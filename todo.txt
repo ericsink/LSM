@@ -1,0 +1,65 @@
+
+way too many mutables in the fs code
+
+way too many if-then places in the fs code
+
+way too many for/while loops in the fs code
+
+should memorysegment for fs be written with an immutable collection?
+
+test multicursor with more than 2 subs
+
+test several iterations of creating a btree from two others.
+
+check for problems with assumptions about what Stream.Length
+returns.  Is it the whole stream length?  Or what's left?  And
+does the code assume one way or the other?
+
+feels like mostly the uint vs int stuff is just causing trouble.
+
+maybe try to avoid realloc of the _keyoffsets array
+
+--------
+
+transactions
+
+--------
+
+no exception throwing?  everything needs to return status.
+but almost everything in .NET throws.  need F#-specific
+implementation of things like SortedDictionary?
+
+checksums for data integrity
+
+still concerned about how much we are copying byte[] for keys
+
+overflow page number could be a varint?
+
+how to make this work within a larger file?
+this is why sqlite4 lsm has "blocks" of pages.
+
+btree_segment.create() needs to take a page size
+and a base pagenumber.
+
+prefix key compression?
+
+zlib compression?  maybe just for overflow pages?
+
+tombstones shouldn't need a length field as well.
+but the absence would mess up the space_needed calcs.
+and if the length is always zero, it's just a byte.
+
+needed a way to ask a cursor if a
+value is a tombstone without retrieving it.  it could be
+huge, and all we wanna know is if it exists.  why doesn't
+sqlite4's LSM have ICursor.vlen()?
+
+--------
+
+conceptually, we COULD write every new segment to disk after commit
+
+once "on disk", a segment is immutable.  reads only.
+only the first (in-memory) segment needs to support writes.
+
+maybe the whole thing should implement IDictionary<byte[],byte[]> ?
+

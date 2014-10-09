@@ -1,0 +1,81 @@
+
+leaf page
+--------
+
+1 byte page type
+1 byte page flags
+
+4 bytes, int, previous page num
+    skips over any overflow pages from this leaf
+
+2 bytes, int, number of pairs
+
+for each pair:
+    key
+    value
+
+each key:
+	1 byte flags, overflow or not, plus tombstone or not
+
+	if not overflow
+	    varint length
+	    N bytes key itself
+
+	if overflow
+	    varint length
+	    4 bytes page number
+
+if not tombstone, value is:
+    1 byte flags, overflow or not
+
+	if not overflow
+	    varint length
+	    N bytes val itself
+
+	if overflow
+	    varint length
+	    4 bytes page number
+
+overflow page
+--------
+
+1 byte page type
+1 byte flags
+
+4 bytes, number of pages remaining in this overflow value, including this one.
+last page in the value has 1 here.  when moving forward, add this number to
+the current page number to get the next thing, which may be another overflow
+value, or may be the next leaf.
+
+overflow into subsequent pages until the length is done
+
+overflow only if the key/value is larger than a page.  in other
+words, if bumping to the next page would make it fit, then no
+overflow.
+
+parent node page
+--------
+
+1 byte page type
+1 byte page flags
+
+2 bytes count keys (n)
+
+root node only:  first_leaf and last_leaf, 4 bytes each
+
+pointers.  (n+1) of them.  varints.
+
+keys.  (n) of them.
+
+each key is:
+
+	1 byte flags, overflow or not
+
+	if not overflow
+	varint length
+	N bytes key itself
+
+	if overflow
+	varint length
+	4 bytes page number
+
