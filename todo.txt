@@ -1,4 +1,8 @@
 
+test multicursor with the same cursor twice?
+
+test multicursor with two identical subs?
+
 way too many mutables in the fs code
 
 way too many if-then places in the fs code

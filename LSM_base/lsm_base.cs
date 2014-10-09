@@ -44,10 +44,10 @@ namespace Zumero.LSM
 		void Next();
 		void Prev();
 
-		bool IsValid();
-		byte[] Key();
-		Stream Value();
-		int ValueLength();
+		bool IsValid(); // TODO property?
+		byte[] Key(); // TODO property?
+		Stream Value(); // TODO property?
+		int ValueLength(); // TODO property?
 
 		int KeyCompare(byte[] k);
 	}

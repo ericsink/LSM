@@ -63,12 +63,14 @@ type IWrite =
 *)
 
 type ByteComparer() = 
-    static member cmp_simple (x:byte[], y:byte[], xlen, ylen, i) =
+    // TODO consider moving the static stuff into a module, with
+    // just the IComparer interface in the class.
+    static member compareSimple (x:byte[], y:byte[], xlen, ylen, i) =
         if i<xlen && i<ylen then
             //let c = x.[i].CompareTo (y.[i])
             let c = (int (x.[i])) - int (y.[i])
             if c <> 0 then c
-            else ByteComparer.cmp_simple (x, y, xlen, ylen, i+1)
+            else ByteComparer.compareSimple (x, y, xlen, ylen, i+1)
         else xlen.CompareTo(ylen)
 
     static member cmp_with_offsets (x:byte[], y:byte[], xlen, xoff, ylen, yoff, i) =
@@ -79,7 +81,7 @@ type ByteComparer() =
         else xlen.CompareTo(ylen)
 
     static member cmp (x, y) =
-        ByteComparer.cmp_simple(x,y,x.Length,y.Length, 0)
+        ByteComparer.compareSimple(x,y,x.Length,y.Length, 0)
 
     static member cmp_within (x,off,len,y) =
         ByteComparer.cmp_with_offsets(x,y,len,off,y.Length,0,0)
@@ -89,7 +91,7 @@ type ByteComparer() =
             ByteComparer.cmp_with_offsets(x,y,x.Length,0,y.Length,0, 0)
             
 
-type PageBuilder(pgsz:int) =
+type private PageBuilder(pgsz:int) =
     let mutable cur = 0
     let buf:byte[] = Array.zeroCreate pgsz
 
@@ -105,7 +107,7 @@ type PageBuilder(pgsz:int) =
     member this.Available() =
         buf.Length - cur
 
-    member this.write_byte(x:byte) =
+    member this.PutByte(x:byte) =
         buf.[cur] <- byte x
         cur <- cur+1
 
@@ -193,7 +195,7 @@ type PageBuilder(pgsz:int) =
             wb (v >>>  8)
             wb (v >>>  0)
 
-type PageReader(pgsz:int) =
+type private PageReader(pgsz:int) =
     let mutable cur = 0
     let buf:byte[] = Array.zeroCreate pgsz
 
@@ -312,8 +314,6 @@ type PageReader(pgsz:int) =
     member this.Skip(len) =
         cur <- cur + len
 
-type Direction = FORWARD=0 | BACKWARD=1 | WANDERING=2
-
 type MemorySegment() =
     let _pairs = new System.Collections.Generic.Dictionary<byte[],Stream>()
 
@@ -383,6 +383,8 @@ type MemorySegment() =
 
     static member Create() =
         new MemorySegment()
+
+type private Direction = FORWARD=0 | BACKWARD=1 | WANDERING=2
 
 type MultiCursor(others:IEnumerable<ICursor>) =
     let _csrs = List.ofSeq others
@@ -466,25 +468,25 @@ type MultiCursor(others:IEnumerable<ICursor>) =
                     if _cur.IsSome then _dir <- Direction.BACKWARD
 
 
-type LivingCursor(chain:ICursor) =
-    member private this.chain = chain // TODO does this need to be a member?
+type LivingCursor(ch:ICursor) =
+    let chain = ch
 
-    member private this.next_until() =
+    let next_until() =
         while (chain.IsValid() && (chain.ValueLength() < 0)) do
             chain.Next()
 
-    member private this.prev_until() =
+    let prev_until() =
         while (chain.IsValid() && (chain.ValueLength() < 0)) do
             chain.Prev()
 
     interface ICursor with
         member this.First() = 
             chain.First()
-            this.next_until()
+            next_until()
 
         member this.Last() = 
             chain.Last()
-            this.prev_until()
+            prev_until()
 
         member this.Key() =
             chain.Key()
@@ -500,18 +502,18 @@ type LivingCursor(chain:ICursor) =
 
         member this.Next() =
             chain.Next()
-            this.next_until()
+            next_until()
 
         member this.Prev() =
             chain.Prev()
-            this.prev_until()
+            prev_until()
         
         member this.KeyCompare k =
             chain.KeyCompare k
 
         member this.Seek (k, sop) =
             chain.Seek (k, sop)
-            if SeekOp.SEEK_GE = sop then this.next_until() else if SeekOp.SEEK_LE = sop then this.prev_until()
+            if SeekOp.SEEK_GE = sop then next_until() else if SeekOp.SEEK_LE = sop then prev_until()
 
 module varint =
     let space_needed v :int = 
@@ -538,7 +540,7 @@ module BTreeSegment =
     let private LEAF_HEADER_SIZE = 8
     let private OFFSET_COUNT_PAIRS = 6
 
-    let private count_overflow_pages_needed_for len = 
+    let private countOverflowPagesFor len = 
         let bytes_per_overflow_page = PAGE_SIZE - OVERFLOW_PAGE_HEADER_SIZE
         let pages = len / bytes_per_overflow_page
         let extra = if (len % bytes_per_overflow_page) <> 0 then 1 else 0
@@ -547,31 +549,31 @@ module BTreeSegment =
 
     let private write_byte_array_with_length (pb:PageBuilder) (ba:byte[]) =
         if null = ba then
-            pb.write_byte(FLAG_TOMBSTONE)
+            pb.PutByte(FLAG_TOMBSTONE)
             pb.write_varint(0UL)
         else
-            pb.write_byte(0uy)
+            pb.PutByte(0uy)
             pb.write_varint(uint64 ba.Length)
             pb.write_byte_array(ba)
 
     let private write_byte_stream_with_length (pb:PageBuilder) (ba:Stream) =
         if null = ba then
-            pb.write_byte(FLAG_TOMBSTONE)
+            pb.PutByte(FLAG_TOMBSTONE)
             pb.write_varint(0UL)
         else
-            pb.write_byte(0uy)
+            pb.PutByte(0uy)
             pb.write_varint(uint64 ba.Length)
             pb.write_byte_stream(ba, int ba.Length)
 
     let private write_overflow_from_stream (pb:PageBuilder) (fs:Stream) (ba:Stream) =
         pb.Reset()
         let mutable sofar = 0
-        let needed = count_overflow_pages_needed_for (int ba.Length)
+        let needed = countOverflowPagesFor (int ba.Length)
         let mutable count = 0;
         while sofar < int ba.Length do
             pb.Reset()
-            pb.write_byte(OVERFLOW_NODE)
-            pb.write_byte(0uy)
+            pb.PutByte(OVERFLOW_NODE)
+            pb.PutByte(0uy)
             pb.write_uint32(uint32 (needed - count))
             let num = Math.Min((PAGE_SIZE - OVERFLOW_PAGE_HEADER_SIZE), ((int ba.Length) - sofar))
             pb.write_byte_stream(ba, num)
@@ -586,8 +588,8 @@ module BTreeSegment =
     let private build_parent_page root first_leaf last_leaf (overflows:System.Collections.Generic.Dictionary<int,uint32>) (pb:PageBuilder) (children:System.Collections.Generic.List<uint32 * byte[]>) stop start =
         let count_keys = stop - start
         pb.Reset ()
-        pb.write_byte (PARENT_NODE)
-        pb.write_byte (if root then FLAG_ROOT_NODE else 0uy)
+        pb.PutByte (PARENT_NODE)
+        pb.PutByte (if root then FLAG_ROOT_NODE else 0uy)
         pb.write_uint16 (uint16 count_keys)
         if root then
             pb.write_uint32(first_leaf)
@@ -597,13 +599,13 @@ module BTreeSegment =
         for q in start .. (stop-1) do
             let k = snd children.[q]
             if ((overflows <> null) && overflows.ContainsKey (q)) then
-                pb.write_byte(FLAG_OVERFLOW)
+                pb.PutByte(FLAG_OVERFLOW)
                 pb.write_varint(uint64 k.Length)
                 pb.write_uint32(overflows.[q])
             else
                 write_byte_array_with_length pb k
 
-    let private calc_available current_size could_be_root =
+    let private calcAvailable current_size could_be_root =
         let basic_size = PAGE_SIZE - current_size
         if could_be_root then
             basic_size - 2 * 4
@@ -624,9 +626,9 @@ module BTreeSegment =
             if (current_size > 0) then
                 let mutable flush_this_page = false
                 if b_last_child then flush_this_page <- true
-                else if (calc_available current_size (next_generation.Count = 0) >= needed_for_inline) then ()
+                else if (calcAvailable current_size (next_generation.Count = 0) >= needed_for_inline) then ()
                 else if ((PAGE_SIZE - PARENT_NODE_HEADER_SIZE) >= needed_for_inline) then flush_this_page <- true
-                else if (calc_available current_size (next_generation.Count = 0) < needed_for_overflow) then flush_this_page <- true
+                else if (calcAvailable current_size (next_generation.Count = 0) < needed_for_overflow) then flush_this_page <- true
                 let b_this_is_the_root_node = b_last_child && (next_generation.Count = 0)
                 if flush_this_page then
                     build_parent_page b_this_is_the_root_node first_leaf last_leaf overflows pb children i first
@@ -640,7 +642,7 @@ module BTreeSegment =
                     first <- i
                     overflows.Clear()
                     current_size <- 2 + 2 + 5
-                if calc_available current_size (next_generation.Count = 0) >= needed_for_inline then
+                if calcAvailable current_size (next_generation.Count = 0) >= needed_for_inline then
                     current_size <- current_size + k.Length
                 else
                     let k_overflow_page_number = curpage
@@ -697,8 +699,8 @@ module BTreeSegment =
             if pb.Position = 0 then
                 count_pairs <- 0
                 last_key <- null
-                pb.write_byte(LEAF_NODE)
-                pb.write_byte(0uy) // flags
+                pb.PutByte(LEAF_NODE)
+                pb.PutByte(0uy) // flags
 
                 pb.write_uint32 (prev_page_number) // prev page num.
                 pb.write_uint16 (0us) // number of pairs in this page. zero for now. written at end.
@@ -713,14 +715,14 @@ module BTreeSegment =
                     let k_overflow_page_number = next_page_number
                     let k_overflow_page_count = write_overflow_from_bytearray pb2 fs k
                     next_page_number <- next_page_number + uint32 k_overflow_page_count
-                    pb.write_byte(FLAG_OVERFLOW)
+                    pb.PutByte(FLAG_OVERFLOW)
                     pb.write_varint(uint64 k.Length)
                     pb.write_uint32(k_overflow_page_number)
 
                 let v_overflow_page_number = next_page_number
                 let v_overflow_page_count = write_overflow_from_stream pb2 fs v
                 next_page_number <- next_page_number + uint32 v_overflow_page_count
-                pb.write_byte(FLAG_OVERFLOW)
+                pb.PutByte(FLAG_OVERFLOW)
                 pb.write_varint(uint64 v.Length)
                 pb.write_uint32(v_overflow_page_number)
             last_key <- k
