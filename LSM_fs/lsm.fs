@@ -804,18 +804,19 @@ module BTreeSegment =
 
         let mutable currentPage:uint32 = 0u
         let mutable leafKeys:int[] = null
+        let mutable countLeafKeys = 0 // only realloc leafKeys when it's too small
         let mutable previousLeaf:uint32 = 0u
         let mutable currentKey = -1
 
         let resetLeaf() =
-            leafKeys <- null
+            countLeafKeys <- 0
             previousLeaf <- 0u
             currentKey <- -1
 
         do resetLeaf()
 
         let nextInLeaf() =
-            if (currentKey+1) < leafKeys.Length then
+            if (currentKey+1) < countLeafKeys then
                 currentKey <- currentKey + 1
                 true
             else
@@ -850,9 +851,10 @@ module BTreeSegment =
                 raise (new Exception())
             pr.GetByte() |> ignore
             previousLeaf <- uint32 (pr.ReadUInt32())
-            let count = pr.GetUInt16() |> int
-            leafKeys <- Array.zeroCreate count
-            for i in 0 .. (count-1) do
+            countLeafKeys <- pr.GetUInt16() |> int
+            if leafKeys=null || leafKeys.Length<countLeafKeys then
+                leafKeys <- Array.zeroCreate countLeafKeys
+            for i in 0 .. (countLeafKeys-1) do
                 let pos = pr.Position
                 leafKeys.[i] <- pr.Position
 
@@ -963,7 +965,7 @@ module BTreeSegment =
                     false
 
         let leafIsValid() =
-            let ok = (leafKeys <> null) && (leafKeys.Length > 0) && (currentKey >= 0) && (currentKey < leafKeys.Length)
+            let ok = (leafKeys <> null) && (countLeafKeys > 0) && (currentKey >= 0) && (currentKey < countLeafKeys)
             ok
 
         let rec searchInParentPage k (ptrs:uint32[]) (keys:byte[][]) (i:uint32) :uint32 =
@@ -977,7 +979,7 @@ module BTreeSegment =
             if setCurrentPage pg then
                 if LEAF_NODE = pr.PageType then
                     readLeaf()
-                    currentKey <- searchLeaf k 0 (leafKeys.Length - 1) sop -1 -1
+                    currentKey <- searchLeaf k 0 (countLeafKeys - 1) sop -1 -1
                     if SeekOp.SEEK_EQ <> sop then
                         if not (leafIsValid()) then
                             if SeekOp.SEEK_GE = sop then
@@ -989,7 +991,7 @@ module BTreeSegment =
                                     resetLeaf()
                                 else if setCurrentPage previousLeaf then
                                     readLeaf()
-                                    currentKey <- leafKeys.Length - 1
+                                    currentKey <- countLeafKeys - 1
                 else if PARENT_NODE = pr.PageType then
                     let (ptrs,keys) = readParentPage()
                     let found = searchInParentPage k ptrs keys 0u
@@ -1054,7 +1056,7 @@ module BTreeSegment =
                         let pg = getLastLeafFromRootPage()
                         setCurrentPage pg |> ignore // TODO
                     readLeaf()
-                    currentKey <- leafKeys.Length - 1
+                    currentKey <- countLeafKeys - 1
 
             member this.Next() =
                 if not (nextInLeaf()) then
@@ -1068,7 +1070,7 @@ module BTreeSegment =
                         resetLeaf()
                     else if setCurrentPage previousLeaf then
                         readLeaf()
-                        currentKey <- leafKeys.Length - 1
+                        currentKey <- countLeafKeys - 1
     
     let OpenCursor(strm, length:int64) :ICursor =
         upcast (new myCursor(strm, length))

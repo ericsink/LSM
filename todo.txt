@@ -1,4 +1,13 @@
 
+memorystream.length.  maybe it's the multiple calls to v.Length
+
+PutVarint child in profiler
+
+why does ByteComparer.cmp itself have so much time?  beyond
+just the func it calls.
+
+memorysegment opencursor is slow, profile says so
+
 test multicursor with the same cursor twice?
 
 test multicursor with two identical subs?
@@ -20,8 +29,6 @@ returns.  Is it the whole stream length?  Or what's left?  And
 does the code assume one way or the other?
 
 feels like mostly the uint vs int stuff is just causing trouble.
-
-maybe try to avoid realloc of the _keyoffsets array
 
 --------
 
