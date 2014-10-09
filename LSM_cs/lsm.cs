@@ -88,7 +88,7 @@ namespace Zumero.LSM.cs
 
 	class ByteComparer : IComparer<byte[]>
 	{
-		public static int cmp_within(byte[] buf, int bufOffset, int bufLen, byte[] y)
+		public static int compareWithin(byte[] buf, int bufOffset, int bufLen, byte[] y)
 		{
 			int n2 = y.Length;
 			int len = bufLen<n2 ? bufLen : n2;
@@ -154,7 +154,7 @@ namespace Zumero.LSM.cs
 
 		public int Compare(int len, byte[] other)
 		{
-			return ByteComparer.cmp_within (buf, cur, len, other);
+			return ByteComparer.compareWithin (buf, cur, len, other);
 		}
 
 		public int Position
@@ -936,14 +936,15 @@ namespace Zumero.LSM.cs
 			int n = (PAGE_SIZE - currentSize);
 			if (couldBeRoot)
 			{
-				// make space for the first_page and last_page fields
+				// make space for the firstLeaf and lastLeaf fields
 				n -= (2 * sizeof(UInt32));
 			}
 			return n;
 		}
 
-		private static List<node> writeParentNodes(uint firstLeaf, uint lastLeaf, List<node> children, uint nextPageNumber, Stream fs, PageBuilder pb)
+		private static List<node> writeParentNodes(uint firstLeaf, uint lastLeaf, List<node> children, uint startingPageNumber, Stream fs, PageBuilder pb)
 		{
+			uint nextPageNumber = startingPageNumber;
 			var nextGeneration = new List<node> ();
 
 			int sofar = 0;
@@ -1022,7 +1023,7 @@ namespace Zumero.LSM.cs
 					sofar += k.Length;
 				} else {
 					// it's okay to pass our PageBuilder here for working purposes.  we're not
-					// really using it yet, until we call build_parent_page
+					// really using it yet, until we call buildParentPage
 					uint overflowFirstPage = nextPageNumber;
 					uint overflowPageCount = writeOverflowFromArray (pb, fs, k);
 					nextPageNumber += overflowPageCount;
@@ -1508,7 +1509,7 @@ namespace Zumero.LSM.cs
 				startRootPageRead ();
 
 				var firstLeaf = pr.GetUInt32 ();
-				//var lastLeaf = pr.read_uint32 ();
+				//var lastLeaf = pr.GetUInt32 ();
 
 				return firstLeaf;
 			}
@@ -1517,7 +1518,7 @@ namespace Zumero.LSM.cs
 			{
 				startRootPageRead ();
 
-				//var firstLeaf = pr.read_uint32 ();
+				//var firstLeaf = pr.GetUInt32 ();
 				pr.Skip (sizeof(uint));
 				var lastLeaf = pr.GetUInt32 ();
 
@@ -1682,20 +1683,20 @@ namespace Zumero.LSM.cs
 
 					} else if (pr.PageType == PARENT_NODE) {
 						Tuple<uint[],byte[][]> tp = readParentPage ();
-						var my_ptrs = tp.Item1;
-						var my_keys = tp.Item2;
+						var ptrs = tp.Item1;
+						var keys = tp.Item2;
 
 						// TODO is linear search here the fastest way?
 						uint found = 0;
-						for (int i = 0; i < my_keys.Length; i++) {
-							int cmp = ByteComparer.cmp (k, my_keys [i]);
+						for (int i = 0; i < keys.Length; i++) {
+							int cmp = ByteComparer.cmp (k, keys [i]);
 							if (cmp <= 0) {
-								found = my_ptrs [i];
+								found = ptrs [i];
 								break;
 							}
 						}
 						if (found == 0) {
-							found = my_ptrs [my_ptrs.Length - 1];
+							found = ptrs [ptrs.Length - 1];
 						}
 						pagenum = found;
 					}

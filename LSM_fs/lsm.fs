@@ -83,7 +83,7 @@ type ByteComparer() =
     static member cmp (x, y) =
         ByteComparer.compareSimple(x,y,x.Length,y.Length, 0)
 
-    static member cmp_within (x,off,len,y) =
+    static member compareWithin (x,off,len,y) =
         ByteComparer.compareWithOffsets(x,y,len,off,y.Length,0,0)
 
     interface IComparer<byte[]> with
@@ -217,7 +217,7 @@ type private PageReader(pgsz:int) =
         r
 
     member this.cmp(len, other) =
-        ByteComparer.cmp_within(buf, cur, len, other)
+        ByteComparer.compareWithin(buf, cur, len, other)
 
     // page type could just be a property
     member this.PageType =
@@ -399,13 +399,13 @@ type MultiCursor(_subcursors:IEnumerable<ICursor>) =
     let mutable cur:ICursor option = None
     let mutable dir = Direction.WANDERING
 
-    let valid_sorted sortfunc = 
+    let validSorted sortfunc = 
         let valids = List.filter (fun (csr:ICursor) -> csr.IsValid()) subcursors
         let sorted = List.sortWith sortfunc valids
         sorted
 
     let find sortfunc = 
-        let vs = valid_sorted sortfunc
+        let vs = validSorted sortfunc
         if vs.IsEmpty then None
         else Some vs.Head
 
@@ -588,11 +588,11 @@ module BTreeSegment =
         writeOverflowFromStream pb fs (new MemoryStream(ba))
 
     let private buildParentPage root firstLeaf lastLeaf (overflows:System.Collections.Generic.Dictionary<int,uint32>) (pb:PageBuilder) (children:System.Collections.Generic.List<uint32 * byte[]>) stop start =
-        let count_keys = stop - start
+        let countKeys = stop - start
         pb.Reset ()
         pb.PutByte (PARENT_NODE)
         pb.PutByte (if root then FLAG_ROOT_NODE else 0uy)
-        pb.PutUInt16 (uint16 count_keys)
+        pb.PutUInt16 (uint16 countKeys)
         if root then
             pb.PutUInt32(firstLeaf)
             pb.PutUInt32(lastLeaf)
@@ -607,57 +607,57 @@ module BTreeSegment =
             else
                 putArrayWithLength pb k
 
-    let private calcAvailable current_size could_be_root =
-        let basic_size = PAGE_SIZE - current_size
-        if could_be_root then
-            basic_size - 2 * 4
+    let private calcAvailable currentSize couldBeRoot =
+        let basicSize = PAGE_SIZE - currentSize
+        if couldBeRoot then
+            basicSize - 2 * 4
         else
-            basic_size
+            basicSize
 
-    let private writeParentNodes firstLeaf lastLeaf (children:System.Collections.Generic.List<uint32 * byte[]>) nextPageNumber fs pb =
-        let next_generation = new System.Collections.Generic.List<uint32 * byte[]>()
-        let mutable current_size = 0
-        let mutable curpage = nextPageNumber
+    let private writeParentNodes firstLeaf lastLeaf (children:System.Collections.Generic.List<uint32 * byte[]>) startingPageNumber fs pb =
+        let nextGeneration = new System.Collections.Generic.List<uint32 * byte[]>()
+        let mutable sofar = 0
+        let mutable nextPageNumber = startingPageNumber
         let overflows = new System.Collections.Generic.Dictionary<int,uint32>()
         let mutable first = 0
         for i in 0 .. children.Count-1 do
             let (pagenum,k) = children.[i]
-            let needed_for_inline = 1 + Varint.SpaceNeededFor (uint64 k.Length) + k.Length + Varint.SpaceNeededFor (uint64 pagenum)
-            let needed_for_overflow = 1 + Varint.SpaceNeededFor (uint64 k.Length) + 4 + Varint.SpaceNeededFor (uint64 pagenum)
-            let b_last_child = (i = (children.Count - 1))
-            if (current_size > 0) then
+            let neededForInline = 1 + Varint.SpaceNeededFor (uint64 k.Length) + k.Length + Varint.SpaceNeededFor (uint64 pagenum)
+            let neededForOverflow = 1 + Varint.SpaceNeededFor (uint64 k.Length) + 4 + Varint.SpaceNeededFor (uint64 pagenum)
+            let isLastChild = (i = (children.Count - 1))
+            if (sofar > 0) then
                 let mutable flushThisPage = false
-                if b_last_child then flushThisPage <- true
-                else if (calcAvailable current_size (next_generation.Count = 0) >= needed_for_inline) then ()
-                else if ((PAGE_SIZE - PARENT_NODE_HEADER_SIZE) >= needed_for_inline) then flushThisPage <- true
-                else if (calcAvailable current_size (next_generation.Count = 0) < needed_for_overflow) then flushThisPage <- true
-                let b_this_is_the_root_node = b_last_child && (next_generation.Count = 0)
+                if isLastChild then flushThisPage <- true
+                else if (calcAvailable sofar (nextGeneration.Count = 0) >= neededForInline) then ()
+                else if ((PAGE_SIZE - PARENT_NODE_HEADER_SIZE) >= neededForInline) then flushThisPage <- true
+                else if (calcAvailable sofar (nextGeneration.Count = 0) < neededForOverflow) then flushThisPage <- true
+                let isRootNode = isLastChild && (nextGeneration.Count = 0)
                 if flushThisPage then
-                    buildParentPage b_this_is_the_root_node firstLeaf lastLeaf overflows pb children i first
+                    buildParentPage isRootNode firstLeaf lastLeaf overflows pb children i first
                     pb.Flush(fs)
-                    next_generation.Add(curpage, snd children.[i-1])
-                    current_size <- 0
+                    nextGeneration.Add(nextPageNumber, snd children.[i-1])
+                    sofar <- 0
                     first <- 0
                     overflows.Clear()
-            if not b_last_child then 
-                if current_size = 0 then
+            if not isLastChild then 
+                if sofar = 0 then
                     first <- i
                     overflows.Clear()
-                    current_size <- 2 + 2 + 5
-                if calcAvailable current_size (next_generation.Count = 0) >= needed_for_inline then
-                    current_size <- current_size + k.Length
+                    sofar <- 2 + 2 + 5
+                if calcAvailable sofar (nextGeneration.Count = 0) >= neededForInline then
+                    sofar <- sofar + k.Length
                 else
-                    let keyOverflowFirstPage = curpage
+                    let keyOverflowFirstPage = nextPageNumber
                     let keyOverflowPageCount = writeOverflowFromArray pb fs k
-                    curpage <- curpage + uint32 keyOverflowPageCount
-                    current_size <- current_size + 4
+                    nextPageNumber <- nextPageNumber + uint32 keyOverflowPageCount
+                    sofar <- sofar + 4
                     overflows.[i] <- keyOverflowFirstPage
-                current_size <- current_size + 1 + Varint.SpaceNeededFor(uint64 k.Length) + Varint.SpaceNeededFor(uint64 pagenum)
-        next_generation
+                sofar <- sofar + 1 + Varint.SpaceNeededFor(uint64 k.Length) + Varint.SpaceNeededFor(uint64 pagenum)
+        nextGeneration
 
     let Create(fs:Stream, csr:ICursor) :uint32 = 
         let pb = new PageBuilder(PAGE_SIZE)
-        let pb2 = new PageBuilder(PAGE_SIZE)
+        let pbOverflow = new PageBuilder(PAGE_SIZE)
         let mutable nextPageNumber:uint32 = 1u
         let mutable prevPageNumber:uint32 = 0u
         let mutable countPairs = 0
@@ -715,14 +715,14 @@ module BTreeSegment =
                     putArrayWithLength pb k
                 else
                     let keyOverflowFirstPage = nextPageNumber
-                    let keyOverflowPageCount = writeOverflowFromArray pb2 fs k
+                    let keyOverflowPageCount = writeOverflowFromArray pbOverflow fs k
                     nextPageNumber <- nextPageNumber + uint32 keyOverflowPageCount
                     pb.PutByte(FLAG_OVERFLOW)
                     pb.PutVarint(uint64 k.Length)
                     pb.PutUInt32(keyOverflowFirstPage)
 
                 let valueOverflowFirstPage = nextPageNumber
-                let valueOverflowPageCount = writeOverflowFromStream pb2 fs v
+                let valueOverflowPageCount = writeOverflowFromStream pbOverflow fs v
                 nextPageNumber <- nextPageNumber + uint32 valueOverflowPageCount
                 pb.PutByte(FLAG_OVERFLOW)
                 pb.PutVarint(uint64 v.Length)
@@ -788,8 +788,8 @@ module BTreeSegment =
             with get() = raise (new NotSupportedException())
             and set(value) = raise (new NotSupportedException())
 
-    let private readOverflow len fs (first_page:uint32) =
-        let ostrm = new myOverflowReadStream(fs, first_page, len)
+    let private readOverflow len fs (firstPage:uint32) =
+        let ostrm = new myOverflowReadStream(fs, firstPage, len)
         utils.ReadAll(ostrm)
 
     type private myCursor(_fs,_fsLength:int64) =
@@ -924,7 +924,7 @@ module BTreeSegment =
             let lastLeaf = pr.ReadUInt32()
             lastLeaf
 
-        let parentpage_read() =
+        let readParentPage() =
             pr.Reset()
             if pr.GetByte() <> PARENT_NODE then 
                 raise (new Exception())
@@ -986,7 +986,7 @@ module BTreeSegment =
                                     readLeaf()
                                     currentKey <- leafKeys.Length - 1
                 else if PARENT_NODE = pr.PageType then
-                    let (ptrs,keys) = parentpage_read()
+                    let (ptrs,keys) = readParentPage()
                     let found = searchInParentPage k ptrs keys 0u
                     if 0u = found then
                         search ptrs.[ptrs.Length - 1] k sop
