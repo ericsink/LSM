@@ -628,12 +628,14 @@ module BTreeSegment =
             let neededForOverflow = 1 + Varint.SpaceNeededFor (uint64 k.Length) + 4 + Varint.SpaceNeededFor (uint64 pagenum)
             let isLastChild = (i = (children.Count - 1))
             if (sofar > 0) then
-                let mutable flushThisPage = false
-                if isLastChild then flushThisPage <- true
-                else if (calcAvailable sofar (nextGeneration.Count = 0) >= neededForInline) then ()
-                else if ((PAGE_SIZE - PARENT_NODE_HEADER_SIZE) >= neededForInline) then flushThisPage <- true
-                else if (calcAvailable sofar (nextGeneration.Count = 0) < neededForOverflow) then flushThisPage <- true
-                let isRootNode = isLastChild && (nextGeneration.Count = 0)
+                let couldBeRoot = (nextGeneration.Count = 0)
+                let avail = calcAvailable sofar couldBeRoot 
+                let fitsInline = (avail >= neededForInline)
+                let wouldFitInlineOnNextPage = ((PAGE_SIZE - PARENT_NODE_HEADER_SIZE) >= neededForInline)
+                let fitsOverflow = (avail >= neededForOverflow)
+                let flushThisPage = isLastChild || ((not fitsInline) && (wouldFitInlineOnNextPage || (not fitsOverflow))) 
+                let isRootNode = isLastChild && couldBeRoot
+
                 if flushThisPage then
                     buildParentPage isRootNode firstLeaf lastLeaf overflows pb children i first
                     pb.Flush(fs)
@@ -678,19 +680,20 @@ module BTreeSegment =
             let neededForValueInline = 1 + if v<>null then Varint.SpaceNeededFor(uint64 v.Length) + int v.Length else 0
             let neededForValueOverflow = 1 + if v<>null then Varint.SpaceNeededFor(uint64 v.Length) + neededForOverflowPageNumber else 0
 
-            let neededForInlineBoth = neededForKeyInline + neededForValueInline
+            let neededForBothInline = neededForKeyInline + neededForValueInline
             let neededForKeyInlineValueOverflow = neededForKeyInline + neededForValueOverflow
-            let neededForOverflowBoth = neededForKeyOverflow + neededForValueOverflow
+            let neededForBothOverflow = neededForKeyOverflow + neededForValueOverflow
 
             csr.Next()
 
             if pb.Position > 0 then
                 let avail = pb.Available
-                let mutable flushThisPage = false
-                if (avail >= neededForInlineBoth) then ()
-                else if ((PAGE_SIZE - LEAF_HEADER_SIZE) >= neededForInlineBoth) then flushThisPage <- true
-                else if (avail >= neededForKeyInlineValueOverflow) then ()
-                else if (avail < neededForOverflowBoth) then flushThisPage <- true
+                let fitBothInline = (avail >= neededForBothInline)
+                let wouldFitBothInlineOnNextPage = ((PAGE_SIZE - LEAF_HEADER_SIZE) >= neededForBothInline)
+                let fitKeyInlineValueOverflow = (avail >= neededForKeyInlineValueOverflow)
+                let fitBothOverflow = (avail >= neededForBothOverflow)
+                let flushThisPage = (not fitBothInline) && (wouldFitBothInlineOnNextPage || ( (not fitKeyInlineValueOverflow) && (not fitBothOverflow) ) )
+
                 if flushThisPage then
                     pb.PutUInt16At (OFFSET_COUNT_PAIRS, uint16 countPairs)
                     pb.Flush(fs)
@@ -709,7 +712,7 @@ module BTreeSegment =
                 pb.PutUInt32 (prevPageNumber) // prev page num.
                 pb.PutUInt16 (0us) // number of pairs in this page. zero for now. written at end.
             let available = pb.Available
-            if (available >= neededForInlineBoth) then
+            if (available >= neededForBothInline) then
                 putArrayWithLength pb k
                 putStreamWithLength pb v
             else
