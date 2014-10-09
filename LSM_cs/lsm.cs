@@ -898,9 +898,9 @@ namespace Zumero.LSM.cs
 
 		private static int countOverflowPagesFor(int len)
 		{
-			int bytePerPage = PAGE_SIZE - OVERFLOW_PAGE_HEADER_SIZE;
-			int needed = len / bytePerPage;
-			if ((len % bytePerPage) != 0) {
+			int bytesPerPage = PAGE_SIZE - OVERFLOW_PAGE_HEADER_SIZE;
+			int needed = len / bytesPerPage;
+			if ((len % bytesPerPage) != 0) {
 				needed++;
 			}
 			return needed;
@@ -1074,7 +1074,7 @@ namespace Zumero.LSM.cs
 				var neededForValueOverflow = 1 + ((v!=null) ? Varint.SpaceNeededFor((ulong) v.Length) + neededForOverflowPageNumber : 0);
 
 				var neededForInlineBoth = neededForKeyInline + neededForValueInline;
-				var needed_for_inline_key_overflow_val = neededForKeyInline + neededForValueOverflow;
+				var neededForKeyInlineValueOverflow = neededForKeyInline + neededForValueOverflow;
 				var neededForOverflowBoth = neededForKeyOverflow + neededForValueOverflow;
 
 				csr.Next ();
@@ -1090,7 +1090,7 @@ namespace Zumero.LSM.cs
 					} else if ((PAGE_SIZE - LEAF_HEADER_SIZE) >= neededForInlineBoth) {
 						// it won't fit here, but it would fully fit on the next page.
 						flushThisPage = true;
-					} else if (avail >= needed_for_inline_key_overflow_val) {
+					} else if (avail >= neededForKeyInlineValueOverflow) {
 						// the key will fit inline if we just overflow the val
 					} else if (avail < neededForOverflowBoth) {
 						// we can't even put this pair in this page if we overflow both.
@@ -1153,7 +1153,7 @@ namespace Zumero.LSM.cs
 					putArrayWithLength (pb, k);
 					putStreamWithLength (pb, v);
 				} else {
-					if (available >= needed_for_inline_key_overflow_val) {
+					if (available >= neededForKeyInlineValueOverflow) {
 						// the key will fit inline if we just overflow the val
 						putArrayWithLength (pb, k);
 					} else {
@@ -1212,7 +1212,7 @@ namespace Zumero.LSM.cs
 			}
 		}
 
-		private class OverflowReadStream : Stream
+		private class myOverflowReadStream : Stream
 		{
 			private readonly Stream fs;
 			private readonly int len;
@@ -1224,7 +1224,7 @@ namespace Zumero.LSM.cs
 			// TODO I suppose if the underlying stream can seek and if we kept
 			// the first_page, we could seek or reset as well.
 
-			public OverflowReadStream(Stream _fs, uint firstPage, int _len)
+			public myOverflowReadStream(Stream _fs, uint firstPage, int _len)
 			{
 				fs = _fs;
 				len = _len;
@@ -1320,7 +1320,7 @@ namespace Zumero.LSM.cs
 
 		private static byte[] readOverflow(int len, Stream fs, uint firstPage)
 		{
-			var ostrm = new OverflowReadStream (fs, firstPage, len);
+			var ostrm = new myOverflowReadStream (fs, firstPage, len);
 			return utils.ReadAll (ostrm);
 		}
 
@@ -1381,7 +1381,7 @@ namespace Zumero.LSM.cs
                 }
             }
 
-			private void inhaleLeaf()
+			private void readLeaf()
 			{
 				resetLeaf ();
 				pr.Reset ();
@@ -1507,24 +1507,24 @@ namespace Zumero.LSM.cs
 			{
 				startRootPageRead ();
 
-				var rootpage_first_leaf = pr.GetUInt32 ();
-				//var rootpage_last_leaf = pr.read_uint32 ();
+				var firstLeaf = pr.GetUInt32 ();
+				//var lastLeaf = pr.read_uint32 ();
 
-				return rootpage_first_leaf;
+				return firstLeaf;
 			}
 
 			private uint getLastLeafFromRootPage()
 			{
 				startRootPageRead ();
 
-				//var rootpage_first_leaf = pr.read_uint32 ();
+				//var firstLeaf = pr.read_uint32 ();
 				pr.Skip (sizeof(uint));
-				var rootpage_last_leaf = pr.GetUInt32 ();
+				var lastLeaf = pr.GetUInt32 ();
 
-				return rootpage_last_leaf;
+				return lastLeaf;
 			}
 
-			private Tuple<uint[],byte[][]> inhaleParentPage()
+			private Tuple<uint[],byte[][]> readParentPage()
 			{
 				pr.Reset ();
 				if (pr.GetByte() != PARENT_NODE) {
@@ -1532,28 +1532,28 @@ namespace Zumero.LSM.cs
 				}
 				byte pflag = pr.GetByte ();
 				int count = (int) pr.GetUInt16 ();
-				var my_ptrs = new uint[count+1];
-				var my_keys = new byte[count][];
+				var ptrs = new uint[count+1];
+				var keys = new byte[count][];
 
 				if (0 != (pflag & FLAG_ROOT_NODE)) {
 					pr.Skip (2 * sizeof(uint));
 				}
 				// note "<= count" below
 				for (int i = 0; i <= count; i++) {
-					my_ptrs[i] = (uint) pr.GetVarint();
+					ptrs[i] = (uint) pr.GetVarint();
 				}
 				// note "< count" below
 				for (int i = 0; i < count; i++) {
 					byte flag = pr.GetByte();
 					int klen = (int) pr.GetVarint();
 					if (0 == (flag & FLAG_OVERFLOW)) {
-						my_keys[i] = pr.GetArray(klen);
+						keys[i] = pr.GetArray(klen);
 					} else {
 						uint pagenum = pr.GetUInt32 ();
-						my_keys[i] = readOverflow (klen, fs, pagenum);
+						keys[i] = readOverflow (klen, fs, pagenum);
 					}
 				}
-				return new Tuple<uint[],byte[][]> (my_ptrs, my_keys);
+				return new Tuple<uint[],byte[][]> (ptrs, keys);
 			}
 
 			// this is used when moving forward through the leaf pages.
@@ -1607,7 +1607,7 @@ namespace Zumero.LSM.cs
 					return null;
 				} else if (0 != (vflag & FLAG_OVERFLOW)) {
 					uint pagenum = pr.GetUInt32 ();
-					return new OverflowReadStream (fs, pagenum, vlen);
+					return new myOverflowReadStream (fs, pagenum, vlen);
 				} else {
 					return new MemoryStream(pr.GetArray (vlen));
 				}
@@ -1647,7 +1647,7 @@ namespace Zumero.LSM.cs
 					}
 
 					if (pr.PageType == LEAF_NODE) {
-						inhaleLeaf ();
+						readLeaf ();
 
 						currentKey = searchLeaf (k, 0, leafKeys.Length - 1, sop);
 
@@ -1662,7 +1662,7 @@ namespace Zumero.LSM.cs
 								// to look at the next/prev leaf.
 								if (SeekOp.SEEK_GE == sop) {
 									if (setCurrentPage (currentPage + 1) && searchForwardForLeaf ()) {
-										inhaleLeaf ();
+										readLeaf ();
 										currentKey = 0;
 									} else {
 										break;
@@ -1673,7 +1673,7 @@ namespace Zumero.LSM.cs
 										resetLeaf(); // TODO probably not needed?
 										break;
 									} else if (setCurrentPage(previousLeaf)) {
-										inhaleLeaf ();
+										readLeaf ();
 										currentKey = leafKeys.Length - 1;
 									}
 								}
@@ -1681,7 +1681,7 @@ namespace Zumero.LSM.cs
 						}
 
 					} else if (pr.PageType == PARENT_NODE) {
-						Tuple<uint[],byte[][]> tp = inhaleParentPage ();
+						Tuple<uint[],byte[][]> tp = readParentPage ();
 						var my_ptrs = tp.Item1;
 						var my_keys = tp.Item2;
 
@@ -1713,7 +1713,7 @@ namespace Zumero.LSM.cs
 						// assert _buf[1] & FLAG_ROOT_NODE
 						setCurrentPage (getFirstLeafFromRootPage()); // TODO don't ignore return val
 					}
-					inhaleLeaf ();
+					readLeaf ();
 					currentKey = 0;
 				}
 			}
@@ -1729,7 +1729,7 @@ namespace Zumero.LSM.cs
 						// assert _buf[1] & FLAG_ROOT_NODE
 						setCurrentPage (getLastLeafFromRootPage()); // TODO don't ignore return val
 					}
-					inhaleLeaf ();
+					readLeaf ();
 					currentKey = leafKeys.Length - 1;
 				}
 			}
@@ -1739,7 +1739,7 @@ namespace Zumero.LSM.cs
 				if (!nextInLeaf()) {
 					// need a new page
 					if (setCurrentPage (currentPage + 1) && searchForwardForLeaf ()) {
-						inhaleLeaf ();
+						readLeaf ();
 						currentKey = 0;
 					}
 				}
@@ -1752,7 +1752,7 @@ namespace Zumero.LSM.cs
 					if (0 == previousLeaf) {
 						resetLeaf();
 					} else if (setCurrentPage(previousLeaf)) {
-						inhaleLeaf ();
+						readLeaf ();
 						currentKey = leafKeys.Length - 1;
 					}
 				}
