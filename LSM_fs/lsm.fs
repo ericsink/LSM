@@ -568,21 +568,23 @@ module BTreeSegment =
             pb.PutStream(ba, int ba.Length)
 
     let private writeOverflowFromStream (pb:PageBuilder) (fs:Stream) (ba:Stream) =
-        pb.Reset()
-        let mutable sofar = 0
         let needed = countOverflowPagesFor (int ba.Length)
-        let mutable count = 0;
-        while sofar < int ba.Length do
+        let len = int ba.Length
+
+        let rec fn sofar count =
             pb.Reset()
             pb.PutByte(OVERFLOW_NODE)
             pb.PutByte(0uy)
             pb.PutUInt32(uint32 (needed - count))
-            let num = Math.Min((PAGE_SIZE - OVERFLOW_PAGE_HEADER_SIZE), ((int ba.Length) - sofar))
+            let num = Math.Min((PAGE_SIZE - OVERFLOW_PAGE_HEADER_SIZE), (len - sofar))
             pb.PutStream(ba, num)
-            sofar <- sofar + num
             pb.Flush(fs)
-            count <- count + 1
-        count
+            if (sofar+num) < len then
+                fn (sofar+num) (count+1)
+            else
+                count + 1
+
+        fn 0 0
 
     let private writeOverflowFromArray (pb:PageBuilder) (fs:Stream) (ba:byte[]) =
         writeOverflowFromStream pb fs (new MemoryStream(ba))
