@@ -65,7 +65,7 @@ type IWrite =
 module ByteComparer = 
     // this code is very non-F#-ish.  but it's much faster.
 
-    let Compare (x:byte[], y:byte[]) =
+    let Compare (x:byte[]) (y:byte[]) =
         let xlen = x.Length
         let ylen = y.Length
         let len = if xlen<ylen then xlen else ylen
@@ -80,7 +80,7 @@ module ByteComparer =
                 i <- i + 1
         if i>len then result else (xlen - ylen)
 
-    let CompareWithin (x:byte[],off,xlen,y:byte[]) =
+    let CompareWithin (x:byte[]) off xlen (y:byte[]) =
         let ylen = y.Length
         let len = if xlen<ylen then xlen else ylen
         let mutable i = 0
@@ -225,9 +225,8 @@ type private PageReader(pgsz:int) =
         r
 
     member this.Compare(len, other) =
-        ByteComparer.CompareWithin(buf, cur, len, other)
+        ByteComparer.CompareWithin buf cur len other
 
-    // page type could just be a property
     member this.PageType =
         buf.[0]
 
@@ -336,7 +335,7 @@ type MemorySegment() =
         // cannot be captured by a closure.
         let cur = ref -1
         let keys:byte[][] = (Array.ofSeq pairs.Keys)
-        let sortfunc x y = ByteComparer.Compare(x, y)
+        let sortfunc x y = ByteComparer.Compare x y
         Array.sortInPlaceWith sortfunc keys
 
         let rec search k min max sop le ge = 
@@ -347,7 +346,7 @@ type MemorySegment() =
             else
                 let mid = (max + min) / 2
                 let kmid = keys.[mid]
-                let cmp = ByteComparer.Compare (kmid, k)
+                let cmp = ByteComparer.Compare kmid k
                 if 0 = cmp then mid
                 else if cmp<0  then search k (mid+1) max sop mid ge
                 else search k min (mid-1) sop le mid
@@ -372,7 +371,7 @@ type MemorySegment() =
                 keys.[!cur]
             
             member this.KeyCompare(k) =
-                ByteComparer.Compare(keys.[!cur], k)
+                ByteComparer.Compare (keys.[!cur]) k
 
             member this.Value() =
                 let v = pairs.[keys.[!cur]]
@@ -883,7 +882,7 @@ module BTreeSegment =
             else
                 let pagenum = pr.ReadUInt32()
                 let k = readOverflow klen fs pagenum
-                ByteComparer.Compare (k, other)
+                ByteComparer.Compare k other
 
         let keyInLeaf n = 
             pr.SetPosition(leafKeys.[n])
@@ -982,7 +981,7 @@ module BTreeSegment =
             ok
 
         let rec searchInParentPage k (ptrs:uint32[]) (keys:byte[][]) (i:uint32) :uint32 =
-            let cmp = ByteComparer.Compare (k, keys.[int i])
+            let cmp = ByteComparer.Compare k (keys.[int i])
             if cmp>0 then
                 searchInParentPage k ptrs keys (i+1u)
             else
