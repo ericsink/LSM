@@ -1,5 +1,5 @@
 
-memorystream.length.  maybe it's the multiple calls to v.Length
+fix the realloc of leafKeys in the cs code as well
 
 PutVarint child in profiler
 

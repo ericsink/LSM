@@ -558,14 +558,14 @@ module BTreeSegment =
             pb.PutVarint(uint64 ba.Length)
             pb.PutArray(ba)
 
-    let private putStreamWithLength (pb:PageBuilder) (ba:Stream) =
+    let private putStreamWithLength (pb:PageBuilder) (ba:Stream) vlen =
         if null = ba then
             pb.PutByte(FLAG_TOMBSTONE)
             pb.PutVarint(0UL)
         else
             pb.PutByte(0uy)
-            pb.PutVarint(uint64 ba.Length)
-            pb.PutStream(ba, int ba.Length)
+            pb.PutVarint(uint64 vlen)
+            pb.PutStream(ba, int vlen)
 
     let private writeOverflowFromStream (pb:PageBuilder) (fs:Stream) (ba:Stream) =
         let needed = countOverflowPagesFor (int ba.Length)
@@ -671,14 +671,15 @@ module BTreeSegment =
         while csr.IsValid() do
             let k = csr.Key()
             let v = csr.Value()
+            let vlen = if v<>null then v.Length else int64 0
             let neededForOverflowPageNumber = 4 // TODO sizeof uint32
 
             let neededForKeyBase = 1 + Varint.SpaceNeededFor(uint64 k.Length)
             let neededForKeyInline = neededForKeyBase + k.Length
             let neededForKeyOverflow = neededForKeyBase + neededForOverflowPageNumber
 
-            let neededForValueInline = 1 + if v<>null then Varint.SpaceNeededFor(uint64 v.Length) + int v.Length else 0
-            let neededForValueOverflow = 1 + if v<>null then Varint.SpaceNeededFor(uint64 v.Length) + neededForOverflowPageNumber else 0
+            let neededForValueInline = 1 + if v<>null then Varint.SpaceNeededFor(uint64 vlen) + int vlen else 0
+            let neededForValueOverflow = 1 + if v<>null then Varint.SpaceNeededFor(uint64 vlen) + neededForOverflowPageNumber else 0
 
             let neededForBothInline = neededForKeyInline + neededForValueInline
             let neededForKeyInlineValueOverflow = neededForKeyInline + neededForValueOverflow
@@ -714,7 +715,7 @@ module BTreeSegment =
             let available = pb.Available
             if (available >= neededForBothInline) then
                 putArrayWithLength pb k
-                putStreamWithLength pb v
+                putStreamWithLength pb v vlen
             else
                 if (available >= neededForKeyInlineValueOverflow) then
                     putArrayWithLength pb k
@@ -730,7 +731,7 @@ module BTreeSegment =
                 let valueOverflowPageCount = writeOverflowFromStream pbOverflow fs v
                 nextPageNumber <- nextPageNumber + uint32 valueOverflowPageCount
                 pb.PutByte(FLAG_OVERFLOW)
-                pb.PutVarint(uint64 v.Length)
+                pb.PutVarint(uint64 vlen)
                 pb.PutUInt32(valueOverflowFirstPage)
             lastKey <- k
             countPairs <- countPairs + 1
