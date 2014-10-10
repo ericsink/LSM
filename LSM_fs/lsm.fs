@@ -604,6 +604,7 @@ module BTreeSegment =
         writeOverflowFromStream pb fs (new MemoryStream(ba))
 
     let private buildParentPage root firstLeaf lastLeaf (overflows:System.Collections.Generic.Dictionary<int,uint32>) (pb:PageBuilder) (children:System.Collections.Generic.List<uint32 * byte[]>) stop start =
+        // assert stop > start
         let countKeys = stop - start
         pb.Reset ()
         pb.PutByte (PARENT_NODE)
@@ -612,8 +613,12 @@ module BTreeSegment =
         if root then
             pb.PutUInt32(firstLeaf)
             pb.PutUInt32(lastLeaf)
+        // store all the ptrs, n+1 of them
+        // note loop bounds
         for q in start .. stop do
             pb.PutVarint(uint64 (fst (children.[q])))
+        // store all the keys, n of them
+        // note loop bounds
         for q in start .. (stop-1) do
             let k = snd children.[q]
             if ((overflows <> null) && overflows.ContainsKey (q)) then
@@ -626,17 +631,19 @@ module BTreeSegment =
     let private calcAvailable currentSize couldBeRoot =
         let basicSize = PAGE_SIZE - currentSize
         if couldBeRoot then
+            // make room for firstLeaf and lastLeaf
             basicSize - 2 * 4
         else
             basicSize
 
     let private writeParentNodes firstLeaf lastLeaf (children:System.Collections.Generic.List<uint32 * byte[]>) startingPageNumber fs pb =
         let nextGeneration = new System.Collections.Generic.List<uint32 * byte[]>()
+        let overflows = new System.Collections.Generic.Dictionary<int,uint32>()
         // TODO encapsulate mutables in a class?
         let mutable sofar = 0
         let mutable nextPageNumber = startingPageNumber
-        let overflows = new System.Collections.Generic.Dictionary<int,uint32>()
         let mutable first = 0
+        // assert children.Count > 1
         for i in 0 .. children.Count-1 do
             let (pagenum,k) = children.[i]
             let neededForInline = 1 + Varint.SpaceNeededFor (uint64 k.Length) + k.Length + Varint.SpaceNeededFor (uint64 pagenum)
@@ -906,6 +913,7 @@ module BTreeSegment =
             pr.GetByte() |> ignore
             previousLeaf <- uint32 (pr.ReadUInt32())
             countLeafKeys <- pr.GetUInt16() |> int
+            // only realloc leafKeys if it's too small
             if leafKeys=null || leafKeys.Length<countLeafKeys then
                 leafKeys <- Array.zeroCreate countLeafKeys
             for i in 0 .. (countLeafKeys-1) do
