@@ -63,33 +63,36 @@ type IWrite =
 *)
 
 type ByteComparer() = 
-    // TODO consider moving the static stuff into a module, with
-    // just the IComparer interface in the class.
-    static member compareSimple (x:byte[], y:byte[], xlen, ylen, i) =
-        if i<xlen && i<ylen then
-            //let c = x.[i].CompareTo (y.[i])
+    // this code is very non-F#-ish.  but it's much faster.
+
+    static member cmp (x:byte[], y:byte[]) =
+        let xlen = x.Length
+        let ylen = y.Length
+        let len = if xlen<ylen then xlen else ylen
+        let mutable i = 0
+        let mutable result = 0
+        while i<len do
             let c = (int (x.[i])) - int (y.[i])
-            if c <> 0 then c
-            else ByteComparer.compareSimple (x, y, xlen, ylen, i+1)
-        else xlen.CompareTo(ylen)
+            if c <> 0 then
+                i <- len+1 // breaks out of the loop, and signals that result is valid
+                result <- c
+            else
+                i <- i + 1
+        if i>len then result else (xlen - ylen)
 
-    static member compareWithOffsets (x:byte[], y:byte[], xlen, xoff, ylen, yoff, i) =
-        if i<xlen && i<ylen then
-            let c = x.[i + xoff].CompareTo (y.[i + yoff])
-            if c <> 0 then c
-            else ByteComparer.compareWithOffsets (x, y, xlen, xoff, ylen, yoff, i+1)
-        else xlen.CompareTo(ylen)
-
-    static member cmp (x, y) =
-        ByteComparer.compareSimple(x,y,x.Length,y.Length, 0)
-
-    static member compareWithin (x,off,len,y) =
-        ByteComparer.compareWithOffsets(x,y,len,off,y.Length,0,0)
-
-    interface IComparer<byte[]> with
-        member this.Compare(x, y) =
-            ByteComparer.compareSimple(x,y,x.Length,y.Length, 0)
-            
+    static member compareWithin (x:byte[],off,xlen,y:byte[]) =
+        let ylen = y.Length
+        let len = if xlen<ylen then xlen else ylen
+        let mutable i = 0
+        let mutable result = 0
+        while i<len do
+            let c = (int (x.[i + off])) - int (y.[i])
+            if c <> 0 then
+                i <- len+1 // breaks out of the loop, and signals that result is valid
+                result <- c
+            else
+                i <- i + 1
+        if i>len then result else (xlen - ylen)
 
 type private PageBuilder(pgsz:int) =
     let mutable cur = 0
