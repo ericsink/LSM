@@ -136,64 +136,69 @@ type private PageBuilder(pgsz:int) =
         buf.[at+1] <- byte (v >>>  0)
 
     member this.PutVarint(v:uint64) =
-        // TODO this inner function might be causing perf problems
-        let wb x = 
-            buf.[cur] <- byte x
-            cur <- cur+1
         if v<=240UL then 
-            wb v
+            buf.[cur] <- byte v
+            cur <- cur + 1
         else if v<=2287UL then 
-            wb ((v - 240UL) / 256UL + 241UL)
-            wb ((v - 240UL) % 256UL)
+            buf.[cur] <- byte ((v - 240UL) / 256UL + 241UL)
+            buf.[cur+1] <- byte ((v - 240UL) % 256UL)
+            cur <- cur + 2
         else if v<=67823UL then 
-            wb 249UL
-            wb ((v - 2288UL) / 256UL)
-            wb ((v - 2288UL) % 256UL)
+            buf.[cur] <- 249uy
+            buf.[cur+1] <- byte ((v - 2288UL) / 256UL)
+            buf.[cur+2] <- byte ((v - 2288UL) % 256UL)
+            cur <- cur + 3
         else if v<=16777215UL then 
-            wb 250UL
-            wb (v >>> 16)
-            wb (v >>>  8)
-            wb (v >>>  0)
+            buf.[cur] <- 250uy
+            buf.[cur+1] <- byte (v >>> 16)
+            buf.[cur+2] <- byte (v >>>  8)
+            buf.[cur+3] <- byte (v >>>  0)
+            cur <- cur + 4
         else if v<=4294967295UL then 
-            wb 251UL
-            wb (v >>> 24)
-            wb (v >>> 16)
-            wb (v >>>  8)
-            wb (v >>>  0)
+            buf.[cur] <- 251uy
+            buf.[cur+1] <- byte (v >>> 24)
+            buf.[cur+2] <- byte (v >>> 16)
+            buf.[cur+3] <- byte (v >>>  8)
+            buf.[cur+4] <- byte (v >>>  0)
+            cur <- cur + 5
         else if v<=1099511627775UL then 
-            wb 252UL
-            wb (v >>> 32)
-            wb (v >>> 24)
-            wb (v >>> 16)
-            wb (v >>>  8)
-            wb (v >>>  0)
+            buf.[cur] <- 252uy
+            buf.[cur+1] <- byte (v >>> 32)
+            buf.[cur+2] <- byte (v >>> 24)
+            buf.[cur+3] <- byte (v >>> 16)
+            buf.[cur+4] <- byte (v >>>  8)
+            buf.[cur+5] <- byte (v >>>  0)
+            cur <- cur + 6
         else if v<=281474976710655UL then 
-            wb 253UL
-            wb (v >>> 40)
-            wb (v >>> 32)
-            wb (v >>> 24)
-            wb (v >>> 16)
-            wb (v >>>  8)
-            wb (v >>>  0)
+            buf.[cur] <- 253uy
+            buf.[cur+1] <- byte (v >>> 40)
+            buf.[cur+2] <- byte (v >>> 32)
+            buf.[cur+3] <- byte (v >>> 24)
+            buf.[cur+4] <- byte (v >>> 16)
+            buf.[cur+5] <- byte (v >>>  8)
+            buf.[cur+6] <- byte (v >>>  0)
+            cur <- cur + 7
         else if v<=72057594037927935UL then 
-            wb 254UL
-            wb (v >>> 48)
-            wb (v >>> 40)
-            wb (v >>> 32)
-            wb (v >>> 24)
-            wb (v >>> 16)
-            wb (v >>>  8)
-            wb (v >>>  0)
+            buf.[cur] <- 254uy
+            buf.[cur+1] <- byte (v >>> 48)
+            buf.[cur+2] <- byte (v >>> 40)
+            buf.[cur+3] <- byte (v >>> 32)
+            buf.[cur+4] <- byte (v >>> 24)
+            buf.[cur+5] <- byte (v >>> 16)
+            buf.[cur+6] <- byte (v >>>  8)
+            buf.[cur+7] <- byte (v >>>  0)
+            cur <- cur + 8
         else
-            wb 255UL
-            wb (v >>> 56)
-            wb (v >>> 48)
-            wb (v >>> 40)
-            wb (v >>> 32)
-            wb (v >>> 24)
-            wb (v >>> 16)
-            wb (v >>>  8)
-            wb (v >>>  0)
+            buf.[cur] <- 255uy
+            buf.[cur+1] <- byte (v >>> 56)
+            buf.[cur+2] <- byte (v >>> 48)
+            buf.[cur+3] <- byte (v >>> 40)
+            buf.[cur+4] <- byte (v >>> 32)
+            buf.[cur+5] <- byte (v >>> 24)
+            buf.[cur+6] <- byte (v >>> 16)
+            buf.[cur+7] <- byte (v >>>  8)
+            buf.[cur+8] <- byte (v >>>  0)
+            cur <- cur + 9
 
 type private PageReader(pgsz:int) =
     let mutable cur = 0
