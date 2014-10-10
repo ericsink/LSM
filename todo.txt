@@ -1,8 +1,6 @@
 
 fix the realloc of leafKeys in the cs code as well
 
-PutVarint child in profiler
-
 why does ByteComparer.cmp itself have so much time?  beyond
 just the func it calls.
 

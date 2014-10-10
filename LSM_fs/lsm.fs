@@ -477,13 +477,14 @@ type MultiCursor(_subcursors:IEnumerable<ICursor>) =
             List.iter f subcursors
             dir <- Direction.WANDERING
             if cur.IsNone then
-                if SeekOp.SEEK_GE = sop then
+                match sop with
+                | SeekOp.SEEK_GE ->
                     cur <- findMin()
                     if cur.IsSome then dir <- Direction.FORWARD
-                else if SeekOp.SEEK_LE = sop then
+                | SeekOp.SEEK_LE ->
                     cur <- findMax()
                     if cur.IsSome then dir <- Direction.BACKWARD
-
+                | _ -> ()
 
 type LivingCursor(ch:ICursor) =
     let chain = ch
@@ -521,7 +522,10 @@ type LivingCursor(ch:ICursor) =
         
         member this.Seek (k, sop) =
             chain.Seek (k, sop)
-            if SeekOp.SEEK_GE = sop then skipTombstonesForward() else if SeekOp.SEEK_LE = sop then skipTombstonesBackward()
+            match sop with
+            | SeekOp.SEEK_GE -> skipTombstonesForward()
+            | SeekOp.SEEK_LE -> skipTombstonesBackward()
+            | _ -> ()
 
 module Varint =
     let SpaceNeededFor v :int = 
