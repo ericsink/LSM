@@ -1643,6 +1643,7 @@ namespace Zumero.LSM.cs
 				// start at the last page, which is always the root of the tree.  
 				// it might be the leaf, in a tree with just one node.
 
+                // TODO in the fs version, this is a func called lastPage
 				uint pagenum = (uint) (fsLength / PAGE_SIZE);
 
 				while (true) {

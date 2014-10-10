@@ -1034,6 +1034,11 @@ module BTreeSegment =
             else
                 ptrs.[int i]
 
+        let lastPage() =
+            // the last page is always the root of the tree.  
+            // it might be the leaf, in a tree with just one node.
+            uint32 (fsLength / int64 PAGE_SIZE)
+
         let rec search pg k sop =
             if setCurrentPage pg then
                 if LEAF_NODE = pr.PageType then
@@ -1066,9 +1071,7 @@ module BTreeSegment =
                 leafIsValid()
 
             member this.Seek(k,sop) =
-                // start at the last page, which is always the root of the tree.  
-                // it might be the leaf, in a tree with just one node.
-                let pagenum = uint32 (fsLength / int64 PAGE_SIZE)
+                let pagenum = lastPage()
                 search pagenum k sop
 
             member this.Key() =
@@ -1103,7 +1106,7 @@ module BTreeSegment =
                 compareKeyInLeaf currentKey k
 
             member this.First() =
-                let pagenum = uint32 (fsLength / int64 PAGE_SIZE)
+                let pagenum = lastPage()
                 if setCurrentPage pagenum then
                     let pt = pr.PageType
                     if LEAF_NODE <> pt then
@@ -1113,7 +1116,7 @@ module BTreeSegment =
                     currentKey <- 0
 
             member this.Last() =
-                let pagenum = uint32 (fsLength / int64 PAGE_SIZE)
+                let pagenum = lastPage()
                 if setCurrentPage pagenum then
                     if LEAF_NODE <> pr.PageType then
                         let pg = getLastLeafFromRootPage()
