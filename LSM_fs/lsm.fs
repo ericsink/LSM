@@ -62,10 +62,10 @@ type IWrite =
     abstract member OpenCursor: unit -> ICursor
 *)
 
-type ByteComparer() = 
+module ByteComparer = 
     // this code is very non-F#-ish.  but it's much faster.
 
-    static member cmp (x:byte[], y:byte[]) =
+    let cmp (x:byte[], y:byte[]) =
         let xlen = x.Length
         let ylen = y.Length
         let len = if xlen<ylen then xlen else ylen
@@ -80,7 +80,7 @@ type ByteComparer() =
                 i <- i + 1
         if i>len then result else (xlen - ylen)
 
-    static member compareWithin (x:byte[],off,xlen,y:byte[]) =
+    let compareWithin (x:byte[],off,xlen,y:byte[]) =
         let ylen = y.Length
         let len = if xlen<ylen then xlen else ylen
         let mutable i = 0
