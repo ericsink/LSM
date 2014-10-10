@@ -472,13 +472,15 @@ type MultiCursor(_subcursors:IEnumerable<ICursor>) =
 
         member this.Seek (k, sop) =
             cur <- None
-            let f (csr:ICursor) :unit =
-                csr.Seek (k, sop)
-                if cur.IsNone && csr.IsValid() && ( (SeekOp.SEEK_EQ = sop) || (0 = csr.KeyCompare (k)) ) then cur <- Some csr
-                // TODO if found stop
-            List.iter f subcursors
             dir <- Direction.WANDERING
-            if cur.IsNone then
+            let f (csr:ICursor) :bool =
+                csr.Seek (k, sop)
+                if cur.IsNone && csr.IsValid() && ( (SeekOp.SEEK_EQ = sop) || (0 = csr.KeyCompare (k)) ) then 
+                    cur <- Some csr
+                    true
+                else
+                    false
+            if not (List.exists f subcursors) then
                 match sop with
                 | SeekOp.SEEK_GE ->
                     cur <- findMin()
