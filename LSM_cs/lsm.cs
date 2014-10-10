@@ -42,7 +42,8 @@ namespace Zumero.LSM.cs
 		// read until the end of the stream
 		public static byte[] ReadAll(Stream s)
 		{
-			byte[] a = new byte[s.Length]; // TODO does this give us the length remaining?
+			// TODO this code seems to assume s.Position is 0
+			byte[] a = new byte[s.Length];
 			int sofar = 0;
 			while (sofar < a.Length) {
 				int got = s.Read (a, sofar, (int) (a.Length - sofar));
@@ -1393,12 +1394,14 @@ namespace Zumero.LSM.cs
 				pr.GetByte (); // TODO pflag
 				previousLeaf = pr.GetUInt32 ();
 				int count = pr.GetUInt16 ();
+				// TODO in the fs version, leafKeys is only reallocated when it is too small
 				leafKeys = new int[count];
 				for (int i = 0; i < count; i++) {
 					leafKeys [i] = pr.Position;
 
                     skipKey();
 
+					// TODO in the fs version, this is a func called skipKey
 					// need to skip the val
 					byte vflag = pr.GetByte();
 					int vlen = (int) pr.GetVarint();

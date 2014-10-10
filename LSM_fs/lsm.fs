@@ -63,7 +63,8 @@ type IWrite =
 *)
 
 module ByteComparer = 
-    // this code is very non-F#-ish.  but it's much faster.
+    // this code is very non-F#-ish.  but it's much faster than the
+    // idiomatic version which precedded it.
 
     let Compare (x:byte[]) (y:byte[]) =
         let xlen = x.Length
@@ -631,6 +632,7 @@ module BTreeSegment =
 
     let private writeParentNodes firstLeaf lastLeaf (children:System.Collections.Generic.List<uint32 * byte[]>) startingPageNumber fs pb =
         let nextGeneration = new System.Collections.Generic.List<uint32 * byte[]>()
+        // TODO encapsulate mutables in a class?
         let mutable sofar = 0
         let mutable nextPageNumber = startingPageNumber
         let overflows = new System.Collections.Generic.Dictionary<int,uint32>()
@@ -660,21 +662,29 @@ module BTreeSegment =
                 if sofar = 0 then
                     first <- i
                     overflows.Clear()
+                    // 2 for the page type and flags
+                    // 2 for the stored count
+                    // 5 for the extra ptr we will add at the end, a varint, 5 is worst case
                     sofar <- 2 + 2 + 5
                 if calcAvailable sofar (nextGeneration.Count = 0) >= neededForInline then
                     sofar <- sofar + k.Length
                 else
+                    // it's okay to pass our main PageBuilder here for working purposes.  we're not
+                    // really using it yet, until we call buildParentPage
                     let keyOverflowFirstPage = nextPageNumber
                     let keyOverflowPageCount = writeOverflowFromArray pb fs k
                     nextPageNumber <- nextPageNumber + uint32 keyOverflowPageCount
                     sofar <- sofar + 4
                     overflows.[i] <- keyOverflowFirstPage
+                // inline or not, we need space for the following things
                 sofar <- sofar + 1 + Varint.SpaceNeededFor(uint64 k.Length) + Varint.SpaceNeededFor(uint64 pagenum)
         nextGeneration
 
+    // TODO we probably want this function to accept a pagesize and base pagenumber
     let Create(fs:Stream, csr:ICursor) :uint32 = 
         let pb = new PageBuilder(PAGE_SIZE)
         let pbOverflow = new PageBuilder(PAGE_SIZE)
+        // TODO encapsulate mutables in a class?
         let mutable nextPageNumber:uint32 = 1u
         let mutable prevPageNumber:uint32 = 0u
         let mutable countPairs = 0
@@ -684,6 +694,8 @@ module BTreeSegment =
         while csr.IsValid() do
             let k = csr.Key()
             let v = csr.Value()
+            // assert k <> null
+            // but v might be null (a tombstone)
             let vlen = if v<>null then v.Length else int64 0
             let neededForOverflowPageNumber = 4 // TODO sizeof uint32
 
@@ -709,6 +721,7 @@ module BTreeSegment =
                 let flushThisPage = (not fitBothInline) && (wouldFitBothInlineOnNextPage || ( (not fitKeyInlineValueOverflow) && (not fitBothOverflow) ) )
 
                 if flushThisPage then
+                    // note similar flush code below at the end of the loop
                     pb.PutUInt16At (OFFSET_COUNT_PAIRS, uint16 countPairs)
                     pb.Flush(fs)
                     nodelist.Add(nextPageNumber, lastKey)
@@ -718,6 +731,8 @@ module BTreeSegment =
                     countPairs <- 0
                     lastKey <- null
             if pb.Position = 0 then
+                // we are here either because we just flushed a page
+                // or because this is the very first page
                 countPairs <- 0
                 lastKey <- null
                 pb.PutByte(LEAF_NODE)
@@ -725,7 +740,24 @@ module BTreeSegment =
 
                 pb.PutUInt32 (prevPageNumber) // prev page num.
                 pb.PutUInt16 (0us) // number of pairs in this page. zero for now. written at end.
+                // assert pb.Position is 8 (LEAF_HEADER_SIZE)
             let available = pb.Available
+            (*
+             * one of the following cases must now be true:
+             * 
+             * - both the key and val will fit
+             * - key inline and overflow the val
+             * - overflow both
+             * 
+             * note that we don't care about the case where the
+             * val would fit if we overflowed the key.  if the key
+             * needs to be overflowed, then we're going to overflow
+             * the val as well, even if it would fit.
+             * 
+             * if bumping to the next page would help, we have
+             * already done it above.
+             * 
+             *)
             if (available >= neededForBothInline) then
                 putArrayWithLength pb k
                 putStreamWithLength pb v vlen
@@ -749,16 +781,21 @@ module BTreeSegment =
             lastKey <- k
             countPairs <- countPairs + 1
         if pb.Position > 0 then
+            // note similar flush code above
             pb.PutUInt16At (OFFSET_COUNT_PAIRS, uint16 countPairs)
             pb.Flush(fs)
             nodelist.Add(nextPageNumber, lastKey)
         if nodelist.Count > 0 then
-            let foo = nodelist.[0]
             let firstLeaf = fst nodelist.[0]
             let lastLeaf = fst nodelist.[nodelist.Count-1]
+            // now write the parent pages.
+            // maybe more than one level of them.
+            // keep writing until we have written a level which has only one node,
+            // which is the root node.
             while nodelist.Count > 1 do
                 nodelist <- writeParentNodes firstLeaf lastLeaf nodelist nextPageNumber fs pb
                 nextPageNumber <- nextPageNumber + uint32 nodelist.Count
+            // assert nodelist.Count = 1
             fst nodelist.[0]
         else
             uint32 0
@@ -767,15 +804,18 @@ module BTreeSegment =
         inherit Stream()
         let fs = _fs
         let len = _len
-        let mutable curpage = first
         let buf:byte[] = Array.zeroCreate PAGE_SIZE
+        let mutable curpage = first
         let mutable sofarOverall = 0
         let mutable sofarThisPage = 0
+
+        // TODO consider supporting seek (if this.fs does)
 
         let ReadPage() =
             let pos = (curpage - 1u) * uint32 PAGE_SIZE
             fs.Seek(int64 pos, SeekOrigin.Begin) |> ignore
             utils.ReadFully(fs, buf, 0, PAGE_SIZE) |> ignore
+            // assert PageType is OVERFLOW
             sofarThisPage <- 0
 
         do ReadPage()
@@ -966,6 +1006,10 @@ module BTreeSegment =
                     keys.[i] <- readOverflow klen fs pagenum
             (ptrs,keys)
 
+        // this is used when moving forward through the leaf pages.
+        // we need to skip any overflow pages.  when moving backward,
+        // this is not necessary, because each leaf has a pointer to
+        // the leaf before it.
         let rec searchForwardForLeaf() = 
             let pt = pr.PageType
             if pt = LEAF_NODE then true
@@ -983,6 +1027,7 @@ module BTreeSegment =
             ok
 
         let rec searchInParentPage k (ptrs:uint32[]) (keys:byte[][]) (i:uint32) :uint32 =
+            // TODO linear search?  really?
             let cmp = ByteComparer.Compare k (keys.[int i])
             if cmp>0 then
                 searchInParentPage k ptrs keys (i+1u)
@@ -996,6 +1041,8 @@ module BTreeSegment =
                     currentKey <- searchLeaf k 0 (countLeafKeys - 1) sop -1 -1
                     if SeekOp.SEEK_EQ <> sop then
                         if not (leafIsValid()) then
+                            // if LE or GE failed on a given page, we might need
+                            // to look at the next/prev leaf.
                             if SeekOp.SEEK_GE = sop then
                                 if (setCurrentPage (currentPage + 1u) && searchForwardForLeaf ()) then
                                     readLeaf()
@@ -1019,6 +1066,8 @@ module BTreeSegment =
                 leafIsValid()
 
             member this.Seek(k,sop) =
+                // start at the last page, which is always the root of the tree.  
+                // it might be the leaf, in a tree with just one node.
                 let pagenum = uint32 (fsLength / int64 PAGE_SIZE)
                 search pagenum k sop
 
@@ -1086,6 +1135,7 @@ module BTreeSegment =
                         readLeaf()
                         currentKey <- countLeafKeys - 1
     
+    // TODO pass in a page size
     let OpenCursor(strm, length:int64) :ICursor =
         upcast (new myCursor(strm, length))
 
