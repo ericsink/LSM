@@ -135,6 +135,64 @@ namespace lsm_tests
 	public class Class1
 	{
 		[Fact]
+		public void lexographic()
+		{
+			Action<ICursor> do_checks = (ICursor csr) => {
+				// --------
+				csr.First();
+				Assert.True(csr.IsValid());
+				Assert.Equal ("10", csr.Key ().FromUTF8 ());
+
+				csr.Next();
+				Assert.True(csr.IsValid());
+				Assert.Equal ("20", csr.Key ().FromUTF8 ());
+
+				csr.Next();
+				Assert.True(csr.IsValid());
+				Assert.Equal ("8", csr.Key ().FromUTF8 ());
+
+				csr.Next();
+				Assert.False(csr.IsValid());
+
+				// --------
+				csr.Last();
+				Assert.True(csr.IsValid());
+				Assert.Equal ("8", csr.Key ().FromUTF8 ());
+
+				csr.Prev();
+				Assert.True(csr.IsValid());
+				Assert.Equal ("20", csr.Key ().FromUTF8 ());
+
+				csr.Prev();
+				Assert.True(csr.IsValid());
+				Assert.Equal ("10", csr.Key ().FromUTF8 ());
+
+				csr.Prev();
+				Assert.False(csr.IsValid());
+			};
+
+			Action<combo> f = (combo c) => {
+				var t1 = c.create_memory_segment();
+				t1.Insert("8", "");
+				t1.Insert("10", "");
+				t1.Insert("20", "");
+
+				{
+					ICursor csr = t1.OpenCursor();
+
+					do_checks(csr);
+
+					using (var fs = new FileStream ("lexographic", FileMode.Create)) {
+						c.create_btree_segment (fs, csr);
+
+						do_checks(c.open_btree_segment(fs, fs.Length));
+					}
+				}
+			};
+			foreach (combo c in combo.get_combos()) f(c);
+		}
+
+		[Fact]
 		public void weird()
 		{
 			Action<combo> f = (combo c) => {
@@ -277,7 +335,7 @@ namespace lsm_tests
 		}
 
 		[Fact]
-		public void do_hundredk()
+		public void hundredk()
 		{
 			Action<combo> f = (combo c) => {
 				var t1 = c.create_memory_segment ();
@@ -293,7 +351,7 @@ namespace lsm_tests
 		}
 
 		[Fact]
-		public void do_no_le_ge_multicursor()
+		public void no_le_ge_multicursor()
 		{
 			Action<combo> f = (combo c) => {
 				{
@@ -341,7 +399,7 @@ namespace lsm_tests
 		}
 
 		[Fact]
-		public void do_no_le_ge()
+		public void no_le_ge()
 		{
 			Action<combo> f = (combo c) => {
 				var t1 = c.create_memory_segment();
@@ -389,7 +447,7 @@ namespace lsm_tests
 		}
 
 		[Fact]
-		public void do_long_vals()
+		public void long_vals()
 		{
 			Action<combo> f = (combo c) => {
 				var s = "this is a longer string";
@@ -445,7 +503,7 @@ namespace lsm_tests
 		}
 
 		[Fact]
-		public void do_seek_ge_le()
+		public void seek_ge_le()
 		{
 			Action<combo> f = (combo c) => {
 				var t1 = c.create_memory_segment();
@@ -492,7 +550,7 @@ namespace lsm_tests
 		}
 
 		[Fact]
-		public void do_seek_ge_le_bigger()
+		public void seek_ge_le_bigger()
 		{
 			Action<combo> f = (combo c) => {
 				var t1 = c.create_memory_segment();
@@ -526,7 +584,7 @@ namespace lsm_tests
 		}
 
 		[Fact]
-		public void do_seek_ge_le_bigger_multicursor()
+		public void seek_ge_le_bigger_multicursor()
 		{
 			Action<combo> f = (combo c) => {
 				{
@@ -575,7 +633,7 @@ namespace lsm_tests
 		}
 
 		[Fact]
-		public void do_delete_not_there()
+		public void delete_not_there()
 		{
 			Action<combo> f = (combo c) => {
 				var t1 = c.create_memory_segment();
@@ -598,7 +656,7 @@ namespace lsm_tests
 		}
 
 		[Fact]
-		public void do_empty_segment()
+		public void empty_segment()
 		{
 			Action<combo> f = (combo c) => {
 				var t1 = c.create_memory_segment();
@@ -629,7 +687,7 @@ namespace lsm_tests
 		}
 
 		[Fact]
-		public void do_btree_in_memory()
+		public void btree_in_memory()
 		{
 			Action<combo> f = (combo c) => {
 				var t1 = c.create_memory_segment();
@@ -656,7 +714,7 @@ namespace lsm_tests
 		}
 
 		[Fact]
-		public void do_empty_val()
+		public void empty_val()
 		{
 			Action<combo> f = (combo c) => {
 				var t1 = c.create_memory_segment();
@@ -682,7 +740,7 @@ namespace lsm_tests
 		}
 
 		[Fact]
-		public void do_overwrite_val_mem()
+		public void overwrite_val_mem()
 		{
 			Action<combo> f = (combo c) => {
 				{
@@ -738,7 +796,7 @@ namespace lsm_tests
 		}
 
 		[Fact]
-		public void do_tombstone()
+		public void tombstone()
 		{
 			Action<combo> f = (combo c) => {
 				{

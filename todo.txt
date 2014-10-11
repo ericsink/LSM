@@ -1,4 +1,6 @@
 
+wonder if IWrite is worth the trouble?
+
 need a test which verifies proper sort order with keys of
 different lengths
 
