@@ -213,7 +213,7 @@ type private PageReader(pgsz:int) =
     member this.Position = cur
     member this.PageSize = buf.Length
     member this.SetPosition(x) = cur <- x
-    member this.Read(s:Stream) = s.Read(buf, 0, buf.Length)
+    member this.Read(s:Stream) = utils.ReadFully(s, buf, 0, buf.Length)
     member this.Reset() = cur <- 0
     member this.Compare(len, other) = ByteComparer.CompareWithin buf cur len other
     member this.PageType = buf.[0]
@@ -665,6 +665,7 @@ module BTreeSegment =
                     buildParentPage isRootNode firstLeaf lastLeaf overflows pb children i first
                     pb.Flush(fs)
                     nextGeneration.Add(nextPageNumber, snd children.[i-1])
+                    nextPageNumber <- nextPageNumber + 1
                     sofar <- 0
                     first <- 0
                     overflows.Clear()
@@ -795,6 +796,7 @@ module BTreeSegment =
             pb.PutInt16At (OFFSET_COUNT_PAIRS, countPairs)
             pb.Flush(fs)
             nodelist.Add(nextPageNumber, lastKey)
+            nextPageNumber <- nextPageNumber + 1
         if nodelist.Count > 0 then
             let firstLeaf = fst nodelist.[0]
             let lastLeaf = fst nodelist.[nodelist.Count-1]
@@ -1031,11 +1033,13 @@ module BTreeSegment =
 
         let rec searchInParentPage k (ptrs:int[]) (keys:byte[][]) (i:int) :int =
             // TODO linear search?  really?
-            let cmp = ByteComparer.Compare k (keys.[int i])
-            if cmp>0 then
-                searchInParentPage k ptrs keys (i+1)
-            else
-                ptrs.[int i]
+            if i < keys.Length then
+                let cmp = ByteComparer.Compare k (keys.[int i])
+                if cmp>0 then
+                    searchInParentPage k ptrs keys (i+1)
+                else
+                    ptrs.[int i]
+            else 0
 
         let rec search pg k sop =
             if setCurrentPage pg then

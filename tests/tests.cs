@@ -134,7 +134,9 @@ namespace lsm_tests
 						}
 						for (int i=0; i<100; i++) {
 							mc.Next();
+							Assert.True(mc.IsValid());
 							mc.Next();
+							Assert.True(mc.IsValid());
 							mc.Prev();
 							Assert.True(mc.IsValid());
 						}

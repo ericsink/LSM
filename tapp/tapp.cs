@@ -4,7 +4,7 @@ using System.Collections.Generic;
 using System.IO;
 
 using Zumero.LSM;
-using Zumero.LSM.fs;
+//using Zumero.LSM.fs;
 
 public static class hack
 {
@@ -53,33 +53,48 @@ public static class hack
 
 public class foo
 {
-	private const int PAGE_SIZE = 4096;
+	private const int PAGE_SIZE = 256;
+
+	private static int lastPage(Stream fs)
+	{
+		return (int)(fs.Length / PAGE_SIZE);
+	}
 
     public static void Main(string[] argv)
     {
-        var t1 = MemorySegment.Create();
-        for (int i = 0; i < 10000; i++) {
-            t1.Insert ((i * 2).ToString (), i.ToString ());
-        }
+		var t1 = Zumero.LSM.cs.MemorySegment.Create();
+		for (int i = 0; i < 10000; i++) {
+			t1.Insert ((i * 2).ToString (), i.ToString ());
+		}
 
-        using (var fs = new FileStream("tapp.bin", FileMode.Create)) {
-            BTreeSegment.Create(fs, PAGE_SIZE, t1.OpenCursor());
+		using (var fs = new FileStream("test_seek_ge_le_bigger", FileMode.Create)) {
+			Zumero.LSM.cs.BTreeSegment.Create(fs, PAGE_SIZE, t1.OpenCursor());
 
-            {
-				var csr = BTreeSegment.OpenCursor(fs, PAGE_SIZE, (int) (fs.Length / PAGE_SIZE));
+			{
+				var csr = Zumero.LSM.cs.BTreeSegment.OpenCursor(fs, PAGE_SIZE, lastPage(fs));
 
-				csr.First ();
-				while (csr.IsValid ()) {
-					Console.WriteLine ("{0}", csr.Key ().FromUTF8 ());
-					csr.Next ();
-				}
+				csr.Seek ("8088", SeekOp.SEEK_EQ);
+				Console.WriteLine ("{0}", csr.IsValid ());
+				Console.WriteLine ("{0}", csr.Key ().FromUTF8 ());
+				//Assert.True (csr.IsValid ());
 
-                //csr.Seek ("8088", SeekOp.SEEK_EQ);
-                //csr.Seek ("8087", SeekOp.SEEK_EQ);
-                //csr.Seek ("8087", SeekOp.SEEK_LE);
-                //csr.Seek ("8087", SeekOp.SEEK_GE);
-            }
-        }
+				csr.Seek ("8087", SeekOp.SEEK_EQ);
+				Console.WriteLine ("{0}", csr.IsValid ());
+				//Assert.False (csr.IsValid ());
+
+				csr.Seek ("8087", SeekOp.SEEK_LE);
+				Console.WriteLine ("{0}", csr.IsValid ());
+				Console.WriteLine ("{0}", csr.Key ().FromUTF8 ());
+				//Assert.True (csr.IsValid ());
+				//Assert.Equal ("8086", csr.Key ().FromUTF8 ());
+
+				csr.Seek ("8087", SeekOp.SEEK_GE);
+				Console.WriteLine ("{0}", csr.IsValid ());
+				Console.WriteLine ("{0}", csr.Key ().FromUTF8 ());
+				//Assert.True (csr.IsValid ());
+				//Assert.Equal ("8088", csr.Key ().FromUTF8 ());
+			}
+		}
     }
 }
 

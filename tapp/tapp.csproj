@@ -44,5 +44,9 @@
       <Project>{EC16340F-B28D-44EF-9101-FC496D16B255}</Project>
       <Name>LSM_fs</Name>
     </ProjectReference>
+    <ProjectReference Include="..\LSM_cs\LSM_cs.csproj">
+      <Project>{E27F39D7-16F2-4802-87F0-F3B42792E455}</Project>
+      <Name>LSM_cs</Name>
+    </ProjectReference>
   </ItemGroup>
 </Project>

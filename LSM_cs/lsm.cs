@@ -146,7 +146,7 @@ namespace Zumero.LSM.cs
 
 		public void Read(Stream fs)
 		{
-			fs.Read (buf, 0, buf.Length);
+			utils.ReadFully(fs, buf, 0, buf.Length);
 		}
 
 		public void Reset()
