@@ -397,8 +397,8 @@ type MemorySegment() =
         member this.OpenCursor() =
             openCursor()
 
-    static member Create() =
-        new MemorySegment()
+    static member Create() :IWrite =
+        upcast (new MemorySegment())
 
 type private Direction = FORWARD=0 | BACKWARD=1 | WANDERING=2
 
