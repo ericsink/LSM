@@ -1,6 +1,6 @@
 
-consider wrapping let pagenum = uint32 (fsLength / int64 PAGE_SIZE)
-in a func with a good name
+need a test which verifies proper sort order with keys of
+different lengths
 
 encapuslate mutable local-function-variables in a class?
 
