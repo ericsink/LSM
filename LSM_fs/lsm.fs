@@ -99,17 +99,11 @@ type private PageBuilder(pgsz:int) =
     let mutable cur = 0
     let buf:byte[] = Array.zeroCreate pgsz
 
-    member this.Reset() =
-        cur <- 0
-
-    member this.Flush(s:Stream) =
-        s.Write(buf, 0, buf.Length)
-
-    member this.Position =
-        cur
-
-    member this.Available =
-        buf.Length - cur
+    member this.Reset() = cur <- 0
+    member this.Flush(s:Stream) = s.Write(buf, 0, buf.Length)
+    member this.PageSize = buf.Length
+    member this.Position = cur
+    member this.Available = buf.Length - cur
 
     member this.PutByte(x:byte) =
         buf.[cur] <- byte x
@@ -216,28 +210,19 @@ type private PageReader(pgsz:int) =
     let mutable cur = 0
     let buf:byte[] = Array.zeroCreate pgsz
 
-    member this.Position =
-        cur
-
-    member this.SetPosition(x) =
-        cur <- x
-
-    member this.Read(s:Stream) =
-        s.Read(buf, 0, buf.Length)
-
-    member this.Reset() =
-        cur <- 0
+    member this.Position = cur
+    member this.PageSize = buf.Length
+    member this.SetPosition(x) = cur <- x
+    member this.Read(s:Stream) = s.Read(buf, 0, buf.Length)
+    member this.Reset() = cur <- 0
+    member this.Compare(len, other) = ByteComparer.CompareWithin buf cur len other
+    member this.PageType = buf.[0]
+    member this.Skip(len) = cur <- cur + len
 
     member this.GetByte() =
         let r = buf.[cur]
         cur <- cur + 1
         r
-
-    member this.Compare(len, other) =
-        ByteComparer.CompareWithin buf cur len other
-
-    member this.PageType =
-        buf.[0]
 
     member this.ReadInt32() :int =
         let a0 = uint64 buf.[cur+0]
@@ -337,9 +322,6 @@ type private PageReader(pgsz:int) =
             cur <- cur + 9
             let r = (a1<<<56) ||| (a2<<<48) ||| (a3<<<40) ||| (a4<<<32) ||| (a5<<<24) ||| (a6<<<16) ||| (a7<<<8) ||| a8
             int64 r
-            
-    member this.Skip(len) =
-        cur <- cur + len
 
 type MemorySegment() =
     let pairs = new System.Collections.Generic.Dictionary<byte[],Stream>()
@@ -577,8 +559,8 @@ module BTreeSegment =
     let private LEAF_HEADER_SIZE = 8
     let private OFFSET_COUNT_PAIRS = 6
 
-    let private countOverflowPagesFor len = 
-        let bytesPerPage = PAGE_SIZE - OVERFLOW_PAGE_HEADER_SIZE
+    let private countOverflowPagesFor pageSize len = 
+        let bytesPerPage = pageSize - OVERFLOW_PAGE_HEADER_SIZE
         let pages = len / bytesPerPage
         let extra = if (len % bytesPerPage) <> 0 then 1 else 0
         pages + extra
@@ -602,7 +584,7 @@ module BTreeSegment =
             pb.PutStream(ba, int vlen)
 
     let private writeOverflowFromStream (pb:PageBuilder) (fs:Stream) (ba:Stream) =
-        let needed = countOverflowPagesFor (int ba.Length)
+        let needed = countOverflowPagesFor (pb.PageSize) (int ba.Length)
         let len = int ba.Length
 
         // in the C# version, this is a loop with sofar and count as mutables.
@@ -612,7 +594,7 @@ module BTreeSegment =
             pb.PutByte(OVERFLOW_NODE)
             pb.PutByte(0uy)
             pb.PutInt32(needed - count)
-            let num = Math.Min((PAGE_SIZE - OVERFLOW_PAGE_HEADER_SIZE), (len - sofar))
+            let num = Math.Min((pb.PageSize - OVERFLOW_PAGE_HEADER_SIZE), (len - sofar))
             pb.PutStream(ba, num)
             pb.Flush(fs)
             if (sofar+num) < len then
@@ -650,15 +632,15 @@ module BTreeSegment =
             else
                 putArrayWithLength pb k
 
-    let private calcAvailable currentSize couldBeRoot =
-        let basicSize = PAGE_SIZE - currentSize
+    let private calcAvailable pageSize currentSize couldBeRoot =
+        let basicSize = pageSize - currentSize
         if couldBeRoot then
             // make room for firstLeaf and lastLeaf
             basicSize - 2 * 4
         else
             basicSize
 
-    let private writeParentNodes firstLeaf lastLeaf (children:System.Collections.Generic.List<int32 * byte[]>) startingPageNumber fs pb =
+    let private writeParentNodes firstLeaf lastLeaf (children:System.Collections.Generic.List<int32 * byte[]>) startingPageNumber fs (pb:PageBuilder) =
         let nextGeneration = new System.Collections.Generic.List<int32 * byte[]>()
         let overflows = new System.Collections.Generic.Dictionary<int,int32>()
         // TODO encapsulate mutables in a class?
@@ -673,9 +655,9 @@ module BTreeSegment =
             let isLastChild = (i = (children.Count - 1))
             if (sofar > 0) then
                 let couldBeRoot = (nextGeneration.Count = 0)
-                let avail = calcAvailable sofar couldBeRoot 
+                let avail = calcAvailable (pb.PageSize) sofar couldBeRoot 
                 let fitsInline = (avail >= neededForInline)
-                let wouldFitInlineOnNextPage = ((PAGE_SIZE - PARENT_NODE_HEADER_SIZE) >= neededForInline)
+                let wouldFitInlineOnNextPage = ((pb.PageSize - PARENT_NODE_HEADER_SIZE) >= neededForInline)
                 let fitsOverflow = (avail >= neededForOverflow)
                 let flushThisPage = isLastChild || ((not fitsInline) && (wouldFitInlineOnNextPage || (not fitsOverflow))) 
                 let isRootNode = isLastChild && couldBeRoot
@@ -695,7 +677,7 @@ module BTreeSegment =
                     // 2 for the stored count
                     // 5 for the extra ptr we will add at the end, a varint, 5 is worst case
                     sofar <- 2 + 2 + 5
-                if calcAvailable sofar (nextGeneration.Count = 0) >= neededForInline then
+                if calcAvailable (pb.PageSize) sofar (nextGeneration.Count = 0) >= neededForInline then
                     sofar <- sofar + k.Length
                 else
                     // it's okay to pass our main PageBuilder here for working purposes.  we're not
@@ -744,7 +726,7 @@ module BTreeSegment =
             if pb.Position > 0 then
                 let avail = pb.Available
                 let fitBothInline = (avail >= neededForBothInline)
-                let wouldFitBothInlineOnNextPage = ((PAGE_SIZE - LEAF_HEADER_SIZE) >= neededForBothInline)
+                let wouldFitBothInlineOnNextPage = ((pb.PageSize - LEAF_HEADER_SIZE) >= neededForBothInline)
                 let fitKeyInlineValueOverflow = (avail >= neededForKeyInlineValueOverflow)
                 let fitBothOverflow = (avail >= neededForBothOverflow)
                 let flushThisPage = (not fitBothInline) && (wouldFitBothInlineOnNextPage || ( (not fitKeyInlineValueOverflow) && (not fitBothOverflow) ) )
@@ -841,9 +823,9 @@ module BTreeSegment =
         // TODO consider supporting seek (if this.fs does)
 
         let ReadPage() =
-            let pos = ((int64 curpage) - 1L) * int64 PAGE_SIZE
+            let pos = ((int64 curpage) - 1L) * int64 buf.Length
             fs.Seek(pos, SeekOrigin.Begin) |> ignore
-            utils.ReadFully(fs, buf, 0, PAGE_SIZE)
+            utils.ReadFully(fs, buf, 0, buf.Length)
             // assert PageType is OVERFLOW
             sofarThisPage <- 0
 
@@ -856,10 +838,10 @@ module BTreeSegment =
             if sofarOverall >= len then
                 0
             else    
-                if (sofarThisPage >= (PAGE_SIZE - OVERFLOW_PAGE_HEADER_SIZE)) then
+                if (sofarThisPage >= (buf.Length - OVERFLOW_PAGE_HEADER_SIZE)) then
                     curpage <- curpage + 1
                     ReadPage()
-                let available = Math.Min ((PAGE_SIZE - OVERFLOW_PAGE_HEADER_SIZE), len - sofarOverall)
+                let available = Math.Min ((buf.Length - OVERFLOW_PAGE_HEADER_SIZE), len - sofarOverall)
                 let num = Math.Min (available, wanted)
                 System.Array.Copy (buf, OVERFLOW_PAGE_HEADER_SIZE + sofarThisPage, ba, offset, num)
                 sofarOverall <- sofarOverall + num
@@ -902,7 +884,7 @@ module BTreeSegment =
             if 0 = currentPage then false
             else                
                 if pagenum <= rootPage then
-                    let pos = ((int64 currentPage) - 1L) * int64 PAGE_SIZE
+                    let pos = ((int64 currentPage) - 1L) * int64 pr.PageSize
                     fs.Seek (pos, SeekOrigin.Begin) |> ignore
                     pr.Read(fs) |> ignore
                     true

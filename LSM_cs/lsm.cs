@@ -131,10 +131,18 @@ namespace Zumero.LSM.cs
 		private readonly byte[] buf;
 		private int cur;
 
-		public PageReader(int pgsz)
+		public PageReader(int pageSize)
 		{
-			buf = new byte[pgsz];
+			buf = new byte[pageSize];
 		}
+
+        public int PageSize
+        {
+            get
+            {
+                return buf.Length;
+            }
+        }
 
 		public void Read(Stream fs)
 		{
@@ -280,10 +288,17 @@ namespace Zumero.LSM.cs
 		private readonly byte[] buf;
 		private int cur;
 
-		public PageBuilder(int pgsz)
+		public PageBuilder(int pageSize)
 		{
-			buf = new byte[pgsz];
+			buf = new byte[pageSize];
 		}
+
+        public int PageSize
+        {
+			get {
+				return buf.Length;
+			}
+        }
 
 		public void Reset()
 		{
@@ -895,10 +910,6 @@ namespace Zumero.LSM.cs
 					putArrayWithLength (pb, k);
 				}
 			}
-
-			// assert cur <= PAGE_SIZE.  actually, it has to be, since
-			// an exception would have been thrown above if we overran the
-			// buffer.
 		}
 
 		/*
@@ -909,9 +920,9 @@ namespace Zumero.LSM.cs
 		 * We need to know in advance how many pages the value will consume.
 		 */
 
-		private static int countOverflowPagesFor(int len)
+		private static int countOverflowPagesFor(int pageSize, int len)
 		{
-			int bytesPerPage = PAGE_SIZE - OVERFLOW_PAGE_HEADER_SIZE;
+			int bytesPerPage = pageSize - OVERFLOW_PAGE_HEADER_SIZE;
 			int needed = len / bytesPerPage;
 			if ((len % bytesPerPage) != 0) {
 				needed++;
@@ -927,7 +938,7 @@ namespace Zumero.LSM.cs
 		private static int writeOverflowFromStream(PageBuilder pb, Stream fs, Stream ba)
 		{
 			int sofar = 0;
-			int needed = countOverflowPagesFor ((int) ba.Length);
+			int needed = countOverflowPagesFor (pb.PageSize, (int) ba.Length);
 
 			int count = 0;
 			while (sofar < ba.Length) {
@@ -935,7 +946,7 @@ namespace Zumero.LSM.cs
 				pb.PutByte (OVERFLOW_NODE);
 				pb.PutByte (0);
 				pb.PutInt32 (needed - count);
-				int num = Math.Min ((PAGE_SIZE - OVERFLOW_PAGE_HEADER_SIZE), (int) (ba.Length - sofar));
+				int num = Math.Min ((pb.PageSize - OVERFLOW_PAGE_HEADER_SIZE), (int) (ba.Length - sofar));
 				pb.PutStream (ba, num);
 				sofar += num;
 				pb.Flush (fs);
@@ -944,9 +955,9 @@ namespace Zumero.LSM.cs
 			return (int) count;
 		}
 
-		private static int calcAvailable(int currentSize, bool couldBeRoot)
+		private static int calcAvailable(int pageSize, int currentSize, bool couldBeRoot)
 		{
-			int n = (PAGE_SIZE - currentSize);
+			int n = (pageSize - currentSize);
 			if (couldBeRoot)
 			{
 				// make space for the firstLeaf and lastLeaf fields
@@ -992,12 +1003,12 @@ namespace Zumero.LSM.cs
 					bool flushThisPage = false;
 					if (isLastChild) {
 						flushThisPage = true;
-					} else if (calcAvailable(sofar, (nextGeneration.Count == 0)) >= neededForInline) {
+					} else if (calcAvailable(pb.PageSize, sofar, (nextGeneration.Count == 0)) >= neededForInline) {
 						// no problem.
-					} else if ((PAGE_SIZE - PARENT_NODE_HEADER_SIZE) >= neededForInline) {
+					} else if ((pb.PageSize - PARENT_NODE_HEADER_SIZE) >= neededForInline) {
 						// it won't fit here, but it would fully fit on the next page.
 						flushThisPage = true;
-					} else if (calcAvailable(sofar, (nextGeneration.Count == 0)) < neededForOverflow) {
+					} else if (calcAvailable(pb.PageSize, sofar, (nextGeneration.Count == 0)) < neededForOverflow) {
 						// we can't even put this key in this page if we overflow it.
 						flushThisPage = true;
 					}
@@ -1033,7 +1044,7 @@ namespace Zumero.LSM.cs
 					sofar += 5; // for the extra pointer we'll add at the end, which is a varint, so 5 is the worst case
 				}
 					
-				if (calcAvailable(sofar, (nextGeneration.Count == 0)) >= neededForInline) {
+				if (calcAvailable(pb.PageSize, sofar, (nextGeneration.Count == 0)) >= neededForInline) {
 					sofar += k.Length;
 				} else {
 					// it's okay to pass our PageBuilder here for working purposes.  we're not
@@ -1104,7 +1115,7 @@ namespace Zumero.LSM.cs
 					bool flushThisPage = false;
 					if (avail >= neededForInlineBoth) {
 						// no problem.  both the key and the value are going to fit
-					} else if ((PAGE_SIZE - LEAF_HEADER_SIZE) >= neededForInlineBoth) {
+					} else if ((pb.PageSize - LEAF_HEADER_SIZE) >= neededForInlineBoth) {
 						// it won't fit here, but it would fully fit on the next page.
 						flushThisPage = true;
 					} else if (avail >= neededForKeyInlineValueOverflow) {
@@ -1246,7 +1257,7 @@ namespace Zumero.LSM.cs
 			private int sofarOverall;
 			private int sofarThisPage;
 			private int currentPage;
-			private byte[] buf = new byte[PAGE_SIZE];
+			private readonly byte[] buf;
 
 			// TODO I suppose if the underlying stream can seek and if we kept
 			// the first_page, we could seek or reset as well.
@@ -1258,6 +1269,7 @@ namespace Zumero.LSM.cs
 
 				currentPage = firstPage;
 
+                buf = new byte[PAGE_SIZE];
 				ReadPage();
 			}
 
@@ -1269,9 +1281,9 @@ namespace Zumero.LSM.cs
 
 			private void ReadPage()
 			{
-				long pos = (((long) currentPage) - 1) * PAGE_SIZE;
+				long pos = (((long) currentPage) - 1) * buf.Length;
 				fs.Seek (pos, SeekOrigin.Begin);
-				utils.ReadFully (fs, buf, 0, PAGE_SIZE);
+				utils.ReadFully (fs, buf, 0, buf.Length);
 				// assert buf[0] == OVERFLOW
 				sofarThisPage = 0;
 			}
@@ -1284,7 +1296,7 @@ namespace Zumero.LSM.cs
 
 			public override int Read (byte[] ba, int offset, int wanted)
 			{
-				if (sofarThisPage >= (PAGE_SIZE - OVERFLOW_PAGE_HEADER_SIZE)) {
+				if (sofarThisPage >= (buf.Length - OVERFLOW_PAGE_HEADER_SIZE)) {
 					if (sofarOverall < len) {
 						currentPage++;
 						ReadPage ();
@@ -1293,7 +1305,7 @@ namespace Zumero.LSM.cs
 					}
 				}
 
-				int available = (int) Math.Min ((PAGE_SIZE - OVERFLOW_PAGE_HEADER_SIZE), len - sofarOverall);
+				int available = (int) Math.Min ((buf.Length - OVERFLOW_PAGE_HEADER_SIZE), len - sofarOverall);
 				int num = (int)Math.Min (available, wanted);
 				Array.Copy (buf, OVERFLOW_PAGE_HEADER_SIZE + sofarThisPage, ba, offset, num);
 				sofarOverall += num;
@@ -1356,7 +1368,7 @@ namespace Zumero.LSM.cs
 			private readonly int rootPage;
 			private readonly int firstLeaf;
 			private readonly int lastLeaf;
-			private readonly PageReader pr = new PageReader(PAGE_SIZE);
+			private readonly PageReader pr;
 
 			private int currentPage = 0;
 
@@ -1369,6 +1381,7 @@ namespace Zumero.LSM.cs
 				// TODO if !(strm.CanSeek()) throw?
 				rootPage = _rootPage;
 				fs = _fs;
+                pr = new PageReader(PAGE_SIZE);
 				if (!setCurrentPage(rootPage)) {
 					throw new Exception();
 				}
@@ -1537,7 +1550,7 @@ namespace Zumero.LSM.cs
 					return false;
 				}
 				if (pagenum <= rootPage) {
-					long pos = (((long) pagenum) - 1) * PAGE_SIZE;
+					long pos = (((long) pagenum) - 1) * pr.PageSize;
 					fs.Seek (pos, SeekOrigin.Begin);
 					pr.Read (fs);
 					return true;
