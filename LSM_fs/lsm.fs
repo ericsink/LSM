@@ -341,9 +341,10 @@ type MemorySegment() =
 
         let rec search k min max sop le ge = 
             if max < min then
-                if sop = SeekOp.SEEK_EQ then -1
-                else if sop = SeekOp.SEEK_LE then le
-                else ge
+                match sop with
+                | SeekOp.SEEK_EQ -> -1
+                | SeekOp.SEEK_LE -> le
+                | _ -> ge
             else
                 let mid = (max + min) / 2
                 let kmid = keys.[mid]
@@ -585,6 +586,8 @@ module BTreeSegment =
         let needed = countOverflowPagesFor (int ba.Length)
         let len = int ba.Length
 
+        // in the C# version, this is a loop with sofar and count as mutables.
+        // the inner recursive function avoids that here.
         let rec fn sofar count =
             pb.Reset()
             pb.PutByte(OVERFLOW_NODE)
