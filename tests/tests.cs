@@ -28,9 +28,9 @@ namespace lsm_tests
 	{
 		private const int PAGE_SIZE = 4096; // TODO
 
-		private uint lastPage(Stream fs)
+		private int lastPage(Stream fs)
 		{
-			return (uint)(fs.Length / PAGE_SIZE);
+			return (int)(fs.Length / PAGE_SIZE);
 		}
 
 		[Fact]

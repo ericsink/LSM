@@ -24,19 +24,17 @@ namespace Zumero.LSM.cs
 
 	public static class utils
 	{
-		// Like Stream.Read, but it loops until it gets all of what it wants,
-		// or until the end of the stream
-		public static int ReadFully(Stream s, byte[] buf, int off, int len)
+		// Like Stream.Read, but it loops until it gets all of what it wants.
+		public static void ReadFully(Stream s, byte[] buf, int off, int len)
 		{
 			int sofar = 0;
 			while (sofar < len) {
 				int got = s.Read (buf, off + sofar, len - sofar);
 				if (0 == got) {
-					break;
+                    throw new Exception();
 				}
 				sofar += got;
 			}
-			return sofar;
 		}
 
 		// read until the end of the stream
@@ -61,7 +59,7 @@ namespace Zumero.LSM.cs
 	{
 		// http://sqlite.org/src4/doc/trunk/www/varint.wiki
 
-		public static int SpaceNeededFor(ulong v)
+		public static int SpaceNeededFor(long v)
 		{
 			if (v <= 240) {
 				return 1;
@@ -180,20 +178,22 @@ namespace Zumero.LSM.cs
 			return buf [cur++];
 		}
 
-		public uint GetUInt32()
+		public int GetInt32()
 		{
 			uint val = buf [cur++];
 			val = val << 8 | buf [cur++];
 			val = val << 8 | buf [cur++];
 			val = val << 8 | buf [cur++];
-			return val;
+            // assert fits in 32 bit int
+			return (int) val;
 		}
 
-		public ushort GetUInt16()
+		public int GetInt16()
 		{
-			ushort val = buf [cur++];
-			val = (ushort) (val << 8 | buf [cur++]);
-			return val;
+			uint val = buf [cur++];
+			val = (uint) (val << 8 | buf [cur++]);
+            ushort r2 = (ushort) val;
+			return (int) r2;
 		}
 
 		public byte[] GetArray(int len)
@@ -204,31 +204,32 @@ namespace Zumero.LSM.cs
 			return k;
 		}
 
-		public ulong GetVarint()
+		public long GetVarint()
 		{
 			byte a0 = buf [cur++];
+            ulong r;
 			if (a0 <= 240) {
-				return a0;
+				r = a0;
 			} else if (a0 <= 248) {
 				byte a1 = buf [cur++];
-				return (ulong) (240 + 256 * (a0 - 241) + a1);
+				r = (ulong) (240 + 256 * (a0 - 241) + a1);
 			} else if (249 == a0) {
 				byte a1 = buf [cur++];
 				byte a2 = buf [cur++];
-				return (ulong) (2288 + 256 * a1 + a2);
+				r = (ulong) (2288 + 256 * a1 + a2);
 			} else if (250 == a0) {
 				ulong v = 0;
 				v = (v << 8) | buf [cur++];
 				v = (v << 8) | buf [cur++];
 				v = (v << 8) | buf [cur++];
-				return v;
+				r = v;
 			} else if (251 == a0) {
 				ulong v = 0;
 				v = (v << 8) | buf [cur++];
 				v = (v << 8) | buf [cur++];
 				v = (v << 8) | buf [cur++];
 				v = (v << 8) | buf [cur++];
-				return v;
+				r = v;
 			} else if (252 == a0) {
 				ulong v = 0;
 				v = (v << 8) | buf [cur++];
@@ -236,7 +237,7 @@ namespace Zumero.LSM.cs
 				v = (v << 8) | buf [cur++];
 				v = (v << 8) | buf [cur++];
 				v = (v << 8) | buf [cur++];
-				return v;
+				r = v;
 			} else if (253 == a0) {
 				ulong v = 0;
 				v = (v << 8) | buf [cur++];
@@ -245,7 +246,7 @@ namespace Zumero.LSM.cs
 				v = (v << 8) | buf [cur++];
 				v = (v << 8) | buf [cur++];
 				v = (v << 8) | buf [cur++];
-				return v;
+				r = v;
 			} else if (254 == a0) {
 				ulong v = 0;
 				v = (v << 8) | buf [cur++];
@@ -255,7 +256,7 @@ namespace Zumero.LSM.cs
 				v = (v << 8) | buf [cur++];
 				v = (v << 8) | buf [cur++];
 				v = (v << 8) | buf [cur++];
-				return v;
+				r = v;
 			} else {
 				// assert a0 is 255
 				ulong v = 0;
@@ -267,8 +268,10 @@ namespace Zumero.LSM.cs
 				v = (v << 8) | buf [cur++];
 				v = (v << 8) | buf [cur++];
 				v = (v << 8) | buf [cur++];
-				return v;
+				r = v;
 			}
+            // assert r fits
+            return (long) r;
 		}
 	}
 
@@ -309,36 +312,46 @@ namespace Zumero.LSM.cs
 			buf [cur++] = b;
 		}
 
-		public void PutUInt32(uint val)
+		public void PutInt32(int ov)
 		{
-			buf[cur++] = (byte)(val >> 24);
-			buf[cur++] = (byte)(val >> 16);
-			buf[cur++] = (byte)(val >> 8);
-			buf[cur++] = (byte)(val >> 0);
+            // assert ov >= 0
+			uint v = (uint) ov;
+			buf[cur++] = (byte)(v >> 24);
+			buf[cur++] = (byte)(v >> 16);
+			buf[cur++] = (byte)(v >> 8);
+			buf[cur++] = (byte)(v >> 0);
 		}
 
-		public void PutUInt32At(int at, uint val)
+		public void PutInt32At(int at, int ov)
 		{
-			buf[at++] = (byte)(val >> 24);
-			buf[at++] = (byte)(val >> 16);
-			buf[at++] = (byte)(val >> 8);
-			buf[at++] = (byte)(val >> 0);
+            // assert ov >= 0
+			uint v = (uint) ov;
+			buf[at++] = (byte)(v >> 24);
+			buf[at++] = (byte)(v >> 16);
+			buf[at++] = (byte)(v >> 8);
+			buf[at++] = (byte)(v >> 0);
 		}
 
-		public void PutUInt16(ushort val)
+		public void PutInt16(ushort ov)
 		{
-			buf[cur++] = (byte)(val >> 8);
-			buf[cur++] = (byte)(val >> 0);
+            // assert ov >= 0
+			uint v = (uint) ov;
+			buf[cur++] = (byte)(v >> 8);
+			buf[cur++] = (byte)(v >> 0);
 		}
 
-		public void PutUInt16At(int at, ushort val)
+		public void PutInt16At(int at, ushort ov)
 		{
-			buf[at++] = (byte)(val >> 8);
-			buf[at++] = (byte)(val >> 0);
+            // assert ov >= 0
+			uint v = (uint) ov;
+			buf[at++] = (byte)(v >> 8);
+			buf[at++] = (byte)(v >> 0);
 		}
 
-		public void PutVarint(ulong v)
+		public void PutVarint(long ov)
 		{
+            // assert ov >= 0
+            ulong v = (ulong) ov;
 			if (v <= 240) {
 				buf [cur++] = (byte) v;
 			} else if (v <= 2287) {
@@ -404,8 +417,7 @@ namespace Zumero.LSM.cs
 
 		public void PutStream(Stream ba, int num)
 		{
-			int got = utils.ReadFully (ba, buf, cur, num);
-			// assert got == num
+			utils.ReadFully (ba, buf, cur, num);
 			cur += (int) num;
 		}
 
@@ -820,7 +832,7 @@ namespace Zumero.LSM.cs
 
 		private class node
 		{
-			public uint PageNumber;
+			public int PageNumber;
 			public byte[] Key;
 		}
 
@@ -831,7 +843,7 @@ namespace Zumero.LSM.cs
 				pb.PutVarint(0);
 			} else {
 				pb.PutByte (0);
-				pb.PutVarint ((uint)ba.Length);
+				pb.PutVarint (ba.Length);
 				pb.PutArray (ba);
 			}
 		}
@@ -843,12 +855,12 @@ namespace Zumero.LSM.cs
 				pb.PutVarint(0);
 			} else {
 				pb.PutByte (0);
-				pb.PutVarint ((uint)ba.Length);
+				pb.PutVarint (ba.Length);
 				pb.PutStream (ba, (int) ba.Length);
 			}
 		}
 
-		private static void buildParentPage(bool root, uint firstLeaf, uint lastLeaf, Dictionary<int,uint> overflows, PageBuilder pb, List<node> children, int stop, int start)
+		private static void buildParentPage(bool root, int firstLeaf, int lastLeaf, Dictionary<int,int> overflows, PageBuilder pb, List<node> children, int stop, int start)
 		{
 			// assert stop >= start
 			int countKeys = (stop - start); 
@@ -857,11 +869,11 @@ namespace Zumero.LSM.cs
 			pb.PutByte (PARENT_NODE);
 			pb.PutByte( (byte) (root ? FLAG_ROOT_NODE : 0) );
 
-			pb.PutUInt16 ((ushort) countKeys);
+			pb.PutInt16 ((ushort) countKeys);
 
 			if (root) {
-				pb.PutUInt32 (firstLeaf);
-				pb.PutUInt32 (lastLeaf);
+				pb.PutInt32 (firstLeaf);
+				pb.PutInt32 (lastLeaf);
 			}
 
 			// store all the pointers (n+1 of them).  
@@ -877,8 +889,8 @@ namespace Zumero.LSM.cs
 
 				if ((overflows != null) && overflows.ContainsKey (q)) {
 					pb.PutByte(FLAG_OVERFLOW); // means overflow
-					pb.PutVarint((uint) k.Length);
-					pb.PutUInt32 (overflows[q]);
+					pb.PutVarint(k.Length);
+					pb.PutInt32 (overflows[q]);
 				} else {
 					putArrayWithLength (pb, k);
 				}
@@ -907,12 +919,12 @@ namespace Zumero.LSM.cs
 			return needed;
 		}
 
-		private static uint writeOverflowFromArray(PageBuilder pb, Stream fs, byte[] ba)
+		private static int writeOverflowFromArray(PageBuilder pb, Stream fs, byte[] ba)
 		{
 			return writeOverflowFromStream (pb, fs, new MemoryStream (ba));
 		}
 
-		private static uint writeOverflowFromStream(PageBuilder pb, Stream fs, Stream ba)
+		private static int writeOverflowFromStream(PageBuilder pb, Stream fs, Stream ba)
 		{
 			int sofar = 0;
 			int needed = countOverflowPagesFor ((int) ba.Length);
@@ -922,14 +934,14 @@ namespace Zumero.LSM.cs
 				pb.Reset ();
 				pb.PutByte (OVERFLOW_NODE);
 				pb.PutByte (0);
-				pb.PutUInt32 ((uint) (needed - count));
+				pb.PutInt32 (needed - count);
 				int num = Math.Min ((PAGE_SIZE - OVERFLOW_PAGE_HEADER_SIZE), (int) (ba.Length - sofar));
 				pb.PutStream (ba, num);
 				sofar += num;
 				pb.Flush (fs);
 				count++;
 			}
-			return (uint) count;
+			return (int) count;
 		}
 
 		private static int calcAvailable(int currentSize, bool couldBeRoot)
@@ -938,19 +950,19 @@ namespace Zumero.LSM.cs
 			if (couldBeRoot)
 			{
 				// make space for the firstLeaf and lastLeaf fields
-				n -= (2 * sizeof(UInt32));
+				n -= (2 * sizeof(Int32));
 			}
 			return n;
 		}
 
-		private static List<node> writeParentNodes(uint firstLeaf, uint lastLeaf, List<node> children, uint startingPageNumber, Stream fs, PageBuilder pb)
+		private static List<node> writeParentNodes(int firstLeaf, int lastLeaf, List<node> children, int startingPageNumber, Stream fs, PageBuilder pb)
 		{
             // TODO page number and block issue here
-			uint nextPageNumber = startingPageNumber;
+			int nextPageNumber = startingPageNumber;
 			var nextGeneration = new List<node> ();
 
 			int sofar = 0;
-			Dictionary<int,uint> overflows = new Dictionary<int, uint> ();
+			Dictionary<int,int> overflows = new Dictionary<int, int> ();
 			int first = 0;
 
 			// assert children.Count > 1
@@ -959,13 +971,13 @@ namespace Zumero.LSM.cs
 				byte[] k = n.Key;
 
 				int neededForInline = 1 
-					+ Varint.SpaceNeededFor ((uint)k.Length) 
+					+ Varint.SpaceNeededFor (k.Length) 
 					+ k.Length 
 					+ Varint.SpaceNeededFor (n.PageNumber);
 
 				int neededForOverflow = 1 
-					+ Varint.SpaceNeededFor ((uint)k.Length) 
-					+ sizeof(uint)
+					+ Varint.SpaceNeededFor (k.Length) 
+					+ sizeof(int)
 					+ Varint.SpaceNeededFor (n.PageNumber);
 
 				bool isLastChild = false;
@@ -1026,17 +1038,17 @@ namespace Zumero.LSM.cs
 				} else {
 					// it's okay to pass our PageBuilder here for working purposes.  we're not
 					// really using it yet, until we call buildParentPage
-					uint overflowFirstPage = nextPageNumber;
-					uint overflowPageCount = writeOverflowFromArray (pb, fs, k);
+					int overflowFirstPage = nextPageNumber;
+					int overflowPageCount = writeOverflowFromArray (pb, fs, k);
 					nextPageNumber += overflowPageCount;
-					sofar += sizeof(uint);
+					sofar += sizeof(int);
 					overflows [i] = overflowFirstPage;
 				}
 
 				// inline or not, we need space for the following things
 
 				sofar++; // for the flag
-				sofar += Varint.SpaceNeededFor((uint) k.Length);
+				sofar += Varint.SpaceNeededFor((int) k.Length);
 				sofar += Varint.SpaceNeededFor(n.PageNumber);
 			}
 
@@ -1046,21 +1058,21 @@ namespace Zumero.LSM.cs
 		}
 
 		// TODO we probably want this function to accept a pagesize and base pagenumber
-		public static uint Create(Stream fs, ICursor csr)
+		public static int Create(Stream fs, ICursor csr)
 		{
 			// TODO if !(fs.CanSeek()) throw?
 			PageBuilder pb = new PageBuilder(PAGE_SIZE);
 			PageBuilder pbOverflow = new PageBuilder(PAGE_SIZE);
 
             // TODO initial page number should be passed in
-			uint nextPageNumber = 1;
+			int nextPageNumber = 1;
 
 			var nodelist = new List<node> ();
 
 			ushort countPairs = 0;
 			byte[] lastKey = null;
 
-			uint prevPageNumber = 0;
+			int prevPageNumber = 0;
 
 			csr.First ();
 			while (csr.IsValid ()) {
@@ -1070,13 +1082,13 @@ namespace Zumero.LSM.cs
 				// assert k != null
 				// for a tombstone, v might be null
 
-				var neededForOverflowPageNumber = sizeof(uint);
-				var neededForKeyBase = 1 + Varint.SpaceNeededFor((ulong) k.Length);
+				var neededForOverflowPageNumber = sizeof(int);
+				var neededForKeyBase = 1 + Varint.SpaceNeededFor(k.Length);
 				var neededForKeyInline = neededForKeyBase + k.Length;
 				var neededForKeyOverflow = neededForKeyBase + neededForOverflowPageNumber;
 
-				var neededForValueInline = 1 + ((v!=null) ? Varint.SpaceNeededFor((ulong) v.Length) + v.Length : 0);
-				var neededForValueOverflow = 1 + ((v!=null) ? Varint.SpaceNeededFor((ulong) v.Length) + neededForOverflowPageNumber : 0);
+				var neededForValueInline = 1 + ((v!=null) ? Varint.SpaceNeededFor(v.Length) + v.Length : 0);
+				var neededForValueOverflow = 1 + ((v!=null) ? Varint.SpaceNeededFor(v.Length) + neededForOverflowPageNumber : 0);
 
 				var neededForInlineBoth = neededForKeyInline + neededForValueInline;
 				var neededForKeyInlineValueOverflow = neededForKeyInline + neededForValueOverflow;
@@ -1106,7 +1118,7 @@ namespace Zumero.LSM.cs
 						// TODO this code is duplicated with slight differences below, after the loop
 
 						// now that we know how many pairs are in this page, we can write that out
-						pb.PutUInt16At (OFFSET_COUNT_PAIRS, countPairs);
+						pb.PutInt16At (OFFSET_COUNT_PAIRS, countPairs);
 
 						pb.Flush (fs);
 
@@ -1134,8 +1146,8 @@ namespace Zumero.LSM.cs
 					pb.PutByte(LEAF_NODE);
 					pb.PutByte(0); // flags
 
-					pb.PutUInt32 (prevPageNumber); // prev page num.
-					pb.PutUInt16 (0); // number of pairs in this page. zero for now. written at end.
+					pb.PutInt32 (prevPageNumber); // prev page num.
+					pb.PutInt16 (0); // number of pairs in this page. zero for now. written at end.
 				} 
 
 				int available = pb.Available;
@@ -1168,26 +1180,26 @@ namespace Zumero.LSM.cs
 					} else {
 						// assert available >= needed_for_overflow_both
 
-						uint keyOverflowFirstPage = nextPageNumber;
+						int keyOverflowFirstPage = nextPageNumber;
                         // TODO writeOverflow assumes it can write all its pages consecutively.
                         // with blocks, this would only be true if we asked in advance for that
                         // many pages from some kind of a page manager.
-						uint keyOverflowPageCount = writeOverflowFromArray (pbOverflow, fs, k);
+						int keyOverflowPageCount = writeOverflowFromArray (pbOverflow, fs, k);
 						nextPageNumber += keyOverflowPageCount;
 
 						pb.PutByte (FLAG_OVERFLOW);
-						pb.PutVarint ((uint)k.Length);
-						pb.PutUInt32 (keyOverflowFirstPage);
+						pb.PutVarint (k.Length);
+						pb.PutInt32 (keyOverflowFirstPage);
 					}
 
-					uint valueOverflowFirstPage = nextPageNumber;
+					int valueOverflowFirstPage = nextPageNumber;
                     // TODO see consecutive block comment above.
-					uint valueOverflowPageCount = writeOverflowFromStream (pbOverflow, fs, v);
+					int valueOverflowPageCount = writeOverflowFromStream (pbOverflow, fs, v);
 					nextPageNumber += valueOverflowPageCount;
 
 					pb.PutByte (FLAG_OVERFLOW);
-					pb.PutVarint ((uint)v.Length);
-					pb.PutUInt32 (valueOverflowFirstPage);
+					pb.PutVarint (v.Length);
+					pb.PutInt32 (valueOverflowFirstPage);
 				}
 
 				lastKey = k;
@@ -1198,7 +1210,7 @@ namespace Zumero.LSM.cs
 				// TODO this code is duplicated with slight differences from above
 
 				// now that we know how many pairs are in this page, we can write that out
-				pb.PutUInt16At (OFFSET_COUNT_PAIRS, countPairs);
+				pb.PutInt16At (OFFSET_COUNT_PAIRS, countPairs);
 
 				pb.Flush (fs);
 
@@ -1207,8 +1219,8 @@ namespace Zumero.LSM.cs
 			}
 
 			if (nodelist.Count > 0) {
-				uint firstLeaf = nodelist [0].PageNumber;
-				uint lastLeaf = nodelist [nodelist.Count - 1].PageNumber;
+				int firstLeaf = nodelist [0].PageNumber;
+				int lastLeaf = nodelist [nodelist.Count - 1].PageNumber;
 
 				// now write the parent pages, maybe more than one level of them.  we have to get
 				// down to a level with just one parent page in it, the root page.
@@ -1216,7 +1228,7 @@ namespace Zumero.LSM.cs
 				while (nodelist.Count > 1) {
                     // TODO page number and block issue here
 					nodelist = writeParentNodes (firstLeaf, lastLeaf, nodelist, nextPageNumber, fs, pb);
-					nextPageNumber += (uint) nodelist.Count;
+					nextPageNumber += nodelist.Count;
 				}
 
 				// assert nodelist.Count == 1
@@ -1233,13 +1245,13 @@ namespace Zumero.LSM.cs
 			private readonly int len;
 			private int sofarOverall;
 			private int sofarThisPage;
-			private uint currentPage;
+			private int currentPage;
 			private byte[] buf = new byte[PAGE_SIZE];
 
 			// TODO I suppose if the underlying stream can seek and if we kept
 			// the first_page, we could seek or reset as well.
 
-			public myOverflowReadStream(Stream _fs, uint firstPage, int _len)
+			public myOverflowReadStream(Stream _fs, int firstPage, int _len)
 			{
 				fs = _fs;
 				len = _len;
@@ -1257,10 +1269,9 @@ namespace Zumero.LSM.cs
 
 			private void ReadPage()
 			{
-				uint pos = (currentPage - 1) * PAGE_SIZE;
+				long pos = (((long) currentPage) - 1) * PAGE_SIZE;
 				fs.Seek (pos, SeekOrigin.Begin);
-				int got = utils.ReadFully (fs, buf, 0, PAGE_SIZE);
-				// assert got == PAGE_SIZE
+				utils.ReadFully (fs, buf, 0, PAGE_SIZE);
 				// assert buf[0] == OVERFLOW
 				sofarThisPage = 0;
 			}
@@ -1333,7 +1344,7 @@ namespace Zumero.LSM.cs
 			}
 		}
 
-		private static byte[] readOverflow(int len, Stream fs, uint firstPage)
+		private static byte[] readOverflow(int len, Stream fs, int firstPage)
 		{
 			var ostrm = new myOverflowReadStream (fs, firstPage, len);
 			return utils.ReadAll (ostrm);
@@ -1342,18 +1353,18 @@ namespace Zumero.LSM.cs
 		private class myCursor : ICursor
 		{
 			private readonly Stream fs;
-			private readonly uint rootPage;
-			private readonly uint firstLeaf;
-			private readonly uint lastLeaf;
+			private readonly int rootPage;
+			private readonly int firstLeaf;
+			private readonly int lastLeaf;
 			private readonly PageReader pr = new PageReader(PAGE_SIZE);
 
-			private uint currentPage = 0;
+			private int currentPage = 0;
 
 			private int[] leafKeys;
-			private uint previousLeaf;
+			private int previousLeaf;
 			private int currentKey;
 
-			public myCursor(Stream _fs, uint _rootPage)
+			public myCursor(Stream _fs, int _rootPage)
 			{
 				// TODO if !(strm.CanSeek()) throw?
 				rootPage = _rootPage;
@@ -1374,8 +1385,8 @@ namespace Zumero.LSM.cs
 					if (0 == (pflag & FLAG_ROOT_NODE)) {
 						throw new Exception ();
 					}
-					firstLeaf = pr.GetUInt32 ();
-					lastLeaf = pr.GetUInt32 ();
+					firstLeaf = pr.GetInt32 ();
+					lastLeaf = pr.GetInt32 ();
 				}
 				else {
 					throw new Exception();
@@ -1416,7 +1427,7 @@ namespace Zumero.LSM.cs
                 if (0 == (kflag & FLAG_OVERFLOW)) {
                     pr.Skip (klen);
                 } else {
-                    pr.Skip(sizeof(uint));
+                    pr.Skip(sizeof(int));
                 }
             }
 
@@ -1429,8 +1440,8 @@ namespace Zumero.LSM.cs
 					throw new Exception ();
 				}
 				pr.GetByte (); // TODO pflag
-				previousLeaf = pr.GetUInt32 ();
-				int count = pr.GetUInt16 ();
+				previousLeaf = pr.GetInt32 ();
+				int count = pr.GetInt16 ();
 				// TODO in the fs version, leafKeys is only reallocated when it is too small
 				leafKeys = new int[count];
 				for (int i = 0; i < count; i++) {
@@ -1447,7 +1458,7 @@ namespace Zumero.LSM.cs
 					} else if (0 != (vflag & FLAG_OVERFLOW)) {
 						// this is an overflow key.  ignore it.
 						// just skip past its pagenum.  
-                        pr.Skip(sizeof(uint));
+                        pr.Skip(sizeof(int));
 					} else {
 						pr.Skip(vlen);
 					}
@@ -1466,7 +1477,7 @@ namespace Zumero.LSM.cs
 					// key.  for now, we just retrieve the overflowed key
 					// and compare it.  but this comparison could be done
 					// without retrieving the whole thing.
-					uint pagenum = pr.GetUInt32 ();
+					int pagenum = pr.GetInt32 ();
 					byte[] k = readOverflow(klen, fs, pagenum);
 					return ByteComparer.cmp (k, other);
 				}
@@ -1480,7 +1491,7 @@ namespace Zumero.LSM.cs
 				if (0 == (kflag & FLAG_OVERFLOW)) {
 					return pr.GetArray (klen);
 				} else {
-					uint pagenum = pr.GetUInt32 ();
+					int pagenum = pr.GetInt32 ();
 					return readOverflow(klen, fs, pagenum);
 				}
 			}
@@ -1513,7 +1524,7 @@ namespace Zumero.LSM.cs
 				}
 			}
 
-			private bool setCurrentPage(uint pagenum)
+			private bool setCurrentPage(int pagenum)
 			{
 				// TODO if pagenum == currentPage, do nothing?
 				currentPage = pagenum;
@@ -1526,7 +1537,7 @@ namespace Zumero.LSM.cs
 					return false;
 				}
 				if (pagenum <= rootPage) {
-					uint pos = (pagenum - 1) * PAGE_SIZE;
+					long pos = (((long) pagenum) - 1) * PAGE_SIZE;
 					fs.Seek (pos, SeekOrigin.Begin);
 					pr.Read (fs);
 					return true;
@@ -1536,23 +1547,23 @@ namespace Zumero.LSM.cs
 				}
 			}
 
-			private Tuple<uint[],byte[][]> readParentPage()
+			private Tuple<int[],byte[][]> readParentPage()
 			{
 				pr.Reset ();
 				if (pr.GetByte() != PARENT_NODE) {
 					throw new Exception ();
 				}
 				byte pflag = pr.GetByte ();
-				int count = (int) pr.GetUInt16 ();
-				var ptrs = new uint[count+1];
+				int count = (int) pr.GetInt16 ();
+				var ptrs = new int[count+1];
 				var keys = new byte[count][];
 
 				if (0 != (pflag & FLAG_ROOT_NODE)) {
-					pr.Skip (2 * sizeof(uint));
+					pr.Skip (2 * sizeof(int));
 				}
 				// note "<= count" below
 				for (int i = 0; i <= count; i++) {
-					ptrs[i] = (uint) pr.GetVarint();
+					ptrs[i] = (int) pr.GetVarint();
 				}
 				// note "< count" below
 				for (int i = 0; i < count; i++) {
@@ -1561,11 +1572,11 @@ namespace Zumero.LSM.cs
 					if (0 == (flag & FLAG_OVERFLOW)) {
 						keys[i] = pr.GetArray(klen);
 					} else {
-						uint pagenum = pr.GetUInt32 ();
+						int pagenum = pr.GetInt32 ();
 						keys[i] = readOverflow (klen, fs, pagenum);
 					}
 				}
-				return new Tuple<uint[],byte[][]> (ptrs, keys);
+				return new Tuple<int[],byte[][]> (ptrs, keys);
 			}
 
 			// this is used when moving forward through the leaf pages.
@@ -1585,8 +1596,8 @@ namespace Zumero.LSM.cs
 					}
 					else {
 						// assert OVERFLOW == _buf[0]
-						int cur = 2; // offset of the pages_remaining
-						uint skip = pr.GetUInt32 ();
+						pr.SetPosition (2); // offset of the pages_remaining
+						int skip = pr.GetInt32 ();
                         // TODO this code assumes the pages for this overflow
                         // are contiguous, and it assumes that the next page
                         // in this segment is immediately after this overflow.
@@ -1621,7 +1632,7 @@ namespace Zumero.LSM.cs
 				if (0 != (vflag & FLAG_TOMBSTONE)) {
 					return null;
 				} else if (0 != (vflag & FLAG_OVERFLOW)) {
-					uint pagenum = pr.GetUInt32 ();
+					int pagenum = pr.GetInt32 ();
 					return new myOverflowReadStream (fs, pagenum, vlen);
 				} else {
 					return new MemoryStream(pr.GetArray (vlen));
@@ -1654,7 +1665,7 @@ namespace Zumero.LSM.cs
 				// start at the last page, which is always the root of the tree.  
 				// it might be the leaf, in a tree with just one node.
 
-				uint pagenum = rootPage;
+				int pagenum = rootPage;
 
 				while (true) {
 					if (!setCurrentPage (pagenum)) {
@@ -1698,12 +1709,12 @@ namespace Zumero.LSM.cs
 						}
 
 					} else if (pr.PageType == PARENT_NODE) {
-						Tuple<uint[],byte[][]> tp = readParentPage ();
+						Tuple<int[],byte[][]> tp = readParentPage ();
 						var ptrs = tp.Item1;
 						var keys = tp.Item2;
 
 						// TODO is linear search here the fastest way?
-						uint found = 0;
+						int found = 0;
 						for (int i = 0; i < keys.Length; i++) {
 							int cmp = ByteComparer.cmp (k, keys [i]);
 							if (cmp <= 0) {
@@ -1764,7 +1775,7 @@ namespace Zumero.LSM.cs
 		}
 
 		// TODO pass in a page size.
-		public static ICursor OpenCursor(Stream fs, uint rootPage)
+		public static ICursor OpenCursor(Stream fs, int rootPage)
 		{
 			return new myCursor(fs, rootPage);
 		}
