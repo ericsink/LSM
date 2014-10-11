@@ -28,7 +28,7 @@ namespace lsm_tests
 	{
 		public Func<IWrite> create_memory_segment;
 		public Func<Stream,ICursor,uint> create_btree_segment;
-		public Func<Stream,long,ICursor> open_btree_segment;
+		public Func<Stream,uint,ICursor> open_btree_segment;
 		public Func<ICursor,ICursor> create_living_cursor;
 		public Func<ICursor,ICursor,ICursor> create_multicursor;
 

@@ -861,9 +861,9 @@ module BTreeSegment =
         let ostrm = new myOverflowReadStream(fs, firstPage, len)
         utils.ReadAll(ostrm)
 
-    type private myCursor(_fs,_fsLength:int64) =
+    type private myCursor(_fs:Stream,_rootPage:uint32) =
         let fs = _fs
-        let fsLength = _fsLength
+        let rootPage = _rootPage
         let pr = new PageReader(PAGE_SIZE)
 
         let mutable currentPage:uint32 = 0u
@@ -877,7 +877,36 @@ module BTreeSegment =
             previousLeaf <- 0u
             currentKey <- -1
 
-        do resetLeaf()
+        let setCurrentPage (pagenum:uint32) = 
+            currentPage <- pagenum
+            resetLeaf()
+            if 0u = currentPage then false
+            else                
+                if pagenum <= rootPage then
+                    let pos = (currentPage - 1u) * uint32 PAGE_SIZE
+                    fs.Seek (int64 pos, SeekOrigin.Begin) |> ignore
+                    pr.Read(fs) |> ignore
+                    true
+                else
+                    false
+                    
+        let getFirstAndLastLeaf() = 
+            if not (setCurrentPage rootPage) then raise (new Exception())
+            if pr.PageType = LEAF_NODE then
+                (rootPage, rootPage)
+            else
+                pr.Reset()
+                if pr.GetByte() <> PARENT_NODE then 
+                    raise (new Exception())
+                let pflag = pr.GetByte()
+                pr.GetUInt16() |> ignore
+                if 0uy = (pflag &&& FLAG_ROOT_NODE) then 
+                    raise (new Exception())
+                let first = pr.ReadUInt32()
+                let last = pr.ReadUInt32()
+                (first, last)
+              
+        let (firstLeaf, lastLeaf) = getFirstAndLastLeaf()
 
         let nextInLeaf() =
             if (currentKey+1) < countLeafKeys then
@@ -959,41 +988,6 @@ module BTreeSegment =
                 else if cmp<0  then searchLeaf k (mid+1) max sop mid ge
                 else searchLeaf k min (mid-1) sop le mid
 
-        let setCurrentPage (pagenum:uint32) = 
-            currentPage <- pagenum
-            resetLeaf()
-            if 0u = currentPage then false
-            else
-                let pos = (currentPage - 1u) * uint32 PAGE_SIZE
-                if ((pos + uint32 PAGE_SIZE) <= uint32 fsLength) then
-                    fs.Seek (int64 pos, SeekOrigin.Begin) |> ignore
-                    pr.Read(fs) |> ignore
-                    true
-                else
-                    false
-                    
-        let startRootPageRead() =
-            pr.Reset()
-            if pr.GetByte() <> PARENT_NODE then 
-                raise (new Exception())
-            let pflag = pr.GetByte()
-            pr.GetUInt16() |> ignore
-            if 0uy = (pflag &&& FLAG_ROOT_NODE) then 
-                raise (new Exception())
-                      
-        let getFirstLeafFromRootPage() =
-            startRootPageRead()
-            let firstLeaf = pr.ReadUInt32()
-            //let lastLeaf = pr.ReadUInt32()
-            firstLeaf
-
-        let getLastLeafFromRootPage() =
-            startRootPageRead()
-            //let firstLeaf = pr.ReadUInt32()
-            pr.Skip(4)
-            let lastLeaf = pr.ReadUInt32()
-            lastLeaf
-
         let readParentPage() =
             pr.Reset()
             if pr.GetByte() <> PARENT_NODE then 
@@ -1043,11 +1037,6 @@ module BTreeSegment =
             else
                 ptrs.[int i]
 
-        let lastPage() =
-            // the last page is always the root of the tree.  
-            // it might be the leaf, in a tree with just one node.
-            uint32 (fsLength / int64 PAGE_SIZE)
-
         let rec search pg k sop =
             if setCurrentPage pg then
                 if LEAF_NODE = pr.PageType then
@@ -1080,8 +1069,7 @@ module BTreeSegment =
                 leafIsValid()
 
             member this.Seek(k,sop) =
-                let pagenum = lastPage()
-                search pagenum k sop
+                search rootPage k sop
 
             member this.Key() =
                 keyInLeaf currentKey
@@ -1115,21 +1103,12 @@ module BTreeSegment =
                 compareKeyInLeaf currentKey k
 
             member this.First() =
-                let pagenum = lastPage()
-                if setCurrentPage pagenum then
-                    let pt = pr.PageType
-                    if LEAF_NODE <> pt then
-                        let pg = getFirstLeafFromRootPage()
-                        setCurrentPage pg |> ignore // TODO
+                if setCurrentPage firstLeaf then
                     readLeaf()
                     currentKey <- 0
 
             member this.Last() =
-                let pagenum = lastPage()
-                if setCurrentPage pagenum then
-                    if LEAF_NODE <> pr.PageType then
-                        let pg = getLastLeafFromRootPage()
-                        setCurrentPage pg |> ignore // TODO
+                if setCurrentPage lastLeaf then
                     readLeaf()
                     currentKey <- countLeafKeys - 1
 
@@ -1148,6 +1127,6 @@ module BTreeSegment =
                         currentKey <- countLeafKeys - 1
     
     // TODO pass in a page size
-    let OpenCursor(strm, length:int64) :ICursor =
-        upcast (new myCursor(strm, length))
+    let OpenCursor(strm, rootPage:uint32) :ICursor =
+        upcast (new myCursor(strm, rootPage))
 

@@ -945,6 +945,7 @@ namespace Zumero.LSM.cs
 
 		private static List<node> writeParentNodes(uint firstLeaf, uint lastLeaf, List<node> children, uint startingPageNumber, Stream fs, PageBuilder pb)
 		{
+            // TODO page number and block issue here
 			uint nextPageNumber = startingPageNumber;
 			var nextGeneration = new List<node> ();
 
@@ -1047,9 +1048,11 @@ namespace Zumero.LSM.cs
 		// TODO we probably want this function to accept a pagesize and base pagenumber
 		public static uint Create(Stream fs, ICursor csr)
 		{
+			// TODO if !(fs.CanSeek()) throw?
 			PageBuilder pb = new PageBuilder(PAGE_SIZE);
 			PageBuilder pbOverflow = new PageBuilder(PAGE_SIZE);
 
+            // TODO initial page number should be passed in
 			uint nextPageNumber = 1;
 
 			var nodelist = new List<node> ();
@@ -1109,6 +1112,10 @@ namespace Zumero.LSM.cs
 
 						nodelist.Add (new node { PageNumber = nextPageNumber, Key = lastKey });
 
+                        // TODO don't assume we can just write this page after the previous one.
+                        // probably, but we need to account for the end of the block.  and if this
+                        // was the last page page in the block, we needed to make room for a pointer
+                        // to the next one.
 						prevPageNumber = nextPageNumber++;
 						pb.Reset ();
 						countPairs = 0;
@@ -1162,6 +1169,9 @@ namespace Zumero.LSM.cs
 						// assert available >= needed_for_overflow_both
 
 						uint keyOverflowFirstPage = nextPageNumber;
+                        // TODO writeOverflow assumes it can write all its pages consecutively.
+                        // with blocks, this would only be true if we asked in advance for that
+                        // many pages from some kind of a page manager.
 						uint keyOverflowPageCount = writeOverflowFromArray (pbOverflow, fs, k);
 						nextPageNumber += keyOverflowPageCount;
 
@@ -1171,6 +1181,7 @@ namespace Zumero.LSM.cs
 					}
 
 					uint valueOverflowFirstPage = nextPageNumber;
+                    // TODO see consecutive block comment above.
 					uint valueOverflowPageCount = writeOverflowFromStream (pbOverflow, fs, v);
 					nextPageNumber += valueOverflowPageCount;
 
@@ -1191,6 +1202,7 @@ namespace Zumero.LSM.cs
 
 				pb.Flush (fs);
 
+                // TODO page number and block issue again
 				nodelist.Add (new node { PageNumber = nextPageNumber++, Key = lastKey });
 			}
 
@@ -1202,6 +1214,7 @@ namespace Zumero.LSM.cs
 				// down to a level with just one parent page in it, the root page.
 
 				while (nodelist.Count > 1) {
+                    // TODO page number and block issue here
 					nodelist = writeParentNodes (firstLeaf, lastLeaf, nodelist, nextPageNumber, fs, pb);
 					nextPageNumber += (uint) nodelist.Count;
 				}
@@ -1329,7 +1342,9 @@ namespace Zumero.LSM.cs
 		private class myCursor : ICursor
 		{
 			private readonly Stream fs;
-			private readonly long fsLength;
+			private readonly uint rootPage;
+			private readonly uint firstLeaf;
+			private readonly uint lastLeaf;
 			private readonly PageReader pr = new PageReader(PAGE_SIZE);
 
 			private uint currentPage = 0;
@@ -1338,11 +1353,33 @@ namespace Zumero.LSM.cs
 			private uint previousLeaf;
 			private int currentKey;
 
-			public myCursor(Stream _fs, long _fsLength)
+			public myCursor(Stream _fs, uint _rootPage)
 			{
-				fsLength = _fsLength;
+				// TODO if !(strm.CanSeek()) throw?
+				rootPage = _rootPage;
 				fs = _fs;
-				resetLeaf();
+				if (!setCurrentPage(rootPage)) {
+					throw new Exception();
+				}
+				if (pr.PageType == LEAF_NODE) {
+					firstLeaf = lastLeaf = rootPage;
+				} else if (pr.PageType == PARENT_NODE) {
+					pr.Reset ();
+					if (pr.GetByte() != PARENT_NODE) {
+						throw new Exception ();
+					}
+					byte pflag = pr.GetByte ();
+					pr.Skip (sizeof(ushort));
+
+					if (0 == (pflag & FLAG_ROOT_NODE)) {
+						throw new Exception ();
+					}
+					firstLeaf = pr.GetUInt32 ();
+					lastLeaf = pr.GetUInt32 ();
+				}
+				else {
+					throw new Exception();
+				}
 			}
 
 			private void resetLeaf()
@@ -1478,54 +1515,25 @@ namespace Zumero.LSM.cs
 
 			private bool setCurrentPage(uint pagenum)
 			{
+				// TODO if pagenum == currentPage, do nothing?
 				currentPage = pagenum;
 				resetLeaf();
+				// TODO this guard doesn't do much anymore.  specifically,
+				// in a single-file design, we don't really have any way of
+				// checking to see if this pagenum is actually part of the
+				// segment.
 				if (0 == pagenum) {
 					return false;
 				}
-				uint pos = (pagenum - 1) * PAGE_SIZE;
-				if ((pos + PAGE_SIZE) <= fsLength) {
+				if (pagenum <= rootPage) {
+					uint pos = (pagenum - 1) * PAGE_SIZE;
 					fs.Seek (pos, SeekOrigin.Begin);
 					pr.Read (fs);
 					return true;
 				} else {
+					// TODO does this actually ever happen?
 					return false;
 				}
-			}
-
-			private void startRootPageRead()
-			{
-				pr.Reset ();
-				if (pr.GetByte() != PARENT_NODE) {
-					throw new Exception ();
-				}
-				byte pflag = pr.GetByte ();
-				pr.Skip (sizeof(ushort));
-
-				if (0 == (pflag & FLAG_ROOT_NODE)) {
-					throw new Exception ();
-				}
-			}
-
-			private uint getFirstLeafFromRootPage()
-			{
-				startRootPageRead ();
-
-				var firstLeaf = pr.GetUInt32 ();
-				//var lastLeaf = pr.GetUInt32 ();
-
-				return firstLeaf;
-			}
-
-			private uint getLastLeafFromRootPage()
-			{
-				startRootPageRead ();
-
-				//var firstLeaf = pr.GetUInt32 ();
-				pr.Skip (sizeof(uint));
-				var lastLeaf = pr.GetUInt32 ();
-
-				return lastLeaf;
 			}
 
 			private Tuple<uint[],byte[][]> readParentPage()
@@ -1579,6 +1587,9 @@ namespace Zumero.LSM.cs
 						// assert OVERFLOW == _buf[0]
 						int cur = 2; // offset of the pages_remaining
 						uint skip = pr.GetUInt32 ();
+                        // TODO this code assumes the pages for this overflow
+                        // are contiguous, and it assumes that the next page
+                        // in this segment is immediately after this overflow.
 						if (!setCurrentPage (currentPage + skip)) {
 							return false;
 						}
@@ -1643,8 +1654,7 @@ namespace Zumero.LSM.cs
 				// start at the last page, which is always the root of the tree.  
 				// it might be the leaf, in a tree with just one node.
 
-                // TODO in the fs version, this is a func called lastPage
-				uint pagenum = (uint) (fsLength / PAGE_SIZE);
+				uint pagenum = rootPage;
 
 				while (true) {
 					if (!setCurrentPage (pagenum)) {
@@ -1666,6 +1676,8 @@ namespace Zumero.LSM.cs
 								// if LE or GE failed on a given page, we might need
 								// to look at the next/prev leaf.
 								if (SeekOp.SEEK_GE == sop) {
+                                    // TODO this code assumes that the next page in this segment is
+                                    // right after this one.
 									if (setCurrentPage (currentPage + 1) && searchForwardForLeaf ()) {
 										readLeaf ();
 										currentKey = 0;
@@ -1709,15 +1721,7 @@ namespace Zumero.LSM.cs
 
 			void ICursor.First()
 			{
-				// start at the last page, which is always the root of the tree.  
-				// it might be the leaf, in a tree with just one node.
-
-				uint pagenum = (uint) (fsLength / PAGE_SIZE);
-				if (setCurrentPage (pagenum)) {
-					if (LEAF_NODE != pr.PageType) {
-						// assert _buf[1] & FLAG_ROOT_NODE
-						setCurrentPage (getFirstLeafFromRootPage()); // TODO don't ignore return val
-					}
+				if (setCurrentPage (firstLeaf)) {
 					readLeaf ();
 					currentKey = 0;
 				}
@@ -1725,15 +1729,7 @@ namespace Zumero.LSM.cs
 
 			void ICursor.Last()
 			{
-				// start at the last page, which is always the root of the tree.  
-				// it might be the leaf, in a tree with just one node.
-
-				uint pagenum = (uint) (fsLength / PAGE_SIZE);
-				if (setCurrentPage (pagenum)) {
-					if (LEAF_NODE != pr.PageType) {
-						// assert _buf[1] & FLAG_ROOT_NODE
-						setCurrentPage (getLastLeafFromRootPage()); // TODO don't ignore return val
-					}
+				if (setCurrentPage (lastLeaf)) {
 					readLeaf ();
 					currentKey = leafKeys.Length - 1;
 				}
@@ -1743,6 +1739,8 @@ namespace Zumero.LSM.cs
 			{
 				if (!nextInLeaf()) {
 					// need a new page
+                    // TODO this code assumes that the next page in this segment is
+                    // right after this one.
 					if (setCurrentPage (currentPage + 1) && searchForwardForLeaf ()) {
 						readLeaf ();
 						currentKey = 0;
@@ -1765,10 +1763,10 @@ namespace Zumero.LSM.cs
 
 		}
 
-		// TODO pass in a page size
-		public static ICursor OpenCursor(Stream strm, long length)
+		// TODO pass in a page size.
+		public static ICursor OpenCursor(Stream fs, uint rootPage)
 		{
-			return new myCursor(strm, length);
+			return new myCursor(fs, rootPage);
 		}
 
 	}

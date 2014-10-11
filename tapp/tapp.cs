@@ -64,7 +64,7 @@ public class foo
             BTreeSegment.Create(fs, t1.OpenCursor());
 
             {
-                var csr = BTreeSegment.OpenCursor(fs, fs.Length);
+				var csr = BTreeSegment.OpenCursor(fs, (uint) (fs.Length / 4096)); // TODO
 
 				csr.First ();
 				while (csr.IsValid ()) {
