@@ -945,9 +945,10 @@ module BTreeSegment =
 
         let rec searchLeaf k min max sop le ge = 
             if max < min then
-                if sop = SeekOp.SEEK_EQ then -1
-                else if sop = SeekOp.SEEK_LE then le
-                else ge
+                match sop with
+                | SeekOp.SEEK_EQ -> -1
+                | SeekOp.SEEK_LE -> le
+                | _ -> ge
             else
                 let mid = (max + min) / 2
                 let cmp = compareKeyInLeaf mid k
