@@ -53,6 +53,8 @@ public static class hack
 
 public class foo
 {
+	private const int PAGE_SIZE = 4096;
+
     public static void Main(string[] argv)
     {
         var t1 = MemorySegment.Create();
@@ -61,10 +63,10 @@ public class foo
         }
 
         using (var fs = new FileStream("tapp.bin", FileMode.Create)) {
-            BTreeSegment.Create(fs, t1.OpenCursor());
+            BTreeSegment.Create(fs, PAGE_SIZE, t1.OpenCursor());
 
             {
-				var csr = BTreeSegment.OpenCursor(fs, (int) (fs.Length / 4096)); // TODO
+				var csr = BTreeSegment.OpenCursor(fs, PAGE_SIZE, (int) (fs.Length / PAGE_SIZE));
 
 				csr.First ();
 				while (csr.IsValid ()) {

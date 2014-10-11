@@ -836,8 +836,6 @@ namespace Zumero.LSM.cs
 
 		private const byte FLAG_ROOT_NODE = 1;
 
-		private const int PAGE_SIZE = 4096;
-
 		private const int OVERFLOW_PAGE_HEADER_SIZE = 6;
 
 		private const int PARENT_NODE_HEADER_SIZE = 8;
@@ -1068,12 +1066,12 @@ namespace Zumero.LSM.cs
 			return nextGeneration;
 		}
 
-		// TODO we probably want this function to accept a pagesize and base pagenumber
-		public static int Create(Stream fs, ICursor csr)
+		// TODO we probably want this function to accept a page range, first and boundary
+		public static int Create(Stream fs, int pageSize, ICursor csr)
 		{
 			// TODO if !(fs.CanSeek()) throw?
-			PageBuilder pb = new PageBuilder(PAGE_SIZE);
-			PageBuilder pbOverflow = new PageBuilder(PAGE_SIZE);
+			PageBuilder pb = new PageBuilder(pageSize);
+			PageBuilder pbOverflow = new PageBuilder(pageSize);
 
             // TODO initial page number should be passed in
 			int nextPageNumber = 1;
@@ -1262,14 +1260,14 @@ namespace Zumero.LSM.cs
 			// TODO I suppose if the underlying stream can seek and if we kept
 			// the first_page, we could seek or reset as well.
 
-			public myOverflowReadStream(Stream _fs, int firstPage, int _len)
+			public myOverflowReadStream(Stream _fs, int pageSize, int firstPage, int _len)
 			{
 				fs = _fs;
 				len = _len;
 
 				currentPage = firstPage;
 
-                buf = new byte[PAGE_SIZE];
+                buf = new byte[pageSize];
 				ReadPage();
 			}
 
@@ -1356,9 +1354,9 @@ namespace Zumero.LSM.cs
 			}
 		}
 
-		private static byte[] readOverflow(int len, Stream fs, int firstPage)
+		private static byte[] readOverflow(int len, Stream fs, int pageSize, int firstPage)
 		{
-			var ostrm = new myOverflowReadStream (fs, firstPage, len);
+			var ostrm = new myOverflowReadStream (fs, pageSize, firstPage, len);
 			return utils.ReadAll (ostrm);
 		}
 
@@ -1376,12 +1374,12 @@ namespace Zumero.LSM.cs
 			private int previousLeaf;
 			private int currentKey;
 
-			public myCursor(Stream _fs, int _rootPage)
+			public myCursor(Stream _fs, int pageSize, int _rootPage)
 			{
 				// TODO if !(strm.CanSeek()) throw?
 				rootPage = _rootPage;
 				fs = _fs;
-                pr = new PageReader(PAGE_SIZE);
+                pr = new PageReader(pageSize);
 				if (!setCurrentPage(rootPage)) {
 					throw new Exception();
 				}
@@ -1491,7 +1489,7 @@ namespace Zumero.LSM.cs
 					// and compare it.  but this comparison could be done
 					// without retrieving the whole thing.
 					int pagenum = pr.GetInt32 ();
-					byte[] k = readOverflow(klen, fs, pagenum);
+					byte[] k = readOverflow(klen, fs, pr.PageSize, pagenum);
 					return ByteComparer.cmp (k, other);
 				}
 			}
@@ -1505,7 +1503,7 @@ namespace Zumero.LSM.cs
 					return pr.GetArray (klen);
 				} else {
 					int pagenum = pr.GetInt32 ();
-					return readOverflow(klen, fs, pagenum);
+					return readOverflow(klen, fs, pr.PageSize, pagenum);
 				}
 			}
 
@@ -1586,7 +1584,7 @@ namespace Zumero.LSM.cs
 						keys[i] = pr.GetArray(klen);
 					} else {
 						int pagenum = pr.GetInt32 ();
-						keys[i] = readOverflow (klen, fs, pagenum);
+						keys[i] = readOverflow (klen, fs, pr.PageSize, pagenum);
 					}
 				}
 				return new Tuple<int[],byte[][]> (ptrs, keys);
@@ -1646,7 +1644,7 @@ namespace Zumero.LSM.cs
 					return null;
 				} else if (0 != (vflag & FLAG_OVERFLOW)) {
 					int pagenum = pr.GetInt32 ();
-					return new myOverflowReadStream (fs, pagenum, vlen);
+					return new myOverflowReadStream (fs, pr.PageSize, pagenum, vlen);
 				} else {
 					return new MemoryStream(pr.GetArray (vlen));
 				}
@@ -1787,10 +1785,9 @@ namespace Zumero.LSM.cs
 
 		}
 
-		// TODO pass in a page size.
-		public static ICursor OpenCursor(Stream fs, int rootPage)
+		public static ICursor OpenCursor(Stream fs, int pageSize, int rootPage)
 		{
-			return new myCursor(fs, rootPage);
+			return new myCursor(fs, pageSize, rootPage);
 		}
 
 	}

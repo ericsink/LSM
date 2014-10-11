@@ -553,7 +553,6 @@ module BTreeSegment =
     let private FLAG_OVERFLOW:byte = 1uy
     let private FLAG_TOMBSTONE:byte = 2uy
     let private FLAG_ROOT_NODE:byte = 1uy
-    let private PAGE_SIZE = 4096
     let private OVERFLOW_PAGE_HEADER_SIZE = 6
     let private PARENT_NODE_HEADER_SIZE = 8
     let private LEAF_HEADER_SIZE = 8
@@ -691,10 +690,10 @@ module BTreeSegment =
                 sofar <- sofar + 1 + Varint.SpaceNeededFor(int64 k.Length) + Varint.SpaceNeededFor(int64 pagenum)
         nextGeneration
 
-    // TODO we probably want this function to accept a pagesize and base pagenumber
-    let Create(fs:Stream, csr:ICursor) :int32 = 
-        let pb = new PageBuilder(PAGE_SIZE)
-        let pbOverflow = new PageBuilder(PAGE_SIZE)
+    // TODO we probably want this function to accept a page range, first and boundary
+    let Create(fs:Stream, pageSize:int, csr:ICursor) :int32 = 
+        let pb = new PageBuilder(pageSize)
+        let pbOverflow = new PageBuilder(pageSize)
         // TODO encapsulate mutables in a class?
         let mutable nextPageNumber:int32 = 1
         let mutable prevPageNumber:int32 = 0
@@ -811,11 +810,11 @@ module BTreeSegment =
         else
             0
 
-    type private myOverflowReadStream(_fs:Stream, first:int, _len:int) =
+    type private myOverflowReadStream(_fs:Stream, pageSize:int, first:int, _len:int) =
         inherit Stream()
         let fs = _fs
         let len = _len
-        let buf:byte[] = Array.zeroCreate PAGE_SIZE
+        let buf:byte[] = Array.zeroCreate pageSize
         let mutable curpage = first
         let mutable sofarOverall = 0
         let mutable sofarThisPage = 0
@@ -858,14 +857,14 @@ module BTreeSegment =
             with get() = raise (new NotSupportedException())
             and set(value) = raise (new NotSupportedException())
 
-    let private readOverflow len fs (firstPage:int) =
-        let ostrm = new myOverflowReadStream(fs, firstPage, len)
+    let private readOverflow len fs pageSize (firstPage:int) =
+        let ostrm = new myOverflowReadStream(fs, pageSize, firstPage, len)
         utils.ReadAll(ostrm)
 
-    type private myCursor(_fs:Stream,_rootPage:int) =
+    type private myCursor(_fs:Stream, pageSize:int, _rootPage:int) =
         let fs = _fs
         let rootPage = _rootPage
-        let pr = new PageReader(PAGE_SIZE)
+        let pr = new PageReader(pageSize)
 
         let mutable currentPage:int = 0
         let mutable leafKeys:int[] = null
@@ -962,7 +961,7 @@ module BTreeSegment =
                 pr.Compare(klen, other)
             else
                 let pagenum = pr.ReadInt32()
-                let k = readOverflow klen fs pagenum
+                let k = readOverflow klen fs pr.PageSize pagenum
                 ByteComparer.Compare k other
 
         let keyInLeaf n = 
@@ -973,7 +972,7 @@ module BTreeSegment =
                 pr.GetArray(klen)
             else
                 let pagenum = pr.ReadInt32()
-                let k = readOverflow klen fs pagenum
+                let k = readOverflow klen fs pr.PageSize pagenum
                 k
 
         let rec searchLeaf k min max sop le ge = 
@@ -1007,7 +1006,7 @@ module BTreeSegment =
                     keys.[i] <- pr.GetArray(klen)
                 else
                     let pagenum = pr.ReadInt32()
-                    keys.[i] <- readOverflow klen fs pagenum
+                    keys.[i] <- readOverflow klen fs pr.PageSize pagenum
             (ptrs,keys)
 
         // this is used when moving forward through the leaf pages.
@@ -1085,7 +1084,7 @@ module BTreeSegment =
                 if 0uy <> (vflag &&& FLAG_TOMBSTONE) then null
                 else if 0uy <> (vflag &&& FLAG_OVERFLOW) then 
                     let pagenum = pr.ReadInt32()
-                    upcast (new myOverflowReadStream(fs, pagenum, vlen))
+                    upcast (new myOverflowReadStream(fs, pr.PageSize, pagenum, vlen))
                 else 
                     upcast (new MemoryStream(pr.GetArray (vlen)))
 
@@ -1127,7 +1126,6 @@ module BTreeSegment =
                         readLeaf()
                         currentKey <- countLeafKeys - 1
     
-    // TODO pass in a page size
-    let OpenCursor(strm, rootPage:int) :ICursor =
-        upcast (new myCursor(strm, rootPage))
+    let OpenCursor(fs, pageSize:int, rootPage:int) :ICursor =
+        upcast (new myCursor(fs, pageSize, rootPage))
 
