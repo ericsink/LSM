@@ -917,9 +917,7 @@ module BTreeSegment =
             if leafKeys=null || leafKeys.Length<countLeafKeys then
                 leafKeys <- Array.zeroCreate countLeafKeys
             for i in 0 .. (countLeafKeys-1) do
-                let pos = pr.Position
                 leafKeys.[i] <- pr.Position
-
                 skipKey()
                 skipValue()
 
@@ -952,7 +950,6 @@ module BTreeSegment =
                 else ge
             else
                 let mid = (max + min) / 2
-                let kmid = keyInLeaf(mid)
                 let cmp = compareKeyInLeaf mid k
                 if 0 = cmp then mid
                 else if cmp<0  then searchLeaf k (mid+1) max sop mid ge
