@@ -196,6 +196,26 @@ namespace Zumero.LSM.cs
 			return (int) val;
 		}
 
+		public int GetInt32At(int at)
+		{
+			uint val = buf [at];
+			val = val << 8 | buf [at+1];
+			val = val << 8 | buf [at+2];
+			val = val << 8 | buf [at+3];
+            // assert fits in 32 bit int
+			return (int) val;
+		}
+
+        public bool CheckPageFlag(byte f)
+        {
+            return 0 != (buf[1] & f);
+        }
+
+        public int GetBoundaryNextPageField()
+        {
+            return GetInt32At(buf.Length - 4);
+        }
+
 		public int GetInt16()
 		{
 			uint val = buf [cur++];
@@ -327,11 +347,6 @@ namespace Zumero.LSM.cs
 			buf [cur++] = b;
 		}
 
-        public void SetPageFlag(byte f)
-        {
-            buf[1] |= f;
-        }
-
 		public void PutInt32(int ov)
 		{
             // assert ov >= 0
@@ -351,6 +366,11 @@ namespace Zumero.LSM.cs
 			buf[at++] = (byte)(v >> 8);
 			buf[at++] = (byte)(v >> 0);
 		}
+
+        public void SetPageFlag(byte f)
+        {
+            buf[1] |= f;
+        }
 
         public void SetBoundaryNextPageField(int page)
         {
@@ -1510,7 +1530,7 @@ namespace Zumero.LSM.cs
 
                     skipKey();
 
-					// TODO in the fs version, this is a func called skipKey
+					// TODO in the fs version, this is a func called skipValue
 					// need to skip the val
 					byte vflag = pr.GetByte();
 					int vlen = (int) pr.GetVarint();
@@ -1644,6 +1664,7 @@ namespace Zumero.LSM.cs
 			// we need to skip any overflow pages.  when moving backward,
 			// this is not necessary, because each leaf has a pointer to
 			// the leaf before it.
+            // TODO this will go away
 			private bool searchForwardForLeaf()
 			{
 				while (true) {
@@ -1748,9 +1769,13 @@ namespace Zumero.LSM.cs
 								// if LE or GE failed on a given page, we might need
 								// to look at the next/prev leaf.
 								if (SeekOp.SEEK_GE == sop) {
-                                    // TODO this code assumes that the next page in this segment is
-                                    // right after this one.
-									if (setCurrentPage (currentPage + 1) && searchForwardForLeaf ()) {
+                                    int nextPage;
+									if (pr.CheckPageFlag(FLAG_BOUNDARY_NODE)) {
+                                        nextPage = pr.GetBoundaryNextPageField();
+                                    } else {
+                                        nextPage = currentPage + 1;
+                                    }
+									if (setCurrentPage (nextPage) && searchForwardForLeaf ()) {
 										readLeaf ();
 										currentKey = 0;
 									} else {
@@ -1811,9 +1836,13 @@ namespace Zumero.LSM.cs
 			{
 				if (!nextInLeaf()) {
 					// need a new page
-                    // TODO this code assumes that the next page in this segment is
-                    // right after this one.
-					if (setCurrentPage (currentPage + 1) && searchForwardForLeaf ()) {
+                    int nextPage;
+                    if (pr.CheckPageFlag(FLAG_BOUNDARY_NODE)) {
+                        nextPage = pr.GetBoundaryNextPageField();
+                    } else {
+                        nextPage = currentPage + 1;
+                    }
+					if (setCurrentPage (nextPage) && searchForwardForLeaf ()) {
 						readLeaf ();
 						currentKey = 0;
 					}

@@ -135,7 +135,7 @@ type private PageBuilder(pgsz:int) =
         buf.[at+2] <- byte (v >>>  8)
         buf.[at+3] <- byte (v >>>  0)
 
-    member this.SetBoundaryNextPageField(page:int) = this.PutInt32At(int (buf.Length-4), page)
+    member this.SetBoundaryNextPageField(page:int) = this.PutInt32At(buf.Length - 4, page)
 
     member this.PutInt16(ov:int) =
         // assert ov >= 0
@@ -235,7 +235,7 @@ type private PageReader(pgsz:int) =
         cur <- cur + 1
         r
 
-    member this.ReadInt32() :int =
+    member this.GetInt32() :int =
         let a0 = uint64 buf.[cur+0]
         let a1 = uint64 buf.[cur+1]
         let a2 = uint64 buf.[cur+2]
@@ -244,6 +244,18 @@ type private PageReader(pgsz:int) =
         cur <- cur + 4
         // assert r fits in a 32 bit signed int
         int r
+
+    member this.GetInt32At(at) :int =
+        let a0 = uint64 buf.[at+0]
+        let a1 = uint64 buf.[at+1]
+        let a2 = uint64 buf.[at+2]
+        let a3 = uint64 buf.[at+3]
+        let r = (a0 <<< 24) ||| (a1 <<< 16) ||| (a2 <<< 8) ||| (a3 <<< 0)
+        // assert r fits in a 32 bit signed int
+        int r
+
+    member this.CheckPageFlag(f) = 0uy <> (buf.[1] &&& f)
+    member this.GetBoundaryNextPageField() = this.GetInt32At(buf.Length - 4)
 
     member this.GetArray(len) =
         let ba:byte[] = Array.zeroCreate len
@@ -947,8 +959,8 @@ module BTreeSegment =
                 pr.GetInt16() |> ignore
                 if 0uy = (pflag &&& FLAG_ROOT_NODE) then 
                     raise (new Exception())
-                let first = pr.ReadInt32()
-                let last = pr.ReadInt32()
+                let first = pr.GetInt32()
+                let last = pr.GetInt32()
                 (first, last)
               
         let (firstLeaf, lastLeaf) = getFirstAndLastLeaf()
@@ -988,7 +1000,7 @@ module BTreeSegment =
             if pr.GetByte() <> LEAF_NODE then 
                 raise (new Exception())
             pr.GetByte() |> ignore
-            previousLeaf <- pr.ReadInt32()
+            previousLeaf <- pr.GetInt32()
             countLeafKeys <- pr.GetInt16() |> int
             // only realloc leafKeys if it's too small
             if leafKeys=null || leafKeys.Length<countLeafKeys then
@@ -1005,7 +1017,7 @@ module BTreeSegment =
             if 0uy = (kflag &&& FLAG_OVERFLOW) then
                 pr.Compare(klen, other)
             else
-                let pagenum = pr.ReadInt32()
+                let pagenum = pr.GetInt32()
                 let k = readOverflow klen fs pr.PageSize pagenum
                 ByteComparer.Compare k other
 
@@ -1016,7 +1028,7 @@ module BTreeSegment =
             if 0uy = (kflag &&& FLAG_OVERFLOW) then
                 pr.GetArray(klen)
             else
-                let pagenum = pr.ReadInt32()
+                let pagenum = pr.GetInt32()
                 let k = readOverflow klen fs pr.PageSize pagenum
                 k
 
@@ -1050,7 +1062,7 @@ module BTreeSegment =
                 if 0uy = (kflag &&& FLAG_OVERFLOW) then
                     keys.[i] <- pr.GetArray(klen)
                 else
-                    let pagenum = pr.ReadInt32()
+                    let pagenum = pr.GetInt32()
                     keys.[i] <- readOverflow klen fs pr.PageSize pagenum
             (ptrs,keys)
 
@@ -1058,13 +1070,14 @@ module BTreeSegment =
         // we need to skip any overflow pages.  when moving backward,
         // this is not necessary, because each leaf has a pointer to
         // the leaf before it.
+        // TODO this will go away
         let rec searchForwardForLeaf() = 
             let pt = pr.PageType
             if pt = LEAF_NODE then true
             else if pt = PARENT_NODE then false
             else
                 pr.SetPosition(2) // offset of the pages_remaining
-                let skip = pr.ReadInt32()
+                let skip = pr.GetInt32()
                 if setCurrentPage (currentPage + skip) then
                     searchForwardForLeaf()
                 else
@@ -1094,7 +1107,10 @@ module BTreeSegment =
                             // if LE or GE failed on a given page, we might need
                             // to look at the next/prev leaf.
                             if SeekOp.SEEK_GE = sop then
-                                if (setCurrentPage (currentPage + 1) && searchForwardForLeaf ()) then
+                                let nextPage =
+                                    if pr.CheckPageFlag(FLAG_BOUNDARY_NODE) then pr.GetBoundaryNextPageField()
+                                    else currentPage + 1
+                                if (setCurrentPage (nextPage) && searchForwardForLeaf ()) then
                                     readLeaf()
                                     currentKey <- 0
                             else
@@ -1130,7 +1146,7 @@ module BTreeSegment =
                 let vlen = pr.GetVarint() |> int
                 if 0uy <> (vflag &&& FLAG_TOMBSTONE) then null
                 else if 0uy <> (vflag &&& FLAG_OVERFLOW) then 
-                    let pagenum = pr.ReadInt32()
+                    let pagenum = pr.GetInt32()
                     upcast (new myOverflowReadStream(fs, pr.PageSize, pagenum, vlen))
                 else 
                     upcast (new MemoryStream(pr.GetArray (vlen)))
@@ -1161,7 +1177,10 @@ module BTreeSegment =
 
             member this.Next() =
                 if not (nextInLeaf()) then
-                    if setCurrentPage (currentPage + 1) && searchForwardForLeaf() then
+                    let nextPage =
+                        if pr.CheckPageFlag(FLAG_BOUNDARY_NODE) then pr.GetBoundaryNextPageField()
+                        else currentPage + 1
+                    if setCurrentPage (nextPage) && searchForwardForLeaf() then
                         readLeaf()
                         currentKey <- 0
 
