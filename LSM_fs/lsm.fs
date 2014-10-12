@@ -903,6 +903,20 @@ module BTreeSegment =
             // assert PageType is OVERFLOW
             sofarThisPage <- 0
 
+        let isBoundary = 0uy <> (buf.[1] &&& FLAG_BOUNDARY_NODE)
+        let availableOnThisPage =
+            let allowanceForBoundary = if isBoundary then 4 else 0
+            (buf.Length - OVERFLOW_PAGE_HEADER_SIZE) - allowanceForBoundary
+
+        let GetInt32At(at) :int =
+            let a0 = uint64 buf.[at+0]
+            let a1 = uint64 buf.[at+1]
+            let a2 = uint64 buf.[at+2]
+            let a3 = uint64 buf.[at+3]
+            let r = (a0 <<< 24) ||| (a1 <<< 16) ||| (a2 <<< 8) ||| (a3 <<< 0)
+            // assert r fits in a 32 bit signed int
+            int r
+
         do ReadPage()
 
         override this.Length = int64 len
@@ -912,11 +926,13 @@ module BTreeSegment =
             if sofarOverall >= len then
                 0
             else    
-                if (sofarThisPage >= (buf.Length - OVERFLOW_PAGE_HEADER_SIZE)) then
-                    // TODO check for boundary
-                    curpage <- curpage + 1
+                if (sofarThisPage >= availableOnThisPage) then
+                    if isBoundary then
+                        curpage <- GetInt32At(buf.Length - 4)
+                    else
+                        curpage <- curpage + 1
                     ReadPage()
-                let available = Math.Min ((buf.Length - OVERFLOW_PAGE_HEADER_SIZE), len - sofarOverall)
+                let available = Math.Min (availableOnThisPage, len - sofarOverall)
                 let num = Math.Min (available, wanted)
                 System.Array.Copy (buf, OVERFLOW_PAGE_HEADER_SIZE + sofarThisPage, ba, offset, num)
                 sofarOverall <- sofarOverall + num

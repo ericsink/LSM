@@ -1374,19 +1374,47 @@ namespace Zumero.LSM.cs
 				}
 			}
 
+            private bool isBoundary
+            {
+                get {
+                    return (0 != (buf[1] & FLAG_BOUNDARY_NODE));
+                }
+            }
+
+            private int availableOnThisPage
+            {
+                get {
+                    int allowanceForBoundary = isBoundary ? 4 : 0;
+                    return (buf.Length - OVERFLOW_PAGE_HEADER_SIZE) - allowanceForBoundary;
+                }
+            }
+
+            private int GetInt32At(int at)
+            {
+                uint val = buf [at];
+                val = val << 8 | buf [at+1];
+                val = val << 8 | buf [at+2];
+                val = val << 8 | buf [at+3];
+                // assert fits in 32 bit int
+                return (int) val;
+            }
+
 			public override int Read (byte[] ba, int offset, int wanted)
 			{
-				if (sofarThisPage >= (buf.Length - OVERFLOW_PAGE_HEADER_SIZE)) {
+				if (sofarThisPage >= availableOnThisPage) {
 					if (sofarOverall < len) {
-                        // TODO check for boundary
-						currentPage++;
+                        if (isBoundary) {
+                            currentPage = GetInt32At(buf.Length - 4);
+                        } else {
+                            currentPage++;
+                        }
 						ReadPage ();
 					} else {
 						return 0;
 					}
 				}
 
-				int available = (int) Math.Min ((buf.Length - OVERFLOW_PAGE_HEADER_SIZE), len - sofarOverall);
+				int available = (int) Math.Min (availableOnThisPage, len - sofarOverall);
 				int num = (int)Math.Min (available, wanted);
 				Array.Copy (buf, OVERFLOW_PAGE_HEADER_SIZE + sofarThisPage, ba, offset, num);
 				sofarOverall += num;
