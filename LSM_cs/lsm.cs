@@ -52,13 +52,12 @@ namespace Zumero.LSM.cs
 		// read until the end of the stream
 		public static byte[] ReadAll(Stream s)
 		{
-			// TODO this code seems to assume s.Position is 0
-			byte[] a = new byte[s.Length];
+			byte[] a = new byte[(int) (s.Length - s.Position)];
 			int sofar = 0;
 			while (sofar < a.Length) {
 				int got = s.Read (a, sofar, (int) (a.Length - sofar));
 				if (0 == got) {
-					break; // TODO shouldn't this be an error?
+                    throw new Exception();
 				}
 				sofar += got;
 			}
@@ -1500,7 +1499,7 @@ namespace Zumero.LSM.cs
 
 			public override long Position {
 				get {
-					throw new NotSupportedException ();
+                    return sofarOverall;
 				}
 				set {
 					throw new NotSupportedException ();

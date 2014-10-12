@@ -39,13 +39,12 @@ module utils =
             sofar <- sofar + got
 
     let ReadAll (strm:Stream) =
-        // TODO this code seems to assume s.Position is 0
-        let len = int strm.Length
+        let len = int (strm.Length - strm.Position)
         let buf:byte[] = Array.zeroCreate len
         let mutable sofar = 0
         while sofar<len do
             let got = strm.Read(buf, sofar, len - sofar)
-            //if 0 = got then throw?
+            if 0 = got then raise (new Exception())
             sofar <- sofar + got
         buf
 
@@ -990,7 +989,7 @@ module BTreeSegment =
         override this.Seek(offset,origin) = raise (new NotSupportedException())
         override this.Write(buf,off,len) = raise (new NotSupportedException())
         override this.Position
-            with get() = raise (new NotSupportedException())
+            with get() = int64 sofarOverall
             and set(value) = raise (new NotSupportedException())
 
     let private readOverflow len fs pageSize (firstPage:int) =

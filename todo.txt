@@ -1,42 +1,16 @@
 
-redo storage of overflows
-
-implement IPageManager
-    GetNewRange
-    GetConsecutivePageGroup
-
-implement the calls to the page manager
-
-get rid of searchForwardForLeaf
+for a given segment, we need a way to keep track of all
+the blocks/pages that were used by the segment.  either
+BTreeSegment.Create needs to return all this info, or
+the page manager needs to keep track along the way.
 
 consider moving rootpage first/leaf leaf to the end
 of the page
 
-write tests which deal with different page ranges
-
-and need to remember that an overflow might be longer than a
-block.  so we can't actually promise that they're consecutive.
-unless we have different rules for overflows then for leaves
-and parents.  which would be possible if we stored overflows
-separately.
-
-we don't really need blocks unless we want to allow multiple
-btree writers at the same time.  we could just always be
-appending to the end of the file.
-
-but then how would we reclaim blocks in the middle of the
-file.  we can't write a segment there unless we know it's
-going to fit, which we don't.
-
-overflows could be written separately from their segments?
-but still consecutive pages for a given overflow.  
-
-so we could
-pass Create() a first page and then a last available page.
-on the last available, set a flag on it, and put a next page
-field at the end.  unless it's the root page.  which we know.
-
-readers would have to respect the flag when searching forward.
+on an overflow boundary page, there is no need to put
+the boundary next pointer at the end of the page.  just
+re-use the skip pointer.  maybe move the skip pointer to
+the end of the page.
 
 IWrite needs to have an open cursor which can always see changes
 that were just made.  so the idea of using a plain dictionary
@@ -114,7 +88,8 @@ encapuslate mutable local-function-variables in a class?
 
 fix the realloc of leafKeys in the cs code as well
 
-memorysegment opencursor is slow, profile says so
+memorysegment opencursor is slow, profile says so.  because
+of the sort of the dictionary keys.
 
 test multicursor with the same cursor twice?
 
@@ -126,23 +101,7 @@ way too many if-then places in the fs code
 
 way too many for/while loops in the fs code
 
-should memorysegment for fs be written with an immutable collection?
-
 test multicursor with more than 2 subs
-
-test several iterations of creating a btree from two others.
-
-check for problems with assumptions about what Stream.Length
-returns.  Is it the whole stream length?  Or what's left?  And
-does the code assume one way or the other?
-
-feels like mostly the uint vs int stuff is just causing trouble.
-
---------
-
-transactions
-
---------
 
 no exception throwing?  everything needs to return status.
 but almost everything in .NET throws.  need F#-specific
@@ -151,14 +110,6 @@ implementation of things like SortedDictionary?
 checksums for data integrity
 
 still concerned about how much we are copying byte[] for keys
-
-overflow page number could be a varint?
-
-how to make this work within a larger file?
-this is why sqlite4 lsm has "blocks" of pages.
-
-btree_segment.create() needs to take a page size
-and a base pagenumber.
 
 prefix key compression?
 
