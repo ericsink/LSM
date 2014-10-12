@@ -24,6 +24,18 @@ namespace Zumero.LSM.cs
 
 	public static class utils
 	{
+		public static void SeekPage(Stream fs, int pageSize, int pageNumber)
+		{
+			if (0 == pageNumber) {
+				throw new Exception();
+			}
+			long pos = (((long) pageNumber) - 1) * pageSize;
+			long newpos = fs.Seek (pos, SeekOrigin.Begin);
+			if (pos != newpos) {
+				throw new Exception();
+			}
+		}
+
 		// Like Stream.Read, but it loops until it gets all of what it wants.
 		public static void ReadFully(Stream s, byte[] buf, int off, int len)
 		{
@@ -961,16 +973,17 @@ namespace Zumero.LSM.cs
 			return needed;
 		}
 
-		private static int writeOverflowFromArray(PageBuilder pb, Stream fs, byte[] ba)
+		private static int writeOverflowFromArray(IPages pageManager, int nextPageNumber, int boundaryPageNumber, PageBuilder pb, Stream fs, byte[] ba)
 		{
-			return writeOverflowFromStream (pb, fs, new MemoryStream (ba));
+			return writeOverflowFromStream (pageManager, nextPageNumber, boundaryPageNumber, pb, fs, new MemoryStream (ba));
 		}
 
-		private static int writeOverflowFromStream(PageBuilder pb, Stream fs, Stream ba)
+		private static int writeOverflowFromStream(IPages pageManager, int nextPageNumber, int boundaryPageNumber, PageBuilder pb, Stream fs, Stream ba)
 		{
 			int sofar = 0;
 			int needed = countOverflowPagesFor (pb.PageSize, (int) ba.Length);
 
+            // TODO fix this to do boundary stuff
 			int count = 0;
 			while (sofar < ba.Length) {
 				pb.Reset ();
@@ -983,7 +996,7 @@ namespace Zumero.LSM.cs
 				pb.Flush (fs);
 				count++;
 			}
-			return (int) count;
+            return nextPageNumber + count;
 		}
 
 		private static int calcAvailable(int pageSize, int currentSize, bool couldBeRoot, bool isBoundary)
@@ -1002,7 +1015,7 @@ namespace Zumero.LSM.cs
 			return n;
 		}
 
-		private static List<node> writeParentNodes(int firstLeaf, int lastLeaf, List<node> children, int startingPageNumber, int boundaryPageNumber, Stream fs, PageBuilder pb)
+		private static List<node> writeParentNodes(int firstLeaf, int lastLeaf, List<node> children, IPages pageManager, int startingPageNumber, int boundaryPageNumber, Stream fs, PageBuilder pb, PageBuilder pbOverflow)
 		{
 			int nextPageNumber = startingPageNumber;
 			var nextGeneration = new List<node> ();
@@ -1090,14 +1103,10 @@ namespace Zumero.LSM.cs
 					if (calcAvailable(pb.PageSize, sofar, (nextGeneration.Count == 0), isBoundary) >= neededForInline) {
 						sofar += k.Length;
 					} else {
-						// it's okay to pass our PageBuilder here for working purposes.  we're not
-						// really using it yet, until we call buildParentPage
-                        // TODO try again to use pbOverflow, for consistency
-						int overflowFirstPage = nextPageNumber;
-						int overflowPageCount = writeOverflowFromArray (pb, fs, k);
-						nextPageNumber += overflowPageCount;
+						int keyOverflowFirstPage = nextPageNumber;
+						nextPageNumber = writeOverflowFromArray (pageManager, nextPageNumber, boundaryPageNumber, pbOverflow, fs, k);
 						sofar += sizeof(int);
-						overflows [i] = overflowFirstPage;
+						overflows [i] = keyOverflowFirstPage;
 					}
 
 					// inline or not, we need space for the following things
@@ -1113,13 +1122,13 @@ namespace Zumero.LSM.cs
 			return nextGeneration;
 		}
 
-		// TODO we probably want this function to accept a page range, first and boundary
-		public static int Create(Stream fs, int pageSize, Tuple<int,int> range, ICursor csr)
+		public static int Create(Stream fs, int pageSize, IPages pageManager, ICursor csr)
 		{
 			// TODO if !(fs.CanSeek()) throw?
 			PageBuilder pb = new PageBuilder(pageSize);
 			PageBuilder pbOverflow = new PageBuilder(pageSize);
 
+            var range = pageManager.GetRange();
 			int nextPageNumber = range.Item1;
             int boundaryPageNumber = range.Item2;
 
@@ -1248,11 +1257,7 @@ namespace Zumero.LSM.cs
 						// assert available >= needed_for_overflow_both
 
 						int keyOverflowFirstPage = nextPageNumber;
-                        // TODO writeOverflow assumes it can write all its pages consecutively.
-                        // with blocks, this would only be true if we asked in advance for that
-                        // many pages from some kind of a page manager.
-						int keyOverflowPageCount = writeOverflowFromArray (pbOverflow, fs, k);
-						nextPageNumber += keyOverflowPageCount;
+						nextPageNumber = writeOverflowFromArray (pageManager, nextPageNumber, boundaryPageNumber, pbOverflow, fs, k);
 
 						pb.PutByte (FLAG_OVERFLOW);
 						pb.PutVarint (k.Length);
@@ -1260,9 +1265,7 @@ namespace Zumero.LSM.cs
 					}
 
 					int valueOverflowFirstPage = nextPageNumber;
-                    // TODO see consecutive block comment above.
-					int valueOverflowPageCount = writeOverflowFromStream (pbOverflow, fs, v);
-					nextPageNumber += valueOverflowPageCount;
+					nextPageNumber = writeOverflowFromStream (pageManager, nextPageNumber, boundaryPageNumber, pbOverflow, fs, v);
 
 					pb.PutByte (FLAG_OVERFLOW);
 					pb.PutVarint (v.Length);
@@ -1307,8 +1310,8 @@ namespace Zumero.LSM.cs
 				// down to a level with just one parent page in it, the root page.
 
 				while (nodelist.Count > 1) {
-					nodelist = writeParentNodes (firstLeaf, lastLeaf, nodelist, nextPageNumber, boundaryPageNumber, fs, pb);
-					nextPageNumber += nodelist.Count;
+					nodelist = writeParentNodes (firstLeaf, lastLeaf, nodelist, pageManager, nextPageNumber, boundaryPageNumber, fs, pb, pbOverflow);
+					nextPageNumber += nodelist.Count; // TODO this is wrong
 				}
 
 				// assert nodelist.Count == 1
@@ -1349,8 +1352,7 @@ namespace Zumero.LSM.cs
 
 			private void ReadPage()
 			{
-				long pos = (((long) currentPage) - 1) * buf.Length;
-				fs.Seek (pos, SeekOrigin.Begin);
+                utils.SeekPage(fs, buf.Length, currentPage);
 				utils.ReadFully (fs, buf, 0, buf.Length);
 				// assert buf[0] == OVERFLOW
 				sofarThisPage = 0;
@@ -1618,8 +1620,7 @@ namespace Zumero.LSM.cs
 					return false;
 				}
 				if (pagenum <= rootPage) {
-					long pos = (((long) pagenum) - 1) * pr.PageSize;
-					fs.Seek (pos, SeekOrigin.Begin);
+                    utils.SeekPage(fs, pr.PageSize, pagenum);
 					pr.Read (fs);
 					return true;
 				} else {

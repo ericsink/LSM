@@ -20,6 +20,11 @@ namespace Zumero.LSM
 	using System.IO;
 	using System.Collections.Generic;
 
+    public interface IPages
+    {
+        Tuple<int,int> GetRange();
+    }
+
 	public interface IWrite
 	{
 		void Insert(byte[] k, Stream v);

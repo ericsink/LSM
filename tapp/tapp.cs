@@ -62,39 +62,6 @@ public class foo
 
     public static void Main(string[] argv)
     {
-		var t1 = Zumero.LSM.cs.MemorySegment.Create();
-		for (int i = 0; i < 10000; i++) {
-			t1.Insert ((i * 2).ToString (), i.ToString ());
-		}
-
-		using (var fs = new FileStream("test_seek_ge_le_bigger", FileMode.Create)) {
-			Zumero.LSM.cs.BTreeSegment.Create(fs, PAGE_SIZE, new Tuple<int,int>(1,0), t1.OpenCursor());
-
-			{
-				var csr = Zumero.LSM.cs.BTreeSegment.OpenCursor(fs, PAGE_SIZE, lastPage(fs));
-
-				csr.Seek ("8088", SeekOp.SEEK_EQ);
-				Console.WriteLine ("{0}", csr.IsValid ());
-				Console.WriteLine ("{0}", csr.Key ().FromUTF8 ());
-				//Assert.True (csr.IsValid ());
-
-				csr.Seek ("8087", SeekOp.SEEK_EQ);
-				Console.WriteLine ("{0}", csr.IsValid ());
-				//Assert.False (csr.IsValid ());
-
-				csr.Seek ("8087", SeekOp.SEEK_LE);
-				Console.WriteLine ("{0}", csr.IsValid ());
-				Console.WriteLine ("{0}", csr.Key ().FromUTF8 ());
-				//Assert.True (csr.IsValid ());
-				//Assert.Equal ("8086", csr.Key ().FromUTF8 ());
-
-				csr.Seek ("8087", SeekOp.SEEK_GE);
-				Console.WriteLine ("{0}", csr.IsValid ());
-				Console.WriteLine ("{0}", csr.Key ().FromUTF8 ());
-				//Assert.True (csr.IsValid ());
-				//Assert.Equal ("8088", csr.Key ().FromUTF8 ());
-			}
-		}
     }
 }
 

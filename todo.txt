@@ -1,4 +1,19 @@
 
+redo storage of overflows
+
+implement IPageManager
+    GetNewRange
+    GetConsecutivePageGroup
+
+implement the calls to the page manager
+
+get rid of searchForwardForLeaf
+
+consider moving rootpage first/leaf leaf to the end
+of the page
+
+write tests which deal with different page ranges
+
 and need to remember that an overflow might be longer than a
 block.  so we can't actually promise that they're consecutive.
 unless we have different rules for overflows then for leaves

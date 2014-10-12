@@ -27,7 +27,7 @@ namespace lsm_tests
 	public class combo
 	{
 		public Func<IWrite> create_memory_segment;
-		public Func<Stream,int,Tuple<int,int>,ICursor,int> create_btree_segment;
+		public Func<Stream,int,IPages,ICursor,int> create_btree_segment;
 		public Func<Stream,int,int,ICursor> open_btree_segment;
 		public Func<ICursor,ICursor> create_living_cursor;
 		public Func<ICursor,ICursor,ICursor> create_multicursor;

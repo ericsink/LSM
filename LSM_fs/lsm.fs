@@ -23,23 +23,31 @@ open System.Collections.Generic
 open Zumero.LSM
 
 module utils =
-        let ReadFully(strm:Stream, buf, off, len) =
-            let mutable sofar = 0
-            while sofar<len do
-                let got = strm.Read(buf, off + sofar, len - sofar)
-                if 0 = got then raise (new Exception())
-                sofar <- sofar + got
+    // TODO why aren't the functions here in utils using curried params?
 
-        let ReadAll (strm:Stream) =
-            // TODO this code seems to assume s.Position is 0
-            let len = int strm.Length
-            let buf:byte[] = Array.zeroCreate len
-            let mutable sofar = 0
-            while sofar<len do
-                let got = strm.Read(buf, sofar, len - sofar)
-                //if 0 = got then throw?
-                sofar <- sofar + got
-            buf
+    let SeekPage(strm:Stream, pageSize, pageNumber) =
+        if 0 = pageNumber then raise (new Exception())
+        let pos = ((int64 pageNumber) - 1L) * int64 pageSize
+        let newpos = strm.Seek(pos, SeekOrigin.Begin)
+        if pos <> newpos then raise (new Exception())
+
+    let ReadFully(strm:Stream, buf, off, len) =
+        let mutable sofar = 0
+        while sofar<len do
+            let got = strm.Read(buf, off + sofar, len - sofar)
+            if 0 = got then raise (new Exception())
+            sofar <- sofar + got
+
+    let ReadAll (strm:Stream) =
+        // TODO this code seems to assume s.Position is 0
+        let len = int strm.Length
+        let buf:byte[] = Array.zeroCreate len
+        let mutable sofar = 0
+        while sofar<len do
+            let got = strm.Read(buf, sofar, len - sofar)
+            //if 0 = got then throw?
+            sofar <- sofar + got
+        buf
 
 (*
 type SeekOp = SEEK_EQ=0 | SEEK_LE=1 | SEEK_GE=2
@@ -608,9 +616,11 @@ module BTreeSegment =
             pb.PutVarint(int64 vlen)
             pb.PutStream(ba, int vlen)
 
-    let private writeOverflowFromStream (pb:PageBuilder) (fs:Stream) (ba:Stream) =
+    let private writeOverflowFromStream (pageManager:IPages) nextPageNumber boundaryPageNumber (pb:PageBuilder) (fs:Stream) (ba:Stream) =
         let needed = countOverflowPagesFor (pb.PageSize) (int ba.Length)
         let len = int ba.Length
+
+        // TODO fix this to do boundary stuff
 
         // in the C# version, this is a loop with sofar and count as mutables.
         // the inner recursive function avoids that here.
@@ -627,10 +637,11 @@ module BTreeSegment =
             else
                 count + 1
 
-        fn 0 0
+        let count = fn 0 0
+        nextPageNumber + count
 
-    let private writeOverflowFromArray (pb:PageBuilder) (fs:Stream) (ba:byte[]) =
-        writeOverflowFromStream pb fs (new MemoryStream(ba))
+    let private writeOverflowFromArray (pageManager:IPages) nextPageNumber boundaryPageNumber (pb:PageBuilder) (fs:Stream) (ba:byte[]) =
+        writeOverflowFromStream pageManager nextPageNumber boundaryPageNumber pb fs (new MemoryStream(ba))
 
     let private buildParentPage flags firstLeaf lastLeaf (overflows:System.Collections.Generic.Dictionary<int,int32>) (pb:PageBuilder) (children:System.Collections.Generic.List<int32 * byte[]>) stop start =
         // assert stop > start
@@ -663,7 +674,7 @@ module BTreeSegment =
         let allowanceForRootNode = if couldBeRoot then 2*4 else 0 // first/last Leaf
         basicSize - (allowanceForRootNode + allowanceForBoundaryNode)
 
-    let private writeParentNodes firstLeaf lastLeaf (children:System.Collections.Generic.List<int32 * byte[]>) startingPageNumber boundaryPageNumber fs (pb:PageBuilder) =
+    let private writeParentNodes firstLeaf lastLeaf (children:System.Collections.Generic.List<int32 * byte[]>) (pageManager:IPages) startingPageNumber boundaryPageNumber fs (pb:PageBuilder) (pbOverflow:PageBuilder) =
         let nextGeneration = new System.Collections.Generic.List<int32 * byte[]>()
         let overflows = new System.Collections.Generic.Dictionary<int,int32>()
         // TODO encapsulate mutables in a class?
@@ -713,23 +724,19 @@ module BTreeSegment =
                 if calcAvailable (pb.PageSize) sofar (nextGeneration.Count = 0) isBoundary >= neededForInline then
                     sofar <- sofar + k.Length
                 else
-                    // it's okay to pass our main PageBuilder here for working purposes.  we're not
-                    // really using it yet, until we call buildParentPage
-                    // TODO try again to use pbOverflow, for consistency
                     let keyOverflowFirstPage = nextPageNumber
-                    let keyOverflowPageCount = writeOverflowFromArray pb fs k
-                    nextPageNumber <- nextPageNumber + keyOverflowPageCount
+                    nextPageNumber <- writeOverflowFromArray pageManager nextPageNumber boundaryPageNumber pbOverflow fs k
                     sofar <- sofar + 4
                     overflows.[i] <- keyOverflowFirstPage
                 // inline or not, we need space for the following things
                 sofar <- sofar + 1 + Varint.SpaceNeededFor(int64 k.Length) + Varint.SpaceNeededFor(int64 pagenum)
         nextGeneration
 
-    // TODO we probably want this function to accept a page range, first and boundary
-    let Create(fs:Stream, pageSize:int, range, csr:ICursor) :int32 = 
+    let Create(fs:Stream, pageSize:int, pageManager:IPages, csr:ICursor) :int32 = 
         let pb = new PageBuilder(pageSize)
         let pbOverflow = new PageBuilder(pageSize)
         // TODO encapsulate mutables in a class?
+        let range = pageManager.GetRange()
         let mutable nextPageNumber:int32 = fst range
         let boundaryPageNumber:int32 = snd range
         let mutable prevPageNumber:int32 = 0
@@ -822,15 +829,15 @@ module BTreeSegment =
                     putArrayWithLength pb k
                 else
                     let keyOverflowFirstPage = nextPageNumber
-                    let keyOverflowPageCount = writeOverflowFromArray pbOverflow fs k
-                    nextPageNumber <- nextPageNumber + keyOverflowPageCount
+                    nextPageNumber <- writeOverflowFromArray pageManager nextPageNumber boundaryPageNumber pbOverflow fs k
+
                     pb.PutByte(FLAG_OVERFLOW)
                     pb.PutVarint(int64 k.Length)
                     pb.PutInt32(keyOverflowFirstPage)
 
                 let valueOverflowFirstPage = nextPageNumber
-                let valueOverflowPageCount = writeOverflowFromStream pbOverflow fs v
-                nextPageNumber <- nextPageNumber + valueOverflowPageCount
+                nextPageNumber <- writeOverflowFromStream pageManager nextPageNumber boundaryPageNumber pbOverflow fs v
+
                 pb.PutByte(FLAG_OVERFLOW)
                 pb.PutVarint(int64 vlen)
                 pb.PutInt32(valueOverflowFirstPage)
@@ -860,8 +867,8 @@ module BTreeSegment =
             // keep writing until we have written a level which has only one node,
             // which is the root node.
             while nodelist.Count > 1 do
-                nodelist <- writeParentNodes firstLeaf lastLeaf nodelist nextPageNumber boundaryPageNumber fs pb
-                nextPageNumber <- nextPageNumber + nodelist.Count
+                nodelist <- writeParentNodes firstLeaf lastLeaf nodelist pageManager nextPageNumber boundaryPageNumber fs pb pbOverflow
+                nextPageNumber <- nextPageNumber + nodelist.Count // TODO this is wrong
             // assert nodelist.Count = 1
             fst nodelist.[0]
         else
@@ -878,9 +885,8 @@ module BTreeSegment =
 
         // TODO consider supporting seek
 
-        let ReadPage() =
-            let pos = ((int64 curpage) - 1L) * int64 buf.Length
-            fs.Seek(pos, SeekOrigin.Begin) |> ignore
+        let ReadPage() = 
+            utils.SeekPage(fs, buf.Length, curpage)
             utils.ReadFully(fs, buf, 0, buf.Length)
             // assert PageType is OVERFLOW
             sofarThisPage <- 0
@@ -940,9 +946,8 @@ module BTreeSegment =
             if 0 = currentPage then false
             else                
                 if pagenum <= rootPage then
-                    let pos = ((int64 currentPage) - 1L) * int64 pr.PageSize
-                    fs.Seek (pos, SeekOrigin.Begin) |> ignore
-                    pr.Read(fs) |> ignore
+                    utils.SeekPage(fs, pr.PageSize, currentPage)
+                    pr.Read(fs)
                     true
                 else
                     false
