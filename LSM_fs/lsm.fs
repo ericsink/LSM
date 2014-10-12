@@ -127,6 +127,16 @@ type private PageBuilder(pgsz:int) =
         buf.[cur+3] <- byte (v >>>  0)
         cur <- cur+4
 
+    member this.PutInt32At(at:int, ov:int) =
+        // assert ov >= 0
+        let v:uint32 = uint32 ov
+        buf.[at+0] <- byte (v >>>  24)
+        buf.[at+1] <- byte (v >>>  16)
+        buf.[at+2] <- byte (v >>>  8)
+        buf.[at+3] <- byte (v >>>  0)
+
+    member this.SetBoundaryNextPageField(page:int) = this.PutInt32At(int (buf.Length-4), page)
+
     member this.PutInt16(ov:int) =
         // assert ov >= 0
         let v:uint32 = uint32 ov
@@ -667,14 +677,13 @@ module BTreeSegment =
                 if flushThisPage then
                     let thisPageNumber = nextPageNumber
                     let flags:byte = if isRootNode then FLAG_ROOT_NODE else if isBoundary then FLAG_BOUNDARY_NODE else 0uy
+                    buildParentPage flags firstLeaf lastLeaf overflows pb children i first
                     if not isRootNode then
                         if isBoundary then
-                            () // TODO
                             // TODO ask for another range
-                            // TODO set the nextPage field
+                            pb.SetBoundaryNextPageField(0) // TODO
                         else
                             nextPageNumber <- nextPageNumber + 1
-                    buildParentPage flags firstLeaf lastLeaf overflows pb children i first
                     pb.Flush(fs)
                     nextGeneration.Add(thisPageNumber, snd children.[i-1])
                     sofar <- 0
@@ -753,10 +762,9 @@ module BTreeSegment =
                     // this point in the code, we can be certain that there is going to be
                     // another page.
                     if thisPageNumber = boundaryPageNumber then
-                        () // TODO
                         pb.SetPageFlag FLAG_BOUNDARY_NODE
                         // TODO ask for another range
-                        // TODO write the boundary nextPage field
+                        pb.SetBoundaryNextPageField(0) // TODO
                     else
                         nextPageNumber <- nextPageNumber + 1
                     pb.PutInt16At (OFFSET_COUNT_PAIRS, countPairs)
@@ -824,10 +832,9 @@ module BTreeSegment =
                 // this is the root page, even though it is a leaf
             else
                 if thisPageNumber = boundaryPageNumber then
-                    () // TODO
                     pb.SetPageFlag FLAG_BOUNDARY_NODE
                     // TODO ask for another range
-                    // TODO write the boundary nextPage field
+                    pb.SetBoundaryNextPageField(0) // TODO
                 else
                     nextPageNumber <- nextPageNumber + 1
             pb.PutInt16At (OFFSET_COUNT_PAIRS, countPairs)

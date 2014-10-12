@@ -352,6 +352,11 @@ namespace Zumero.LSM.cs
 			buf[at++] = (byte)(v >> 0);
 		}
 
+        public void SetBoundaryNextPageField(int page)
+        {
+            PutInt32At(buf.Length - 4, page);
+        }
+
 		public void PutInt16(ushort ov)
 		{
             // assert ov >= 0
@@ -1028,20 +1033,18 @@ namespace Zumero.LSM.cs
 					if (flushThisPage) {
 						int thisPageNumber = nextPageNumber;
 
-                        byte flags = 0;
-						if (isRootNode) {
-                            flags |= FLAG_ROOT_NODE;
-                        } else {
+						byte flags = isRootNode ? FLAG_ROOT_NODE : (isBoundary ? FLAG_BOUNDARY_NODE : (byte) 0);
+
+						buildParentPage (flags, firstLeaf, lastLeaf, overflows, pb, children, i, first);
+
+						if (!isRootNode) {
 							if (isBoundary) {
-                                flags |= FLAG_BOUNDARY_NODE;
 								// TODO ask for next range
-                                // set the nextPage field
+                                pb.SetBoundaryNextPageField(0); // TODO
 							} else {
 								nextPageNumber++;
 							}
 						}
-
-						buildParentPage (flags, firstLeaf, lastLeaf, overflows, pb, children, i, first);
 
 						pb.Flush (fs);
 
@@ -1161,7 +1164,7 @@ namespace Zumero.LSM.cs
 						if (thisPageNumber == boundaryPageNumber) {
                             pb.SetPageFlag(FLAG_BOUNDARY_NODE);
                             // TODO ask for another range
-                            // TODO write the boundary nextPage field
+                            pb.SetBoundaryNextPageField(0); // TODO
 						} else {
 							nextPageNumber++;
 						}
@@ -1262,7 +1265,7 @@ namespace Zumero.LSM.cs
 					if (thisPageNumber == boundaryPageNumber) {
                         pb.SetPageFlag(FLAG_BOUNDARY_NODE);
                         // TODO ask for another range
-                        // TODO write the boundary nextPage field
+                        pb.SetBoundaryNextPageField(0); // TODO
 					} else {
 						nextPageNumber++;
 					}
