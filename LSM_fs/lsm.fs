@@ -616,29 +616,33 @@ module BTreeSegment =
             pb.PutVarint(int64 vlen)
             pb.PutStream(ba, int vlen)
 
-    let private writeOverflow (pageManager:IPages) nextPageNumber boundaryPageNumber (pb:PageBuilder) (fs:Stream) (ba:Stream) =
-        let needed = countOverflowPagesFor (pb.PageSize) (int ba.Length)
+    let private writePartialOverflow (pb:PageBuilder) (fs:Stream) (ba:Stream) numPagesToWrite _sofar =
         let len = int ba.Length
 
-        // TODO fix this to do boundary stuff
+        let mutable sofar = _sofar
+        let mutable count = 0
 
-        // in the C# version, this is a loop with sofar and count as mutables.
-        // the inner recursive function avoids that here.
-        let rec fn sofar count =
+        for i in 0 .. numPagesToWrite-1 do
             pb.Reset()
             pb.PutByte(OVERFLOW_NODE)
             pb.PutByte(0uy)
-            pb.PutInt32(needed - count)
+            pb.PutInt32(numPagesToWrite - count)
+            // check for the likely partial page at the end
             let num = Math.Min((pb.PageSize - OVERFLOW_PAGE_HEADER_SIZE), (len - sofar))
             pb.PutStream(ba, num)
+            sofar <- sofar + num
             pb.Flush(fs)
-            if (sofar+num) < len then
-                fn (sofar+num) (count+1)
-            else
-                count + 1
+            count <- count + 1
+        sofar
 
-        let count = fn 0 0
-        (nextPageNumber + count, boundaryPageNumber)
+    let private writeOverflow (pageManager:IPages) nextPageNumber boundaryPageNumber (pb:PageBuilder) (fs:Stream) (ba:Stream) =
+        let needed = countOverflowPagesFor (pb.PageSize) (int ba.Length)
+
+        // TODO fix this to do boundary stuff
+
+        let sofar = writePartialOverflow pb fs ba needed 0
+
+        (nextPageNumber + needed, boundaryPageNumber)
 
     let private buildParentPage flags firstLeaf lastLeaf (overflows:System.Collections.Generic.Dictionary<int,int32>) (pb:PageBuilder) (children:System.Collections.Generic.List<int32 * byte[]>) stop start =
         // assert stop > start

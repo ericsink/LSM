@@ -973,25 +973,34 @@ namespace Zumero.LSM.cs
 			return needed;
 		}
 
-		private static Tuple<int,int> writeOverflow(IPages pageManager, int nextPageNumber, int boundaryPageNumber, PageBuilder pb, Stream fs, Stream ba)
-		{
-			int sofar = 0;
-			int needed = countOverflowPagesFor (pb.PageSize, (int) ba.Length);
-
-            // TODO fix this to do boundary stuff
+        private static int writePartialOverflow(PageBuilder pb, Stream fs, Stream ba, int numPagesToWrite, int sofar)
+        {
 			int count = 0;
-			while (sofar < ba.Length) {
+            for (int i=0; i<numPagesToWrite; i++) {
 				pb.Reset ();
 				pb.PutByte (OVERFLOW_NODE);
 				pb.PutByte (0);
-				pb.PutInt32 (needed - count);
+				pb.PutInt32 (numPagesToWrite - count);
+                // check for the likely partial page at the end
 				int num = Math.Min ((pb.PageSize - OVERFLOW_PAGE_HEADER_SIZE), (int) (ba.Length - sofar));
 				pb.PutStream (ba, num);
 				sofar += num;
 				pb.Flush (fs);
 				count++;
 			}
-            return new Tuple<int,int>(nextPageNumber + count, boundaryPageNumber);
+            return sofar;
+        }
+
+		private static Tuple<int,int> writeOverflow(IPages pageManager, int nextPageNumber, int boundaryPageNumber, PageBuilder pb, Stream fs, Stream ba)
+		{
+			int sofar = 0;
+			int needed = countOverflowPagesFor (pb.PageSize, (int) ba.Length);
+
+            // TODO fix this to do boundary stuff
+
+            sofar = writePartialOverflow(pb, fs, ba, needed, sofar);
+
+            return new Tuple<int,int>(nextPageNumber + needed, boundaryPageNumber);
 		}
 
 		private static int calcAvailable(int pageSize, int currentSize, bool couldBeRoot, bool isBoundary)
