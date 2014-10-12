@@ -52,6 +52,104 @@ namespace lsm_tests
 			return (int)(fs.Length / PAGE_SIZE);
 		}
 
+		private Stream openFile(string s)
+		{
+			return new FileStream (s, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+		}
+
+		[Fact]
+		public void one_file()
+		{
+			Action<combo> f = (combo c) => {
+				int s1;
+				int s2;
+				int s3;
+				int s4;
+				IPages pageManager = new SimplePageManager(null); // TODO doesn't use fs anyway
+				using (var fs = new FileStream ("one_file", FileMode.Create, FileAccess.ReadWrite, FileShare.None)) {
+					{
+						var t1 = c.create_memory_segment();
+						for (int i=0; i<500; i++) {
+							t1.Insert((i*2).ToString(), i.ToString());
+						}
+						s1 = c.create_btree_segment (fs, PAGE_SIZE, pageManager, t1.OpenCursor ());
+					}
+
+					{
+						var t1 = c.create_memory_segment();
+						for (int i=0; i<500; i++) {
+							t1.Insert((i*3).ToString(), i.ToString());
+						}
+						s2 = c.create_btree_segment (fs, PAGE_SIZE, pageManager, t1.OpenCursor ());
+					}
+
+					{
+						var t1 = c.create_memory_segment();
+						for (int i=0; i<500; i++) {
+							t1.Insert((i*5).ToString(), i.ToString());
+						}
+						s3 = c.create_btree_segment (fs, PAGE_SIZE, pageManager, t1.OpenCursor ());
+					}
+
+					{
+						var t1 = c.create_memory_segment();
+						for (int i=0; i<500; i++) {
+							t1.Insert((i*7).ToString(), i.ToString());
+						}
+						s4 = c.create_btree_segment (fs, PAGE_SIZE, pageManager, t1.OpenCursor ());
+					}
+				}
+
+				// TODO combo needs a way to get a multicursor with >2 subs
+
+				int s1_2;
+				int s3_4;
+				using (var fs = new FileStream ("one_file", FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite)) {
+
+					using (var fs1 = openFile("one_file")) {
+						var csr1 = c.open_btree_segment (fs1, PAGE_SIZE, s1);
+						using (var fs2 = openFile("one_file")) {
+							var csr2 = c.open_btree_segment (fs2, PAGE_SIZE, s2);
+							var mc = c.create_multicursor(csr1, csr2);
+							s1_2 = c.create_btree_segment (fs, PAGE_SIZE, pageManager, mc);
+						}
+					}
+
+					using (var fs3 = openFile("one_file")) {
+						var csr3 = c.open_btree_segment (fs3, PAGE_SIZE, s3);
+						using (var fs4 = openFile("one_file")) {
+							var csr4 = c.open_btree_segment (fs4, PAGE_SIZE, s4);
+							var mc = c.create_multicursor(csr3, csr4);
+							s3_4 = c.create_btree_segment (fs, PAGE_SIZE, pageManager, mc);
+						}
+					}
+				}
+
+				using (var fs = new FileStream ("one_file", FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite)) {
+					int s5;
+
+					using (var fs1_2 = openFile("one_file")) {
+						var csr1_2 = c.open_btree_segment (fs1_2, PAGE_SIZE, s1_2);
+						using (var fs3_4 = openFile("one_file")) {
+							var csr3_4 = c.open_btree_segment (fs3_4, PAGE_SIZE, s3_4);
+							var mc = c.create_multicursor(csr1_2, csr3_4);
+							s5 = c.create_btree_segment (fs, PAGE_SIZE, pageManager, mc);
+						}
+					}
+
+					{
+						var csr = c.open_btree_segment(fs, PAGE_SIZE, s5);
+
+						csr.First();
+						while (csr.IsValid()) {
+							csr.Next();
+						}
+					}
+				}
+			};
+			foreach (combo c in combo.get_combos()) f(c);
+		}
+
 		[Fact]
 		public void lexographic()
 		{
