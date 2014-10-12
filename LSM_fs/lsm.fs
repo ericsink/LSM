@@ -639,7 +639,7 @@ module BTreeSegment =
         else
             basicSize
 
-    let private writeParentNodes firstLeaf lastLeaf (children:System.Collections.Generic.List<int32 * byte[]>) startingPageNumber fs (pb:PageBuilder) =
+    let private writeParentNodes firstLeaf lastLeaf (children:System.Collections.Generic.List<int32 * byte[]>) startingPageNumber boundaryPageNumber fs (pb:PageBuilder) =
         let nextGeneration = new System.Collections.Generic.List<int32 * byte[]>()
         let overflows = new System.Collections.Generic.Dictionary<int,int32>()
         // TODO encapsulate mutables in a class?
@@ -662,10 +662,15 @@ module BTreeSegment =
                 let isRootNode = isLastChild && couldBeRoot
 
                 if flushThisPage then
+                    let thisPageNumber = nextPageNumber
+                    if not isRootNode then
+                        if thisPageNumber = boundaryPageNumber then
+                            () // TODO ask for more
+                        else
+                            nextPageNumber <- nextPageNumber + 1
                     buildParentPage isRootNode firstLeaf lastLeaf overflows pb children i first
                     pb.Flush(fs)
-                    nextGeneration.Add(nextPageNumber, snd children.[i-1])
-                    nextPageNumber <- nextPageNumber + 1
+                    nextGeneration.Add(thisPageNumber, snd children.[i-1])
                     sofar <- 0
                     first <- 0
                     overflows.Clear()
@@ -692,11 +697,12 @@ module BTreeSegment =
         nextGeneration
 
     // TODO we probably want this function to accept a page range, first and boundary
-    let Create(fs:Stream, pageSize:int, csr:ICursor) :int32 = 
+    let Create(fs:Stream, pageSize:int, range, csr:ICursor) :int32 = 
         let pb = new PageBuilder(pageSize)
         let pbOverflow = new PageBuilder(pageSize)
         // TODO encapsulate mutables in a class?
-        let mutable nextPageNumber:int32 = 1
+        let mutable nextPageNumber:int32 = fst range
+        let boundaryPageNumber:int32 = snd range
         let mutable prevPageNumber:int32 = 0
         let mutable countPairs = 0
         let mutable lastKey:byte[] = null
@@ -733,11 +739,21 @@ module BTreeSegment =
 
                 if flushThisPage then
                     // note similar flush code below at the end of the loop
+                    let thisPageNumber = nextPageNumber
+                    // assert -- it is not possible for this to be the last leaf.  so, at
+                    // this point in the code, we can be certain that there is going to be
+                    // another page.
+                    if thisPageNumber = boundaryPageNumber then
+                        () // TODO
+                        // we need to set the flag, and ask for another page range.  and
+                        // write the nextPageNumber into this page, which TODO we haven't
+                        // made room for yet.
+                    else
+                        nextPageNumber <- nextPageNumber + 1
                     pb.PutInt16At (OFFSET_COUNT_PAIRS, countPairs)
                     pb.Flush(fs)
-                    nodelist.Add(nextPageNumber, lastKey)
-                    prevPageNumber <- nextPageNumber
-                    nextPageNumber <- nextPageNumber + 1
+                    nodelist.Add(thisPageNumber, lastKey)
+                    prevPageNumber <- thisPageNumber
                     pb.Reset()
                     countPairs <- 0
                     lastKey <- null
@@ -793,10 +809,21 @@ module BTreeSegment =
             countPairs <- countPairs + 1
         if pb.Position > 0 then
             // note similar flush code above
+            let thisPageNumber = nextPageNumber
+            if not (csr.IsValid()) && (0 = nodelist.Count) then
+                () // TODO
+                // this is the root page, even though it is a leaf
+            else
+                if thisPageNumber = boundaryPageNumber then
+                    () // TODO
+                    // we need to set the flag, and ask for another page range.  and
+                    // write the nextPageNumber into this page, which TODO we haven't
+                    // made room for yet.
+                else
+                    nextPageNumber <- nextPageNumber + 1
             pb.PutInt16At (OFFSET_COUNT_PAIRS, countPairs)
             pb.Flush(fs)
-            nodelist.Add(nextPageNumber, lastKey)
-            nextPageNumber <- nextPageNumber + 1
+            nodelist.Add(thisPageNumber, lastKey)
         if nodelist.Count > 0 then
             let firstLeaf = fst nodelist.[0]
             let lastLeaf = fst nodelist.[nodelist.Count-1]
@@ -805,7 +832,7 @@ module BTreeSegment =
             // keep writing until we have written a level which has only one node,
             // which is the root node.
             while nodelist.Count > 1 do
-                nodelist <- writeParentNodes firstLeaf lastLeaf nodelist nextPageNumber fs pb
+                nodelist <- writeParentNodes firstLeaf lastLeaf nodelist nextPageNumber boundaryPageNumber fs pb
                 nextPageNumber <- nextPageNumber + nodelist.Count
             // assert nodelist.Count = 1
             fst nodelist.[0]

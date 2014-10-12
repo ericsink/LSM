@@ -964,9 +964,8 @@ namespace Zumero.LSM.cs
 			return n;
 		}
 
-		private static List<node> writeParentNodes(int firstLeaf, int lastLeaf, List<node> children, int startingPageNumber, Stream fs, PageBuilder pb)
+		private static List<node> writeParentNodes(int firstLeaf, int lastLeaf, List<node> children, int startingPageNumber, int boundaryPageNumber, Stream fs, PageBuilder pb)
 		{
-            // TODO page number and block issue here
 			int nextPageNumber = startingPageNumber;
 			var nextGeneration = new List<node> ();
 
@@ -1017,11 +1016,23 @@ namespace Zumero.LSM.cs
 					}
 
 					if (flushThisPage) {
+						int thisPageNumber = nextPageNumber;
+
+						if (isRootNode) {
+							// nothing to do here
+						} else {
+							if (thisPageNumber == boundaryPageNumber) {
+								// TODO ask for more
+							} else {
+								nextPageNumber++;
+							}
+						}
+
 						buildParentPage (isRootNode, firstLeaf, lastLeaf, overflows, pb, children, i, first);
 
 						pb.Flush (fs);
 
-						nextGeneration.Add (new node {PageNumber = nextPageNumber++, Key=children[i-1].Key});
+						nextGeneration.Add (new node {PageNumber = thisPageNumber, Key=children[i-1].Key});
 
 						sofar = 0;
 						first = 0;
@@ -1067,14 +1078,14 @@ namespace Zumero.LSM.cs
 		}
 
 		// TODO we probably want this function to accept a page range, first and boundary
-		public static int Create(Stream fs, int pageSize, ICursor csr)
+		public static int Create(Stream fs, int pageSize, Tuple<int,int> range, ICursor csr)
 		{
 			// TODO if !(fs.CanSeek()) throw?
 			PageBuilder pb = new PageBuilder(pageSize);
 			PageBuilder pbOverflow = new PageBuilder(pageSize);
 
-            // TODO initial page number should be passed in
-			int nextPageNumber = 1;
+			int nextPageNumber = range.Item1;
+            int boundaryPageNumber = range.Item2;
 
 			var nodelist = new List<node> ();
 
@@ -1124,20 +1135,30 @@ namespace Zumero.LSM.cs
 					}
 
 					if (flushThisPage) {
-						// TODO this code is duplicated with slight differences below, after the loop
+						// note that this code is duplicated with slight differences below, after the loop
+
+						int thisPageNumber = nextPageNumber;
+
+						// assert -- it is not possible for this to be the last leaf.  so, at
+						// this point in the code, we can be certain that there is going to be
+						// another page.
+
+						if (thisPageNumber == boundaryPageNumber) {
+							// we need to set the flag, and ask for another page range.  and
+							// write the nextPageNumber into this page, which TODO we haven't
+							// made room for yet.
+						} else {
+							nextPageNumber++;
+						}
 
 						// now that we know how many pairs are in this page, we can write that out
 						pb.PutInt16At (OFFSET_COUNT_PAIRS, countPairs);
 
 						pb.Flush (fs);
 
-						nodelist.Add (new node { PageNumber = nextPageNumber, Key = lastKey });
+						nodelist.Add (new node { PageNumber = thisPageNumber, Key = lastKey });
 
-                        // TODO don't assume we can just write this page after the previous one.
-                        // probably, but we need to account for the end of the block.  and if this
-                        // was the last page page in the block, we needed to make room for a pointer
-                        // to the next one.
-						prevPageNumber = nextPageNumber++;
+						prevPageNumber = thisPageNumber;
 						pb.Reset ();
 						countPairs = 0;
 						lastKey = null;
@@ -1216,15 +1237,29 @@ namespace Zumero.LSM.cs
 			}
 
 			if (pb.Position > 0) {
-				// TODO this code is duplicated with slight differences from above
+				// note that this code is duplicated with slight differences from above
+
+				int thisPageNumber = nextPageNumber;
+
+				if (!csr.IsValid () && (0 == nodelist.Count)) {
+					// this is the last page.  the only page.  the root page.
+					// even though it's a leaf.
+				} else {
+					if (thisPageNumber == boundaryPageNumber) {
+						// we need to set the flag, and ask for another page range.  and
+						// write the nextPageNumber into this page, which TODO we haven't
+						// made room for yet.
+					} else {
+						nextPageNumber++;
+					}
+				}
 
 				// now that we know how many pairs are in this page, we can write that out
 				pb.PutInt16At (OFFSET_COUNT_PAIRS, countPairs);
 
 				pb.Flush (fs);
 
-                // TODO page number and block issue again
-				nodelist.Add (new node { PageNumber = nextPageNumber++, Key = lastKey });
+				nodelist.Add (new node { PageNumber = thisPageNumber, Key = lastKey });
 			}
 
 			if (nodelist.Count > 0) {
@@ -1235,8 +1270,7 @@ namespace Zumero.LSM.cs
 				// down to a level with just one parent page in it, the root page.
 
 				while (nodelist.Count > 1) {
-                    // TODO page number and block issue here
-					nodelist = writeParentNodes (firstLeaf, lastLeaf, nodelist, nextPageNumber, fs, pb);
+					nodelist = writeParentNodes (firstLeaf, lastLeaf, nodelist, nextPageNumber, boundaryPageNumber, fs, pb);
 					nextPageNumber += nodelist.Count;
 				}
 

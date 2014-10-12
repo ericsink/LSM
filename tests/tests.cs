@@ -26,7 +26,7 @@ namespace lsm_tests
 {
 	public class Class1
 	{
-		private const int PAGE_SIZE = 4096; // TODO
+		private const int PAGE_SIZE = 256;
 
 		private int lastPage(Stream fs)
 		{
@@ -82,7 +82,7 @@ namespace lsm_tests
 					do_checks(csr);
 
 					using (var fs = new FileStream ("lexographic", FileMode.Create)) {
-						c.create_btree_segment (fs, PAGE_SIZE, csr);
+						c.create_btree_segment (fs, PAGE_SIZE, new Tuple<int,int>(1,0), csr);
 
 						do_checks(c.open_btree_segment(fs, PAGE_SIZE, lastPage(fs)));
 					}
@@ -102,7 +102,7 @@ namespace lsm_tests
 					}
 
 					using (var fs = new FileStream ("weird1", FileMode.Create)) {
-						c.create_btree_segment (fs, PAGE_SIZE, t1.OpenCursor ());
+						c.create_btree_segment (fs, PAGE_SIZE, new Tuple<int,int>(1,0), t1.OpenCursor ());
 					}
 				}
 				{
@@ -112,7 +112,7 @@ namespace lsm_tests
 					}
 
 					using (var fs = new FileStream ("weird2", FileMode.Create)) {
-						c.create_btree_segment (fs, PAGE_SIZE, t1.OpenCursor ());
+						c.create_btree_segment (fs, PAGE_SIZE, new Tuple<int,int>(1,0), t1.OpenCursor ());
 					}
 				}
 
@@ -195,7 +195,7 @@ namespace lsm_tests
 				}
 
 				using (var fs = new FileStream ("blobs", FileMode.Create)) {
-					c.create_btree_segment (fs, PAGE_SIZE, t1.OpenCursor ());
+					c.create_btree_segment (fs, PAGE_SIZE, new Tuple<int,int>(1,0), t1.OpenCursor ());
 				}
 			};
 			foreach (combo c in combo.get_combos()) f(c);
@@ -220,7 +220,7 @@ namespace lsm_tests
 				}
 
 				using (var fs = new FileStream ("simple", FileMode.Create)) {
-					c.create_btree_segment (fs, PAGE_SIZE, t1.OpenCursor ());
+					c.create_btree_segment (fs, PAGE_SIZE, new Tuple<int,int>(1,0), t1.OpenCursor ());
 				}
 
 				using (var fs = new FileStream ("simple", FileMode.Open, FileAccess.Read)) {
@@ -245,7 +245,7 @@ namespace lsm_tests
 				}
 
 				using (var fs = new FileStream ("hundredk", FileMode.Create)) {
-					c.create_btree_segment (fs, PAGE_SIZE, t1.OpenCursor ());
+					c.create_btree_segment (fs, PAGE_SIZE, new Tuple<int,int>(1,0), t1.OpenCursor ());
 				}
 			};
 			foreach (combo c in combo.get_combos()) f(c);
@@ -261,7 +261,7 @@ namespace lsm_tests
 					t1.Insert ("g", "7");
 
 					using (var fs = new FileStream ("no_le_ge_multicursor_1", FileMode.Create)) {
-						c.create_btree_segment(fs, PAGE_SIZE, t1.OpenCursor ());
+						c.create_btree_segment(fs, PAGE_SIZE, new Tuple<int,int>(1,0), t1.OpenCursor ());
 					}
 				}
 
@@ -270,7 +270,7 @@ namespace lsm_tests
 					t1.Insert ("e", "5");
 
 					using (var fs = new FileStream ("no_le_ge_multicursor_2", FileMode.Create)) {
-						c.create_btree_segment(fs, PAGE_SIZE, t1.OpenCursor ());
+						c.create_btree_segment(fs, PAGE_SIZE, new Tuple<int,int>(1,0), t1.OpenCursor ());
 					}
 				}
 
@@ -325,7 +325,7 @@ namespace lsm_tests
 				}
 
 				using (var fs = new FileStream ("no_le_ge", FileMode.Create)) {
-					c.create_btree_segment(fs, PAGE_SIZE, t1.OpenCursor ());
+					c.create_btree_segment(fs, PAGE_SIZE, new Tuple<int,int>(1,0), t1.OpenCursor ());
 				}
 
 				using (var fs = new FileStream ("no_le_ge", FileMode.Open, FileAccess.Read)) {
@@ -364,7 +364,7 @@ namespace lsm_tests
 					t1.Insert ("k4", s);
 
 					using (var fs = new FileStream ("long_vals", FileMode.Create, FileAccess.ReadWrite)) {
-						c.create_btree_segment(fs, PAGE_SIZE, t1.OpenCursor ());
+						c.create_btree_segment(fs, PAGE_SIZE, new Tuple<int,int>(1,0), t1.OpenCursor ());
 					}
 				}
 
@@ -395,7 +395,7 @@ namespace lsm_tests
 					t1.Insert (s + s + s + s, "k1");
 
 					using (var fs = new FileStream ("long_keys", FileMode.Create, FileAccess.ReadWrite)) {
-						c.create_btree_segment(fs, PAGE_SIZE, t1.OpenCursor ());
+						c.create_btree_segment(fs, PAGE_SIZE, new Tuple<int,int>(1,0), t1.OpenCursor ());
 					}
 				}
 			};
@@ -426,7 +426,7 @@ namespace lsm_tests
 				Assert.Equal (13, count_keys_backward (t1.OpenCursor ()));
 
 				using (var fs = new MemoryStream()) {
-					c.create_btree_segment(fs, PAGE_SIZE, t1.OpenCursor());
+					c.create_btree_segment(fs, PAGE_SIZE, new Tuple<int,int>(1,0), t1.OpenCursor());
 
 					{
 						var csr = c.open_btree_segment(fs, PAGE_SIZE, lastPage(fs));
@@ -460,7 +460,7 @@ namespace lsm_tests
 				}
 
 				using (var fs = new FileStream("test_seek_ge_le_bigger", FileMode.Create)) {
-					c.create_btree_segment(fs, PAGE_SIZE, t1.OpenCursor());
+					c.create_btree_segment(fs, PAGE_SIZE, new Tuple<int,int>(1,0), t1.OpenCursor());
 
 					{
 						var csr = c.open_btree_segment(fs, PAGE_SIZE, lastPage(fs));
@@ -495,7 +495,7 @@ namespace lsm_tests
 					}
 
 					using (var fs = new FileStream ("test_seek_ge_le_bigger_multicursor_4", FileMode.Create)) {
-						c.create_btree_segment(fs, PAGE_SIZE, t1.OpenCursor ());
+						c.create_btree_segment(fs, PAGE_SIZE, new Tuple<int,int>(1,0), t1.OpenCursor ());
 					}
 				}
 				{
@@ -505,7 +505,7 @@ namespace lsm_tests
 					}
 
 					using (var fs = new FileStream ("test_seek_ge_le_bigger_multicursor_7", FileMode.Create)) {
-						c.create_btree_segment(fs, PAGE_SIZE, t1.OpenCursor ());
+						c.create_btree_segment(fs, PAGE_SIZE, new Tuple<int,int>(1,0), t1.OpenCursor ());
 					}
 				}
 
@@ -602,7 +602,7 @@ namespace lsm_tests
 				Assert.Equal (3, count_keys_backward (t1.OpenCursor ()));
 
 				using (var fs = new MemoryStream()) {
-					c.create_btree_segment(fs, PAGE_SIZE, t1.OpenCursor());
+					c.create_btree_segment(fs, PAGE_SIZE, new Tuple<int,int>(1,0), t1.OpenCursor());
 
 					{
 						var csr = c.open_btree_segment(fs, PAGE_SIZE, lastPage(fs));
@@ -629,7 +629,7 @@ namespace lsm_tests
 				Assert.Equal (0, csr.ValueLength ());
 
 				using (var fs = new FileStream ("empty_val", FileMode.Create, FileAccess.ReadWrite)) {
-					c.create_btree_segment(fs, PAGE_SIZE, csr);
+					c.create_btree_segment(fs, PAGE_SIZE, new Tuple<int,int>(1,0), csr);
 				}
 
 				using (var fs = new FileStream ("empty_val", FileMode.Open, FileAccess.Read)) {
@@ -661,7 +661,7 @@ namespace lsm_tests
 					}
 
 					using (var fs = new FileStream ("overwrite_val_mem", FileMode.Create, FileAccess.ReadWrite)) {
-						c.create_btree_segment(fs, PAGE_SIZE, t1.OpenCursor ());
+						c.create_btree_segment(fs, PAGE_SIZE, new Tuple<int,int>(1,0), t1.OpenCursor ());
 					}
 				}
 
@@ -713,7 +713,7 @@ namespace lsm_tests
 					Assert.Equal (4, count_keys_backward (t1.OpenCursor ()));
 
 					using (var fs = new FileStream ("tombstone_1", FileMode.Create, FileAccess.ReadWrite)) {
-						c.create_btree_segment(fs, PAGE_SIZE, t1.OpenCursor ());
+						c.create_btree_segment(fs, PAGE_SIZE, new Tuple<int,int>(1,0), t1.OpenCursor ());
 					}
 				}
 
@@ -727,7 +727,7 @@ namespace lsm_tests
 					Assert.Equal (0, count_keys_backward (c.create_living_cursor(t1.OpenCursor ())));
 
 					using (var fs = new FileStream ("tombstone_2", FileMode.Create, FileAccess.ReadWrite)) {
-						c.create_btree_segment(fs, PAGE_SIZE, t1.OpenCursor ());
+						c.create_btree_segment(fs, PAGE_SIZE, new Tuple<int,int>(1,0), t1.OpenCursor ());
 					}
 				}
 

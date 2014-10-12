@@ -68,7 +68,7 @@ public class foo
 		}
 
 		using (var fs = new FileStream("test_seek_ge_le_bigger", FileMode.Create)) {
-			Zumero.LSM.cs.BTreeSegment.Create(fs, PAGE_SIZE, t1.OpenCursor());
+			Zumero.LSM.cs.BTreeSegment.Create(fs, PAGE_SIZE, new Tuple<int,int>(1,0), t1.OpenCursor());
 
 			{
 				var csr = Zumero.LSM.cs.BTreeSegment.OpenCursor(fs, PAGE_SIZE, lastPage(fs));
