@@ -1068,8 +1068,10 @@ namespace Zumero.LSM.cs
 
 						if (!isRootNode) {
 							if (isBoundary) {
-								// TODO ask for next range
-                                pb.SetBoundaryNextPageField(0); // TODO
+                                var newRange = pageManager.GetRange();
+                                nextPageNumber = newRange.Item1;
+                                boundaryPageNumber = newRange.Item2;
+                                pb.SetBoundaryNextPageField(nextPageNumber);
 							} else {
 								nextPageNumber++;
 							}
@@ -1190,8 +1192,10 @@ namespace Zumero.LSM.cs
 
 						if (thisPageNumber == boundaryPageNumber) {
                             pb.SetPageFlag(FLAG_BOUNDARY_NODE);
-                            // TODO ask for another range
-                            pb.SetBoundaryNextPageField(0); // TODO
+                            var newRange = pageManager.GetRange();
+                            nextPageNumber = newRange.Item1;
+                            boundaryPageNumber = newRange.Item2;
+                            pb.SetBoundaryNextPageField(nextPageNumber);
 						} else {
 							nextPageNumber++;
 						}
@@ -1289,8 +1293,10 @@ namespace Zumero.LSM.cs
 				} else {
 					if (thisPageNumber == boundaryPageNumber) {
                         pb.SetPageFlag(FLAG_BOUNDARY_NODE);
-                        // TODO ask for another range
-                        pb.SetBoundaryNextPageField(0); // TODO
+                        var newRange = pageManager.GetRange();
+                        nextPageNumber = newRange.Item1;
+                        boundaryPageNumber = newRange.Item2;
+                        pb.SetBoundaryNextPageField(nextPageNumber);
 					} else {
 						nextPageNumber++;
 					}
@@ -1372,6 +1378,7 @@ namespace Zumero.LSM.cs
 			{
 				if (sofarThisPage >= (buf.Length - OVERFLOW_PAGE_HEADER_SIZE)) {
 					if (sofarOverall < len) {
+                        // TODO check for boundary
 						currentPage++;
 						ReadPage ();
 					} else {
@@ -1669,7 +1676,6 @@ namespace Zumero.LSM.cs
 			// we need to skip any overflow pages.  when moving backward,
 			// this is not necessary, because each leaf has a pointer to
 			// the leaf before it.
-            // TODO this will go away
 			private bool searchForwardForLeaf()
 			{
 				while (true) {
@@ -1683,14 +1689,25 @@ namespace Zumero.LSM.cs
 					}
 					else {
 						// assert OVERFLOW == _buf[0]
-						pr.SetPosition (2); // offset of the pages_remaining
-						int skip = pr.GetInt32 ();
-                        // TODO this code assumes the pages for this overflow
-                        // are contiguous, and it assumes that the next page
-                        // in this segment is immediately after this overflow.
-						if (!setCurrentPage (currentPage + skip)) {
-							return false;
-						}
+                        int nextPage;
+                        if (pr.CheckPageFlag(FLAG_BOUNDARY_NODE)) {
+                            // this happens when an overflow didn't fit.  the
+                            // skip field gets set to point to its boundary page
+                            // instead of to the end of the overflow.
+                            nextPage = pr.GetBoundaryNextPageField();
+                        } else {
+                            pr.SetPosition (2); // offset of the pages_remaining
+                            int skip = pr.GetInt32 ();
+                            // the skip field in an overflow page should take us to
+                            // whatever follows this overflow (which could be a leaf
+                            // or a parent or another overflow) OR to the boundary
+                            // page for this overflow (in the case where the overflow
+                            // didn't fit)
+                            nextPage = currentPage + skip;
+                        }
+                        if (!setCurrentPage(nextPage)) {
+                            return false;
+                        }
 					}
 				}
 			}

@@ -701,8 +701,10 @@ module BTreeSegment =
                     buildParentPage flags firstLeaf lastLeaf overflows pb children i first
                     if not isRootNode then
                         if isBoundary then
-                            // TODO ask for another range
-                            pb.SetBoundaryNextPageField(0) // TODO
+                            let newRange = pageManager.GetRange()
+                            nextPageNumber <- fst newRange
+                            boundaryPageNumber <- snd newRange
+                            pb.SetBoundaryNextPageField(nextPageNumber)
                         else
                             nextPageNumber <- nextPageNumber + 1
                     pb.Flush(fs)
@@ -782,8 +784,10 @@ module BTreeSegment =
                     // another page.
                     if thisPageNumber = boundaryPageNumber then
                         pb.SetPageFlag FLAG_BOUNDARY_NODE
-                        // TODO ask for another range
-                        pb.SetBoundaryNextPageField(0) // TODO
+                        let newRange = pageManager.GetRange()
+                        nextPageNumber <- fst newRange
+                        boundaryPageNumber <- snd newRange
+                        pb.SetBoundaryNextPageField(nextPageNumber)
                     else
                         nextPageNumber <- nextPageNumber + 1
                     pb.PutInt16At (OFFSET_COUNT_PAIRS, countPairs)
@@ -856,8 +860,10 @@ module BTreeSegment =
             else
                 if thisPageNumber = boundaryPageNumber then
                     pb.SetPageFlag FLAG_BOUNDARY_NODE
-                    // TODO ask for another range
-                    pb.SetBoundaryNextPageField(0) // TODO
+                    let newRange = pageManager.GetRange()
+                    nextPageNumber <- fst newRange
+                    boundaryPageNumber <- snd newRange
+                    pb.SetBoundaryNextPageField(nextPageNumber)
                 else
                     nextPageNumber <- nextPageNumber + 1
             pb.PutInt16At (OFFSET_COUNT_PAIRS, countPairs)
@@ -907,6 +913,7 @@ module BTreeSegment =
                 0
             else    
                 if (sofarThisPage >= (buf.Length - OVERFLOW_PAGE_HEADER_SIZE)) then
+                    // TODO check for boundary
                     curpage <- curpage + 1
                     ReadPage()
                 let available = Math.Min ((buf.Length - OVERFLOW_PAGE_HEADER_SIZE), len - sofarOverall)
@@ -1081,18 +1088,34 @@ module BTreeSegment =
         // we need to skip any overflow pages.  when moving backward,
         // this is not necessary, because each leaf has a pointer to
         // the leaf before it.
-        // TODO this will go away
         let rec searchForwardForLeaf() = 
             let pt = pr.PageType
             if pt = LEAF_NODE then true
-            else if pt = PARENT_NODE then false
+            else if pt = PARENT_NODE then 
+                // if we bump into a parent node, that means there are
+                // no more leaves.
+                false
             else
-                pr.SetPosition(2) // offset of the pages_remaining
-                let skip = pr.GetInt32()
-                if setCurrentPage (currentPage + skip) then
-                    searchForwardForLeaf()
+                if pr.CheckPageFlag(FLAG_BOUNDARY_NODE) then
+                    // this happens when an overflow didn't fit.  the
+                    // skip field gets set to point to its boundary page
+                    // instead of to the end of the overflow.
+                    if setCurrentPage (pr.GetBoundaryNextPageField()) then
+                        searchForwardForLeaf()
+                    else
+                        false
                 else
-                    false
+                    pr.SetPosition(2) // offset of the pages_remaining
+                    let skip = pr.GetInt32()
+                    // the skip field in an overflow page should take us to
+                    // whatever follows this overflow (which could be a leaf
+                    // or a parent or another overflow) OR to the boundary
+                    // page for this overflow (in the case where the overflow
+                    // didn't fit)
+                    if setCurrentPage (currentPage + skip) then
+                        searchForwardForLeaf()
+                    else
+                        false
 
         let leafIsValid() =
             let ok = (leafKeys <> null) && (countLeafKeys > 0) && (currentKey >= 0) && (currentKey < countLeafKeys)
