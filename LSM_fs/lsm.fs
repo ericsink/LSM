@@ -616,7 +616,7 @@ module BTreeSegment =
             pb.PutVarint(int64 vlen)
             pb.PutStream(ba, int vlen)
 
-    let private writeOverflowFromStream (pageManager:IPages) nextPageNumber boundaryPageNumber (pb:PageBuilder) (fs:Stream) (ba:Stream) =
+    let private writeOverflow (pageManager:IPages) nextPageNumber boundaryPageNumber (pb:PageBuilder) (fs:Stream) (ba:Stream) =
         let needed = countOverflowPagesFor (pb.PageSize) (int ba.Length)
         let len = int ba.Length
 
@@ -638,10 +638,7 @@ module BTreeSegment =
                 count + 1
 
         let count = fn 0 0
-        nextPageNumber + count
-
-    let private writeOverflowFromArray (pageManager:IPages) nextPageNumber boundaryPageNumber (pb:PageBuilder) (fs:Stream) (ba:byte[]) =
-        writeOverflowFromStream pageManager nextPageNumber boundaryPageNumber pb fs (new MemoryStream(ba))
+        (nextPageNumber + count, boundaryPageNumber)
 
     let private buildParentPage flags firstLeaf lastLeaf (overflows:System.Collections.Generic.Dictionary<int,int32>) (pb:PageBuilder) (children:System.Collections.Generic.List<int32 * byte[]>) stop start =
         // assert stop > start
@@ -674,12 +671,13 @@ module BTreeSegment =
         let allowanceForRootNode = if couldBeRoot then 2*4 else 0 // first/last Leaf
         basicSize - (allowanceForRootNode + allowanceForBoundaryNode)
 
-    let private writeParentNodes firstLeaf lastLeaf (children:System.Collections.Generic.List<int32 * byte[]>) (pageManager:IPages) startingPageNumber boundaryPageNumber fs (pb:PageBuilder) (pbOverflow:PageBuilder) =
+    let private writeParentNodes firstLeaf lastLeaf (children:System.Collections.Generic.List<int32 * byte[]>) (pageManager:IPages) startingPageNumber startingBoundaryPageNumber fs (pb:PageBuilder) (pbOverflow:PageBuilder) =
         let nextGeneration = new System.Collections.Generic.List<int32 * byte[]>()
         let overflows = new System.Collections.Generic.Dictionary<int,int32>()
         // TODO encapsulate mutables in a class?
         let mutable sofar = 0
         let mutable nextPageNumber = startingPageNumber
+        let mutable boundaryPageNumber = startingBoundaryPageNumber
         let mutable first = 0
         // assert children.Count > 1
         for i in 0 .. children.Count-1 do
@@ -725,12 +723,14 @@ module BTreeSegment =
                     sofar <- sofar + k.Length
                 else
                     let keyOverflowFirstPage = nextPageNumber
-                    nextPageNumber <- writeOverflowFromArray pageManager nextPageNumber boundaryPageNumber pbOverflow fs k
+                    let kRange = writeOverflow pageManager nextPageNumber boundaryPageNumber pbOverflow fs (new MemoryStream(k))
+                    nextPageNumber <- fst kRange
+                    boundaryPageNumber <- snd kRange
                     sofar <- sofar + 4
                     overflows.[i] <- keyOverflowFirstPage
                 // inline or not, we need space for the following things
                 sofar <- sofar + 1 + Varint.SpaceNeededFor(int64 k.Length) + Varint.SpaceNeededFor(int64 pagenum)
-        nextGeneration
+        (nextPageNumber,boundaryPageNumber,nextGeneration)
 
     let Create(fs:Stream, pageSize:int, pageManager:IPages, csr:ICursor) :int32 = 
         let pb = new PageBuilder(pageSize)
@@ -738,7 +738,7 @@ module BTreeSegment =
         // TODO encapsulate mutables in a class?
         let range = pageManager.GetRange()
         let mutable nextPageNumber:int32 = fst range
-        let boundaryPageNumber:int32 = snd range
+        let mutable boundaryPageNumber:int32 = snd range
         let mutable prevPageNumber:int32 = 0
         let mutable countPairs = 0
         let mutable lastKey:byte[] = null
@@ -829,14 +829,18 @@ module BTreeSegment =
                     putArrayWithLength pb k
                 else
                     let keyOverflowFirstPage = nextPageNumber
-                    nextPageNumber <- writeOverflowFromArray pageManager nextPageNumber boundaryPageNumber pbOverflow fs k
+                    let kRange = writeOverflow pageManager nextPageNumber boundaryPageNumber pbOverflow fs (new MemoryStream(k))
+                    nextPageNumber <- fst kRange
+                    boundaryPageNumber <- snd kRange
 
                     pb.PutByte(FLAG_OVERFLOW)
                     pb.PutVarint(int64 k.Length)
                     pb.PutInt32(keyOverflowFirstPage)
 
                 let valueOverflowFirstPage = nextPageNumber
-                nextPageNumber <- writeOverflowFromStream pageManager nextPageNumber boundaryPageNumber pbOverflow fs v
+                let vRange = writeOverflow pageManager nextPageNumber boundaryPageNumber pbOverflow fs v
+                nextPageNumber <- fst vRange
+                boundaryPageNumber <- snd vRange
 
                 pb.PutByte(FLAG_OVERFLOW)
                 pb.PutVarint(int64 vlen)
@@ -867,8 +871,10 @@ module BTreeSegment =
             // keep writing until we have written a level which has only one node,
             // which is the root node.
             while nodelist.Count > 1 do
-                nodelist <- writeParentNodes firstLeaf lastLeaf nodelist pageManager nextPageNumber boundaryPageNumber fs pb pbOverflow
-                nextPageNumber <- nextPageNumber + nodelist.Count // TODO this is wrong
+                let (newNextPageNumber,newBoundaryPageNumber,newNodelist) = writeParentNodes firstLeaf lastLeaf nodelist pageManager nextPageNumber boundaryPageNumber fs pb pbOverflow
+                nextPageNumber <- newNextPageNumber
+                boundaryPageNumber <- newBoundaryPageNumber
+                nodelist <- newNodelist
             // assert nodelist.Count = 1
             fst nodelist.[0]
         else

@@ -973,12 +973,7 @@ namespace Zumero.LSM.cs
 			return needed;
 		}
 
-		private static int writeOverflowFromArray(IPages pageManager, int nextPageNumber, int boundaryPageNumber, PageBuilder pb, Stream fs, byte[] ba)
-		{
-			return writeOverflowFromStream (pageManager, nextPageNumber, boundaryPageNumber, pb, fs, new MemoryStream (ba));
-		}
-
-		private static int writeOverflowFromStream(IPages pageManager, int nextPageNumber, int boundaryPageNumber, PageBuilder pb, Stream fs, Stream ba)
+		private static Tuple<int,int> writeOverflow(IPages pageManager, int nextPageNumber, int boundaryPageNumber, PageBuilder pb, Stream fs, Stream ba)
 		{
 			int sofar = 0;
 			int needed = countOverflowPagesFor (pb.PageSize, (int) ba.Length);
@@ -996,7 +991,7 @@ namespace Zumero.LSM.cs
 				pb.Flush (fs);
 				count++;
 			}
-            return nextPageNumber + count;
+            return new Tuple<int,int>(nextPageNumber + count, boundaryPageNumber);
 		}
 
 		private static int calcAvailable(int pageSize, int currentSize, bool couldBeRoot, bool isBoundary)
@@ -1015,9 +1010,10 @@ namespace Zumero.LSM.cs
 			return n;
 		}
 
-		private static List<node> writeParentNodes(int firstLeaf, int lastLeaf, List<node> children, IPages pageManager, int startingPageNumber, int boundaryPageNumber, Stream fs, PageBuilder pb, PageBuilder pbOverflow)
+		private static Tuple<int,int,List<node>> writeParentNodes(int firstLeaf, int lastLeaf, List<node> children, IPages pageManager, int startingPageNumber, int startingBoundaryPageNumber, Stream fs, PageBuilder pb, PageBuilder pbOverflow)
 		{
 			int nextPageNumber = startingPageNumber;
+            int boundaryPageNumber = startingBoundaryPageNumber;
 			var nextGeneration = new List<node> ();
 
 			int sofar = 0;
@@ -1104,7 +1100,9 @@ namespace Zumero.LSM.cs
 						sofar += k.Length;
 					} else {
 						int keyOverflowFirstPage = nextPageNumber;
-						nextPageNumber = writeOverflowFromArray (pageManager, nextPageNumber, boundaryPageNumber, pbOverflow, fs, k);
+						var kRange = writeOverflow (pageManager, nextPageNumber, boundaryPageNumber, pbOverflow, fs, new MemoryStream(k));
+                        nextPageNumber = kRange.Item1;
+                        boundaryPageNumber = kRange.Item2;
 						sofar += sizeof(int);
 						overflows [i] = keyOverflowFirstPage;
 					}
@@ -1119,7 +1117,7 @@ namespace Zumero.LSM.cs
 
 			// assert cur is null
 
-			return nextGeneration;
+			return new Tuple<int,int,List<node>>(nextPageNumber, boundaryPageNumber, nextGeneration);
 		}
 
 		public static int Create(Stream fs, int pageSize, IPages pageManager, ICursor csr)
@@ -1257,15 +1255,19 @@ namespace Zumero.LSM.cs
 						// assert available >= needed_for_overflow_both
 
 						int keyOverflowFirstPage = nextPageNumber;
-						nextPageNumber = writeOverflowFromArray (pageManager, nextPageNumber, boundaryPageNumber, pbOverflow, fs, k);
+						var kRange = writeOverflow (pageManager, nextPageNumber, boundaryPageNumber, pbOverflow, fs, new MemoryStream(k));
+                        nextPageNumber = kRange.Item1;
+                        boundaryPageNumber = kRange.Item2;
 
 						pb.PutByte (FLAG_OVERFLOW);
 						pb.PutVarint (k.Length);
 						pb.PutInt32 (keyOverflowFirstPage);
 					}
 
-					int valueOverflowFirstPage = nextPageNumber;
-					nextPageNumber = writeOverflowFromStream (pageManager, nextPageNumber, boundaryPageNumber, pbOverflow, fs, v);
+                    int valueOverflowFirstPage = nextPageNumber;
+                    var vRange = writeOverflow (pageManager, nextPageNumber, boundaryPageNumber, pbOverflow, fs, v);
+                    nextPageNumber = vRange.Item1;
+                    boundaryPageNumber = vRange.Item2;
 
 					pb.PutByte (FLAG_OVERFLOW);
 					pb.PutVarint (v.Length);
@@ -1310,8 +1312,10 @@ namespace Zumero.LSM.cs
 				// down to a level with just one parent page in it, the root page.
 
 				while (nodelist.Count > 1) {
-					nodelist = writeParentNodes (firstLeaf, lastLeaf, nodelist, pageManager, nextPageNumber, boundaryPageNumber, fs, pb, pbOverflow);
-					nextPageNumber += nodelist.Count; // TODO this is wrong
+					var results = writeParentNodes (firstLeaf, lastLeaf, nodelist, pageManager, nextPageNumber, boundaryPageNumber, fs, pb, pbOverflow);
+                    nextPageNumber = results.Item1;
+                    boundaryPageNumber = results.Item2;
+                    nodelist = results.Item3;
 				}
 
 				// assert nodelist.Count == 1
