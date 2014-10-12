@@ -104,6 +104,7 @@ type private PageBuilder(pgsz:int) =
     member this.PageSize = buf.Length
     member this.Position = cur
     member this.Available = buf.Length - cur
+    member this.SetPageFlag(x:byte) = buf.[1] <- buf.[1] ||| x
 
     member this.PutByte(x:byte) =
         buf.[cur] <- byte x
@@ -609,14 +610,14 @@ module BTreeSegment =
     let private writeOverflowFromArray (pb:PageBuilder) (fs:Stream) (ba:byte[]) =
         writeOverflowFromStream pb fs (new MemoryStream(ba))
 
-    let private buildParentPage root firstLeaf lastLeaf (overflows:System.Collections.Generic.Dictionary<int,int32>) (pb:PageBuilder) (children:System.Collections.Generic.List<int32 * byte[]>) stop start =
+    let private buildParentPage flags firstLeaf lastLeaf (overflows:System.Collections.Generic.Dictionary<int,int32>) (pb:PageBuilder) (children:System.Collections.Generic.List<int32 * byte[]>) stop start =
         // assert stop > start
         let countKeys = stop - start
         pb.Reset ()
         pb.PutByte (PARENT_NODE)
-        pb.PutByte (if root then FLAG_ROOT_NODE else 0uy)
+        pb.PutByte (flags)
         pb.PutInt16 (countKeys)
-        if root then
+        if 0uy <> (flags &&& FLAG_ROOT_NODE) then
             pb.PutInt32(firstLeaf)
             pb.PutInt32(lastLeaf)
         // store all the ptrs, n+1 of them
@@ -665,15 +666,15 @@ module BTreeSegment =
 
                 if flushThisPage then
                     let thisPageNumber = nextPageNumber
+                    let flags:byte = if isRootNode then FLAG_ROOT_NODE else if isBoundary then FLAG_BOUNDARY_NODE else 0uy
                     if not isRootNode then
                         if isBoundary then
                             () // TODO
-                            // TODO set the flag
                             // TODO ask for another range
                             // TODO set the nextPage field
                         else
                             nextPageNumber <- nextPageNumber + 1
-                    buildParentPage isRootNode firstLeaf lastLeaf overflows pb children i first
+                    buildParentPage flags firstLeaf lastLeaf overflows pb children i first
                     pb.Flush(fs)
                     nextGeneration.Add(thisPageNumber, snd children.[i-1])
                     sofar <- 0
@@ -753,7 +754,7 @@ module BTreeSegment =
                     // another page.
                     if thisPageNumber = boundaryPageNumber then
                         () // TODO
-                        // TODO set the flag
+                        pb.SetPageFlag FLAG_BOUNDARY_NODE
                         // TODO ask for another range
                         // TODO write the boundary nextPage field
                     else
@@ -824,7 +825,7 @@ module BTreeSegment =
             else
                 if thisPageNumber = boundaryPageNumber then
                     () // TODO
-                    // TODO set the flag
+                    pb.SetPageFlag FLAG_BOUNDARY_NODE
                     // TODO ask for another range
                     // TODO write the boundary nextPage field
                 else

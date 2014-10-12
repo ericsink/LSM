@@ -327,6 +327,11 @@ namespace Zumero.LSM.cs
 			buf [cur++] = b;
 		}
 
+        public void SetPageFlag(byte f)
+        {
+            buf[1] |= f;
+        }
+
 		public void PutInt32(int ov)
 		{
             // assert ov >= 0
@@ -876,18 +881,18 @@ namespace Zumero.LSM.cs
 			}
 		}
 
-		private static void buildParentPage(bool root, int firstLeaf, int lastLeaf, Dictionary<int,int> overflows, PageBuilder pb, List<node> children, int stop, int start)
+		private static void buildParentPage(byte flags, int firstLeaf, int lastLeaf, Dictionary<int,int> overflows, PageBuilder pb, List<node> children, int stop, int start)
 		{
 			// assert stop >= start
 			int countKeys = (stop - start); 
 
 			pb.Reset ();
 			pb.PutByte (PARENT_NODE);
-			pb.PutByte( (byte) (root ? FLAG_ROOT_NODE : 0) );
+			pb.PutByte (flags);
 
 			pb.PutInt16 ((ushort) countKeys);
 
-			if (root) {
+			if (0 != (flags & FLAG_ROOT_NODE)) {
 				pb.PutInt32 (firstLeaf);
 				pb.PutInt32 (lastLeaf);
 			}
@@ -1023,9 +1028,12 @@ namespace Zumero.LSM.cs
 					if (flushThisPage) {
 						int thisPageNumber = nextPageNumber;
 
-						if (!isRootNode) {
+                        byte flags = 0;
+						if (isRootNode) {
+                            flags |= FLAG_ROOT_NODE;
+                        } else {
 							if (isBoundary) {
-                                // TODO set flag
+                                flags |= FLAG_BOUNDARY_NODE;
 								// TODO ask for next range
                                 // set the nextPage field
 							} else {
@@ -1033,7 +1041,7 @@ namespace Zumero.LSM.cs
 							}
 						}
 
-						buildParentPage (isRootNode, firstLeaf, lastLeaf, overflows, pb, children, i, first);
+						buildParentPage (flags, firstLeaf, lastLeaf, overflows, pb, children, i, first);
 
 						pb.Flush (fs);
 
@@ -1151,7 +1159,7 @@ namespace Zumero.LSM.cs
 						// another page.
 
 						if (thisPageNumber == boundaryPageNumber) {
-                            // TODO set the flag
+                            pb.SetPageFlag(FLAG_BOUNDARY_NODE);
                             // TODO ask for another range
                             // TODO write the boundary nextPage field
 						} else {
@@ -1252,7 +1260,7 @@ namespace Zumero.LSM.cs
 					// even though it's a leaf.
 				} else {
 					if (thisPageNumber == boundaryPageNumber) {
-                        // TODO set the flag
+                        pb.SetPageFlag(FLAG_BOUNDARY_NODE);
                         // TODO ask for another range
                         // TODO write the boundary nextPage field
 					} else {
