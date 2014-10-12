@@ -51,6 +51,24 @@ public static class hack
     }
 }
 
+public class SimplePageManager : IPages
+{
+	private readonly Stream fs;
+	int cur = 1;
+
+	public SimplePageManager(Stream _fs)
+	{
+		fs = _fs;
+	}
+
+	Tuple<int,int> IPages.GetRange()
+	{
+		var t = new Tuple<int,int>(cur,cur + 9);
+		cur = cur + 11;
+		return t;
+	}
+}
+
 public class foo
 {
 	private const int PAGE_SIZE = 256;
@@ -62,6 +80,21 @@ public class foo
 
     public static void Main(string[] argv)
     {
+		var t1 = Zumero.LSM.cs.MemorySegment.Create ();
+		for (int i = 0; i < 10000; i++) {
+			t1.Insert (i.ToString (), i.ToString ());
+		}
+		using (var fs = new FileStream ("tapp.bin", FileMode.Create, FileAccess.ReadWrite)) {
+			int root = Zumero.LSM.cs.BTreeSegment.Create (fs, PAGE_SIZE, new SimplePageManager(fs), t1.OpenCursor ());
+
+			var csr = Zumero.LSM.cs.BTreeSegment.OpenCursor(fs, PAGE_SIZE, root);
+
+			csr.First ();
+			while (csr.IsValid ()) {
+				Console.WriteLine (csr.Key ().FromUTF8 ());			
+				csr.Next ();
+			}
+		}
     }
 }
 

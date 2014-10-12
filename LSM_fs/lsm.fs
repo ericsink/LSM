@@ -633,7 +633,6 @@ module BTreeSegment =
         let len = int ba.Length
 
         let mutable sofar = _sofar
-        let mutable count = 0
 
         pb.Reset()
         pb.PutByte(OVERFLOW_NODE)
@@ -677,6 +676,7 @@ module BTreeSegment =
                 boundaryPageNumber <- snd newRange
                 sofar <- writeOverflowBoundaryPage pb fs ba sofar nextPageNumber
                 pagesWritten <- pagesWritten + 1
+                utils.SeekPage(fs, pb.PageSize, nextPageNumber)
 
         (nextPageNumber, boundaryPageNumber)
 
@@ -748,6 +748,7 @@ module BTreeSegment =
                         else
                             nextPageNumber <- nextPageNumber + 1
                     pb.Flush(fs)
+                    if nextPageNumber <> (thisPageNumber+1) then utils.SeekPage(fs, pb.PageSize, nextPageNumber)
                     nextGeneration.Add(thisPageNumber, snd children.[i-1])
                     sofar <- 0
                     first <- 0
@@ -785,6 +786,7 @@ module BTreeSegment =
         let mutable countPairs = 0
         let mutable lastKey:byte[] = null
         let mutable nodelist = new System.Collections.Generic.List<int32 * byte[]>()
+        utils.SeekPage(fs, pb.PageSize, nextPageNumber)
         csr.First()
         while csr.IsValid() do
             let k = csr.Key()
@@ -832,6 +834,7 @@ module BTreeSegment =
                         nextPageNumber <- nextPageNumber + 1
                     pb.PutInt16At (OFFSET_COUNT_PAIRS, countPairs)
                     pb.Flush(fs)
+                    if nextPageNumber <> (thisPageNumber+1) then utils.SeekPage(fs, pb.PageSize, nextPageNumber)
                     nodelist.Add(thisPageNumber, lastKey)
                     prevPageNumber <- thisPageNumber
                     pb.Reset()
@@ -908,6 +911,7 @@ module BTreeSegment =
                     nextPageNumber <- nextPageNumber + 1
             pb.PutInt16At (OFFSET_COUNT_PAIRS, countPairs)
             pb.Flush(fs)
+            if nextPageNumber <> (thisPageNumber+1) then utils.SeekPage(fs, pb.PageSize, nextPageNumber)
             nodelist.Add(thisPageNumber, lastKey)
         if nodelist.Count > 0 then
             let firstLeaf = fst nodelist.[0]
@@ -931,21 +935,21 @@ module BTreeSegment =
         let fs = _fs
         let len = _len
         let buf:byte[] = Array.zeroCreate pageSize
-        let mutable curpage = first
+        let mutable currentPage = first
         let mutable sofarOverall = 0
         let mutable sofarThisPage = 0
 
         // TODO consider supporting seek
 
         let ReadPage() = 
-            utils.SeekPage(fs, buf.Length, curpage)
+            utils.SeekPage(fs, buf.Length, currentPage)
             utils.ReadFully(fs, buf, 0, buf.Length)
             // assert PageType is OVERFLOW
             sofarThisPage <- 0
 
-        let isBoundary = 0uy <> (buf.[1] &&& FLAG_BOUNDARY_NODE)
-        let availableOnThisPage =
-            let allowanceForBoundary = if isBoundary then 4 else 0
+        let isBoundary() = 0uy <> (buf.[1] &&& FLAG_BOUNDARY_NODE)
+        let availableOnThisPage() =
+            let allowanceForBoundary = if isBoundary() then 4 else 0
             (buf.Length - OVERFLOW_PAGE_HEADER_SIZE) - allowanceForBoundary
 
         let GetInt32At(at) :int =
@@ -966,13 +970,13 @@ module BTreeSegment =
             if sofarOverall >= len then
                 0
             else    
-                if (sofarThisPage >= availableOnThisPage) then
-                    if isBoundary then
-                        curpage <- GetInt32At(buf.Length - 4)
+                if (sofarThisPage >= availableOnThisPage()) then
+                    if isBoundary() then
+                        currentPage <- GetInt32At(buf.Length - 4)
                     else
-                        curpage <- curpage + 1
+                        currentPage <- currentPage + 1
                     ReadPage()
-                let available = Math.Min (availableOnThisPage, len - sofarOverall)
+                let available = Math.Min (availableOnThisPage(), len - sofarOverall)
                 let num = Math.Min (available, wanted)
                 System.Array.Copy (buf, OVERFLOW_PAGE_HEADER_SIZE + sofarThisPage, ba, offset, num)
                 sofarOverall <- sofarOverall + num

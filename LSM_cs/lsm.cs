@@ -1036,6 +1036,7 @@ namespace Zumero.LSM.cs
                     boundaryPageNumber = newRange.Item2;
                     sofar = writeOverflowBoundaryPage(pb, fs, ba, sofar, nextPageNumber);
                     pagesWritten++;
+                    utils.SeekPage(fs, pb.PageSize, nextPageNumber);
                 }
             }
 
@@ -1127,6 +1128,10 @@ namespace Zumero.LSM.cs
 
 						pb.Flush (fs);
 
+                        if (nextPageNumber != (thisPageNumber+1)) {
+                            utils.SeekPage(fs, pb.PageSize, nextPageNumber);
+                        }
+
 						nextGeneration.Add (new node {PageNumber = thisPageNumber, Key=children[i-1].Key});
 
 						sofar = 0;
@@ -1186,6 +1191,8 @@ namespace Zumero.LSM.cs
 			byte[] lastKey = null;
 
 			int prevPageNumber = 0;
+
+            utils.SeekPage(fs, pb.PageSize, nextPageNumber);
 
 			csr.First ();
 			while (csr.IsValid ()) {
@@ -1252,6 +1259,10 @@ namespace Zumero.LSM.cs
 						pb.PutInt16At (OFFSET_COUNT_PAIRS, countPairs);
 
 						pb.Flush (fs);
+
+                        if (nextPageNumber != (thisPageNumber+1)) {
+                            utils.SeekPage(fs, pb.PageSize, nextPageNumber);
+                        }
 
 						nodelist.Add (new node { PageNumber = thisPageNumber, Key = lastKey });
 
@@ -1354,6 +1365,10 @@ namespace Zumero.LSM.cs
 				pb.PutInt16At (OFFSET_COUNT_PAIRS, countPairs);
 
 				pb.Flush (fs);
+
+                if (nextPageNumber != (thisPageNumber+1)) {
+                    utils.SeekPage(fs, pb.PageSize, nextPageNumber);
+                }
 
 				nodelist.Add (new node { PageNumber = thisPageNumber, Key = lastKey });
 			}

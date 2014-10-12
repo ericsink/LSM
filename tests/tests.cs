@@ -28,6 +28,7 @@ namespace lsm_tests
     public class SimplePageManager : IPages
     {
         private readonly Stream fs;
+		int cur = 1;
 
         public SimplePageManager(Stream _fs)
         {
@@ -36,7 +37,9 @@ namespace lsm_tests
 
         Tuple<int,int> IPages.GetRange()
         {
-            return new Tuple<int,int>(1,0);
+			var t = new Tuple<int,int>(cur,cur + 9);
+			cur = cur + 13;
+			return t;
         }
     }
 
