@@ -831,10 +831,13 @@ namespace Zumero.LSM.cs
 		private const byte PARENT_NODE = 2;
 		private const byte OVERFLOW_NODE = 3;
 
+        // flags on values
 		private const byte FLAG_OVERFLOW = 1;
 		private const byte FLAG_TOMBSTONE = 2;
 
+        // flags on pages
 		private const byte FLAG_ROOT_NODE = 1;
+		private const byte FLAG_BOUNDARY_NODE = 2;
 
 		private const int OVERFLOW_PAGE_HEADER_SIZE = 6;
 
@@ -953,13 +956,18 @@ namespace Zumero.LSM.cs
 			return (int) count;
 		}
 
-		private static int calcAvailable(int pageSize, int currentSize, bool couldBeRoot)
+		private static int calcAvailable(int pageSize, int currentSize, bool couldBeRoot, bool isBoundary)
 		{
 			int n = (pageSize - currentSize);
 			if (couldBeRoot)
 			{
 				// make space for the firstLeaf and lastLeaf fields
-				n -= (2 * sizeof(Int32));
+				n -= (2 * sizeof(int));
+			}
+			if (isBoundary) 
+			{
+				// make space for the nextPage field on a boundary page
+				n -= sizeof(int);
 			}
 			return n;
 		}
@@ -988,41 +996,38 @@ namespace Zumero.LSM.cs
 					+ sizeof(int)
 					+ Varint.SpaceNeededFor (n.PageNumber);
 
-				bool isLastChild = false;
-				if (i == (children.Count - 1)) {
-					// there must be >1 items in the children list, so:
-					// assert i>0
-					// assert cur != null
-					isLastChild = true;
-				}
-					
+				bool isLastChild = (i == (children.Count - 1));
+
 				if (sofar > 0) {
-					bool flushThisPage = false;
+					var flushThisPage = false;
+					var isBoundary = (nextPageNumber == boundaryPageNumber);
+                    var couldBeRoot = (nextGeneration.Count == 0);
+                    var avail = calcAvailable(pb.PageSize, sofar, couldBeRoot, isBoundary);
 					if (isLastChild) {
 						flushThisPage = true;
-					} else if (calcAvailable(pb.PageSize, sofar, (nextGeneration.Count == 0)) >= neededForInline) {
+					} else if (avail >= neededForInline) {
 						// no problem.
 					} else if ((pb.PageSize - PARENT_NODE_HEADER_SIZE) >= neededForInline) {
 						// it won't fit here, but it would fully fit on the next page.
 						flushThisPage = true;
-					} else if (calcAvailable(pb.PageSize, sofar, (nextGeneration.Count == 0)) < neededForOverflow) {
+					} else if (avail < neededForOverflow) {
 						// we can't even put this key in this page if we overflow it.
 						flushThisPage = true;
 					}
 
 					bool isRootNode = false;
-					if (isLastChild && (nextGeneration.Count == 0)) {
+					if (isLastChild && couldBeRoot) {
 						isRootNode = true;
 					}
 
 					if (flushThisPage) {
 						int thisPageNumber = nextPageNumber;
 
-						if (isRootNode) {
-							// nothing to do here
-						} else {
-							if (thisPageNumber == boundaryPageNumber) {
-								// TODO ask for more
+						if (!isRootNode) {
+							if (isBoundary) {
+                                // TODO set flag
+								// TODO ask for next range
+                                // set the nextPage field
 							} else {
 								nextPageNumber++;
 							}
@@ -1037,39 +1042,39 @@ namespace Zumero.LSM.cs
 						sofar = 0;
 						first = 0;
 						overflows.Clear();
-
-                        if (isLastChild) {
-							break;
-						}					
 					}
 				}
 
-				if (0 == sofar) {
-					first = i;
-					overflows.Clear();
+				if (!isLastChild) {
+					if (0 == sofar) {
+						first = i;
+						overflows.Clear();
 
-					sofar += 2; // for the page type and the flags
-					sofar += 2; // for the stored count
-					sofar += 5; // for the extra pointer we'll add at the end, which is a varint, so 5 is the worst case
+						sofar += 2; // for the page type and the flags
+						sofar += 2; // for the stored count
+						sofar += 5; // for the extra pointer we'll add at the end, which is a varint, so 5 is the worst case
+					}
+						
+					bool isBoundary = (nextPageNumber == boundaryPageNumber);
+					if (calcAvailable(pb.PageSize, sofar, (nextGeneration.Count == 0), isBoundary) >= neededForInline) {
+						sofar += k.Length;
+					} else {
+						// it's okay to pass our PageBuilder here for working purposes.  we're not
+						// really using it yet, until we call buildParentPage
+                        // TODO try again to use pbOverflow, for consistency
+						int overflowFirstPage = nextPageNumber;
+						int overflowPageCount = writeOverflowFromArray (pb, fs, k);
+						nextPageNumber += overflowPageCount;
+						sofar += sizeof(int);
+						overflows [i] = overflowFirstPage;
+					}
+
+					// inline or not, we need space for the following things
+
+					sofar++; // for the flag
+					sofar += Varint.SpaceNeededFor((int) k.Length);
+					sofar += Varint.SpaceNeededFor(n.PageNumber);
 				}
-					
-				if (calcAvailable(pb.PageSize, sofar, (nextGeneration.Count == 0)) >= neededForInline) {
-					sofar += k.Length;
-				} else {
-					// it's okay to pass our PageBuilder here for working purposes.  we're not
-					// really using it yet, until we call buildParentPage
-					int overflowFirstPage = nextPageNumber;
-					int overflowPageCount = writeOverflowFromArray (pb, fs, k);
-					nextPageNumber += overflowPageCount;
-					sofar += sizeof(int);
-					overflows [i] = overflowFirstPage;
-				}
-
-				// inline or not, we need space for the following things
-
-				sofar++; // for the flag
-				sofar += Varint.SpaceNeededFor((int) k.Length);
-				sofar += Varint.SpaceNeededFor(n.PageNumber);
 			}
 
 			// assert cur is null
@@ -1099,6 +1104,8 @@ namespace Zumero.LSM.cs
 				byte[] k = csr.Key ();
 				Stream v = csr.Value ();
 
+				// TODO get vlen here and don't call v.Length so much
+
 				// assert k != null
 				// for a tombstone, v might be null
 
@@ -1110,7 +1117,7 @@ namespace Zumero.LSM.cs
 				var neededForValueInline = 1 + ((v!=null) ? Varint.SpaceNeededFor(v.Length) + v.Length : 0);
 				var neededForValueOverflow = 1 + ((v!=null) ? Varint.SpaceNeededFor(v.Length) + neededForOverflowPageNumber : 0);
 
-				var neededForInlineBoth = neededForKeyInline + neededForValueInline;
+				var neededForBothInline = neededForKeyInline + neededForValueInline;
 				var neededForKeyInlineValueOverflow = neededForKeyInline + neededForValueOverflow;
 				var neededForOverflowBoth = neededForKeyOverflow + neededForValueOverflow;
 
@@ -1119,12 +1126,12 @@ namespace Zumero.LSM.cs
 				if (pb.Position > 0) {
 					// figure out if we need to just flush this page
 
-					int avail = pb.Available;
+					int avail = pb.Available - ((nextPageNumber == boundaryPageNumber) ? 4 : 0);
 
 					bool flushThisPage = false;
-					if (avail >= neededForInlineBoth) {
+					if (avail >= neededForBothInline) {
 						// no problem.  both the key and the value are going to fit
-					} else if ((pb.PageSize - LEAF_HEADER_SIZE) >= neededForInlineBoth) {
+					} else if ((pb.PageSize - LEAF_HEADER_SIZE) >= neededForBothInline) {
 						// it won't fit here, but it would fully fit on the next page.
 						flushThisPage = true;
 					} else if (avail >= neededForKeyInlineValueOverflow) {
@@ -1144,9 +1151,9 @@ namespace Zumero.LSM.cs
 						// another page.
 
 						if (thisPageNumber == boundaryPageNumber) {
-							// we need to set the flag, and ask for another page range.  and
-							// write the nextPageNumber into this page, which TODO we haven't
-							// made room for yet.
+                            // TODO set the flag
+                            // TODO ask for another range
+                            // TODO write the boundary nextPage field
 						} else {
 							nextPageNumber++;
 						}
@@ -1180,8 +1187,6 @@ namespace Zumero.LSM.cs
 					pb.PutInt16 (0); // number of pairs in this page. zero for now. written at end.
 				} 
 
-				int available = pb.Available;
-
 				/*
 				 * one of the following cases must now be true:
 				 * 
@@ -1199,7 +1204,8 @@ namespace Zumero.LSM.cs
 				 * 
 				 */
 
-				if (available >= neededForInlineBoth) {
+				int available = pb.Available - ((nextPageNumber == boundaryPageNumber) ? 4 : 0);
+				if (available >= neededForBothInline) {
 					// no problem.  both the key and the value are going to fit
 					putArrayWithLength (pb, k);
 					putStreamWithLength (pb, v);
@@ -1246,9 +1252,9 @@ namespace Zumero.LSM.cs
 					// even though it's a leaf.
 				} else {
 					if (thisPageNumber == boundaryPageNumber) {
-						// we need to set the flag, and ask for another page range.  and
-						// write the nextPageNumber into this page, which TODO we haven't
-						// made room for yet.
+                        // TODO set the flag
+                        // TODO ask for another range
+                        // TODO write the boundary nextPage field
 					} else {
 						nextPageNumber++;
 					}
@@ -1291,8 +1297,7 @@ namespace Zumero.LSM.cs
 			private int currentPage;
 			private readonly byte[] buf;
 
-			// TODO I suppose if the underlying stream can seek and if we kept
-			// the first_page, we could seek or reset as well.
+			// TODO consider supporting seek
 
 			public myOverflowReadStream(Stream _fs, int pageSize, int firstPage, int _len)
 			{

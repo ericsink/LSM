@@ -550,9 +550,12 @@ module BTreeSegment =
     let private LEAF_NODE:byte = 1uy
     let private PARENT_NODE:byte = 2uy
     let private OVERFLOW_NODE:byte = 3uy
+    // flags on values
     let private FLAG_OVERFLOW:byte = 1uy
     let private FLAG_TOMBSTONE:byte = 2uy
+    // flags on pages
     let private FLAG_ROOT_NODE:byte = 1uy
+    let private FLAG_BOUNDARY_NODE:byte = 2uy
     let private OVERFLOW_PAGE_HEADER_SIZE = 6
     let private PARENT_NODE_HEADER_SIZE = 8
     let private LEAF_HEADER_SIZE = 8
@@ -631,13 +634,11 @@ module BTreeSegment =
             else
                 putArrayWithLength pb k
 
-    let private calcAvailable pageSize currentSize couldBeRoot =
+    let private calcAvailable pageSize currentSize couldBeRoot isBoundary =
         let basicSize = pageSize - currentSize
-        if couldBeRoot then
-            // make room for firstLeaf and lastLeaf
-            basicSize - 2 * 4
-        else
-            basicSize
+        let allowanceForBoundaryNode = if isBoundary then 4 else 0 // nextPage
+        let allowanceForRootNode = if couldBeRoot then 2*4 else 0 // first/last Leaf
+        basicSize - (allowanceForRootNode + allowanceForBoundaryNode)
 
     let private writeParentNodes firstLeaf lastLeaf (children:System.Collections.Generic.List<int32 * byte[]>) startingPageNumber boundaryPageNumber fs (pb:PageBuilder) =
         let nextGeneration = new System.Collections.Generic.List<int32 * byte[]>()
@@ -653,8 +654,9 @@ module BTreeSegment =
             let neededForOverflow = 1 + Varint.SpaceNeededFor (int64 k.Length) + 4 + Varint.SpaceNeededFor (int64 pagenum)
             let isLastChild = (i = (children.Count - 1))
             if (sofar > 0) then
+                let isBoundary = (nextPageNumber = boundaryPageNumber)
                 let couldBeRoot = (nextGeneration.Count = 0)
-                let avail = calcAvailable (pb.PageSize) sofar couldBeRoot 
+                let avail = calcAvailable (pb.PageSize) sofar couldBeRoot isBoundary
                 let fitsInline = (avail >= neededForInline)
                 let wouldFitInlineOnNextPage = ((pb.PageSize - PARENT_NODE_HEADER_SIZE) >= neededForInline)
                 let fitsOverflow = (avail >= neededForOverflow)
@@ -664,8 +666,11 @@ module BTreeSegment =
                 if flushThisPage then
                     let thisPageNumber = nextPageNumber
                     if not isRootNode then
-                        if thisPageNumber = boundaryPageNumber then
-                            () // TODO ask for more
+                        if isBoundary then
+                            () // TODO
+                            // TODO set the flag
+                            // TODO ask for another range
+                            // TODO set the nextPage field
                         else
                             nextPageNumber <- nextPageNumber + 1
                     buildParentPage isRootNode firstLeaf lastLeaf overflows pb children i first
@@ -682,11 +687,13 @@ module BTreeSegment =
                     // 2 for the stored count
                     // 5 for the extra ptr we will add at the end, a varint, 5 is worst case
                     sofar <- 2 + 2 + 5
-                if calcAvailable (pb.PageSize) sofar (nextGeneration.Count = 0) >= neededForInline then
+                let isBoundary = (nextPageNumber = boundaryPageNumber)
+                if calcAvailable (pb.PageSize) sofar (nextGeneration.Count = 0) isBoundary >= neededForInline then
                     sofar <- sofar + k.Length
                 else
                     // it's okay to pass our main PageBuilder here for working purposes.  we're not
                     // really using it yet, until we call buildParentPage
+                    // TODO try again to use pbOverflow, for consistency
                     let keyOverflowFirstPage = nextPageNumber
                     let keyOverflowPageCount = writeOverflowFromArray pb fs k
                     nextPageNumber <- nextPageNumber + keyOverflowPageCount
@@ -714,6 +721,7 @@ module BTreeSegment =
             // assert k <> null
             // but v might be null (a tombstone)
             let vlen = if v<>null then v.Length else int64 0
+
             let neededForOverflowPageNumber = 4 // TODO sizeof int
 
             let neededForKeyBase = 1 + Varint.SpaceNeededFor(int64 k.Length)
@@ -730,7 +738,7 @@ module BTreeSegment =
             csr.Next()
 
             if pb.Position > 0 then
-                let avail = pb.Available
+                let avail = pb.Available - (if nextPageNumber = boundaryPageNumber then 4 else 0)
                 let fitBothInline = (avail >= neededForBothInline)
                 let wouldFitBothInlineOnNextPage = ((pb.PageSize - LEAF_HEADER_SIZE) >= neededForBothInline)
                 let fitKeyInlineValueOverflow = (avail >= neededForKeyInlineValueOverflow)
@@ -745,9 +753,9 @@ module BTreeSegment =
                     // another page.
                     if thisPageNumber = boundaryPageNumber then
                         () // TODO
-                        // we need to set the flag, and ask for another page range.  and
-                        // write the nextPageNumber into this page, which TODO we haven't
-                        // made room for yet.
+                        // TODO set the flag
+                        // TODO ask for another range
+                        // TODO write the boundary nextPage field
                     else
                         nextPageNumber <- nextPageNumber + 1
                     pb.PutInt16At (OFFSET_COUNT_PAIRS, countPairs)
@@ -768,7 +776,6 @@ module BTreeSegment =
                 pb.PutInt32 (prevPageNumber) // prev page num.
                 pb.PutInt16 (0) // number of pairs in this page. zero for now. written at end.
                 // assert pb.Position is 8 (LEAF_HEADER_SIZE)
-            let available = pb.Available
             (*
              * one of the following cases must now be true:
              * 
@@ -785,6 +792,7 @@ module BTreeSegment =
              * already done it above.
              * 
              *)
+            let available = pb.Available - (if nextPageNumber = boundaryPageNumber then 4 else 0)
             if (available >= neededForBothInline) then
                 putArrayWithLength pb k
                 putStreamWithLength pb v vlen
@@ -816,9 +824,9 @@ module BTreeSegment =
             else
                 if thisPageNumber = boundaryPageNumber then
                     () // TODO
-                    // we need to set the flag, and ask for another page range.  and
-                    // write the nextPageNumber into this page, which TODO we haven't
-                    // made room for yet.
+                    // TODO set the flag
+                    // TODO ask for another range
+                    // TODO write the boundary nextPage field
                 else
                     nextPageNumber <- nextPageNumber + 1
             pb.PutInt16At (OFFSET_COUNT_PAIRS, countPairs)
@@ -848,7 +856,7 @@ module BTreeSegment =
         let mutable sofarOverall = 0
         let mutable sofarThisPage = 0
 
-        // TODO consider supporting seek (if this.fs does)
+        // TODO consider supporting seek
 
         let ReadPage() =
             let pos = ((int64 curpage) - 1L) * int64 buf.Length
