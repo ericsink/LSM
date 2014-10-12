@@ -955,24 +955,6 @@ namespace Zumero.LSM.cs
 			}
 		}
 
-		/*
-		 * Each overflow page, after 1 byte for the page type and 1 byte for flags,
-		 * has a 32-bit int which is the number of pages left in this overflow value.
-		 * 
-		 * It would be nice to make this a varint, but that would be problematic.
-		 * We need to know in advance how many pages the value will consume.
-		 */
-
-		private static int countOverflowPagesFor(int pageSize, int len)
-		{
-			int bytesPerPage = pageSize - OVERFLOW_PAGE_HEADER_SIZE;
-			int needed = len / bytesPerPage;
-			if ((len % bytesPerPage) != 0) {
-				needed++;
-			}
-			return needed;
-		}
-
         private static int writePartialOverflow(PageBuilder pb, Stream fs, Stream ba, int numPagesToWrite, int sofar)
         {
 			int count = 0;
@@ -991,16 +973,73 @@ namespace Zumero.LSM.cs
             return sofar;
         }
 
-		private static Tuple<int,int> writeOverflow(IPages pageManager, int nextPageNumber, int boundaryPageNumber, PageBuilder pb, Stream fs, Stream ba)
+        private static int writeOverflowBoundaryPage(PageBuilder pb, Stream fs, Stream ba, int sofar, int nextPageNumber)
+        {
+            pb.Reset ();
+            pb.PutByte (OVERFLOW_NODE);
+            pb.PutByte (FLAG_BOUNDARY_NODE);
+            pb.PutInt32 (0); // TODO should we really just leave the skip field 0?
+            // check for the possible partial page at the end
+            int num = Math.Min ((pb.PageSize - OVERFLOW_PAGE_HEADER_SIZE - sizeof(int)), (int) (ba.Length - sofar));
+            pb.PutStream (ba, num);
+            sofar += num;
+            pb.SetBoundaryNextPageField(nextPageNumber);
+            pb.Flush (fs);
+
+            return sofar;
+        }
+
+		/*
+		 * Each overflow page, after 1 byte for the page type and 1 byte for flags,
+		 * has a 32-bit int which is the number of pages left in this overflow value.
+		 * 
+		 * It would be nice to make this a varint, but that would be problematic.
+		 * We need to know in advance how many pages the value will consume.
+		 */
+
+		private static int countOverflowPagesFor(int pageSize, int len)
+		{
+			// this assumes no boundary pages
+			int bytesPerPage = pageSize - OVERFLOW_PAGE_HEADER_SIZE;
+			int needed = len / bytesPerPage;
+			if ((len % bytesPerPage) != 0) {
+				needed++;
+			}
+			return needed;
+		}
+
+		private static Tuple<int,int> writeOverflow(IPages pageManager, int startingNextPageNumber, int startingBoundaryPageNumber, PageBuilder pb, Stream fs, Stream ba)
 		{
 			int sofar = 0;
-			int needed = countOverflowPagesFor (pb.PageSize, (int) ba.Length);
+			int len = (int) ba.Length;
+            int nextPageNumber = startingNextPageNumber;
+            int boundaryPageNumber = startingBoundaryPageNumber;
+            int pagesWritten = 0;
 
-            // TODO fix this to do boundary stuff
+            while (sofar < len) {
+                int needed = countOverflowPagesFor (pb.PageSize, len - sofar);
+                int availableBeforeBoundary;
+                if (boundaryPageNumber > 0) {
+                    availableBeforeBoundary = boundaryPageNumber - nextPageNumber;
+                } else {
+                    availableBeforeBoundary = needed;
+                }
+                int numPages = Math.Min(needed, availableBeforeBoundary);
+                sofar = writePartialOverflow(pb, fs, ba, numPages, sofar);
+                pagesWritten += numPages;
+                nextPageNumber += numPages;
 
-            sofar = writePartialOverflow(pb, fs, ba, needed, sofar);
+                if (sofar < len) {
+                    // assert nextPageNumber == boundaryPageNumber
+                    var newRange = pageManager.GetRange();
+                    nextPageNumber = newRange.Item1;
+                    boundaryPageNumber = newRange.Item2;
+                    sofar = writeOverflowBoundaryPage(pb, fs, ba, sofar, nextPageNumber);
+                    pagesWritten++;
+                }
+            }
 
-            return new Tuple<int,int>(nextPageNumber + needed, boundaryPageNumber);
+            return new Tuple<int,int>(nextPageNumber, boundaryPageNumber);
 		}
 
 		private static int calcAvailable(int pageSize, int currentSize, bool couldBeRoot, bool isBoundary)

@@ -592,12 +592,6 @@ module BTreeSegment =
     let private LEAF_HEADER_SIZE = 8
     let private OFFSET_COUNT_PAIRS = 6
 
-    let private countOverflowPagesFor pageSize len = 
-        let bytesPerPage = pageSize - OVERFLOW_PAGE_HEADER_SIZE
-        let pages = len / bytesPerPage
-        let extra = if (len % bytesPerPage) <> 0 then 1 else 0
-        pages + extra
-
     let private putArrayWithLength (pb:PageBuilder) (ba:byte[]) =
         if null = ba then
             pb.PutByte(FLAG_TOMBSTONE)
@@ -635,14 +629,56 @@ module BTreeSegment =
             count <- count + 1
         sofar
 
-    let private writeOverflow (pageManager:IPages) nextPageNumber boundaryPageNumber (pb:PageBuilder) (fs:Stream) (ba:Stream) =
-        let needed = countOverflowPagesFor (pb.PageSize) (int ba.Length)
+    let private writeOverflowBoundaryPage (pb:PageBuilder) (fs:Stream) (ba:Stream) _sofar nextPageNumber =
+        let len = int ba.Length
 
-        // TODO fix this to do boundary stuff
+        let mutable sofar = _sofar
+        let mutable count = 0
 
-        let sofar = writePartialOverflow pb fs ba needed 0
+        pb.Reset()
+        pb.PutByte(OVERFLOW_NODE)
+        pb.PutByte(FLAG_BOUNDARY_NODE)
+        pb.PutInt32(0) // TODO really?
+        // check for the possible partial page at the end
+        let num = Math.Min((pb.PageSize - OVERFLOW_PAGE_HEADER_SIZE - 4), (len - sofar))
+        pb.PutStream(ba, num)
+        sofar <- sofar + num
+        pb.SetBoundaryNextPageField(nextPageNumber)
+        pb.Flush(fs)
 
-        (nextPageNumber + needed, boundaryPageNumber)
+        sofar
+
+    let private countOverflowPagesFor pageSize len = 
+        // this assumes no boundary pages
+        let bytesPerPage = pageSize - OVERFLOW_PAGE_HEADER_SIZE
+        let pages = len / bytesPerPage
+        let extra = if (len % bytesPerPage) <> 0 then 1 else 0
+        pages + extra
+
+    let private writeOverflow (pageManager:IPages) startingNextPageNumber startingBoundaryPageNumber (pb:PageBuilder) (fs:Stream) (ba:Stream) =
+        let mutable sofar = 0
+        let len = (int ba.Length)
+        let mutable nextPageNumber = startingNextPageNumber
+        let mutable boundaryPageNumber = startingBoundaryPageNumber
+        let mutable pagesWritten = 0
+
+        while sofar < len do
+            let needed = countOverflowPagesFor (pb.PageSize) (len - sofar)
+            let availableBeforeBoundary = if boundaryPageNumber > 0 then (boundaryPageNumber - nextPageNumber) else needed
+            let numPages = Math.Min(needed, availableBeforeBoundary)
+            sofar <- writePartialOverflow pb fs ba numPages sofar
+            pagesWritten <- pagesWritten + numPages
+            nextPageNumber <- nextPageNumber + numPages
+
+            if sofar < len then
+                // assert nextPageNumber = boundaryPageNumber
+                let newRange = pageManager.GetRange()
+                nextPageNumber <- fst newRange
+                boundaryPageNumber <- snd newRange
+                sofar <- writeOverflowBoundaryPage pb fs ba sofar nextPageNumber
+                pagesWritten <- pagesWritten + 1
+
+        (nextPageNumber, boundaryPageNumber)
 
     let private buildParentPage flags firstLeaf lastLeaf (overflows:System.Collections.Generic.Dictionary<int,int32>) (pb:PageBuilder) (children:System.Collections.Generic.List<int32 * byte[]>) stop start =
         // assert stop > start
