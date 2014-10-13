@@ -1,19 +1,10 @@
 
-page size should probably be owned by the page manager
+--------
 
 tx stuff:
 
-IWrite needs to have an open cursor which can always see changes
-that were just made.  so the idea of using a plain dictionary
-and then sorting the keys when the cursor is opened?  that
-won't work.  IWrite is an ICursor with two more methods.
-
-or is it?  when iterating, what happens if something is
-inserted?  maybe IWrite.OpenCursor() only sees exactly
-what was current when it was called, as a way of resolving
-the ambiguity of what it should see?  it still needs to be
-fast, though.  if you need to see something you just
-inserted, then just open a new cursor.
+even for IWrite, open cursor, an ICursor always gives
+a view of data that cannot change while you are reading it.
 
 IWrite basically represents an open write transaction.
 commit: flush it to a btree and update the segment list.
@@ -114,8 +105,6 @@ prefix key compression?
 
 what are the embedded pointers in the runs in SQLite4 LSM?
 
-zlib compression?  maybe just for overflow pages?
-
 tombstones shouldn't need a length field as well.
 but the absence would mess up the space_needed calcs.
 and if the length is always zero, it's just a byte.
@@ -136,4 +125,36 @@ once "on disk", a segment is immutable.  reads only.
 only the first (in-memory) segment needs to support writes.
 
 maybe the whole thing should implement IDictionary<byte[],byte[]> ?
+
+--------
+
+we can't do calculations on whether a value will fit if
+we don't know its length.
+
+or maybe we just need to handle valueStreams which cannot
+do Length as a separate code path?
+
+why do the middle pages of an overflow need headers at all?
+
+or maybe at least, the middle overflow pages don't need
+the lastint32?
+
+and maybe OverflowReadStream should just read directly
+into the given ba instead of reading the whole page and
+copying.
+
+can we write an overflow without knowing its length in
+advance?  that would be handy.  maybe we could chain a
+zlib stream and compress as it goes in.  but how do we
+set the skip field?  we pretty much can't.  I suppose we
+could just write the whole thing and then go back and
+write the skip field.
+
+page manager needs to keep track of all the pages and
+remember what's free.  and it needs to remember all
+the segments.  all the blocks.
+
+do we need a segment info thing written to the disk?
+like for each segment, a list of all its blocks?
+
 
