@@ -17,7 +17,7 @@ namespace lsm_tests
 	    {
 	        // note the arbitrary choice of getting this function from cs instead of fs
 	        // maybe utils should move into LSM_base
-	        return Zumero.LSM.fs.utils.ReadAll (s).FromUTF8 ();
+	        return Zumero.LSM.fs.utils.ReadAll (s).UTF8ToString ();
 	    }
 
 

@@ -91,7 +91,7 @@ namespace Zumero.LSM
 			return System.Text.Encoding.UTF8.GetBytes (s);
 		}
 
-		public static string FromUTF8(this byte[] ba)
+		public static string UTF8ToString(this byte[] ba)
 		{
 			return System.Text.Encoding.UTF8.GetString (ba, 0, ba.Length);
 		}

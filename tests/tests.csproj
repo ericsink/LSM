@@ -53,9 +53,9 @@
       <Project>{E9E55FF3-EED9-457A-8CCD-2CBA6FEF5CF7}</Project>
       <Name>LSM_base</Name>
     </ProjectReference>
-    <ProjectReference Include="..\test_base\test_base.csproj">
+    <ProjectReference Include="..\tbase\tbase.csproj">
       <Project>{F05CCE04-5064-4948-8F55-AB29151D0B5F}</Project>
-      <Name>test_base</Name>
+      <Name>tbase</Name>
     </ProjectReference>
   </ItemGroup>
 </Project>

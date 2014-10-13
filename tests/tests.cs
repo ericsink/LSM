@@ -138,15 +138,15 @@ namespace lsm_tests
 				// --------
 				csr.First();
 				Assert.True(csr.IsValid());
-				Assert.Equal ("10", csr.Key ().FromUTF8 ());
+				Assert.Equal ("10", csr.Key ().UTF8ToString ());
 
 				csr.Next();
 				Assert.True(csr.IsValid());
-				Assert.Equal ("20", csr.Key ().FromUTF8 ());
+				Assert.Equal ("20", csr.Key ().UTF8ToString ());
 
 				csr.Next();
 				Assert.True(csr.IsValid());
-				Assert.Equal ("8", csr.Key ().FromUTF8 ());
+				Assert.Equal ("8", csr.Key ().UTF8ToString ());
 
 				csr.Next();
 				Assert.False(csr.IsValid());
@@ -154,15 +154,15 @@ namespace lsm_tests
 				// --------
 				csr.Last();
 				Assert.True(csr.IsValid());
-				Assert.Equal ("8", csr.Key ().FromUTF8 ());
+				Assert.Equal ("8", csr.Key ().UTF8ToString ());
 
 				csr.Prev();
 				Assert.True(csr.IsValid());
-				Assert.Equal ("20", csr.Key ().FromUTF8 ());
+				Assert.Equal ("20", csr.Key ().UTF8ToString ());
 
 				csr.Prev();
 				Assert.True(csr.IsValid());
-				Assert.Equal ("10", csr.Key ().FromUTF8 ());
+				Assert.Equal ("10", csr.Key ().UTF8ToString ());
 
 				csr.Prev();
 				Assert.False(csr.IsValid());
@@ -265,7 +265,7 @@ namespace lsm_tests
 							mc.Next();
 							Assert.True(mc.IsValid());
 						}
-						string s = mc.Key().FromUTF8();
+						string s = mc.Key().UTF8ToString();
 						// got the following value from the debugger.
 						// just want to make sure that it doesn't change
 						// and all combos give the same answer.
@@ -490,7 +490,7 @@ namespace lsm_tests
 					csr.Last ();
 					while (csr.IsValid ()) {
 						var v = csr.Value ();
-						Assert.Equal (s, v.from_utf8());
+						Assert.Equal (s, v.UTF8StreamToString());
 						csr.Prev ();
 					}
 				}
@@ -549,11 +549,11 @@ namespace lsm_tests
 
 						csr.Seek ("n", SeekOp.SEEK_LE);
 						Assert.True (csr.IsValid ());
-						Assert.Equal ("m", csr.Key ().FromUTF8 ());
+						Assert.Equal ("m", csr.Key ().UTF8ToString ());
 
 						csr.Seek ("n", SeekOp.SEEK_GE);
 						Assert.True (csr.IsValid ());
-						Assert.Equal ("o", csr.Key ().FromUTF8 ());
+						Assert.Equal ("o", csr.Key ().UTF8ToString ());
 					}
 				}
 			};
@@ -584,11 +584,11 @@ namespace lsm_tests
 
 						csr.Seek ("8087", SeekOp.SEEK_LE);
 						Assert.True (csr.IsValid ());
-						Assert.Equal ("8086", csr.Key ().FromUTF8 ());
+						Assert.Equal ("8086", csr.Key ().UTF8ToString ());
 
 						csr.Seek ("8087", SeekOp.SEEK_GE);
 						Assert.True (csr.IsValid ());
-						Assert.Equal ("8088", csr.Key ().FromUTF8 ());
+						Assert.Equal ("8088", csr.Key ().UTF8ToString ());
 					}
 				}
 			};
@@ -634,11 +634,11 @@ namespace lsm_tests
 
 						csr.Seek ("0000002330", SeekOp.SEEK_LE);
 						Assert.True (csr.IsValid ());
-						Assert.Equal ("0000002328", csr.Key ().FromUTF8 ());
+						Assert.Equal ("0000002328", csr.Key ().UTF8ToString ());
 
 						csr.Seek ("0000002330", SeekOp.SEEK_GE);
 						Assert.True (csr.IsValid ());
-						Assert.Equal ("0000002331", csr.Key ().FromUTF8 ());
+						Assert.Equal ("0000002331", csr.Key ().UTF8ToString ());
 					}
 				}
 			};
@@ -724,7 +724,7 @@ namespace lsm_tests
 
 						csr.Seek ("b", SeekOp.SEEK_EQ);
 						Assert.True (csr.IsValid ());
-						Assert.Equal ("2", csr.Value ().from_utf8 ());
+						Assert.Equal ("2", csr.Value ().UTF8StreamToString ());
 					}
 				}
 			};
@@ -773,7 +773,7 @@ namespace lsm_tests
 						var csr = t1.OpenCursor ();
 						csr.Seek ("b", SeekOp.SEEK_EQ);
 						Assert.True (csr.IsValid ());
-						Assert.Equal ("2", csr.Value ().from_utf8 ());
+						Assert.Equal ("2", csr.Value ().UTF8StreamToString ());
 					}
 
 					using (var fs = new FileStream ("overwrite_val_mem", FileMode.Create, FileAccess.ReadWrite)) {
@@ -786,7 +786,7 @@ namespace lsm_tests
 					var csr_b1 = c.open_btree_segment(fs, PAGE_SIZE, lastPage(fs));
 					csr_b1.Seek ("b", SeekOp.SEEK_EQ);
 					Assert.True (csr_b1.IsValid ());
-					Assert.Equal ("2", csr_b1.Value ().from_utf8());
+					Assert.Equal ("2", csr_b1.Value ().UTF8StreamToString());
 
 					var t1 = c.create_memory_segment();
 					t1.Insert ("b", "5");
@@ -794,21 +794,21 @@ namespace lsm_tests
 						var csr = t1.OpenCursor ();
 						csr.Seek ("b", SeekOp.SEEK_EQ);
 						Assert.True (csr.IsValid ());
-						Assert.Equal ("5", csr.Value ().from_utf8 ());
+						Assert.Equal ("5", csr.Value ().UTF8StreamToString ());
 					}
 
 					{
 						var mc = c.create_multicursor(t1.OpenCursor (), csr_b1);
 						mc.Seek ("b", SeekOp.SEEK_EQ);
 						Assert.True (mc.IsValid ());
-						Assert.Equal ("5", mc.Value ().from_utf8 ());
+						Assert.Equal ("5", mc.Value ().UTF8StreamToString ());
 					}
 
 					{
 						var mc = c.create_multicursor(csr_b1, t1.OpenCursor ());
 						mc.Seek ("b", SeekOp.SEEK_EQ);
 						Assert.True (mc.IsValid ());
-						Assert.Equal ("2", mc.Value ().from_utf8 ());
+						Assert.Equal ("2", mc.Value ().UTF8StreamToString ());
 					}
 				}
 			};
@@ -864,8 +864,8 @@ namespace lsm_tests
 							Assert.Null (mc.Value ());
 							mc.Prev ();
 							Assert.True (mc.IsValid ());
-							Assert.Equal ("a", mc.Key ().FromUTF8 ());
-							Assert.Equal ("1", mc.Value ().from_utf8 ());
+							Assert.Equal ("a", mc.Key ().UTF8ToString ());
+							Assert.Equal ("1", mc.Value ().UTF8StreamToString ());
 
 							Assert.Equal (4, count_keys_forward (mc));
 							Assert.Equal (4, count_keys_backward (mc));
@@ -874,24 +874,24 @@ namespace lsm_tests
 
 							mc.First ();
 							Assert.True (mc.IsValid ());
-							Assert.Equal ("a", mc.Key ().FromUTF8 ());
-							Assert.Equal ("1", mc.Value ().from_utf8 ());
+							Assert.Equal ("a", mc.Key ().UTF8ToString ());
+							Assert.Equal ("1", mc.Value ().UTF8StreamToString ());
 
 							mc.Next ();
 							Assert.True (mc.IsValid ());
-							Assert.Equal ("b", mc.Key ().FromUTF8 ());
+							Assert.Equal ("b", mc.Key ().UTF8ToString ());
 							Assert.Equal (null, mc.Value ());
 							Assert.Equal (-1, mc.ValueLength ());
 
 							mc.Next ();
 							Assert.True (mc.IsValid ());
-							Assert.Equal ("c", mc.Key ().FromUTF8 ());
-							Assert.Equal ("3", mc.Value ().from_utf8 ());
+							Assert.Equal ("c", mc.Key ().UTF8ToString ());
+							Assert.Equal ("3", mc.Value ().UTF8StreamToString ());
 
 							mc.Next ();
 							Assert.True (mc.IsValid ());
-							Assert.Equal ("d", mc.Key ().FromUTF8 ());
-							Assert.Equal ("4", mc.Value ().from_utf8 ());
+							Assert.Equal ("d", mc.Key ().UTF8ToString ());
+							Assert.Equal ("4", mc.Value ().UTF8StreamToString ());
 
 							mc.Next ();
 							Assert.False (mc.IsValid ());
@@ -900,23 +900,23 @@ namespace lsm_tests
 
 							mc.First ();
 							Assert.True (mc.IsValid ());
-							Assert.Equal ("a", mc.Key ().FromUTF8 ());
-							Assert.Equal ("1", mc.Value ().from_utf8 ());
+							Assert.Equal ("a", mc.Key ().UTF8ToString ());
+							Assert.Equal ("1", mc.Value ().UTF8StreamToString ());
 
 							mc.Next ();
 							Assert.True (mc.IsValid ());
-							Assert.Equal ("b", mc.Key ().FromUTF8 ());
+							Assert.Equal ("b", mc.Key ().UTF8ToString ());
 							Assert.Equal (null, mc.Value ());
 							Assert.Equal (-1, mc.ValueLength ());
 
 							mc.Prev ();
 							Assert.True (mc.IsValid ());
-							Assert.Equal ("a", mc.Key ().FromUTF8 ());
-							Assert.Equal ("1", mc.Value ().from_utf8 ());
+							Assert.Equal ("a", mc.Key ().UTF8ToString ());
+							Assert.Equal ("1", mc.Value ().UTF8StreamToString ());
 
 							mc.Next ();
 							Assert.True (mc.IsValid ());
-							Assert.Equal ("b", mc.Key ().FromUTF8 ());
+							Assert.Equal ("b", mc.Key ().UTF8ToString ());
 							Assert.Equal (null, mc.Value ());
 							Assert.Equal (-1, mc.ValueLength ());
 
@@ -925,20 +925,20 @@ namespace lsm_tests
 							mc.Seek ("b", SeekOp.SEEK_LE);
 							Assert.True (mc.IsValid ());
 							Assert.Equal (-1, mc.ValueLength ());
-							Assert.Equal ("b", mc.Key ().FromUTF8 ());
+							Assert.Equal ("b", mc.Key ().UTF8ToString ());
 
 							mc.Prev ();
 							Assert.True (mc.IsValid ());
-							Assert.Equal ("a", mc.Key ().FromUTF8 ());
+							Assert.Equal ("a", mc.Key ().UTF8ToString ());
 
 							mc.Next ();
 							Assert.True (mc.IsValid ());
 							Assert.Equal (-1, mc.ValueLength ());
-							Assert.Equal ("b", mc.Key ().FromUTF8 ());
+							Assert.Equal ("b", mc.Key ().UTF8ToString ());
 
 							mc.Next ();
 							Assert.True (mc.IsValid ());
-							Assert.Equal ("c", mc.Key ().FromUTF8 ());
+							Assert.Equal ("c", mc.Key ().UTF8ToString ());
 
 							// ----
 
@@ -946,18 +946,18 @@ namespace lsm_tests
 
 							lc.First ();
 							Assert.True (lc.IsValid ());
-							Assert.Equal ("a", lc.Key ().FromUTF8 ());
-							Assert.Equal ("1", lc.Value ().from_utf8 ());
+							Assert.Equal ("a", lc.Key ().UTF8ToString ());
+							Assert.Equal ("1", lc.Value ().UTF8StreamToString ());
 
 							lc.Next ();
 							Assert.True (lc.IsValid ());
-							Assert.Equal ("c", lc.Key ().FromUTF8 ());
-							Assert.Equal ("3", lc.Value ().from_utf8 ());
+							Assert.Equal ("c", lc.Key ().UTF8ToString ());
+							Assert.Equal ("3", lc.Value ().UTF8StreamToString ());
 
 							lc.Next ();
 							Assert.True (lc.IsValid ());
-							Assert.Equal ("d", lc.Key ().FromUTF8 ());
-							Assert.Equal ("4", lc.Value ().from_utf8 ());
+							Assert.Equal ("d", lc.Key ().UTF8ToString ());
+							Assert.Equal ("4", lc.Value ().UTF8StreamToString ());
 
 							lc.Next ();
 							Assert.False (lc.IsValid ());
@@ -970,16 +970,16 @@ namespace lsm_tests
 
 							lc.Seek ("b", SeekOp.SEEK_LE);
 							Assert.True (lc.IsValid ());
-							Assert.Equal ("a", lc.Key ().FromUTF8 ());
+							Assert.Equal ("a", lc.Key ().UTF8ToString ());
 							lc.Next ();
 							Assert.True (lc.IsValid ());
-							Assert.Equal ("c", lc.Key ().FromUTF8 ());
+							Assert.Equal ("c", lc.Key ().UTF8ToString ());
 
 							lc.Seek ("b", SeekOp.SEEK_GE);
 							Assert.True (lc.IsValid ());
-							Assert.Equal ("c", lc.Key ().FromUTF8 ());
+							Assert.Equal ("c", lc.Key ().UTF8ToString ());
 							lc.Prev ();
-							Assert.Equal ("a", lc.Key ().FromUTF8 ());
+							Assert.Equal ("a", lc.Key ().UTF8ToString ());
 						}
 					}
 				}

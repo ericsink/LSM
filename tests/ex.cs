@@ -38,9 +38,9 @@ namespace lsm_tests
 			return a;
 		}
 
-		public static string from_utf8(this Stream s)
+		public static string UTF8StreamToString(this Stream s)
 		{
-			return ReadAll (s).FromUTF8 ();
+			return ReadAll (s).UTF8ToString ();
 		}
 
 	}

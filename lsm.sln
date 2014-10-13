@@ -11,7 +11,7 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LSM_base", "LSM_base\LSM_ba
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "tapp", "tapp\tapp.csproj", "{2FE3B216-F994-4BE4-BD1B-F7DBA3C0D63E}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "test_base", "test_base\test_base.csproj", "{F05CCE04-5064-4948-8F55-AB29151D0B5F}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "tbase", "tbase\tbase.csproj", "{F05CCE04-5064-4948-8F55-AB29151D0B5F}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
