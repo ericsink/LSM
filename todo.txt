@@ -1,5 +1,20 @@
 
+need tests that read from an overflow stream asking
+for smaller amounts of data
+
+could maybe remove support for a boundary <= 0
+
+see if a block size of 1 page actually works.  probably
+not.  and probably should be disallowed anyway.
+
 --------
+
+page manager needs to keep track of all the pages and
+remember what's free.  and it needs to remember all
+the segments.  all the blocks.
+
+do we need a segment info thing written to the disk?
+like for each segment, a list of all its blocks?
 
 tx stuff:
 
@@ -134,15 +149,6 @@ we don't know its length.
 or maybe we just need to handle valueStreams which cannot
 do Length as a separate code path?
 
-why do the middle pages of an overflow need headers at all?
-
-or maybe at least, the middle overflow pages don't need
-the lastint32?
-
-and maybe OverflowReadStream should just read directly
-into the given ba instead of reading the whole page and
-copying.
-
 can we write an overflow without knowing its length in
 advance?  that would be handy.  maybe we could chain a
 zlib stream and compress as it goes in.  but how do we
@@ -150,11 +156,24 @@ set the skip field?  we pretty much can't.  I suppose we
 could just write the whole thing and then go back and
 write the skip field.
 
-page manager needs to keep track of all the pages and
-remember what's free.  and it needs to remember all
-the segments.  all the blocks.
+--------
 
-do we need a segment info thing written to the disk?
-like for each segment, a list of all its blocks?
+first page:
+    1: pagetype (overflow)
+    1: flags 0 or "last page is a boundary" or "this page is a boundary"
+    (the data), pageSize - 6
+    4: number of pages in this block (skip)
 
+interior pages: 
+    just data
+
+final page of a block: 
+    just data, minus 4 bytes, for the nextpage field at the end
+
+first page can hold pageSize - 6 bytes.  others can hold pageSize.
+except the last one, which can hold pageSize - 4.
+
+and maybe OverflowReadStream should just read directly
+into the given ba instead of reading the whole page and
+copying.
 
