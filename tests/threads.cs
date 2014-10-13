@@ -36,22 +36,24 @@ namespace lsm_tests
 		}
 
 		[Fact]
-		public void one_file()
+		public void single_file_threaded()
 		{
+			const string filename = "single_file_threaded";
+
 			Action<combo> f = (combo c) => {
 				int s1;
 				int s2;
 				int s3;
 				int s4;
 
-				using (var fsPageManager = new FileStream ("one_file", FileMode.Create, FileAccess.ReadWrite, FileShare.ReadWrite)) {
+				using (var fsPageManager = new FileStream (filename, FileMode.Create, FileAccess.ReadWrite, FileShare.ReadWrite)) {
 					IPages pageManager = new SimplePageManager(fsPageManager);
 
 					var ta = new Thread[4];
 					var ts = new int[4];
 
 					ta[0] = new Thread(() => {
-						using (var fs = new FileStream ("one_file", FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite)) {
+						using (var fs = new FileStream (filename, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite)) {
 							var t1 = c.create_memory_segment();
 							for (int i=0; i<5000; i++) {
 								t1.Insert((i*2).ToString(), i.ToString());
@@ -61,7 +63,7 @@ namespace lsm_tests
 					});
 
 					ta[1] = new Thread(() => {
-						using (var fs = new FileStream ("one_file", FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite)) {
+						using (var fs = new FileStream (filename, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite)) {
 							var t1 = c.create_memory_segment();
 							for (int i=0; i<5000; i++) {
 								t1.Insert((i*3).ToString(), i.ToString());
@@ -71,7 +73,7 @@ namespace lsm_tests
 					});
 
 					ta[2] = new Thread(() => {
-						using (var fs = new FileStream ("one_file", FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite)) {
+						using (var fs = new FileStream (filename, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite)) {
 							var t1 = c.create_memory_segment();
 							for (int i=0; i<5000; i++) {
 								t1.Insert((i*5).ToString(), i.ToString());
@@ -81,7 +83,7 @@ namespace lsm_tests
 					});
 
 					ta[3] = new Thread(() => {
-						using (var fs = new FileStream ("one_file", FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite)) {
+						using (var fs = new FileStream (filename, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite)) {
 							var t1 = c.create_memory_segment();
 							for (int i=0; i<5000; i++) {
 								t1.Insert((i*7).ToString(), i.ToString());
@@ -107,20 +109,20 @@ namespace lsm_tests
 
 					int s1_2;
 					int s3_4;
-					using (var fs = new FileStream ("one_file", FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite)) {
+					using (var fs = new FileStream (filename, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite)) {
 
-						using (var fs1 = openFile("one_file")) {
+						using (var fs1 = openFile(filename)) {
 							var csr1 = c.open_btree_segment (fs1, PAGE_SIZE, s1);
-							using (var fs2 = openFile("one_file")) {
+							using (var fs2 = openFile(filename)) {
 								var csr2 = c.open_btree_segment (fs2, PAGE_SIZE, s2);
 								var mc = c.create_multicursor(csr1, csr2);
 								s1_2 = c.create_btree_segment (fs, PAGE_SIZE, pageManager, mc);
 							}
 						}
 
-						using (var fs3 = openFile("one_file")) {
+						using (var fs3 = openFile(filename)) {
 							var csr3 = c.open_btree_segment (fs3, PAGE_SIZE, s3);
-							using (var fs4 = openFile("one_file")) {
+							using (var fs4 = openFile(filename)) {
 								var csr4 = c.open_btree_segment (fs4, PAGE_SIZE, s4);
 								var mc = c.create_multicursor(csr3, csr4);
 								s3_4 = c.create_btree_segment (fs, PAGE_SIZE, pageManager, mc);
@@ -128,12 +130,12 @@ namespace lsm_tests
 						}
 					}
 
-					using (var fs = new FileStream ("one_file", FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite)) {
+					using (var fs = new FileStream (filename, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite)) {
 						int s5;
 
-						using (var fs1_2 = openFile("one_file")) {
+						using (var fs1_2 = openFile(filename)) {
 							var csr1_2 = c.open_btree_segment (fs1_2, PAGE_SIZE, s1_2);
-							using (var fs3_4 = openFile("one_file")) {
+							using (var fs3_4 = openFile(filename)) {
 								var csr3_4 = c.open_btree_segment (fs3_4, PAGE_SIZE, s3_4);
 								var mc = c.create_multicursor(csr1_2, csr3_4);
 								s5 = c.create_btree_segment (fs, PAGE_SIZE, pageManager, mc);

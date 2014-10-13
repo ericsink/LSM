@@ -1,10 +1,19 @@
 
+page size should probably be owned by the page manager
+
 tx stuff:
 
 IWrite needs to have an open cursor which can always see changes
 that were just made.  so the idea of using a plain dictionary
 and then sorting the keys when the cursor is opened?  that
 won't work.  IWrite is an ICursor with two more methods.
+
+or is it?  when iterating, what happens if something is
+inserted?  maybe IWrite.OpenCursor() only sees exactly
+what was current when it was called, as a way of resolving
+the ambiguity of what it should see?  it still needs to be
+fast, though.  if you need to see something you just
+inserted, then just open a new cursor.
 
 IWrite basically represents an open write transaction.
 commit: flush it to a btree and update the segment list.
