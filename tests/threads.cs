@@ -58,7 +58,7 @@ namespace lsm_tests
 							for (int i=0; i<5000; i++) {
 								t1.Insert((i*2).ToString(), i.ToString());
 							}
-							ts[0] = c.create_btree_segment (fs, PAGE_SIZE, pageManager, t1.OpenCursor ());
+							ts[0] = c.create_btree_segment (fs, pageManager, t1.OpenCursor ());
 						}
 					});
 
@@ -68,7 +68,7 @@ namespace lsm_tests
 							for (int i=0; i<5000; i++) {
 								t1.Insert((i*3).ToString(), i.ToString());
 							}
-							ts[1] = c.create_btree_segment (fs, PAGE_SIZE, pageManager, t1.OpenCursor ());
+							ts[1] = c.create_btree_segment (fs, pageManager, t1.OpenCursor ());
 						}
 					});
 
@@ -78,7 +78,7 @@ namespace lsm_tests
 							for (int i=0; i<5000; i++) {
 								t1.Insert((i*5).ToString(), i.ToString());
 							}
-							ts[2] = c.create_btree_segment (fs, PAGE_SIZE, pageManager, t1.OpenCursor ());
+							ts[2] = c.create_btree_segment (fs, pageManager, t1.OpenCursor ());
 						}
 					});
 
@@ -88,7 +88,7 @@ namespace lsm_tests
 							for (int i=0; i<5000; i++) {
 								t1.Insert((i*7).ToString(), i.ToString());
 							}
-							ts[3] = c.create_btree_segment (fs, PAGE_SIZE, pageManager, t1.OpenCursor ());
+							ts[3] = c.create_btree_segment (fs, pageManager, t1.OpenCursor ());
 						}
 					});
 
@@ -116,7 +116,7 @@ namespace lsm_tests
 							using (var fs2 = openFile(filename)) {
 								var csr2 = c.open_btree_segment (fs2, PAGE_SIZE, s2);
 								var mc = c.create_multicursor(csr1, csr2);
-								s1_2 = c.create_btree_segment (fs, PAGE_SIZE, pageManager, mc);
+								s1_2 = c.create_btree_segment (fs, pageManager, mc);
 							}
 						}
 
@@ -125,7 +125,7 @@ namespace lsm_tests
 							using (var fs4 = openFile(filename)) {
 								var csr4 = c.open_btree_segment (fs4, PAGE_SIZE, s4);
 								var mc = c.create_multicursor(csr3, csr4);
-								s3_4 = c.create_btree_segment (fs, PAGE_SIZE, pageManager, mc);
+								s3_4 = c.create_btree_segment (fs, pageManager, mc);
 							}
 						}
 					}
@@ -138,7 +138,7 @@ namespace lsm_tests
 							using (var fs3_4 = openFile(filename)) {
 								var csr3_4 = c.open_btree_segment (fs3_4, PAGE_SIZE, s3_4);
 								var mc = c.create_multicursor(csr1_2, csr3_4);
-								s5 = c.create_btree_segment (fs, PAGE_SIZE, pageManager, mc);
+								s5 = c.create_btree_segment (fs, pageManager, mc);
 							}
 						}
 

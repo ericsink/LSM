@@ -30,11 +30,19 @@ namespace lsm_tests
 		int cur = 1;
 		private readonly Dictionary<string,List<Tuple<int,int>>> segments;
 
+		// TODO pageSize should probably be a param on the constructor?
 		public SimplePageManager(Stream _fs)
 		{
 			fs = _fs;
 			segments = new Dictionary<string, List<Tuple<int, int>>> ();
 		}
+
+        int IPages.PageSize
+        {
+            get {
+                return 256; // TODO not hard-coded
+            }
+        }
 
 		string IPages.Begin()
 		{

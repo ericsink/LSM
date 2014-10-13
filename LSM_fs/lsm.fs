@@ -775,7 +775,8 @@ module BTreeSegment =
                 sofar <- sofar + 1 + Varint.SpaceNeededFor(int64 k.Length) + Varint.SpaceNeededFor(int64 pagenum)
         (nextPageNumber,boundaryPageNumber,nextGeneration)
 
-    let Create(fs:Stream, pageSize:int, pageManager:IPages, csr:ICursor) :int32 = 
+    let Create(fs:Stream, pageManager:IPages, csr:ICursor) :int32 = 
+        let pageSize = pageManager.PageSize
         let pb = new PageBuilder(pageSize)
         let pbOverflow = new PageBuilder(pageSize)
         // TODO encapsulate mutables in a class?

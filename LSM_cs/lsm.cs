@@ -1180,9 +1180,10 @@ namespace Zumero.LSM.cs
 			return new Tuple<int,int,List<node>>(nextPageNumber, boundaryPageNumber, nextGeneration);
 		}
 
-		public static int Create(Stream fs, int pageSize, IPages pageManager, ICursor csr)
+		public static int Create(Stream fs, IPages pageManager, ICursor csr)
 		{
 			// TODO if !(fs.CanSeek()) throw?
+            int pageSize = pageManager.PageSize;
 			PageBuilder pb = new PageBuilder(pageSize);
 			PageBuilder pbOverflow = new PageBuilder(pageSize);
 
