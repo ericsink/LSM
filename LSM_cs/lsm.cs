@@ -222,6 +222,11 @@ namespace Zumero.LSM.cs
             return 0 != (buf[1] & f);
         }
 
+        public int GetSecondToLastInt32()
+        {
+            return GetInt32At(buf.Length - 8);
+        }
+
         public int GetLastInt32()
         {
             return GetInt32At(buf.Length - 4);
@@ -381,6 +386,11 @@ namespace Zumero.LSM.cs
         public void SetPageFlag(byte f)
         {
             buf[1] |= f;
+        }
+
+        public void SetSecondToLastInt32(int page)
+        {
+            PutInt32At(buf.Length - 8, page);
         }
 
         public void SetLastInt32(int page)
@@ -917,21 +927,16 @@ namespace Zumero.LSM.cs
 			}
 		}
 
-		private static void buildParentPage(byte flags, int firstLeaf, int lastLeaf, Dictionary<int,int> overflows, PageBuilder pb, List<node> children, int stop, int start)
+		private static void buildParentPage(Dictionary<int,int> overflows, PageBuilder pb, List<node> children, int stop, int start)
 		{
 			// assert stop >= start
 			int countKeys = (stop - start); 
 
 			pb.Reset ();
 			pb.PutByte (PARENT_NODE);
-			pb.PutByte (flags);
+			pb.PutByte (0);
 
 			pb.PutInt16 ((ushort) countKeys);
-
-			if (0 != (flags & FLAG_ROOT_NODE)) {
-				pb.PutInt32 (firstLeaf);
-				pb.PutInt32 (lastLeaf);
-			}
 
 			// store all the pointers (n+1 of them).  
 			// note q<=stop below
@@ -1108,12 +1113,15 @@ namespace Zumero.LSM.cs
 					if (flushThisPage) {
 						int thisPageNumber = nextPageNumber;
 
-						byte flags = isRootNode ? FLAG_ROOT_NODE : (isBoundary ? FLAG_BOUNDARY_NODE : (byte) 0);
+						buildParentPage (overflows, pb, children, i, first);
 
-						buildParentPage (flags, firstLeaf, lastLeaf, overflows, pb, children, i, first);
-
-						if (!isRootNode) {
+						if (isRootNode) {
+                            pb.SetPageFlag(FLAG_ROOT_NODE);
+                            pb.SetSecondToLastInt32(firstLeaf);
+                            pb.SetLastInt32(lastLeaf);
+                        } else {
 							if (isBoundary) {
+                                pb.SetPageFlag(FLAG_BOUNDARY_NODE);
                                 var newRange = pageManager.GetRange();
                                 nextPageNumber = newRange.Item1;
                                 boundaryPageNumber = newRange.Item2;
@@ -1550,18 +1558,11 @@ namespace Zumero.LSM.cs
 				if (pr.PageType == LEAF_NODE) {
 					firstLeaf = lastLeaf = rootPage;
 				} else if (pr.PageType == PARENT_NODE) {
-					pr.Reset ();
-					if (pr.GetByte() != PARENT_NODE) {
+                    if (!pr.CheckPageFlag(FLAG_ROOT_NODE)) {
 						throw new Exception ();
 					}
-					byte pflag = pr.GetByte ();
-					pr.Skip (sizeof(ushort));
-
-					if (0 == (pflag & FLAG_ROOT_NODE)) {
-						throw new Exception ();
-					}
-					firstLeaf = pr.GetInt32 ();
-					lastLeaf = pr.GetInt32 ();
+					firstLeaf = pr.GetSecondToLastInt32 ();
+					lastLeaf = pr.GetLastInt32 ();
 				}
 				else {
 					throw new Exception();
@@ -1732,9 +1733,6 @@ namespace Zumero.LSM.cs
 				var ptrs = new int[count+1];
 				var keys = new byte[count][];
 
-				if (0 != (pflag & FLAG_ROOT_NODE)) {
-					pr.Skip (2 * sizeof(int));
-				}
 				// note "<= count" below
 				for (int i = 0; i <= count; i++) {
 					ptrs[i] = (int) pr.GetVarint();

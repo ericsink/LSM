@@ -142,6 +142,7 @@ type private PageBuilder(pgsz:int) =
         buf.[at+2] <- byte (v >>>  8)
         buf.[at+3] <- byte (v >>>  0)
 
+    member this.SetSecondToLastInt32(page:int) = this.PutInt32At(buf.Length - 8, page)
     member this.SetLastInt32(page:int) = this.PutInt32At(buf.Length - 4, page)
 
     member this.PutInt16(ov:int) =
@@ -262,6 +263,7 @@ type private PageReader(pgsz:int) =
         int r
 
     member this.CheckPageFlag(f) = 0uy <> (buf.[1] &&& f)
+    member this.GetSecondToLastInt32() = this.GetInt32At(buf.Length - 8)
     member this.GetLastInt32() = this.GetInt32At(buf.Length - 4)
 
     member this.GetArray(len) =
@@ -677,16 +679,13 @@ module BTreeSegment =
 
         (nextPageNumber, boundaryPageNumber)
 
-    let private buildParentPage flags firstLeaf lastLeaf (overflows:System.Collections.Generic.Dictionary<int,int32>) (pb:PageBuilder) (children:System.Collections.Generic.List<int32 * byte[]>) stop start =
+    let private buildParentPage (overflows:System.Collections.Generic.Dictionary<int,int32>) (pb:PageBuilder) (children:System.Collections.Generic.List<int32 * byte[]>) stop start =
         // assert stop > start
         let countKeys = stop - start
         pb.Reset ()
         pb.PutByte (PARENT_NODE)
-        pb.PutByte (flags)
+        pb.PutByte (0uy)
         pb.PutInt16 (countKeys)
-        if 0uy <> (flags &&& FLAG_ROOT_NODE) then
-            pb.PutInt32(firstLeaf)
-            pb.PutInt32(lastLeaf)
         // store all the ptrs, n+1 of them
         // note loop bounds
         for q in start .. stop do
@@ -734,10 +733,14 @@ module BTreeSegment =
 
                 if flushThisPage then
                     let thisPageNumber = nextPageNumber
-                    let flags:byte = if isRootNode then FLAG_ROOT_NODE else if isBoundary then FLAG_BOUNDARY_NODE else 0uy
-                    buildParentPage flags firstLeaf lastLeaf overflows pb children i first
-                    if not isRootNode then
+                    buildParentPage overflows pb children i first
+                    if isRootNode then
+                        pb.SetPageFlag(FLAG_ROOT_NODE)
+                        pb.SetSecondToLastInt32(firstLeaf)
+                        pb.SetLastInt32(lastLeaf)
+                    else
                         if isBoundary then
+                            pb.SetPageFlag(FLAG_BOUNDARY_NODE)
                             let newRange = pageManager.GetRange()
                             nextPageNumber <- fst newRange
                             boundaryPageNumber <- snd newRange
@@ -1024,17 +1027,14 @@ module BTreeSegment =
             if not (setCurrentPage rootPage) then raise (new Exception())
             if pr.PageType = LEAF_NODE then
                 (rootPage, rootPage)
-            else
-                pr.Reset()
-                if pr.GetByte() <> PARENT_NODE then 
+            else if pr.PageType = PARENT_NODE then
+                if not (pr.CheckPageFlag(FLAG_ROOT_NODE)) then
                     raise (new Exception())
-                let pflag = pr.GetByte()
-                pr.GetInt16() |> ignore
-                if 0uy = (pflag &&& FLAG_ROOT_NODE) then 
-                    raise (new Exception())
-                let first = pr.GetInt32()
-                let last = pr.GetInt32()
+                let first = pr.GetSecondToLastInt32()
+                let last = pr.GetLastInt32()
                 (first, last)
+            else
+                raise (new Exception())
               
         let (firstLeaf, lastLeaf) = getFirstAndLastLeaf()
 
@@ -1126,7 +1126,6 @@ module BTreeSegment =
             let count = pr.GetInt16()
             let ptrs:int[] = Array.zeroCreate (int (count+1))
             let keys:byte[][] = Array.zeroCreate (int count)
-            if 0uy <> (pflag &&& FLAG_ROOT_NODE) then pr.Skip(2*4)
             for i in 0 .. int count do
                 ptrs.[i] <-  pr.GetVarint() |> int
             for i in 0 .. int (count-1) do

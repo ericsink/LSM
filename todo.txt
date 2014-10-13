@@ -4,9 +4,6 @@ the blocks/pages that were used by the segment.  either
 BTreeSegment.Create needs to return all this info, or
 the page manager needs to keep track along the way.
 
-consider moving rootpage first/leaf leaf to the end
-of the page
-
 IWrite needs to have an open cursor which can always see changes
 that were just made.  so the idea of using a plain dictionary
 and then sorting the keys when the cursor is opened?  that
