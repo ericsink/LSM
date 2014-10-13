@@ -53,7 +53,7 @@ namespace lsm_tests
 					ta[0] = new Thread(() => {
 						using (var fs = new FileStream ("one_file", FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite)) {
 							var t1 = c.create_memory_segment();
-							for (int i=0; i<50000; i++) {
+							for (int i=0; i<5000; i++) {
 								t1.Insert((i*2).ToString(), i.ToString());
 							}
 							ts[0] = c.create_btree_segment (fs, PAGE_SIZE, pageManager, t1.OpenCursor ());
@@ -63,7 +63,7 @@ namespace lsm_tests
 					ta[1] = new Thread(() => {
 						using (var fs = new FileStream ("one_file", FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite)) {
 							var t1 = c.create_memory_segment();
-							for (int i=0; i<50000; i++) {
+							for (int i=0; i<5000; i++) {
 								t1.Insert((i*3).ToString(), i.ToString());
 							}
 							ts[1] = c.create_btree_segment (fs, PAGE_SIZE, pageManager, t1.OpenCursor ());
@@ -73,7 +73,7 @@ namespace lsm_tests
 					ta[2] = new Thread(() => {
 						using (var fs = new FileStream ("one_file", FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite)) {
 							var t1 = c.create_memory_segment();
-							for (int i=0; i<50000; i++) {
+							for (int i=0; i<5000; i++) {
 								t1.Insert((i*5).ToString(), i.ToString());
 							}
 							ts[2] = c.create_btree_segment (fs, PAGE_SIZE, pageManager, t1.OpenCursor ());
@@ -83,7 +83,7 @@ namespace lsm_tests
 					ta[3] = new Thread(() => {
 						using (var fs = new FileStream ("one_file", FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite)) {
 							var t1 = c.create_memory_segment();
-							for (int i=0; i<50000; i++) {
+							for (int i=0; i<5000; i++) {
 								t1.Insert((i*7).ToString(), i.ToString());
 							}
 							ts[3] = c.create_btree_segment (fs, PAGE_SIZE, pageManager, t1.OpenCursor ());
@@ -147,11 +147,14 @@ namespace lsm_tests
 							while (csr.IsValid()) {
 								csr.Next();
 							}
+
+							csr.Seek((42*3).ToString(), SeekOp.SEEK_EQ);
+							Assert.True(csr.IsValid());
 						}
 					}
 				}
 			};
-			f (combo.make_cs ()); // TODO run in all combos
+			foreach (combo c in combo.get_combos()) f(c);
 		}
 	}
 }
