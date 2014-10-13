@@ -1,4 +1,10 @@
 
+write a test that has multiple things writing pages 
+at the same time
+
+should any of the extension methods for IWrite.Insert
+move into the core code?
+
 for a given segment, we need a way to keep track of all
 the blocks/pages that were used by the segment.  either
 BTreeSegment.Create needs to return all this info, or
@@ -104,6 +110,8 @@ checksums for data integrity
 still concerned about how much we are copying byte[] for keys
 
 prefix key compression?
+
+what are the embedded pointers in the runs in SQLite4 LSM?
 
 zlib compression?  maybe just for overflow pages?
 

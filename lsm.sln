@@ -11,6 +11,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LSM_base", "LSM_base\LSM_ba
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "tapp", "tapp\tapp.csproj", "{2FE3B216-F994-4BE4-BD1B-F7DBA3C0D63E}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "test_base", "test_base\test_base.csproj", "{F05CCE04-5064-4948-8F55-AB29151D0B5F}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -37,6 +39,10 @@ Global
 		{EC16340F-B28D-44EF-9101-FC496D16B255}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{EC16340F-B28D-44EF-9101-FC496D16B255}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{EC16340F-B28D-44EF-9101-FC496D16B255}.Release|Any CPU.Build.0 = Release|Any CPU
+		{F05CCE04-5064-4948-8F55-AB29151D0B5F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{F05CCE04-5064-4948-8F55-AB29151D0B5F}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{F05CCE04-5064-4948-8F55-AB29151D0B5F}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{F05CCE04-5064-4948-8F55-AB29151D0B5F}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(MonoDevelopProperties) = preSolution
 		StartupItem = tests\tests.csproj

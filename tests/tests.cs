@@ -24,25 +24,6 @@ using Zumero.LSM;
 
 namespace lsm_tests
 {
-    // TODO move page manager into combo and implement it in both cs and ls
-    public class SimplePageManager : IPages
-    {
-        private readonly Stream fs;
-		int cur = 1;
-
-        public SimplePageManager(Stream _fs)
-        {
-            fs = _fs;
-        }
-
-        Tuple<int,int> IPages.GetRange()
-        {
-			var t = new Tuple<int,int>(cur,cur + 9);
-			cur = cur + 13;
-			return t;
-        }
-    }
-
 	public class Class1
 	{
 		private const int PAGE_SIZE = 256;

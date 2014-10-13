@@ -653,7 +653,7 @@ module BTreeSegment =
         let extra = if (len % bytesPerPage) <> 0 then 1 else 0
         pages + extra
 
-    let private writeOverflow (pageManager:IPages) startingNextPageNumber startingBoundaryPageNumber (pb:PageBuilder) (fs:Stream) (ba:Stream) =
+    let private writeOverflow (pageManager:IPages) token startingNextPageNumber startingBoundaryPageNumber (pb:PageBuilder) (fs:Stream) (ba:Stream) =
         let mutable sofar = 0
         let len = (int ba.Length)
         let mutable nextPageNumber = startingNextPageNumber
@@ -670,7 +670,7 @@ module BTreeSegment =
 
             if sofar < len then
                 // assert nextPageNumber = boundaryPageNumber
-                let newRange = pageManager.GetRange()
+                let newRange = pageManager.GetRange(token)
                 nextPageNumber <- fst newRange
                 boundaryPageNumber <- snd newRange
                 sofar <- writeOverflowBoundaryPage pb fs ba sofar nextPageNumber
@@ -707,7 +707,7 @@ module BTreeSegment =
         let allowanceForRootNode = if couldBeRoot then 2*4 else 0 // first/last Leaf
         basicSize - (allowanceForRootNode + allowanceForBoundaryNode)
 
-    let private writeParentNodes firstLeaf lastLeaf (children:System.Collections.Generic.List<int32 * byte[]>) (pageManager:IPages) startingPageNumber startingBoundaryPageNumber fs (pb:PageBuilder) (pbOverflow:PageBuilder) =
+    let private writeParentNodes (pageManager:IPages) token firstLeaf lastLeaf (children:System.Collections.Generic.List<int32 * byte[]>) startingPageNumber startingBoundaryPageNumber fs (pb:PageBuilder) (pbOverflow:PageBuilder) =
         let nextGeneration = new System.Collections.Generic.List<int32 * byte[]>()
         let overflows = new System.Collections.Generic.Dictionary<int,int32>()
         // TODO encapsulate mutables in a class?
@@ -741,7 +741,7 @@ module BTreeSegment =
                     else
                         if isBoundary then
                             pb.SetPageFlag(FLAG_BOUNDARY_NODE)
-                            let newRange = pageManager.GetRange()
+                            let newRange = pageManager.GetRange(token)
                             nextPageNumber <- fst newRange
                             boundaryPageNumber <- snd newRange
                             pb.SetLastInt32(nextPageNumber)
@@ -766,7 +766,7 @@ module BTreeSegment =
                     sofar <- sofar + k.Length
                 else
                     let keyOverflowFirstPage = nextPageNumber
-                    let kRange = writeOverflow pageManager nextPageNumber boundaryPageNumber pbOverflow fs (new MemoryStream(k))
+                    let kRange = writeOverflow pageManager token nextPageNumber boundaryPageNumber pbOverflow fs (new MemoryStream(k))
                     nextPageNumber <- fst kRange
                     boundaryPageNumber <- snd kRange
                     sofar <- sofar + 4
@@ -779,7 +779,8 @@ module BTreeSegment =
         let pb = new PageBuilder(pageSize)
         let pbOverflow = new PageBuilder(pageSize)
         // TODO encapsulate mutables in a class?
-        let range = pageManager.GetRange()
+        let token = pageManager.Begin()
+        let range = pageManager.GetRange(token)
         let mutable nextPageNumber:int32 = fst range
         let mutable boundaryPageNumber:int32 = snd range
         let mutable prevPageNumber:int32 = 0
@@ -826,7 +827,7 @@ module BTreeSegment =
                     // another page.
                     if thisPageNumber = boundaryPageNumber then
                         pb.SetPageFlag FLAG_BOUNDARY_NODE
-                        let newRange = pageManager.GetRange()
+                        let newRange = pageManager.GetRange(token)
                         nextPageNumber <- fst newRange
                         boundaryPageNumber <- snd newRange
                         pb.SetLastInt32(nextPageNumber)
@@ -876,7 +877,7 @@ module BTreeSegment =
                     putArrayWithLength pb k
                 else
                     let keyOverflowFirstPage = nextPageNumber
-                    let kRange = writeOverflow pageManager nextPageNumber boundaryPageNumber pbOverflow fs (new MemoryStream(k))
+                    let kRange = writeOverflow pageManager token nextPageNumber boundaryPageNumber pbOverflow fs (new MemoryStream(k))
                     nextPageNumber <- fst kRange
                     boundaryPageNumber <- snd kRange
 
@@ -885,7 +886,7 @@ module BTreeSegment =
                     pb.PutInt32(keyOverflowFirstPage)
 
                 let valueOverflowFirstPage = nextPageNumber
-                let vRange = writeOverflow pageManager nextPageNumber boundaryPageNumber pbOverflow fs v
+                let vRange = writeOverflow pageManager token nextPageNumber boundaryPageNumber pbOverflow fs v
                 nextPageNumber <- fst vRange
                 boundaryPageNumber <- snd vRange
 
@@ -903,7 +904,7 @@ module BTreeSegment =
             else
                 if thisPageNumber = boundaryPageNumber then
                     pb.SetPageFlag FLAG_BOUNDARY_NODE
-                    let newRange = pageManager.GetRange()
+                    let newRange = pageManager.GetRange(token)
                     nextPageNumber <- fst newRange
                     boundaryPageNumber <- snd newRange
                     pb.SetLastInt32(nextPageNumber)
@@ -921,13 +922,15 @@ module BTreeSegment =
             // keep writing until we have written a level which has only one node,
             // which is the root node.
             while nodelist.Count > 1 do
-                let (newNextPageNumber,newBoundaryPageNumber,newNodelist) = writeParentNodes firstLeaf lastLeaf nodelist pageManager nextPageNumber boundaryPageNumber fs pb pbOverflow
+                let (newNextPageNumber,newBoundaryPageNumber,newNodelist) = writeParentNodes pageManager token firstLeaf lastLeaf nodelist nextPageNumber boundaryPageNumber fs pb pbOverflow
                 nextPageNumber <- newNextPageNumber
                 boundaryPageNumber <- newBoundaryPageNumber
                 nodelist <- newNodelist
             // assert nodelist.Count = 1
+            pageManager.End(token, fst nodelist.[0])
             fst nodelist.[0]
         else
+            pageManager.End(token, 0)
             0
 
     type private myOverflowReadStream(_fs:Stream, pageSize:int, first:int, _len:int) =
