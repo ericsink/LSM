@@ -1019,7 +1019,7 @@ module BTreeSegment =
         let mutable sofarOverall = 0
         let mutable sofarThisPage = 0
         let mutable firstPageInBlock = 0
-        let mutable countRegularDataPagesInBlock = 0
+        let mutable countRegularDataPagesInBlock = 0 // TODO not sure we need this
         let mutable boundaryPageNumber = 0
         let mutable bytesOnThisPage = 0
         let mutable offsetOnThisPage = 0
@@ -1079,25 +1079,43 @@ module BTreeSegment =
         override this.CanRead = sofarOverall < len
 
         override this.Read(ba,offset,wanted) =
-            // TODO in some cases, we could just read directly into
-            // ba.
             if sofarOverall >= len then
                 0
             else    
+                let mutable direct = false
                 if (sofarThisPage >= bytesOnThisPage) then
                     if currentPage = boundaryPageNumber then
                         currentPage <- GetLastInt32()
                         ReadFirstPage()
                     else
                         currentPage <- currentPage + 1
-                        ReadPage()
+                        if (currentPage <> boundaryPageNumber) && (wanted >= buf.Length) then
+                            // assert currentPage > firstPageInBlock
+                            direct <- true
+                            bytesOnThisPage <- buf.Length
+                            sofarThisPage <- 0
+                            offsetOnThisPage <- 0
+                        else
+                            ReadPage()
 
-                let available = Math.Min (bytesOnThisPage - sofarThisPage, len - sofarOverall)
-                let num = Math.Min (available, wanted)
-                System.Array.Copy (buf, offsetOnThisPage + sofarThisPage, ba, offset, num)
-                sofarOverall <- sofarOverall + num
-                sofarThisPage <- sofarThisPage + num
-                num
+                if direct then
+                    // skip the buffer.  note, therefore, that the contents of the
+                    // buffer are "invalid" in that they do not correspond to currentPage
+                    //
+                    // TODO it is conceivable that we could actually read MORE than one
+                    // page here.
+                    utils.SeekPage(fs, buf.Length, currentPage)
+                    utils.ReadFully(fs, ba, offset, buf.Length)
+                    sofarOverall <- sofarOverall + buf.Length
+                    sofarThisPage <- buf.Length
+                    buf.Length
+                else
+                    let available = Math.Min (bytesOnThisPage - sofarThisPage, len - sofarOverall)
+                    let num = Math.Min (available, wanted)
+                    System.Array.Copy (buf, offsetOnThisPage + sofarThisPage, ba, offset, num)
+                    sofarOverall <- sofarOverall + num
+                    sofarThisPage <- sofarThisPage + num
+                    num
 
         override this.CanSeek = false
         override this.CanWrite = false
