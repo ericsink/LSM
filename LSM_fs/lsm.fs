@@ -142,7 +142,7 @@ type private PageBuilder(pgsz:int) =
         buf.[at+2] <- byte (v >>>  8)
         buf.[at+3] <- byte (v >>>  0)
 
-    member this.SetBoundaryNextPageField(page:int) = this.PutInt32At(buf.Length - 4, page)
+    member this.SetLastInt32(page:int) = this.PutInt32At(buf.Length - 4, page)
 
     member this.PutInt16(ov:int) =
         // assert ov >= 0
@@ -262,7 +262,7 @@ type private PageReader(pgsz:int) =
         int r
 
     member this.CheckPageFlag(f) = 0uy <> (buf.[1] &&& f)
-    member this.GetBoundaryNextPageField() = this.GetInt32At(buf.Length - 4)
+    member this.GetLastInt32() = this.GetInt32At(buf.Length - 4)
 
     member this.GetArray(len) =
         let ba:byte[] = Array.zeroCreate len
@@ -619,10 +619,10 @@ module BTreeSegment =
             pb.Reset()
             pb.PutByte(OVERFLOW_NODE)
             pb.PutByte(0uy)
-            pb.PutInt32(numPagesToWrite - count)
             // check for the likely partial page at the end
             let num = Math.Min((pb.PageSize - OVERFLOW_PAGE_HEADER_SIZE), (len - sofar))
             pb.PutStream(ba, num)
+            pb.SetLastInt32(numPagesToWrite - count)
             sofar <- sofar + num
             pb.Flush(fs)
             count <- count + 1
@@ -636,18 +636,16 @@ module BTreeSegment =
         pb.Reset()
         pb.PutByte(OVERFLOW_NODE)
         pb.PutByte(FLAG_BOUNDARY_NODE)
-        pb.PutInt32(0) // TODO really?
         // check for the possible partial page at the end
-        let num = Math.Min((pb.PageSize - OVERFLOW_PAGE_HEADER_SIZE - 4), (len - sofar))
+        let num = Math.Min((pb.PageSize - OVERFLOW_PAGE_HEADER_SIZE), (len - sofar))
         pb.PutStream(ba, num)
+        pb.SetLastInt32(nextPageNumber)
         sofar <- sofar + num
-        pb.SetBoundaryNextPageField(nextPageNumber)
         pb.Flush(fs)
 
         sofar
 
     let private countOverflowPagesFor pageSize len = 
-        // this assumes no boundary pages
         let bytesPerPage = pageSize - OVERFLOW_PAGE_HEADER_SIZE
         let pages = len / bytesPerPage
         let extra = if (len % bytesPerPage) <> 0 then 1 else 0
@@ -743,7 +741,7 @@ module BTreeSegment =
                             let newRange = pageManager.GetRange()
                             nextPageNumber <- fst newRange
                             boundaryPageNumber <- snd newRange
-                            pb.SetBoundaryNextPageField(nextPageNumber)
+                            pb.SetLastInt32(nextPageNumber)
                         else
                             nextPageNumber <- nextPageNumber + 1
                     pb.Flush(fs)
@@ -828,7 +826,7 @@ module BTreeSegment =
                         let newRange = pageManager.GetRange()
                         nextPageNumber <- fst newRange
                         boundaryPageNumber <- snd newRange
-                        pb.SetBoundaryNextPageField(nextPageNumber)
+                        pb.SetLastInt32(nextPageNumber)
                     else
                         nextPageNumber <- nextPageNumber + 1
                     pb.PutInt16At (OFFSET_COUNT_PAIRS, countPairs)
@@ -905,7 +903,7 @@ module BTreeSegment =
                     let newRange = pageManager.GetRange()
                     nextPageNumber <- fst newRange
                     boundaryPageNumber <- snd newRange
-                    pb.SetBoundaryNextPageField(nextPageNumber)
+                    pb.SetLastInt32(nextPageNumber)
                 else
                     nextPageNumber <- nextPageNumber + 1
             pb.PutInt16At (OFFSET_COUNT_PAIRS, countPairs)
@@ -947,9 +945,6 @@ module BTreeSegment =
             sofarThisPage <- 0
 
         let isBoundary() = 0uy <> (buf.[1] &&& FLAG_BOUNDARY_NODE)
-        let availableOnThisPage() =
-            let allowanceForBoundary = if isBoundary() then 4 else 0
-            (buf.Length - OVERFLOW_PAGE_HEADER_SIZE) - allowanceForBoundary
 
         let GetInt32At(at) :int =
             let a0 = uint64 buf.[at+0]
@@ -966,18 +961,19 @@ module BTreeSegment =
         override this.CanRead = sofarOverall < len
 
         override this.Read(ba,offset,wanted) =
+            let bytesPerPage = buf.Length - OVERFLOW_PAGE_HEADER_SIZE
             if sofarOverall >= len then
                 0
             else    
-                if (sofarThisPage >= availableOnThisPage()) then
+                if (sofarThisPage >= bytesPerPage) then
                     if isBoundary() then
                         currentPage <- GetInt32At(buf.Length - 4)
                     else
                         currentPage <- currentPage + 1
                     ReadPage()
-                let available = Math.Min (availableOnThisPage(), len - sofarOverall)
+                let available = Math.Min (bytesPerPage, len - sofarOverall)
                 let num = Math.Min (available, wanted)
-                System.Array.Copy (buf, OVERFLOW_PAGE_HEADER_SIZE + sofarThisPage, ba, offset, num)
+                System.Array.Copy (buf, 2 + sofarThisPage, ba, offset, num)
                 sofarOverall <- sofarOverall + num
                 sofarThisPage <- sofarThisPage + num
                 num
@@ -1155,23 +1151,28 @@ module BTreeSegment =
                 // no more leaves.
                 false
             else
+                let lastInt32 = pr.GetLastInt32()
+                //
+                // an overflow page has a value in its LastInt32 which
+                // is one of two things.
+                //
+                // if it's a boundary node, it's the page number of the
+                // next page in the segment.
+                //
+                // otherwise, it's the number of pages to skip ahead.
+                // this skip might take us to whatever follows this
+                // overflow (which could be a leadf or a parent or
+                // another overflow), or it might just take us to a
+                // boundary page (in the case where the overflow didn't
+                // fit).  it doesn't matter.  we just skip ahead.
+                //
                 if pr.CheckPageFlag(FLAG_BOUNDARY_NODE) then
-                    // this happens when an overflow didn't fit.  the
-                    // skip field gets set to point to its boundary page
-                    // instead of to the end of the overflow.
-                    if setCurrentPage (pr.GetBoundaryNextPageField()) then
+                    if setCurrentPage (lastInt32) then
                         searchForwardForLeaf()
                     else
                         false
                 else
-                    pr.SetPosition(2) // offset of the pages_remaining
-                    let skip = pr.GetInt32()
-                    // the skip field in an overflow page should take us to
-                    // whatever follows this overflow (which could be a leaf
-                    // or a parent or another overflow) OR to the boundary
-                    // page for this overflow (in the case where the overflow
-                    // didn't fit)
-                    if setCurrentPage (currentPage + skip) then
+                    if setCurrentPage (currentPage + lastInt32) then
                         searchForwardForLeaf()
                     else
                         false
@@ -1201,7 +1202,7 @@ module BTreeSegment =
                             // to look at the next/prev leaf.
                             if SeekOp.SEEK_GE = sop then
                                 let nextPage =
-                                    if pr.CheckPageFlag(FLAG_BOUNDARY_NODE) then pr.GetBoundaryNextPageField()
+                                    if pr.CheckPageFlag(FLAG_BOUNDARY_NODE) then pr.GetLastInt32()
                                     else currentPage + 1
                                 if (setCurrentPage (nextPage) && searchForwardForLeaf ()) then
                                     readLeaf()
@@ -1271,7 +1272,7 @@ module BTreeSegment =
             member this.Next() =
                 if not (nextInLeaf()) then
                     let nextPage =
-                        if pr.CheckPageFlag(FLAG_BOUNDARY_NODE) then pr.GetBoundaryNextPageField()
+                        if pr.CheckPageFlag(FLAG_BOUNDARY_NODE) then pr.GetLastInt32()
                         else currentPage + 1
                     if setCurrentPage (nextPage) && searchForwardForLeaf() then
                         readLeaf()

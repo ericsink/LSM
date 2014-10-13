@@ -222,7 +222,7 @@ namespace Zumero.LSM.cs
             return 0 != (buf[1] & f);
         }
 
-        public int GetBoundaryNextPageField()
+        public int GetLastInt32()
         {
             return GetInt32At(buf.Length - 4);
         }
@@ -383,7 +383,7 @@ namespace Zumero.LSM.cs
             buf[1] |= f;
         }
 
-        public void SetBoundaryNextPageField(int page)
+        public void SetLastInt32(int page)
         {
             PutInt32At(buf.Length - 4, page);
         }
@@ -961,10 +961,10 @@ namespace Zumero.LSM.cs
 				pb.Reset ();
 				pb.PutByte (OVERFLOW_NODE);
 				pb.PutByte (0);
-				pb.PutInt32 (numPagesToWrite - count);
                 // check for the likely partial page at the end
 				int num = Math.Min ((pb.PageSize - OVERFLOW_PAGE_HEADER_SIZE), (int) (ba.Length - sofar));
 				pb.PutStream (ba, num);
+				pb.SetLastInt32 (numPagesToWrite - count);
 				sofar += num;
 				pb.Flush (fs);
 				count++;
@@ -977,12 +977,11 @@ namespace Zumero.LSM.cs
             pb.Reset ();
             pb.PutByte (OVERFLOW_NODE);
             pb.PutByte (FLAG_BOUNDARY_NODE);
-            pb.PutInt32 (0); // TODO should we really just leave the skip field 0?
             // check for the possible partial page at the end
-            int num = Math.Min ((pb.PageSize - OVERFLOW_PAGE_HEADER_SIZE - sizeof(int)), (int) (ba.Length - sofar));
+            int num = Math.Min ((pb.PageSize - OVERFLOW_PAGE_HEADER_SIZE), (int) (ba.Length - sofar));
             pb.PutStream (ba, num);
+            pb.SetLastInt32(nextPageNumber);
             sofar += num;
-            pb.SetBoundaryNextPageField(nextPageNumber);
             pb.Flush (fs);
 
             return sofar;
@@ -998,7 +997,6 @@ namespace Zumero.LSM.cs
 
 		private static int countOverflowPagesFor(int pageSize, int len)
 		{
-			// this assumes no boundary pages
 			int bytesPerPage = pageSize - OVERFLOW_PAGE_HEADER_SIZE;
 			int needed = len / bytesPerPage;
 			if ((len % bytesPerPage) != 0) {
@@ -1119,7 +1117,7 @@ namespace Zumero.LSM.cs
                                 var newRange = pageManager.GetRange();
                                 nextPageNumber = newRange.Item1;
                                 boundaryPageNumber = newRange.Item2;
-                                pb.SetBoundaryNextPageField(nextPageNumber);
+                                pb.SetLastInt32(nextPageNumber);
 							} else {
 								nextPageNumber++;
 							}
@@ -1249,7 +1247,7 @@ namespace Zumero.LSM.cs
                             var newRange = pageManager.GetRange();
                             nextPageNumber = newRange.Item1;
                             boundaryPageNumber = newRange.Item2;
-                            pb.SetBoundaryNextPageField(nextPageNumber);
+                            pb.SetLastInt32(nextPageNumber);
 						} else {
 							nextPageNumber++;
 						}
@@ -1354,7 +1352,7 @@ namespace Zumero.LSM.cs
                         var newRange = pageManager.GetRange();
                         nextPageNumber = newRange.Item1;
                         boundaryPageNumber = newRange.Item2;
-                        pb.SetBoundaryNextPageField(nextPageNumber);
+                        pb.SetLastInt32(nextPageNumber);
 					} else {
 						nextPageNumber++;
 					}
@@ -1443,14 +1441,6 @@ namespace Zumero.LSM.cs
                 }
             }
 
-            private int availableOnThisPage
-            {
-                get {
-                    int allowanceForBoundary = isBoundary ? 4 : 0;
-                    return (buf.Length - OVERFLOW_PAGE_HEADER_SIZE) - allowanceForBoundary;
-                }
-            }
-
             private int GetInt32At(int at)
             {
                 uint val = buf [at];
@@ -1463,7 +1453,8 @@ namespace Zumero.LSM.cs
 
 			public override int Read (byte[] ba, int offset, int wanted)
 			{
-				if (sofarThisPage >= availableOnThisPage) {
+				int bytesPerPage = buf.Length - OVERFLOW_PAGE_HEADER_SIZE;
+				if (sofarThisPage >= bytesPerPage) {
 					if (sofarOverall < len) {
                         if (isBoundary) {
                             currentPage = GetInt32At(buf.Length - 4);
@@ -1476,9 +1467,9 @@ namespace Zumero.LSM.cs
 					}
 				}
 
-				int available = (int) Math.Min (availableOnThisPage, len - sofarOverall);
+				int available = (int) Math.Min (bytesPerPage, len - sofarOverall);
 				int num = (int)Math.Min (available, wanted);
-				Array.Copy (buf, OVERFLOW_PAGE_HEADER_SIZE + sofarThisPage, ba, offset, num);
+				Array.Copy (buf, 2 + sofarThisPage, ba, offset, num);
 				sofarOverall += num;
 				sofarThisPage += num;
 
@@ -1780,20 +1771,25 @@ namespace Zumero.LSM.cs
 					else {
 						// assert OVERFLOW == _buf[0]
                         int nextPage;
+                        int lastInt32 = pr.GetLastInt32();
+                        //
+                        // an overflow page has a value in its LastInt32 which
+                        // is one of two things.
+                        //
+                        // if it's a boundary node, it's the page number of the
+                        // next page in the segment.
+                        //
+                        // otherwise, it's the number of pages to skip ahead.
+                        // this skip might take us to whatever follows this
+                        // overflow (which could be a leadf or a parent or
+                        // another overflow), or it might just take us to a
+                        // boundary page (in the case where the overflow didn't
+                        // fit).  it doesn't matter.  we just skip ahead.
+                        //
                         if (pr.CheckPageFlag(FLAG_BOUNDARY_NODE)) {
-                            // this happens when an overflow didn't fit.  the
-                            // skip field gets set to point to its boundary page
-                            // instead of to the end of the overflow.
-                            nextPage = pr.GetBoundaryNextPageField();
+                            nextPage = lastInt32;
                         } else {
-                            pr.SetPosition (2); // offset of the pages_remaining
-                            int skip = pr.GetInt32 ();
-                            // the skip field in an overflow page should take us to
-                            // whatever follows this overflow (which could be a leaf
-                            // or a parent or another overflow) OR to the boundary
-                            // page for this overflow (in the case where the overflow
-                            // didn't fit)
-                            nextPage = currentPage + skip;
+                            nextPage = currentPage + lastInt32;
                         }
                         if (!setCurrentPage(nextPage)) {
                             return false;
@@ -1883,7 +1879,7 @@ namespace Zumero.LSM.cs
 								if (SeekOp.SEEK_GE == sop) {
                                     int nextPage;
 									if (pr.CheckPageFlag(FLAG_BOUNDARY_NODE)) {
-                                        nextPage = pr.GetBoundaryNextPageField();
+                                        nextPage = pr.GetLastInt32();
                                     } else {
                                         nextPage = currentPage + 1;
                                     }
@@ -1950,7 +1946,7 @@ namespace Zumero.LSM.cs
 					// need a new page
                     int nextPage;
                     if (pr.CheckPageFlag(FLAG_BOUNDARY_NODE)) {
-                        nextPage = pr.GetBoundaryNextPageField();
+                        nextPage = pr.GetLastInt32();
                     } else {
                         nextPage = currentPage + 1;
                     }

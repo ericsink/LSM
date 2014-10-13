@@ -7,11 +7,6 @@ the page manager needs to keep track along the way.
 consider moving rootpage first/leaf leaf to the end
 of the page
 
-on an overflow boundary page, there is no need to put
-the boundary next pointer at the end of the page.  just
-re-use the skip pointer.  maybe move the skip pointer to
-the end of the page.
-
 IWrite needs to have an open cursor which can always see changes
 that were just made.  so the idea of using a plain dictionary
 and then sorting the keys when the cursor is opened?  that
