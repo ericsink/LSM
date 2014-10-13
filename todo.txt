@@ -1,14 +1,5 @@
 
-write a test that has multiple things writing pages 
-at the same time
-
-should any of the extension methods for IWrite.Insert
-move into the core code?
-
-for a given segment, we need a way to keep track of all
-the blocks/pages that were used by the segment.  either
-BTreeSegment.Create needs to return all this info, or
-the page manager needs to keep track along the way.
+tx stuff:
 
 IWrite needs to have an open cursor which can always see changes
 that were just made.  so the idea of using a plain dictionary
@@ -82,16 +73,15 @@ read the segment list, and write it back out.
 
 --------
 
-encapuslate mutable local-function-variables in a class?
-
-fix the realloc of leafKeys in the cs code as well
-
-memorysegment opencursor is slow, profile says so.  because
-of the sort of the dictionary keys.
-
 test multicursor with the same cursor twice?
 
 test multicursor with two identical subs?
+
+--------
+
+fsharp stuff:
+
+encapuslate mutable local-function-variables in a class?
 
 way too many mutables in the fs code
 
@@ -104,6 +94,8 @@ test multicursor with more than 2 subs
 no exception throwing?  everything needs to return status.
 but almost everything in .NET throws.  need F#-specific
 implementation of things like SortedDictionary?
+
+--------
 
 checksums for data integrity
 
@@ -123,6 +115,9 @@ needed a way to ask a cursor if a
 value is a tombstone without retrieving it.  it could be
 huge, and all we wanna know is if it exists.  why doesn't
 sqlite4's LSM have ICursor.vlen()?
+
+fix the realloc of leafKeys in the cs code as well?  or is
+the cs code just becoming part of the fs version's test suite?
 
 --------
 
