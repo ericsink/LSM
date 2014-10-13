@@ -18,21 +18,30 @@ using System;
 using System.IO;
 using System.Collections.Generic;
 
-//using Xunit;
-
 using Zumero.LSM;
 
 namespace lsm_tests
 {
 	public static class hack
 	{
-		public static string from_utf8(this Stream s)
+		public static byte[] ReadAll(Stream s)
 		{
-			// note the arbitrary choice of getting this function from cs instead of fs
-			// maybe utils should move into LSM_base
-			return Zumero.LSM.cs.utils.ReadAll (s).FromUTF8 ();
+			byte[] a = new byte[(int) (s.Length - s.Position)];
+			int sofar = 0;
+			while (sofar < a.Length) {
+				int got = s.Read (a, sofar, (int) (a.Length - sofar));
+				if (0 == got) {
+					throw new Exception();
+				}
+				sofar += got;
+			}
+			return a;
 		}
 
+		public static string from_utf8(this Stream s)
+		{
+			return ReadAll (s).FromUTF8 ();
+		}
 
 	}
 
