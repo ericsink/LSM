@@ -26,7 +26,7 @@ namespace lsm_tests
 {
 	public class Class1
 	{
-		private const int PAGE_SIZE = 256;
+		private const int PAGE_SIZE = 256; // TODO very low, for testing purposes
 
 		private int lastPage(Stream fs)
 		{

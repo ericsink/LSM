@@ -31,6 +31,14 @@ namespace lsm_tests
 		private readonly Dictionary<string,List<Tuple<int,int>>> segments;
 		int pageSize;
 
+		// TODO could be a param
+		const int PAGES_PER_BLOCK = 10; // TODO very low, for testing purposes
+
+		// surprisingly enough, the test suite passes with only ONE page per block.
+		// this is still absurd and should probably be disallowed.
+
+		const int WASTE_PAGES_AFTER_EACH_BLOCK = 3; // obviously, for testing purposes only
+
 		public SimplePageManager(Stream _fs, int _pageSize)
 		{
 			fs = _fs;
@@ -64,8 +72,8 @@ namespace lsm_tests
 		Tuple<int,int> IPages.GetRange(string token)
 		{
 			lock (this) {
-				var t = new Tuple<int,int> (cur, cur + 9);
-				cur = cur + 13;
+				var t = new Tuple<int,int> (cur, cur + PAGES_PER_BLOCK - 1);
+				cur = cur + PAGES_PER_BLOCK + WASTE_PAGES_AFTER_EACH_BLOCK;
 				segments [token].Add (t);
 				//Console.WriteLine ("{0} gets {1} --> {2}", token, t.Item1, t.Item2);
 				return t;
