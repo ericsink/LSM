@@ -94,7 +94,7 @@ namespace lsm_tests
 				}
 
 				using (var fs = new FileStream ("blobs", FileMode.Create)) {
-					IPages pageManager = new SimplePageManager(fs);
+					IPages pageManager = new SimplePageManager(fs, PAGE_SIZE);
 					int pg = c.create_btree_segment (fs, pageManager, t1.OpenCursor ());
 
 					ICursor t1csr = t1.OpenCursor();
@@ -117,8 +117,6 @@ namespace lsm_tests
 						t1csr.Next();
 					}
 				}
-
-				// TODO verify that every blob is the same
 			};
 			foreach (combo c in combo.get_combos()) f(c);
 	    }

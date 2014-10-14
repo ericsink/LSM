@@ -47,7 +47,7 @@ namespace lsm_tests
 				int s4;
 
 				using (var fsPageManager = new FileStream (filename, FileMode.Create, FileAccess.ReadWrite, FileShare.ReadWrite)) {
-					IPages pageManager = new SimplePageManager(fsPageManager);
+					IPages pageManager = new SimplePageManager(fsPageManager, PAGE_SIZE);
 
 					var ta = new Thread[4];
 					var ts = new int[4];
