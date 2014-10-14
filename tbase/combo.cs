@@ -81,8 +81,8 @@ namespace lsm_tests
 			List<combo> a = new List<combo>();
 			a.Add(combo.make_cs());
 			a.Add(combo.make_fs());
-			//a.Add(combo.make_cs_fs());
-			//a.Add(combo.make_fs_cs());
+			a.Add(combo.make_cs_fs());
+			a.Add(combo.make_fs_cs());
 			return a;
 		}
 	}

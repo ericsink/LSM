@@ -896,8 +896,7 @@ namespace Zumero.LSM.cs
         // flags on pages
 		private const byte FLAG_ROOT_NODE = 1;
 		private const byte FLAG_BOUNDARY_NODE = 2;
-
-		private const int OVERFLOW_PAGE_HEADER_SIZE = 6; // TODO going away
+		private const byte FLAG_ENDS_ON_BOUNDARY = 4;
 
 		private class node
 		{
@@ -961,55 +960,49 @@ namespace Zumero.LSM.cs
 			}
 		}
 
-        private static int writePartialOverflow(PageBuilder pb, Stream fs, Stream ba, int numPagesToWrite, int sofar)
-        {
-			int count = 0;
-            for (int i=0; i<numPagesToWrite; i++) {
-				pb.Reset ();
-				pb.PutByte (OVERFLOW_NODE);
-				pb.PutByte (0);
-                // check for the likely partial page at the end
-				int num = Math.Min ((pb.PageSize - OVERFLOW_PAGE_HEADER_SIZE), (int) (ba.Length - sofar));
-				pb.PutStream (ba, num);
-				pb.SetLastInt32 (numPagesToWrite - count);
-				sofar += num;
-				pb.Flush (fs);
-				count++;
-			}
-            return sofar;
-        }
-
-        private static int writeOverflowBoundaryPage(PageBuilder pb, Stream fs, Stream ba, int sofar, int nextPageNumber)
+        private static int buildOverflowFirstPage(PageBuilder pb, Stream ba, int len, int sofar)
         {
             pb.Reset ();
             pb.PutByte (OVERFLOW_NODE);
-            pb.PutByte (FLAG_BOUNDARY_NODE);
-            // check for the possible partial page at the end
-            int num = Math.Min ((pb.PageSize - OVERFLOW_PAGE_HEADER_SIZE), (int) (ba.Length - sofar));
+            pb.PutByte (0); // starts at 0, may be changed before page is written
+            // check for the partial page at the end
+            int num = Math.Min ((pb.PageSize - (2 + sizeof(int))), (int) (len - sofar));
             pb.PutStream (ba, num);
-            pb.SetLastInt32(nextPageNumber);
-            sofar += num;
-            pb.Flush (fs);
+            // something will be put in lastInt32 before the page is written
+            return sofar + num;
+        }
 
+        private static int writeOverflowRegularPages(PageBuilder pb, Stream fs, Stream ba, int numPagesToWrite, int len, int sofar)
+        {
+            for (int i=0; i<numPagesToWrite; i++) {
+                pb.Reset ();
+                // check for the partial page at the end
+				int num = Math.Min (pb.PageSize, (int) (len - sofar));
+				pb.PutStream (ba, num);
+				sofar += num;
+				pb.Flush (fs);
+			}
             return sofar;
         }
 
-		/*
-		 * Each overflow page, after 1 byte for the page type and 1 byte for flags,
-		 * has a 32-bit int which is the number of pages left in this overflow value.
-		 * 
-		 * It would be nice to make this a varint, but that would be problematic.
-		 * We need to know in advance how many pages the value will consume.
-		 */
+        private static int buildOverflowBoundaryPage(PageBuilder pb, Stream ba, int len, int sofar)
+        {
+            pb.Reset ();
+            // check for the partial page at the end
+            int num = Math.Min ((pb.PageSize - sizeof(int)), (int) (len - sofar));
+            pb.PutStream (ba, num);
+            // something will be put in lastInt32 before the page is written
+
+            return sofar + num;
+        }
 
 		private static int countOverflowPagesFor(int pageSize, int len)
 		{
-			int bytesPerPage = pageSize - OVERFLOW_PAGE_HEADER_SIZE;
-			int needed = len / bytesPerPage;
-			if ((len % bytesPerPage) != 0) {
-				needed++;
+            int pages = len / pageSize;
+			if ((len % pageSize) != 0) {
+				pages++;
 			}
-			return needed;
+			return pages;
 		}
 
 		private static Tuple<int,int> writeOverflow(IPages pageManager, string token, int startingNextPageNumber, int startingBoundaryPageNumber, PageBuilder pb, Stream fs, Stream ba)
@@ -1018,29 +1011,95 @@ namespace Zumero.LSM.cs
 			int len = (int) ba.Length;
             int nextPageNumber = startingNextPageNumber;
             int boundaryPageNumber = startingBoundaryPageNumber;
-            int pagesWritten = 0;
 
             while (sofar < len) {
-                int needed = countOverflowPagesFor (pb.PageSize, len - sofar);
-                int availableBeforeBoundary;
-                if (boundaryPageNumber > 0) {
-                    availableBeforeBoundary = boundaryPageNumber - nextPageNumber;
-                } else {
-                    availableBeforeBoundary = needed;
-                }
-                int numPages = Math.Min(needed, availableBeforeBoundary);
-                sofar = writePartialOverflow(pb, fs, ba, numPages, sofar);
-                pagesWritten += numPages;
-                nextPageNumber += numPages;
-
-                if (sofar < len) {
-                    // assert nextPageNumber == boundaryPageNumber
+                // we're going to write out an overflow first page,
+                // followed by zero-or-more "regular" overflow pages,
+                // which have no header.  we'll stop at the boundary
+                // if the whole thing won't fit.
+                sofar = buildOverflowFirstPage(pb, ba, len, sofar);
+                // note that we haven't flushed this page yet.
+                var thisPageNumber = nextPageNumber;
+                if (thisPageNumber == boundaryPageNumber) {
+                    // the first page landed on a boundary
+                    pb.SetPageFlag(FLAG_BOUNDARY_NODE);
                     var newRange = pageManager.GetRange(token);
                     nextPageNumber = newRange.Item1;
                     boundaryPageNumber = newRange.Item2;
-                    sofar = writeOverflowBoundaryPage(pb, fs, ba, sofar, nextPageNumber);
-                    pagesWritten++;
+                    pb.SetLastInt32(nextPageNumber);
+                    pb.Flush(fs);
                     utils.SeekPage(fs, pb.PageSize, nextPageNumber);
+                }
+                else {
+                    nextPageNumber = nextPageNumber + 1;
+                    // assert sofar <= len
+                    if (sofar == len) {
+                        // the first page is also the last one
+						pb.SetLastInt32 (0); // number of regular pages following
+                        pb.Flush(fs);
+                    }
+                    else {
+                        // assert sofar < len
+
+                        // needed gives us the number of pages, NOT including the first one
+                        // which would be necessary to finish this overflow.
+                        var needed = countOverflowPagesFor (pb.PageSize, len - sofar);
+
+                        // availableBeforeBoundary is the number of pages until the boundary,
+                        // NOT counting the boundary page.  nextPageNumber has already been incremented
+                        // for the first page in the block, so we're just talking about data pages.
+                        var availableBeforeBoundary = (boundaryPageNumber > 0) ? (boundaryPageNumber - nextPageNumber) : needed;
+
+                        // if needed <= availableBeforeBoundary then this will fit
+
+                        // if needed = (1 + availableBeforeBoundary) then this might fit, 
+                        // depending on whether the loss of the 4 bytes on the boundary
+                        // page makes a difference or not.  Either way, for this block,
+                        // the overflow ends on the boundary
+
+                        // if needed > (1 + availableBeforeBoundary), then this block will end 
+                        // on the boundary, but it will continue
+
+                        var numRegularPages = Math.Min(needed, availableBeforeBoundary);
+                        pb.SetLastInt32(numRegularPages);
+
+                        if (needed > availableBeforeBoundary) {
+                            // this part of the overflow will end on the boundary,
+                            // perhaps because it finishes exactly there, or perhaps
+                            // because it doesn't fit and needs to continue into the
+                            // next block.
+                            pb.SetPageFlag(FLAG_ENDS_ON_BOUNDARY);
+                        }
+
+                        // now we can flush the first page
+                        pb.Flush(fs);
+
+                        // write out the regular pages.  these are full pages
+                        // of data, with no header and no footer.  the last
+                        // page might not be full, since it might be a
+                        // partial page at the end of the overflow.
+
+                        sofar = writeOverflowRegularPages(pb, fs, ba, numRegularPages, len, sofar);
+                        nextPageNumber = nextPageNumber + numRegularPages;
+
+                        if (needed > availableBeforeBoundary) {
+                            // assert sofar < len
+                            // assert nextPageNumber = boundaryPageNumber
+                            //
+                            // we need to write out a regular page with a
+                            // boundary pointer in it.  if this is happening,
+                            // then FLAG_ENDS_ON_BOUNDARY was set on the first
+                            // overflow page in this block, since we can't set it
+                            // here on this page, because this page has no header.
+                            sofar = buildOverflowBoundaryPage(pb, ba, len, sofar);
+                            var newRange = pageManager.GetRange(token);
+                            nextPageNumber = newRange.Item1;
+                            boundaryPageNumber = newRange.Item2;
+                            pb.SetLastInt32(nextPageNumber);
+                            pb.Flush(fs);
+                            utils.SeekPage(fs, pb.PageSize, nextPageNumber);
+                        }
+                    }
                 }
             }
 
@@ -1416,22 +1475,29 @@ namespace Zumero.LSM.cs
 		{
 			private readonly Stream fs;
 			private readonly int len;
+			private readonly int firstPage;
+			private readonly byte[] buf;
+			private int currentPage;
 			private int sofarOverall;
 			private int sofarThisPage;
-			private int currentPage;
-			private readonly byte[] buf;
+            private int firstPageInBlock;
+            private int countRegularDataPagesInBlock;
+            private int boundaryPageNumber;
+            private int bytesOnThisPage;
+            private int offsetOnThisPage;
 
 			// TODO consider supporting seek
 
-			public myOverflowReadStream(Stream _fs, int pageSize, int firstPage, int _len)
+			public myOverflowReadStream(Stream _fs, int pageSize, int _firstPage, int _len)
 			{
 				fs = _fs;
 				len = _len;
+                firstPage = _firstPage;
 
 				currentPage = firstPage;
 
                 buf = new byte[pageSize];
-				ReadPage();
+				ReadFirstPage();
 			}
 
 			public override long Length {
@@ -1446,7 +1512,46 @@ namespace Zumero.LSM.cs
 				utils.ReadFully (fs, buf, 0, buf.Length);
 				// assert buf[0] == OVERFLOW
 				sofarThisPage = 0;
+                if (currentPage == firstPageInBlock) {
+                    bytesOnThisPage = buf.Length - (2 + sizeof(int));
+                    offsetOnThisPage = 2;
+                }
+                else if (currentPage == boundaryPageNumber) {
+                    bytesOnThisPage = buf.Length - sizeof(int);
+                    offsetOnThisPage = 0;
+                }
+                else {
+                    // assert currentPage > firstPageInBlock
+                    // assert currentPage < boundaryPageNumber OR boundaryPageNumber = 0
+                    bytesOnThisPage = buf.Length;
+                    offsetOnThisPage = 0;
+                }
+
 			}
+
+            private void ReadFirstPage() 
+            {
+                firstPageInBlock = currentPage;
+                ReadPage();
+                if (PageType() != OVERFLOW_NODE) {
+                    throw new Exception();
+                }
+                if (CheckPageFlag(FLAG_BOUNDARY_NODE)) {
+                    // first page landed on a boundary node
+                    // lastInt32 is the next page number, which we'll fetch later
+                    boundaryPageNumber = currentPage;
+                    countRegularDataPagesInBlock = 0;
+                }
+                else {
+                    countRegularDataPagesInBlock = GetLastInt32();
+                    if (CheckPageFlag(FLAG_ENDS_ON_BOUNDARY)) {
+                        boundaryPageNumber = currentPage + countRegularDataPagesInBlock + 1;
+                    }
+                    else {
+                        boundaryPageNumber = 0;
+                    }
+                }
+            }
 
 			public override bool CanRead {
 				get {
@@ -1471,29 +1576,95 @@ namespace Zumero.LSM.cs
                 return (int) val;
             }
 
+            private int GetLastInt32()
+            {
+                return GetInt32At(buf.Length - 4);
+            }
+
+            private byte PageType()
+            {
+                return buf[0];
+            }
+
+            public bool CheckPageFlag(byte f)
+            {
+                return 0 != (buf[1] & f);
+            }
+
 			public override int Read (byte[] ba, int offset, int wanted)
 			{
-				int bytesPerPage = buf.Length - OVERFLOW_PAGE_HEADER_SIZE;
-				if (sofarThisPage >= bytesPerPage) {
-					if (sofarOverall < len) {
-                        if (isBoundary) {
-                            currentPage = GetInt32At(buf.Length - 4);
+                if (sofarOverall >= len) {
+                    return 0;
+                } else {
+                    var direct = false;
+                    if (sofarThisPage >= bytesOnThisPage) {
+                        if (currentPage == boundaryPageNumber) {
+                            currentPage = GetLastInt32();
+                            ReadFirstPage();
                         } else {
-                            currentPage++;
+                            // we need a new page.  and if it's a full data page,
+                            // and if wanted is big enough to take all of it, then
+                            // we want to read (at least) it directly into the
+                            // buffer provided by the caller.  we already know
+                            // this candidate page cannot be the first page in a
+                            // block.
+                            var maybeDataPage = currentPage + 1;
+                            var isDataPage = 
+                                (boundaryPageNumber > 0)
+                                    ? (((len - sofarOverall) >= buf.Length) && (countRegularDataPagesInBlock > 0) && (maybeDataPage > firstPageInBlock) && (maybeDataPage < boundaryPageNumber))
+                                    : ((len - sofarOverall) >= buf.Length) && (countRegularDataPagesInBlock > 0) && (maybeDataPage > firstPageInBlock) && (maybeDataPage <= (firstPageInBlock + countRegularDataPagesInBlock))
+                                    ;
+
+                            if (isDataPage && (wanted >= buf.Length)) {
+                                // assert (currentPage + 1) > firstPageInBlock
+                                //
+                                // don't increment currentPage here because below, we will
+                                // calculate how many pages we actually want to do.
+                                direct = true;
+                                bytesOnThisPage = buf.Length;
+                                sofarThisPage = 0;
+                                offsetOnThisPage = 0;
+                            } else {
+                                currentPage = currentPage + 1;
+                                ReadPage();
+                            }
                         }
-						ReadPage ();
-					} else {
-						return 0;
-					}
-				}
+                    }
 
-				int available = (int) Math.Min (bytesPerPage, len - sofarOverall);
-				int num = (int)Math.Min (available, wanted);
-				Array.Copy (buf, 2 + sofarThisPage, ba, offset, num);
-				sofarOverall += num;
-				sofarThisPage += num;
+                    if (direct) {
+                        // currentPage has not been incremented yet
+                        //
+                        // skip the buffer.  note, therefore, that the contents of the
+                        // buffer are "invalid" in that they do not correspond to currentPage
+                        //
+                        var numPagesWanted = wanted / buf.Length;
+                        // assert countRegularDataPagesInBlock > 0
+                        var lastDataPageInThisBlock = firstPageInBlock + countRegularDataPagesInBlock ;
+                        var theDataPage = currentPage + 1;
+                        var numPagesAvailable = 
+                            (boundaryPageNumber>0)
+                                ? (boundaryPageNumber - theDataPage)
+                                : (lastDataPageInThisBlock - theDataPage + 1)
+                                ;
+                        var numPagesToFetch = Math.Min(numPagesWanted, numPagesAvailable);
+                        var bytesToFetch = numPagesToFetch * buf.Length;
+                        // assert bytesToFetch <= wanted
 
-				return num;
+                        utils.SeekPage(fs, buf.Length, theDataPage);
+                        utils.ReadFully(fs, ba, offset, bytesToFetch);
+                        sofarOverall = sofarOverall + bytesToFetch;
+                        currentPage = currentPage + numPagesToFetch;
+                        sofarThisPage = buf.Length;
+                        return bytesToFetch;
+                    } else {
+                        var available = Math.Min (bytesOnThisPage - sofarThisPage, len - sofarOverall);
+                        var num = Math.Min (available, wanted);
+                        System.Array.Copy (buf, offsetOnThisPage + sofarThisPage, ba, offset, num);
+                        sofarOverall = sofarOverall + num;
+                        sofarThisPage = sofarThisPage + num;
+                        return num;
+                    }
+                }
 			}
 
 			public override bool CanWrite {
@@ -1780,7 +1951,6 @@ namespace Zumero.LSM.cs
 					}
 					else {
 						// assert OVERFLOW == _buf[0]
-                        int nextPage;
                         int lastInt32 = pr.GetLastInt32();
                         //
                         // an overflow page has a value in its LastInt32 which
@@ -1797,12 +1967,21 @@ namespace Zumero.LSM.cs
                         // fit).  it doesn't matter.  we just skip ahead.
                         //
                         if (pr.CheckPageFlag(FLAG_BOUNDARY_NODE)) {
-                            nextPage = lastInt32;
+                            if (!setCurrentPage(lastInt32)) {
+                                return false;
+                            }
                         } else {
-                            nextPage = currentPage + lastInt32;
-                        }
-                        if (!setCurrentPage(nextPage)) {
-                            return false;
+                            var endsOnBoundary = pr.CheckPageFlag(FLAG_ENDS_ON_BOUNDARY);
+                            if (setCurrentPage(currentPage + lastInt32)) {
+                                if (endsOnBoundary) {
+                                    var next = pr.GetLastInt32();
+                                    if (!setCurrentPage(next)) {
+                                        return false;
+                                    }
+                                }
+                            } else {
+                                return false;
+                            }
                         }
 					}
 				}
