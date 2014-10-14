@@ -373,7 +373,7 @@ namespace Zumero.LSM.cs
 			buf[cur++] = (byte)(v >> 0);
 		}
 
-		public void PutInt32At(int at, int ov)
+		private void PutInt32At(int at, int ov)
 		{
             // assert ov >= 0
 			uint v = (uint) ov;
@@ -390,11 +390,17 @@ namespace Zumero.LSM.cs
 
         public void SetSecondToLastInt32(int page)
         {
+            if (cur > buf.Length - 8) {
+				throw new Exception();
+            }
             PutInt32At(buf.Length - 8, page);
         }
 
         public void SetLastInt32(int page)
         {
+            if (cur > buf.Length - 4) {
+				throw new Exception();
+            }
             PutInt32At(buf.Length - 4, page);
         }
 
@@ -878,6 +884,7 @@ namespace Zumero.LSM.cs
 
 	public static class BTreeSegment
 	{
+        // pages types
 		private const byte LEAF_NODE = 1;
 		private const byte PARENT_NODE = 2;
 		private const byte OVERFLOW_NODE = 3;
@@ -890,11 +897,8 @@ namespace Zumero.LSM.cs
 		private const byte FLAG_ROOT_NODE = 1;
 		private const byte FLAG_BOUNDARY_NODE = 2;
 
+        // magic numbers
 		private const int OVERFLOW_PAGE_HEADER_SIZE = 6;
-
-		private const int PARENT_NODE_HEADER_SIZE = 8;
-
-		private const int LEAF_HEADER_SIZE = 8;
 		private const int OFFSET_COUNT_PAIRS = 6;
 
 		private class node
@@ -1045,17 +1049,12 @@ namespace Zumero.LSM.cs
             return new Tuple<int,int>(nextPageNumber, boundaryPageNumber);
 		}
 
-		private static int calcAvailable(int pageSize, int currentSize, bool couldBeRoot, bool isBoundary)
+		private static int calcAvailable(int pageSize, int currentSize, bool couldBeRoot)
 		{
-			int n = (pageSize - currentSize);
+			int n = (pageSize - currentSize - sizeof(int)); // for the lastInt32
 			if (couldBeRoot)
 			{
-				// make space for the firstLeaf and lastLeaf fields
-				n -= (2 * sizeof(int));
-			}
-			if (isBoundary) 
-			{
-				// make space for the nextPage field on a boundary page
+				// make space for the firstLeaf and lastLeaf fields (lastInt32 already there)
 				n -= sizeof(int);
 			}
 			return n;
@@ -1066,6 +1065,12 @@ namespace Zumero.LSM.cs
 			int nextPageNumber = startingPageNumber;
             int boundaryPageNumber = startingBoundaryPageNumber;
 			var nextGeneration = new List<node> ();
+
+            // 2 for the page type and flags
+            // 2 for the stored count
+            // 5 for the extra ptr we will add at the end, a varint, 5 is worst case
+            // 4 for lastInt32
+			var PAGE_OVERHEAD = 2 + 2 + 5 + 4;
 
 			int sofar = 0;
 			Dictionary<int,int> overflows = new Dictionary<int, int> ();
@@ -1092,12 +1097,12 @@ namespace Zumero.LSM.cs
 					var flushThisPage = false;
 					var isBoundary = (nextPageNumber == boundaryPageNumber);
                     var couldBeRoot = (nextGeneration.Count == 0);
-                    var avail = calcAvailable(pb.PageSize, sofar, couldBeRoot, isBoundary);
+                    var avail = calcAvailable(pb.PageSize, sofar, couldBeRoot);
 					if (isLastChild) {
 						flushThisPage = true;
 					} else if (avail >= neededForInline) {
 						// no problem.
-					} else if ((pb.PageSize - PARENT_NODE_HEADER_SIZE) >= neededForInline) {
+					} else if ((pb.PageSize - PAGE_OVERHEAD) >= neededForInline) {
 						// it won't fit here, but it would fully fit on the next page.
 						flushThisPage = true;
 					} else if (avail < neededForOverflow) {
@@ -1149,14 +1154,10 @@ namespace Zumero.LSM.cs
 					if (0 == sofar) {
 						first = i;
 						overflows.Clear();
-
-						sofar += 2; // for the page type and the flags
-						sofar += 2; // for the stored count
-						sofar += 5; // for the extra pointer we'll add at the end, which is a varint, so 5 is the worst case
+                        sofar = PAGE_OVERHEAD;
 					}
 						
-					bool isBoundary = (nextPageNumber == boundaryPageNumber);
-					if (calcAvailable(pb.PageSize, sofar, (nextGeneration.Count == 0), isBoundary) >= neededForInline) {
+					if (calcAvailable(pb.PageSize, sofar, (nextGeneration.Count == 0)) >= neededForInline) {
 						sofar += k.Length;
 					} else {
 						int keyOverflowFirstPage = nextPageNumber;
@@ -1191,6 +1192,12 @@ namespace Zumero.LSM.cs
             var range = pageManager.GetRange(token);
 			int nextPageNumber = range.Item1;
             int boundaryPageNumber = range.Item2;
+
+            // 2 for the page type and flags
+            // 4 for the prev page
+            // 2 for the stored count
+            // 4 for lastInt32 (which isn't in pb.Available)
+			var PAGE_OVERHEAD = 2 + 4 + 2 + 4;
 
 			var nodelist = new List<node> ();
 
@@ -1228,12 +1235,12 @@ namespace Zumero.LSM.cs
 				if (pb.Position > 0) {
 					// figure out if we need to just flush this page
 
-					int avail = pb.Available - ((nextPageNumber == boundaryPageNumber) ? 4 : 0);
+					int avail = pb.Available - sizeof(int); // for lastInt32
 
 					bool flushThisPage = false;
 					if (avail >= neededForBothInline) {
 						// no problem.  both the key and the value are going to fit
-					} else if ((pb.PageSize - LEAF_HEADER_SIZE) >= neededForBothInline) {
+					} else if ((pb.PageSize - PAGE_OVERHEAD) >= neededForBothInline) {
 						// it won't fit here, but it would fully fit on the next page.
 						flushThisPage = true;
 					} else if (avail >= neededForKeyInlineValueOverflow) {
@@ -1312,7 +1319,7 @@ namespace Zumero.LSM.cs
 				 * 
 				 */
 
-				int available = pb.Available - ((nextPageNumber == boundaryPageNumber) ? 4 : 0);
+				int available = pb.Available - sizeof(int); // for lastInt32
 				if (available >= neededForBothInline) {
 					// no problem.  both the key and the value are going to fit
 					putArrayWithLength (pb, k);

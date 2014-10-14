@@ -596,9 +596,6 @@ module BTreeSegment =
     let private FLAG_BOUNDARY_NODE:byte = 2uy
     let private FLAG_ENDS_ON_BOUNDARY:byte = 4uy
     // magic numbers
-    let private OVERFLOW_PAGE_HEADER_SIZE = 6
-    let private PARENT_NODE_HEADER_SIZE = 8
-    let private LEAF_HEADER_SIZE = 8
     let private OFFSET_COUNT_PAIRS = 6
 
     let private putArrayWithLength (pb:PageBuilder) (ba:byte[]) =
@@ -624,7 +621,7 @@ module BTreeSegment =
         pb.PutByte(OVERFLOW_NODE)
         pb.PutByte(0uy) // starts 0, may be changed before the page is written
         // check for the partial page at the end
-        let num = Math.Min((pb.PageSize - OVERFLOW_PAGE_HEADER_SIZE), (len - sofar))
+        let num = Math.Min((pb.PageSize - (2 + sizeof<int32>)), (len - sofar))
         pb.PutStream(ba, num)
         // something will be put in lastInt32 before the page is written
         sofar + num
@@ -771,9 +768,8 @@ module BTreeSegment =
 
     let private calcAvailable pageSize currentSize couldBeRoot =
         let basicSize = pageSize - currentSize
-        let allowanceForBoundaryNode = sizeof<int32>
-        let allowanceForRootNode = if couldBeRoot then sizeof<int32> else 0 // first/last Leaf
-        basicSize - (allowanceForRootNode + allowanceForBoundaryNode)
+        let allowanceForRootNode = if couldBeRoot then sizeof<int32> else 0 // first/last Leaf, lastInt32 already
+        basicSize - allowanceForRootNode
 
     let private writeParentNodes (pageManager:IPages) token firstLeaf lastLeaf (children:System.Collections.Generic.List<int32 * byte[]>) startingPageNumber startingBoundaryPageNumber fs (pb:PageBuilder) (pbOverflow:PageBuilder) =
         let nextGeneration = new System.Collections.Generic.List<int32 * byte[]>()
@@ -783,6 +779,13 @@ module BTreeSegment =
         let mutable nextPageNumber = startingPageNumber
         let mutable boundaryPageNumber = startingBoundaryPageNumber
         let mutable first = 0
+
+        // 2 for the page type and flags
+        // 2 for the stored count
+        // 5 for the extra ptr we will add at the end, a varint, 5 is worst case
+        // 4 for lastInt32
+        let PAGE_OVERHEAD = 2 + 2 + 5 + 4
+
         // assert children.Count > 1
         for i in 0 .. children.Count-1 do
             let (pagenum,k) = children.[i]
@@ -793,7 +796,7 @@ module BTreeSegment =
                 let couldBeRoot = (nextGeneration.Count = 0)
                 let avail = calcAvailable (pb.PageSize) sofar couldBeRoot
                 let fitsInline = (avail >= neededForInline)
-                let wouldFitInlineOnNextPage = ((pb.PageSize - PARENT_NODE_HEADER_SIZE) >= neededForInline)
+                let wouldFitInlineOnNextPage = ((pb.PageSize - PAGE_OVERHEAD) >= neededForInline)
                 let fitsOverflow = (avail >= neededForOverflow)
                 let flushThisPage = isLastChild || ((not fitsInline) && (wouldFitInlineOnNextPage || (not fitsOverflow))) 
                 let isRootNode = isLastChild && couldBeRoot
@@ -804,7 +807,6 @@ module BTreeSegment =
                     if isRootNode then
                         pb.SetPageFlag(FLAG_ROOT_NODE)
                         // assert pb.Position <= (pb.PageSize - 8)
-                        if pb.Position > (pb.PageSize - 8) then raise (new Exception())
                         pb.SetSecondToLastInt32(firstLeaf)
                         pb.SetLastInt32(lastLeaf)
                     else
@@ -814,7 +816,6 @@ module BTreeSegment =
                             nextPageNumber <- fst newRange
                             boundaryPageNumber <- snd newRange
                             // assert pb.Position <= (pb.PageSize - 4)
-                            if pb.Position > (pb.PageSize - sizeof<int32>) then raise (new Exception())
                             pb.SetLastInt32(nextPageNumber)
                         else
                             nextPageNumber <- nextPageNumber + 1
@@ -828,10 +829,7 @@ module BTreeSegment =
                 if sofar = 0 then
                     first <- i
                     overflows.Clear()
-                    // 2 for the page type and flags
-                    // 2 for the stored count
-                    // 5 for the extra ptr we will add at the end, a varint, 5 is worst case
-                    sofar <- 2 + 2 + 5
+                    sofar <- PAGE_OVERHEAD
                 if calcAvailable (pb.PageSize) sofar (nextGeneration.Count = 0) >= neededForInline then
                     sofar <- sofar + k.Length
                 else
@@ -858,6 +856,13 @@ module BTreeSegment =
         let mutable countPairs = 0
         let mutable lastKey:byte[] = null
         let mutable nodelist = new System.Collections.Generic.List<int32 * byte[]>()
+
+        // 2 for the page type and flags
+        // 4 for the prev page
+        // 2 for the stored count
+        // 4 for lastInt32 (which isn't in pb.Available)
+        let PAGE_OVERHEAD = 2 + 4 + 2 + 4
+
         utils.SeekPage(fs, pb.PageSize, nextPageNumber)
         csr.First()
         while csr.IsValid() do
@@ -885,7 +890,7 @@ module BTreeSegment =
             if pb.Position > 0 then
                 let avail = pb.Available - sizeof<int32> // for the lastInt32
                 let fitBothInline = (avail >= neededForBothInline)
-                let wouldFitBothInlineOnNextPage = ((pb.PageSize - LEAF_HEADER_SIZE) >= neededForBothInline)
+                let wouldFitBothInlineOnNextPage = ((pb.PageSize - PAGE_OVERHEAD) >= neededForBothInline)
                 let fitKeyInlineValueOverflow = (avail >= neededForKeyInlineValueOverflow)
                 let fitBothOverflow = (avail >= neededForBothOverflow)
                 let flushThisPage = (not fitBothInline) && (wouldFitBothInlineOnNextPage || ( (not fitKeyInlineValueOverflow) && (not fitBothOverflow) ) )
@@ -902,7 +907,6 @@ module BTreeSegment =
                         nextPageNumber <- fst newRange
                         boundaryPageNumber <- snd newRange
                         // assert pb.Position <= (pb.PageSize - 4)
-                        if pb.Position > (pb.PageSize - sizeof<int32>) then raise (new Exception())
                         pb.SetLastInt32(nextPageNumber)
                     else
                         nextPageNumber <- nextPageNumber + 1
@@ -924,7 +928,7 @@ module BTreeSegment =
 
                 pb.PutInt32 (prevPageNumber) // prev page num.
                 pb.PutInt16 (0) // number of pairs in this page. zero for now. written at end.
-                // assert pb.Position is 8 (LEAF_HEADER_SIZE)
+                // assert pb.Position is 8 (PAGE_OVERHEAD - sizeof(lastInt32))
             (*
              * one of the following cases must now be true:
              * 
@@ -981,7 +985,6 @@ module BTreeSegment =
                     nextPageNumber <- fst newRange
                     boundaryPageNumber <- snd newRange
                     // assert pb.Position <= (pb.PageSize - 4)
-                    if pb.Position > (pb.PageSize - sizeof<int32>) then raise (new Exception())
                     pb.SetLastInt32(nextPageNumber)
                 else
                     nextPageNumber <- nextPageNumber + 1

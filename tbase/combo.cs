@@ -79,7 +79,7 @@ namespace lsm_tests
 		public static List<combo> get_combos()
 		{
 			List<combo> a = new List<combo>();
-			//a.Add(combo.make_cs());
+			a.Add(combo.make_cs());
 			a.Add(combo.make_fs());
 			//a.Add(combo.make_cs_fs());
 			//a.Add(combo.make_fs_cs());
