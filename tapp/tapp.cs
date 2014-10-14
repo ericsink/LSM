@@ -9,9 +9,15 @@ using Zumero.LSM;
 
 namespace lsm_tests
 {
-	// TODO maybe move this to tbase
-	public static class hack
+	public static class foo
 	{
+		private const int PAGE_SIZE = 256;
+
+		private static int lastPage(Stream fs)
+		{
+			return (int)(fs.Length / PAGE_SIZE);
+		}
+
 		public static byte[] ReadAll(Stream s)
 		{
 			byte[] a = new byte[(int) (s.Length - s.Position)];
@@ -31,91 +37,88 @@ namespace lsm_tests
 			return ReadAll (s).UTF8ToString ();
 		}
 
-	}
-
-	public class foo
-	{
-		private const int PAGE_SIZE = 256;
-
-		private static int lastPage(Stream fs)
-		{
-			return (int)(fs.Length / PAGE_SIZE);
-		}
-
 		private static Stream openFile(string s)
 		{
 			return new FileStream (s, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
 		}
 
+		public static int cmp(byte[] x, byte[] y)
+		{
+			int n1 = x.Length;
+			int n2 = y.Length;
+			int len = n1<n2 ? n1 : n2;
+			for (var i = 0; i < len; i++)
+			{
+				var c = x[i].CompareTo(y[i]);
+				if (c != 0)
+				{
+					return c;
+				}
+			}
+
+			return x.Length.CompareTo(y.Length);
+		}
+
+		private static class Assert
+		{
+			public static void True(bool b)
+			{
+				if (!b) {
+					throw new Exception ();
+				}
+			}
+
+			public static void Equal(long x, long y)
+			{
+				if (x != y) {
+					throw new Exception ();
+				}
+			}
+		}
+
 	    public static void Main(string[] argv)
 	    {
+			Random r = new Random (501);
 			Action<combo> f = (combo c) => {
-				var s = "this is a longer string";
-				for (int i = 0; i < 10; i++) {
-					s = s + s;
+				var t1 = c.create_memory_segment();
+				for (int i=0; i<1000; i++) {
+					byte[] k = new byte[r.Next(10000)];
+					byte[] v = new byte[r.Next(10000)];
+					for (int q=0; q<k.Length; q++) {
+						k[q] = (byte) r.Next(255);
+					}
+					for (int q=0; q<v.Length; q++) {
+						v[q] = (byte) r.Next(255);
+					}
+					t1.Insert(k,v);
 				}
 
-				{
-					var t1 = c.create_memory_segment();
-					t1.Insert ("k1", s);
-					t1.Insert ("k2", s);
-					t1.Insert ("k3", s);
-					t1.Insert ("k4", s);
+				using (var fs = new FileStream ("blobs", FileMode.Create)) {
+					IPages pageManager = new SimplePageManager(fs);
+					int pg = c.create_btree_segment (fs, pageManager, t1.OpenCursor ());
 
-					using (var fs = new FileStream ("long_vals", FileMode.Create, FileAccess.ReadWrite)) {
-						IPages pageManager = new SimplePageManager(fs);
-						c.create_btree_segment(fs, pageManager, t1.OpenCursor ());
+					ICursor t1csr = t1.OpenCursor();
+					ICursor btcsr = c.open_btree_segment(fs, PAGE_SIZE, pg);
+					t1csr.First();
+					while (t1csr.IsValid()) {
+
+						var k = t1csr.Key();
+
+						btcsr.Seek(k, SeekOp.SEEK_EQ);
+						Assert.True(btcsr.IsValid());
+
+						Assert.Equal(t1csr.ValueLength(), btcsr.ValueLength());
+
+						var tv = ReadAll(t1csr.Value());
+						var tb = ReadAll(btcsr.Value());
+						int d = cmp(tv,tb);
+						Assert.Equal(0, d);
+
+						t1csr.Next();
 					}
 				}
 
-				using (var fs = new FileStream ("long_vals", FileMode.Open, FileAccess.Read)) {
-					var csr = c.open_btree_segment(fs, PAGE_SIZE, lastPage(fs));
-
-					csr.First ();
-					while (csr.IsValid ()) {
-						var k = csr.Key();
-						if (2 != k.Length) {
-							throw new Exception();
-						}
-						if (s.Length != csr.ValueLength()) {
-							throw new Exception();
-						}
-						var v = csr.Value ();
-						if (s != v.UTF8StreamToString()) {
-							throw new Exception();
-						}
-						csr.Next ();
-					}
-
-					csr.Last ();
-					while (csr.IsValid ()) {
-						var k = csr.Key();
-						if (2 != k.Length) {
-							throw new Exception();
-						}
-						if (s.Length != csr.ValueLength()) {
-							throw new Exception();
-						}
-						var v = csr.Value ();
-						if (s != v.UTF8StreamToString()) {
-							throw new Exception();
-						}
-						csr.Prev ();
-					}
-				}
-
-				{
-					var t1 = c.create_memory_segment();
-					t1.Insert (s, "k1");
-					t1.Insert (s + s, "k1");
-					t1.Insert (s + s + s, "k1");
-					t1.Insert (s + s + s + s, "k1");
-
-					using (var fs = new FileStream ("long_keys", FileMode.Create, FileAccess.ReadWrite)) {
-						IPages pageManager = new SimplePageManager(fs);
-						c.create_btree_segment(fs, pageManager, t1.OpenCursor ());
-					}
-				}
+				// TODO verify that every blob is the same
 			};
 			foreach (combo c in combo.get_combos()) f(c);
 	    }

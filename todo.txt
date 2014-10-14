@@ -2,7 +2,8 @@
 need tests that read from an overflow stream asking
 for smaller amounts of data
 
-could maybe remove support for a boundary <= 0
+could maybe remove support for a boundary <= 0.  there
+will always be a boundary, right?
 
 see if a block size of 1 page actually works.  probably
 not.  and probably should be disallowed anyway.

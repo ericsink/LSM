@@ -132,7 +132,7 @@ type private PageBuilder(pgsz:int) =
         buf.[cur+1] <- byte (v >>>  16)
         buf.[cur+2] <- byte (v >>>  8)
         buf.[cur+3] <- byte (v >>>  0)
-        cur <- cur+4
+        cur <- cur+sizeof<int32>
 
     member this.PutInt32At(at:int, ov:int) =
         // assert ov >= 0
@@ -142,8 +142,8 @@ type private PageBuilder(pgsz:int) =
         buf.[at+2] <- byte (v >>>  8)
         buf.[at+3] <- byte (v >>>  0)
 
-    member this.SetSecondToLastInt32(page:int) = this.PutInt32At(buf.Length - 8, page)
-    member this.SetLastInt32(page:int) = this.PutInt32At(buf.Length - 4, page)
+    member this.SetSecondToLastInt32(page:int) = this.PutInt32At(buf.Length - 2*sizeof<int32>, page)
+    member this.SetLastInt32(page:int) = this.PutInt32At(buf.Length - sizeof<int32>, page)
 
     member this.PutInt16(ov:int) =
         // assert ov >= 0
@@ -249,7 +249,7 @@ type private PageReader(pgsz:int) =
         let a2 = uint64 buf.[cur+2]
         let a3 = uint64 buf.[cur+3]
         let r = (a0 <<< 24) ||| (a1 <<< 16) ||| (a2 <<< 8) ||| (a3 <<< 0)
-        cur <- cur + 4
+        cur <- cur + sizeof<int32>
         // assert r fits in a 32 bit signed int
         int r
 
@@ -263,8 +263,8 @@ type private PageReader(pgsz:int) =
         int r
 
     member this.CheckPageFlag(f) = 0uy <> (buf.[1] &&& f)
-    member this.GetSecondToLastInt32() = this.GetInt32At(buf.Length - 8)
-    member this.GetLastInt32() = this.GetInt32At(buf.Length - 4)
+    member this.GetSecondToLastInt32() = this.GetInt32At(buf.Length - 2*sizeof<int32>)
+    member this.GetLastInt32() = this.GetInt32At(buf.Length - sizeof<int32>)
 
     member this.GetArray(len) =
         let ba:byte[] = Array.zeroCreate len
@@ -645,7 +645,7 @@ module BTreeSegment =
 
         pb.Reset()
         // check for the partial page at the end
-        let num = Math.Min((pb.PageSize - 4), (len - sofar))
+        let num = Math.Min((pb.PageSize - sizeof<int32>), (len - sofar))
         pb.PutStream(ba, num)
         // something will be put in lastInt32 before the page is written
         sofar + num
@@ -778,8 +778,8 @@ module BTreeSegment =
 
     let private calcAvailable pageSize currentSize couldBeRoot isBoundary =
         let basicSize = pageSize - currentSize
-        let allowanceForBoundaryNode = if isBoundary then 4 else 0 // nextPage
-        let allowanceForRootNode = if couldBeRoot then 2*4 else 0 // first/last Leaf
+        let allowanceForBoundaryNode = if isBoundary then sizeof<int32> else 0 // nextPage
+        let allowanceForRootNode = if couldBeRoot then 2*sizeof<int32> else 0 // first/last Leaf
         basicSize - (allowanceForRootNode + allowanceForBoundaryNode)
 
     let private writeParentNodes (pageManager:IPages) token firstLeaf lastLeaf (children:System.Collections.Generic.List<int32 * byte[]>) startingPageNumber startingBoundaryPageNumber fs (pb:PageBuilder) (pbOverflow:PageBuilder) =
@@ -794,9 +794,17 @@ module BTreeSegment =
         for i in 0 .. children.Count-1 do
             let (pagenum,k) = children.[i]
             let neededForInline = 1 + Varint.SpaceNeededFor (int64 k.Length) + k.Length + Varint.SpaceNeededFor (int64 pagenum)
-            let neededForOverflow = 1 + Varint.SpaceNeededFor (int64 k.Length) + 4 + Varint.SpaceNeededFor (int64 pagenum)
+            let neededForOverflow = 1 + Varint.SpaceNeededFor (int64 k.Length) + sizeof<int32> + Varint.SpaceNeededFor (int64 pagenum)
             let isLastChild = (i = (children.Count - 1))
             if (sofar > 0) then
+                // TODO BUG we are deciding here whether something will fit,
+                // and basing that decision in part on whether the nextPageNumber 
+                // is a boundary (which has 4 fewer bytes), but if we write any
+                // overflows between now and when this parent page gets written,
+                // whether/not it is a boundary could change.  Specifically, we
+                // can assume now that it is not a boundary, and use those 4
+                // bytes, and then later end up having it on a boundary, and
+                // end up stepping on something.
                 let isBoundary = (nextPageNumber = boundaryPageNumber)
                 let couldBeRoot = (nextGeneration.Count = 0)
                 let avail = calcAvailable (pb.PageSize) sofar couldBeRoot isBoundary
@@ -811,6 +819,8 @@ module BTreeSegment =
                     buildParentPage overflows pb children i first
                     if isRootNode then
                         pb.SetPageFlag(FLAG_ROOT_NODE)
+                        // assert pb.Position <= (pb.PageSize - 8)
+                        if pb.Position > (pb.PageSize - 8) then raise (new Exception())
                         pb.SetSecondToLastInt32(firstLeaf)
                         pb.SetLastInt32(lastLeaf)
                     else
@@ -819,6 +829,8 @@ module BTreeSegment =
                             let newRange = pageManager.GetRange(token)
                             nextPageNumber <- fst newRange
                             boundaryPageNumber <- snd newRange
+                            // assert pb.Position <= (pb.PageSize - 4)
+                            if pb.Position > (pb.PageSize - sizeof<int32>) then raise (new Exception())
                             pb.SetLastInt32(nextPageNumber)
                         else
                             nextPageNumber <- nextPageNumber + 1
@@ -836,6 +848,7 @@ module BTreeSegment =
                     // 2 for the stored count
                     // 5 for the extra ptr we will add at the end, a varint, 5 is worst case
                     sofar <- 2 + 2 + 5
+                // TODO BUG assumption about whether this page will end up on a boundary or not?
                 let isBoundary = (nextPageNumber = boundaryPageNumber)
                 if calcAvailable (pb.PageSize) sofar (nextGeneration.Count = 0) isBoundary >= neededForInline then
                     sofar <- sofar + k.Length
@@ -844,7 +857,7 @@ module BTreeSegment =
                     let kRange = writeOverflow pageManager token nextPageNumber boundaryPageNumber pbOverflow fs (new MemoryStream(k))
                     nextPageNumber <- fst kRange
                     boundaryPageNumber <- snd kRange
-                    sofar <- sofar + 4
+                    sofar <- sofar + sizeof<int32>
                     overflows.[i] <- keyOverflowFirstPage
                 // inline or not, we need space for the following things
                 sofar <- sofar + 1 + Varint.SpaceNeededFor(int64 k.Length) + Varint.SpaceNeededFor(int64 pagenum)
@@ -872,7 +885,7 @@ module BTreeSegment =
             // but v might be null (a tombstone)
             let vlen = if v<>null then v.Length else int64 0
 
-            let neededForOverflowPageNumber = 4 // TODO sizeof int
+            let neededForOverflowPageNumber = sizeof<int32>
 
             let neededForKeyBase = 1 + Varint.SpaceNeededFor(int64 k.Length)
             let neededForKeyInline = neededForKeyBase + k.Length
@@ -888,7 +901,8 @@ module BTreeSegment =
             csr.Next()
 
             if pb.Position > 0 then
-                let avail = pb.Available - (if nextPageNumber = boundaryPageNumber then 4 else 0)
+                // TODO BUG assumption about whether this page will end up on a boundary or not?
+                let avail = pb.Available - (if nextPageNumber = boundaryPageNumber then sizeof<int32> else 0)
                 let fitBothInline = (avail >= neededForBothInline)
                 let wouldFitBothInlineOnNextPage = ((pb.PageSize - LEAF_HEADER_SIZE) >= neededForBothInline)
                 let fitKeyInlineValueOverflow = (avail >= neededForKeyInlineValueOverflow)
@@ -906,6 +920,8 @@ module BTreeSegment =
                         let newRange = pageManager.GetRange(token)
                         nextPageNumber <- fst newRange
                         boundaryPageNumber <- snd newRange
+                        // assert pb.Position <= (pb.PageSize - 4)
+                        if pb.Position > (pb.PageSize - sizeof<int32>) then raise (new Exception())
                         pb.SetLastInt32(nextPageNumber)
                     else
                         nextPageNumber <- nextPageNumber + 1
@@ -944,7 +960,8 @@ module BTreeSegment =
              * already done it above.
              * 
              *)
-            let available = pb.Available - (if nextPageNumber = boundaryPageNumber then 4 else 0)
+            // TODO BUG assumption about whether this page will end up on a boundary or not?
+            let available = pb.Available - (if nextPageNumber = boundaryPageNumber then sizeof<int32> else 0)
             if (available >= neededForBothInline) then
                 putArrayWithLength pb k
                 putStreamWithLength pb v vlen
@@ -983,6 +1000,8 @@ module BTreeSegment =
                     let newRange = pageManager.GetRange(token)
                     nextPageNumber <- fst newRange
                     boundaryPageNumber <- snd newRange
+                    // assert pb.Position <= (pb.PageSize - 4)
+                    if pb.Position > (pb.PageSize - sizeof<int32>) then raise (new Exception())
                     pb.SetLastInt32(nextPageNumber)
                 else
                     nextPageNumber <- nextPageNumber + 1
@@ -1019,7 +1038,7 @@ module BTreeSegment =
         let mutable sofarOverall = 0
         let mutable sofarThisPage = 0
         let mutable firstPageInBlock = 0
-        let mutable countRegularDataPagesInBlock = 0 // TODO not sure we need this
+        let mutable countRegularDataPagesInBlock = 0 // not counting the first, and not counting any boundary
         let mutable boundaryPageNumber = 0
         let mutable bytesOnThisPage = 0
         let mutable offsetOnThisPage = 0
@@ -1032,10 +1051,10 @@ module BTreeSegment =
             // assert PageType is OVERFLOW
             sofarThisPage <- 0
             if currentPage = firstPageInBlock then
-                bytesOnThisPage <- buf.Length - 6
+                bytesOnThisPage <- buf.Length - (2 + sizeof<int32>)
                 offsetOnThisPage <- 2
             else if currentPage = boundaryPageNumber then
-                bytesOnThisPage <- buf.Length - 4
+                bytesOnThisPage <- buf.Length - sizeof<int32>
                 offsetOnThisPage <- 0
             else
                 // assert currentPage > firstPageInBlock
@@ -1052,7 +1071,7 @@ module BTreeSegment =
             // assert r fits in a 32 bit signed int
             int r
 
-        let GetLastInt32() = GetInt32At(buf.Length - 4)
+        let GetLastInt32() = GetInt32At(buf.Length - sizeof<int32>)
         let PageType() = (buf.[0])
         let CheckPageFlag(f) = 0uy <> (buf.[1] &&& f)
 
@@ -1088,27 +1107,57 @@ module BTreeSegment =
                         currentPage <- GetLastInt32()
                         ReadFirstPage()
                     else
-                        currentPage <- currentPage + 1
-                        if (currentPage <> boundaryPageNumber) && (wanted >= buf.Length) then
-                            // assert currentPage > firstPageInBlock
+                        // we need a new page.  and if it's a full data page,
+                        // and if wanted is big enough to take all of it, then
+                        // we want to read (at least) it directly into the
+                        // buffer provided by the caller.  we already know
+                        // this candidate page cannot be the first page in a
+                        // block.
+                        let maybeDataPage = currentPage + 1
+                        let isDataPage = 
+                            if boundaryPageNumber > 0 then
+                                ((len - sofarOverall) >= buf.Length) && (countRegularDataPagesInBlock > 0) && (maybeDataPage > firstPageInBlock) && (maybeDataPage < boundaryPageNumber)
+                            else
+                                ((len - sofarOverall) >= buf.Length) && (countRegularDataPagesInBlock > 0) && (maybeDataPage > firstPageInBlock) && (maybeDataPage <= (firstPageInBlock + countRegularDataPagesInBlock))
+
+                        if isDataPage && (wanted >= buf.Length) then
+                            // assert (currentPage + 1) > firstPageInBlock
+                            //
+                            // don't increment currentPage here because below, we will
+                            // calculate how many pages we actually want to do.
                             direct <- true
                             bytesOnThisPage <- buf.Length
                             sofarThisPage <- 0
                             offsetOnThisPage <- 0
                         else
+                            currentPage <- currentPage + 1
                             ReadPage()
 
                 if direct then
+                    // currentPage has not been incremented yet
+                    //
                     // skip the buffer.  note, therefore, that the contents of the
                     // buffer are "invalid" in that they do not correspond to currentPage
                     //
-                    // TODO it is conceivable that we could actually read MORE than one
-                    // page here.
-                    utils.SeekPage(fs, buf.Length, currentPage)
-                    utils.ReadFully(fs, ba, offset, buf.Length)
-                    sofarOverall <- sofarOverall + buf.Length
+                    let numPagesWanted = wanted / buf.Length
+                    // assert countRegularDataPagesInBlock > 0
+                    let lastDataPageInThisBlock = firstPageInBlock + countRegularDataPagesInBlock 
+                    let theDataPage = currentPage + 1
+                    let numPagesAvailable = 
+                        if boundaryPageNumber>0 then 
+                            boundaryPageNumber - theDataPage 
+                        else 
+                            lastDataPageInThisBlock - theDataPage + 1
+                    let numPagesToFetch = Math.Min(numPagesWanted, numPagesAvailable)
+                    let bytesToFetch = numPagesToFetch * buf.Length
+                    // assert bytesToFetch <= wanted
+
+                    utils.SeekPage(fs, buf.Length, theDataPage)
+                    utils.ReadFully(fs, ba, offset, bytesToFetch)
+                    sofarOverall <- sofarOverall + bytesToFetch
+                    currentPage <- currentPage + numPagesToFetch
                     sofarThisPage <- buf.Length
-                    buf.Length
+                    bytesToFetch
                 else
                     let available = Math.Min (bytesOnThisPage - sofarThisPage, len - sofarOverall)
                     let num = Math.Min (available, wanted)
@@ -1194,13 +1243,13 @@ module BTreeSegment =
             if 0uy = (kflag &&& FLAG_OVERFLOW) then
                 pr.Skip(int klen)
             else
-                pr.Skip(4)
+                pr.Skip(sizeof<int32>)
 
         let skipValue() =
             let vflag = pr.GetByte()
             let vlen = pr.GetVarint()
             if 0uy <> (vflag &&& FLAG_TOMBSTONE) then ()
-            else if 0uy <> (vflag &&& FLAG_OVERFLOW) then pr.Skip(4)
+            else if 0uy <> (vflag &&& FLAG_OVERFLOW) then pr.Skip(sizeof<int32>)
             else pr.Skip(int vlen)
 
         let readLeaf() =
