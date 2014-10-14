@@ -134,6 +134,7 @@ type private PageBuilder(pgsz:int) =
         buf.[cur+3] <- byte (v >>>  0)
         cur <- cur+sizeof<int32>
 
+    // TODO private?
     member this.PutInt32At(at:int, ov:int) =
         // assert ov >= 0
         let v:uint32 = uint32 ov
@@ -142,7 +143,10 @@ type private PageBuilder(pgsz:int) =
         buf.[at+2] <- byte (v >>>  8)
         buf.[at+3] <- byte (v >>>  0)
 
+    // TODO assert/check position here?
     member this.SetSecondToLastInt32(page:int) = this.PutInt32At(buf.Length - 2*sizeof<int32>, page)
+
+    // TODO assert/check position here?
     member this.SetLastInt32(page:int) = this.PutInt32At(buf.Length - sizeof<int32>, page)
 
     member this.PutInt16(ov:int) =
@@ -776,10 +780,10 @@ module BTreeSegment =
             else
                 putArrayWithLength pb k
 
-    let private calcAvailable pageSize currentSize couldBeRoot isBoundary =
+    let private calcAvailable pageSize currentSize couldBeRoot =
         let basicSize = pageSize - currentSize
-        let allowanceForBoundaryNode = if isBoundary then sizeof<int32> else 0 // nextPage
-        let allowanceForRootNode = if couldBeRoot then 2*sizeof<int32> else 0 // first/last Leaf
+        let allowanceForBoundaryNode = sizeof<int32>
+        let allowanceForRootNode = if couldBeRoot then sizeof<int32> else 0 // first/last Leaf
         basicSize - (allowanceForRootNode + allowanceForBoundaryNode)
 
     let private writeParentNodes (pageManager:IPages) token firstLeaf lastLeaf (children:System.Collections.Generic.List<int32 * byte[]>) startingPageNumber startingBoundaryPageNumber fs (pb:PageBuilder) (pbOverflow:PageBuilder) =
@@ -797,17 +801,8 @@ module BTreeSegment =
             let neededForOverflow = 1 + Varint.SpaceNeededFor (int64 k.Length) + sizeof<int32> + Varint.SpaceNeededFor (int64 pagenum)
             let isLastChild = (i = (children.Count - 1))
             if (sofar > 0) then
-                // TODO BUG we are deciding here whether something will fit,
-                // and basing that decision in part on whether the nextPageNumber 
-                // is a boundary (which has 4 fewer bytes), but if we write any
-                // overflows between now and when this parent page gets written,
-                // whether/not it is a boundary could change.  Specifically, we
-                // can assume now that it is not a boundary, and use those 4
-                // bytes, and then later end up having it on a boundary, and
-                // end up stepping on something.
-                let isBoundary = (nextPageNumber = boundaryPageNumber)
                 let couldBeRoot = (nextGeneration.Count = 0)
-                let avail = calcAvailable (pb.PageSize) sofar couldBeRoot isBoundary
+                let avail = calcAvailable (pb.PageSize) sofar couldBeRoot
                 let fitsInline = (avail >= neededForInline)
                 let wouldFitInlineOnNextPage = ((pb.PageSize - PARENT_NODE_HEADER_SIZE) >= neededForInline)
                 let fitsOverflow = (avail >= neededForOverflow)
@@ -824,7 +819,7 @@ module BTreeSegment =
                         pb.SetSecondToLastInt32(firstLeaf)
                         pb.SetLastInt32(lastLeaf)
                     else
-                        if isBoundary then
+                        if (nextPageNumber = boundaryPageNumber) then
                             pb.SetPageFlag(FLAG_BOUNDARY_NODE)
                             let newRange = pageManager.GetRange(token)
                             nextPageNumber <- fst newRange
@@ -848,9 +843,7 @@ module BTreeSegment =
                     // 2 for the stored count
                     // 5 for the extra ptr we will add at the end, a varint, 5 is worst case
                     sofar <- 2 + 2 + 5
-                // TODO BUG assumption about whether this page will end up on a boundary or not?
-                let isBoundary = (nextPageNumber = boundaryPageNumber)
-                if calcAvailable (pb.PageSize) sofar (nextGeneration.Count = 0) isBoundary >= neededForInline then
+                if calcAvailable (pb.PageSize) sofar (nextGeneration.Count = 0) >= neededForInline then
                     sofar <- sofar + k.Length
                 else
                     let keyOverflowFirstPage = nextPageNumber
@@ -901,8 +894,7 @@ module BTreeSegment =
             csr.Next()
 
             if pb.Position > 0 then
-                // TODO BUG assumption about whether this page will end up on a boundary or not?
-                let avail = pb.Available - (if nextPageNumber = boundaryPageNumber then sizeof<int32> else 0)
+                let avail = pb.Available - sizeof<int32> // for the lastInt32
                 let fitBothInline = (avail >= neededForBothInline)
                 let wouldFitBothInlineOnNextPage = ((pb.PageSize - LEAF_HEADER_SIZE) >= neededForBothInline)
                 let fitKeyInlineValueOverflow = (avail >= neededForKeyInlineValueOverflow)
@@ -960,8 +952,7 @@ module BTreeSegment =
              * already done it above.
              * 
              *)
-            // TODO BUG assumption about whether this page will end up on a boundary or not?
-            let available = pb.Available - (if nextPageNumber = boundaryPageNumber then sizeof<int32> else 0)
+            let available = pb.Available - sizeof<int32> // for the lastInt32
             if (available >= neededForBothInline) then
                 putArrayWithLength pb k
                 putStreamWithLength pb v vlen
