@@ -1,7 +1,4 @@
 
-need tests that read from an overflow stream asking
-for smaller amounts of data
-
 could maybe remove support for a boundary <= 0.  there
 will always be a boundary, right?
 

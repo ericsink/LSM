@@ -52,6 +52,23 @@ namespace lsm_tests
 			return a;
 		}
 
+		public static byte[] ReadAll_SmallChunks(Stream s)
+		{
+			const int CHUNK_SIZE = 57;
+
+			byte[] a = new byte[(int) (s.Length - s.Position)];
+			int sofar = 0;
+			while (sofar < a.Length) {
+				int want = Math.Min (CHUNK_SIZE, (int)(a.Length - sofar));
+				int got = s.Read (a, sofar, want);
+				if (0 == got) {
+					throw new Exception();
+				}
+				sofar += got;
+			}
+			return a;
+		}
+
 		public static int cmp(byte[] x, byte[] y)
 		{
 			int n1 = x.Length;
@@ -395,9 +412,10 @@ namespace lsm_tests
 						Assert.Equal(t1csr.ValueLength(), btcsr.ValueLength());
 
 						var tv = ReadAll(t1csr.Value());
-						var tb = ReadAll(btcsr.Value());
-						int d = cmp(tv,tb);
-						Assert.Equal(0, d);
+						var tb1 = ReadAll(btcsr.Value());
+						var tb2 = ReadAll_SmallChunks(btcsr.Value());
+						Assert.Equal(0, cmp(tv,tb1));
+						Assert.Equal(0, cmp(tv,tb2));
 
 						t1csr.Next();
 					}
