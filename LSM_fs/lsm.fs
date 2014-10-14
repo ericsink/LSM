@@ -134,8 +134,7 @@ type private PageBuilder(pgsz:int) =
         buf.[cur+3] <- byte (v >>>  0)
         cur <- cur+sizeof<int32>
 
-    // TODO private?
-    member this.PutInt32At(at:int, ov:int) =
+    member private this.PutInt32At(at:int, ov:int) =
         // assert ov >= 0
         let v:uint32 = uint32 ov
         buf.[at+0] <- byte (v >>>  24)
@@ -143,11 +142,13 @@ type private PageBuilder(pgsz:int) =
         buf.[at+2] <- byte (v >>>  8)
         buf.[at+3] <- byte (v >>>  0)
 
-    // TODO assert/check position here?
-    member this.SetSecondToLastInt32(page:int) = this.PutInt32At(buf.Length - 2*sizeof<int32>, page)
+    member this.SetSecondToLastInt32(page:int) = 
+        if cur > buf.Length - 8 then raise (new Exception())
+        this.PutInt32At(buf.Length - 2*sizeof<int32>, page)
 
-    // TODO assert/check position here?
-    member this.SetLastInt32(page:int) = this.PutInt32At(buf.Length - sizeof<int32>, page)
+    member this.SetLastInt32(page:int) = 
+        if cur > buf.Length - 4 then raise (new Exception())
+        this.PutInt32At(buf.Length - sizeof<int32>, page)
 
     member this.PutInt16(ov:int) =
         // assert ov >= 0
@@ -618,9 +619,7 @@ module BTreeSegment =
             pb.PutVarint(int64 vlen)
             pb.PutStream(ba, int vlen)
 
-    let private buildOverflowFirstPage (pb:PageBuilder) (ba:Stream) sofar =
-        let len = int ba.Length // TODO should probably pass this in
-
+    let private buildOverflowFirstPage (pb:PageBuilder) (ba:Stream) len sofar =
         pb.Reset()
         pb.PutByte(OVERFLOW_NODE)
         pb.PutByte(0uy) // starts 0, may be changed before the page is written
@@ -630,9 +629,7 @@ module BTreeSegment =
         // something will be put in lastInt32 before the page is written
         sofar + num
 
-    let private writeOverflowRegularPages (pb:PageBuilder) (fs:Stream) (ba:Stream) numPagesToWrite _sofar =
-        let len = int ba.Length // TODO should probably pass this in
-
+    let private writeOverflowRegularPages (pb:PageBuilder) (fs:Stream) (ba:Stream) numPagesToWrite len _sofar =
         let mutable sofar = _sofar
 
         for i in 0 .. numPagesToWrite-1 do
@@ -644,9 +641,7 @@ module BTreeSegment =
             pb.Flush(fs)
         sofar
 
-    let private buildOverflowBoundaryPage (pb:PageBuilder) (ba:Stream) sofar =
-        let len = int ba.Length // TODO should probably pass this in
-
+    let private buildOverflowBoundaryPage (pb:PageBuilder) (ba:Stream) len sofar =
         pb.Reset()
         // check for the partial page at the end
         let num = Math.Min((pb.PageSize - sizeof<int32>), (len - sofar))
@@ -665,14 +660,13 @@ module BTreeSegment =
 
         let mutable nextPageNumber = startingNextPageNumber
         let mutable boundaryPageNumber = startingBoundaryPageNumber
-        let mutable pagesWritten = 0 // TODO do we need this?
 
         while sofar < len do
             // we're going to write out an overflow first page,
             // followed by zero-or-more "regular" overflow pages,
             // which have no header.  we'll stop at the boundary
             // if the whole thing won't fit.
-            sofar <- buildOverflowFirstPage pb ba sofar
+            sofar <- buildOverflowFirstPage pb ba len sofar
             // note that we haven't flushed this page yet.
             let thisPageNumber = nextPageNumber
             if thisPageNumber = boundaryPageNumber then
@@ -683,7 +677,6 @@ module BTreeSegment =
                 boundaryPageNumber <- snd newRange
                 pb.SetLastInt32(nextPageNumber)
                 pb.Flush(fs)
-                pagesWritten <- pagesWritten + 1
                 utils.SeekPage(fs, pb.PageSize, nextPageNumber)
             else 
                 nextPageNumber <- nextPageNumber + 1
@@ -692,7 +685,6 @@ module BTreeSegment =
                     // the first page is also the last one
                     pb.SetLastInt32(0) // number of regular pages following
                     pb.Flush(fs)
-                    pagesWritten <- pagesWritten + 1
                 else
                     // assert sofar < len
 
@@ -727,15 +719,13 @@ module BTreeSegment =
 
                     // now we can flush the first page
                     pb.Flush(fs)
-                    pagesWritten <- pagesWritten + 1
 
                     // write out the regular pages.  these are full pages
                     // of data, with no header and no footer.  the last
                     // page might not be full, since it might be a
                     // partial page at the end of the overflow.
 
-                    sofar <- writeOverflowRegularPages pb fs ba numRegularPages sofar
-                    pagesWritten <- pagesWritten + numRegularPages
+                    sofar <- writeOverflowRegularPages pb fs ba numRegularPages len sofar
                     nextPageNumber <- nextPageNumber + numRegularPages
 
                     if needed > availableBeforeBoundary then
@@ -747,13 +737,12 @@ module BTreeSegment =
                         // then FLAG_ENDS_ON_BOUNDARY was set on the first
                         // overflow page in this block, since we can't set it
                         // here on this page, because this page has no header.
-                        sofar <- buildOverflowBoundaryPage pb ba sofar
+                        sofar <- buildOverflowBoundaryPage pb ba len sofar
                         let newRange = pageManager.GetRange(token)
                         nextPageNumber <- fst newRange
                         boundaryPageNumber <- snd newRange
                         pb.SetLastInt32(nextPageNumber)
                         pb.Flush(fs)
-                        pagesWritten <- pagesWritten + 1
                         utils.SeekPage(fs, pb.PageSize, nextPageNumber)
 
         (nextPageNumber, boundaryPageNumber)
