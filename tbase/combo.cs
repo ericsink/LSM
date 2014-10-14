@@ -18,74 +18,144 @@ using System;
 using System.IO;
 using System.Collections.Generic;
 
-//using Xunit;
-
 using Zumero.LSM;
 
 namespace lsm_tests
 {
-	public class combo
+	public abstract class combo
 	{
-		public Func<IWrite> create_memory_segment;
-		public Func<Stream,IPages,ICursor,int> create_btree_segment;
-		public Func<Stream,int,int,ICursor> open_btree_segment;
-		public Func<ICursor,ICursor> create_living_cursor;
-		public Func<ICursor,ICursor,ICursor> create_multicursor;
-
-		public static combo make_cs()
-		{
-			combo c = new combo ();
-			c.create_memory_segment = Zumero.LSM.cs.MemorySegment.Create;
-			c.create_btree_segment = Zumero.LSM.cs.BTreeSegment.Create;
-			c.open_btree_segment = Zumero.LSM.cs.BTreeSegment.OpenCursor;
-			c.create_living_cursor = (ICursor csr) => new Zumero.LSM.cs.LivingCursor(csr);
-			c.create_multicursor = (ICursor a, ICursor b) => Zumero.LSM.cs.MultiCursor.Create (a, b);
-			return c;
-		}
-
-		public static combo make_fs()
-		{
-			combo c = new combo ();
-			c.create_memory_segment = Zumero.LSM.fs.MemorySegment.Create;
-			c.create_btree_segment = Zumero.LSM.fs.BTreeSegment.Create;
-			c.open_btree_segment = Zumero.LSM.fs.BTreeSegment.OpenCursor;
-			c.create_living_cursor = (ICursor csr) => new Zumero.LSM.fs.LivingCursor(csr);
-			c.create_multicursor = (ICursor a, ICursor b) => Zumero.LSM.fs.MultiCursor.Create (a, b);
-			return c;
-		}
-
-		public static combo make_cs_fs()
-		{
-			combo c = new combo ();
-			c.create_memory_segment = Zumero.LSM.cs.MemorySegment.Create;
-			c.create_btree_segment = Zumero.LSM.cs.BTreeSegment.Create;
-			c.open_btree_segment = Zumero.LSM.fs.BTreeSegment.OpenCursor;
-			c.create_living_cursor = (ICursor csr) => new Zumero.LSM.fs.LivingCursor(csr);
-			c.create_multicursor = (ICursor a, ICursor b) => Zumero.LSM.fs.MultiCursor.Create (a, b);
-			return c;
-		}
-
-		public static combo make_fs_cs()
-		{
-			combo c = new combo ();
-			c.create_memory_segment = Zumero.LSM.fs.MemorySegment.Create;
-			c.create_btree_segment = Zumero.LSM.fs.BTreeSegment.Create;
-			c.open_btree_segment = Zumero.LSM.cs.BTreeSegment.OpenCursor;
-			c.create_living_cursor = (ICursor csr) => new Zumero.LSM.cs.LivingCursor(csr);
-			c.create_multicursor = (ICursor a, ICursor b) => Zumero.LSM.cs.MultiCursor.Create (a, b);
-			return c;
-		}
+		public abstract IWrite create_memory_segment();
+		public abstract int create_btree_segment(Stream fs,IPages pageManager,ICursor csr);
+		public abstract ICursor open_btree_segment(Stream fs,int pageSize,int rootPage);
+		public abstract ICursor create_living_cursor(ICursor csr);
+		public abstract ICursor create_multicursor(params ICursor[] a);
 
 		public static List<combo> get_combos()
 		{
 			List<combo> a = new List<combo>();
-			a.Add(combo.make_cs());
-			a.Add(combo.make_fs());
-			a.Add(combo.make_cs_fs());
-			a.Add(combo.make_fs_cs());
+			a.Add(new combo_cs());
+			a.Add(new combo_fs());
+			a.Add(new combo_cs_fs());
+			a.Add(new combo_fs_cs());
 			return a;
 		}
 	}
+
+    public class combo_cs : combo
+    {
+		public override IWrite create_memory_segment()
+        {
+            return Zumero.LSM.cs.MemorySegment.Create();
+        }
+
+		public override int create_btree_segment(Stream fs,IPages pageManager,ICursor csr)
+        {
+            return Zumero.LSM.cs.BTreeSegment.Create(fs, pageManager, csr);
+        }
+
+		public override ICursor open_btree_segment(Stream fs,int pageSize,int rootPage)
+        {
+            return Zumero.LSM.cs.BTreeSegment.OpenCursor(fs,pageSize,rootPage);
+        }
+
+		public override ICursor create_living_cursor(ICursor csr)
+        {
+            return new Zumero.LSM.cs.LivingCursor(csr);
+        }
+
+		public override ICursor create_multicursor(params ICursor[] a)
+        {
+            return Zumero.LSM.cs.MultiCursor.Create(a);
+        }
+
+    }
+
+    public class combo_fs : combo
+    {
+		public override IWrite create_memory_segment()
+        {
+            return Zumero.LSM.fs.MemorySegment.Create();
+        }
+
+		public override int create_btree_segment(Stream fs,IPages pageManager,ICursor csr)
+        {
+            return Zumero.LSM.fs.BTreeSegment.Create(fs, pageManager, csr);
+        }
+
+		public override ICursor open_btree_segment(Stream fs,int pageSize,int rootPage)
+        {
+            return Zumero.LSM.fs.BTreeSegment.OpenCursor(fs,pageSize,rootPage);
+        }
+
+		public override ICursor create_living_cursor(ICursor csr)
+        {
+            return new Zumero.LSM.fs.LivingCursor(csr);
+        }
+
+		public override ICursor create_multicursor(params ICursor[] a)
+        {
+            return Zumero.LSM.fs.MultiCursor.Create(a);
+        }
+
+    }
+
+    public class combo_cs_fs : combo
+    {
+		public override IWrite create_memory_segment()
+        {
+            return Zumero.LSM.cs.MemorySegment.Create();
+        }
+
+		public override int create_btree_segment(Stream fs,IPages pageManager,ICursor csr)
+        {
+            return Zumero.LSM.cs.BTreeSegment.Create(fs, pageManager, csr);
+        }
+
+		public override ICursor open_btree_segment(Stream fs,int pageSize,int rootPage)
+        {
+            return Zumero.LSM.fs.BTreeSegment.OpenCursor(fs,pageSize,rootPage);
+        }
+
+		public override ICursor create_living_cursor(ICursor csr)
+        {
+            return new Zumero.LSM.fs.LivingCursor(csr);
+        }
+
+		public override ICursor create_multicursor(params ICursor[] a)
+        {
+            return Zumero.LSM.fs.MultiCursor.Create(a);
+        }
+
+    }
+
+    public class combo_fs_cs : combo
+    {
+		public override IWrite create_memory_segment()
+        {
+            return Zumero.LSM.fs.MemorySegment.Create();
+        }
+
+		public override int create_btree_segment(Stream fs,IPages pageManager,ICursor csr)
+        {
+            return Zumero.LSM.fs.BTreeSegment.Create(fs, pageManager, csr);
+        }
+
+		public override ICursor open_btree_segment(Stream fs,int pageSize,int rootPage)
+        {
+            return Zumero.LSM.cs.BTreeSegment.OpenCursor(fs,pageSize,rootPage);
+        }
+
+		public override ICursor create_living_cursor(ICursor csr)
+        {
+            return new Zumero.LSM.cs.LivingCursor(csr);
+        }
+
+		public override ICursor create_multicursor(params ICursor[] a)
+        {
+            return Zumero.LSM.cs.MultiCursor.Create(a);
+        }
+
+    }
 
 }
 

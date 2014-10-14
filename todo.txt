@@ -105,8 +105,6 @@ way too many if-then places in the fs code
 
 way too many for/while loops in the fs code
 
-test multicursor with more than 2 subs
-
 no exception throwing?  everything needs to return status.
 but almost everything in .NET throws.  need F#-specific
 implementation of things like SortedDictionary?
