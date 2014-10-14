@@ -595,8 +595,6 @@ module BTreeSegment =
     let private FLAG_ROOT_NODE:byte = 1uy
     let private FLAG_BOUNDARY_NODE:byte = 2uy
     let private FLAG_ENDS_ON_BOUNDARY:byte = 4uy
-    // magic numbers
-    let private OFFSET_COUNT_PAIRS = 6
 
     let private putArrayWithLength (pb:PageBuilder) (ba:byte[]) =
         if null = ba then
@@ -862,6 +860,7 @@ module BTreeSegment =
         // 2 for the stored count
         // 4 for lastInt32 (which isn't in pb.Available)
         let PAGE_OVERHEAD = 2 + 4 + 2 + 4
+        let OFFSET_COUNT_PAIRS = 6
 
         utils.SeekPage(fs, pb.PageSize, nextPageNumber)
         csr.First()

@@ -897,9 +897,7 @@ namespace Zumero.LSM.cs
 		private const byte FLAG_ROOT_NODE = 1;
 		private const byte FLAG_BOUNDARY_NODE = 2;
 
-        // magic numbers
-		private const int OVERFLOW_PAGE_HEADER_SIZE = 6;
-		private const int OFFSET_COUNT_PAIRS = 6;
+		private const int OVERFLOW_PAGE_HEADER_SIZE = 6; // TODO going away
 
 		private class node
 		{
@@ -1070,7 +1068,7 @@ namespace Zumero.LSM.cs
             // 2 for the stored count
             // 5 for the extra ptr we will add at the end, a varint, 5 is worst case
             // 4 for lastInt32
-			var PAGE_OVERHEAD = 2 + 2 + 5 + 4;
+			const int PAGE_OVERHEAD = 2 + 2 + 5 + 4;
 
 			int sofar = 0;
 			Dictionary<int,int> overflows = new Dictionary<int, int> ();
@@ -1197,7 +1195,8 @@ namespace Zumero.LSM.cs
             // 4 for the prev page
             // 2 for the stored count
             // 4 for lastInt32 (which isn't in pb.Available)
-			var PAGE_OVERHEAD = 2 + 4 + 2 + 4;
+			const int PAGE_OVERHEAD = 2 + 4 + 2 + 4;
+            const int OFFSET_COUNT_PAIRS = 6;
 
 			var nodelist = new List<node> ();
 
