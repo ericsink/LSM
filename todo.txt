@@ -144,6 +144,8 @@ maybe the whole thing should implement IDictionary<byte[],byte[]> ?
 
 --------
 
+values where the stream can't do .Length:
+
 we can't do calculations on whether a value will fit if
 we don't know its length.
 
@@ -157,24 +159,4 @@ set the skip field?  we pretty much can't.  I suppose we
 could just write the whole thing and then go back and
 write the skip field.
 
---------
-
-first page:
-    1: pagetype (overflow)
-    1: flags 0 or "last page is a boundary" or "this page is a boundary"
-    (the data), pageSize - 6
-    4: number of pages in this block (skip)
-
-interior pages: 
-    just data
-
-final page of a block: 
-    just data, minus 4 bytes, for the nextpage field at the end
-
-first page can hold pageSize - 6 bytes.  others can hold pageSize.
-except the last one, which can hold pageSize - 4.
-
-and maybe OverflowReadStream should just read directly
-into the given ba instead of reading the whole page and
-copying.
 
