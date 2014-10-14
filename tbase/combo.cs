@@ -39,7 +39,7 @@ namespace lsm_tests
 			c.create_btree_segment = Zumero.LSM.cs.BTreeSegment.Create;
 			c.open_btree_segment = Zumero.LSM.cs.BTreeSegment.OpenCursor;
 			c.create_living_cursor = (ICursor csr) => new Zumero.LSM.cs.LivingCursor(csr);
-			c.create_multicursor = (ICursor a, ICursor b) => Zumero.LSM.cs.MultiCursor.create (a, b);
+			c.create_multicursor = (ICursor a, ICursor b) => Zumero.LSM.cs.MultiCursor.Create (a, b);
 			return c;
 		}
 
@@ -50,7 +50,7 @@ namespace lsm_tests
 			c.create_btree_segment = Zumero.LSM.fs.BTreeSegment.Create;
 			c.open_btree_segment = Zumero.LSM.fs.BTreeSegment.OpenCursor;
 			c.create_living_cursor = (ICursor csr) => new Zumero.LSM.fs.LivingCursor(csr);
-			c.create_multicursor = (ICursor a, ICursor b) => Zumero.LSM.fs.MultiCursor.create (a, b);
+			c.create_multicursor = (ICursor a, ICursor b) => Zumero.LSM.fs.MultiCursor.Create (a, b);
 			return c;
 		}
 
@@ -61,7 +61,7 @@ namespace lsm_tests
 			c.create_btree_segment = Zumero.LSM.cs.BTreeSegment.Create;
 			c.open_btree_segment = Zumero.LSM.fs.BTreeSegment.OpenCursor;
 			c.create_living_cursor = (ICursor csr) => new Zumero.LSM.fs.LivingCursor(csr);
-			c.create_multicursor = (ICursor a, ICursor b) => Zumero.LSM.fs.MultiCursor.create (a, b);
+			c.create_multicursor = (ICursor a, ICursor b) => Zumero.LSM.fs.MultiCursor.Create (a, b);
 			return c;
 		}
 
@@ -72,7 +72,7 @@ namespace lsm_tests
 			c.create_btree_segment = Zumero.LSM.fs.BTreeSegment.Create;
 			c.open_btree_segment = Zumero.LSM.cs.BTreeSegment.OpenCursor;
 			c.create_living_cursor = (ICursor csr) => new Zumero.LSM.cs.LivingCursor(csr);
-			c.create_multicursor = (ICursor a, ICursor b) => Zumero.LSM.cs.MultiCursor.create (a, b);
+			c.create_multicursor = (ICursor a, ICursor b) => Zumero.LSM.cs.MultiCursor.Create (a, b);
 			return c;
 		}
 

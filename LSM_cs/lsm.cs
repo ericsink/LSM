@@ -636,12 +636,17 @@ namespace Zumero.LSM.cs
 		private ICursor cur;
 		private Direction dir;
 
-		public static ICursor create(params ICursor[] _subcursors)
+		public static ICursor Create(params ICursor[] _subcursors)
 		{
 			return new MultiCursor(_subcursors);
 		}
 
-		public MultiCursor(IEnumerable<ICursor> _subcursors)
+        public static ICursor Create(IEnumerable<ICursor> _subcursors)
+        {
+			return new MultiCursor(_subcursors);
+        }
+
+		private MultiCursor(IEnumerable<ICursor> _subcursors)
 		{
 			subcursors = new List<ICursor> ();
 			foreach (var oc in _subcursors)
