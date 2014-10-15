@@ -767,179 +767,184 @@ module BTreeSegment =
         let pageSize = pageManager.PageSize
         let pb = new PageBuilder(pageSize)
         let pbOverflow = new PageBuilder(pageSize)
-        // TODO encapsulate mutables in a class?
         let token = pageManager.Begin()
-        let range = pageManager.GetRange(token)
-        let mutable nextPageNumber:int32 = fst range
-        let mutable boundaryPageNumber:int32 = snd range
-        let mutable prevPageNumber:int32 = 0
-        let mutable countPairs = 0
-        let mutable lastKey:byte[] = null
-        let mutable nodelist = new System.Collections.Generic.List<int32 * byte[]>()
 
-        // 2 for the page type and flags
-        // 4 for the prev page
-        // 2 for the stored count
-        // 4 for lastInt32 (which isn't in pb.Available)
-        let LEAF_PAGE_OVERHEAD = 2 + 4 + 2 + 4
-        let OFFSET_COUNT_PAIRS = 6
+        let writeLeaves leavesFirstPage leavesBoundaryPage :int*int*System.Collections.Generic.List<int32 * byte[]> =
+            // 2 for the page type and flags
+            // 4 for the prev page
+            // 2 for the stored count
+            // 4 for lastInt32 (which isn't in pb.Available)
+            let LEAF_PAGE_OVERHEAD = 2 + 4 + 2 + 4
+            let OFFSET_COUNT_PAIRS = 6
 
-        utils.SeekPage(fs, pb.PageSize, nextPageNumber)
-        csr.First()
-        while csr.IsValid() do
-            let k = csr.Key()
-            let v = csr.Value()
-            // assert k <> null
-            // but v might be null (a tombstone)
-            let vlen = if v<>null then v.Length else int64 0
+            let leaves = new System.Collections.Generic.List<int32 * byte[]>()
 
-            let neededForOverflowPageNumber = sizeof<int32>
+            let mutable countPairs = 0
+            let mutable lastKey:byte[] = null
+            let mutable prevPageNumber:int32 = 0
+            let mutable nextPageNumber:int32 = leavesFirstPage
+            let mutable boundaryPageNumber:int32 = leavesBoundaryPage
 
-            let neededForKeyBase = 1 + Varint.SpaceNeededFor(int64 k.Length)
-            let neededForKeyInline = neededForKeyBase + k.Length
-            let neededForKeyOverflow = neededForKeyBase + neededForOverflowPageNumber
+            while csr.IsValid() do
+                let k = csr.Key()
+                let v = csr.Value()
+                // assert k <> null
+                // but v might be null (a tombstone)
+                let vlen = if v<>null then v.Length else int64 0
 
-            let neededForValueInline = 1 + if v<>null then Varint.SpaceNeededFor(int64 vlen) + int vlen else 0
-            let neededForValueOverflow = 1 + if v<>null then Varint.SpaceNeededFor(int64 vlen) + neededForOverflowPageNumber else 0
+                let neededForOverflowPageNumber = sizeof<int32>
 
-            let neededForBothInline = neededForKeyInline + neededForValueInline
-            let neededForKeyInlineValueOverflow = neededForKeyInline + neededForValueOverflow
-            let neededForBothOverflow = neededForKeyOverflow + neededForValueOverflow
+                let neededForKeyBase = 1 + Varint.SpaceNeededFor(int64 k.Length)
+                let neededForKeyInline = neededForKeyBase + k.Length
+                let neededForKeyOverflow = neededForKeyBase + neededForOverflowPageNumber
 
-            csr.Next()
+                let neededForValueInline = 1 + if v<>null then Varint.SpaceNeededFor(int64 vlen) + int vlen else 0
+                let neededForValueOverflow = 1 + if v<>null then Varint.SpaceNeededFor(int64 vlen) + neededForOverflowPageNumber else 0
 
-            if pb.Position > 0 then
-                let avail = pb.Available - sizeof<int32> // for the lastInt32
-                let fitBothInline = (avail >= neededForBothInline)
-                let wouldFitBothInlineOnNextPage = ((pb.PageSize - LEAF_PAGE_OVERHEAD) >= neededForBothInline)
-                let fitKeyInlineValueOverflow = (avail >= neededForKeyInlineValueOverflow)
-                let fitBothOverflow = (avail >= neededForBothOverflow)
-                let flushThisPage = (not fitBothInline) && (wouldFitBothInlineOnNextPage || ( (not fitKeyInlineValueOverflow) && (not fitBothOverflow) ) )
+                let neededForBothInline = neededForKeyInline + neededForValueInline
+                let neededForKeyInlineValueOverflow = neededForKeyInline + neededForValueOverflow
+                let neededForBothOverflow = neededForKeyOverflow + neededForValueOverflow
 
-                if flushThisPage then
-                    // note similar flush code below at the end of the loop
-                    let thisPageNumber = nextPageNumber
-                    // assert -- it is not possible for this to be the last leaf.  so, at
-                    // this point in the code, we can be certain that there is going to be
-                    // another page.
-                    if thisPageNumber = boundaryPageNumber then
-                        pb.SetPageFlag FLAG_BOUNDARY_NODE
-                        let (nextPage,boundaryPage) = pageManager.GetRange(token)
-                        // assert pb.Position <= (pb.PageSize - 4)
-                        pb.SetLastInt32(nextPage)
-                        nextPageNumber <- nextPage
-                        boundaryPageNumber <- boundaryPage
-                    else
-                        nextPageNumber <- nextPageNumber + 1
-                    pb.PutInt16At (OFFSET_COUNT_PAIRS, countPairs)
-                    pb.Flush(fs)
-                    if nextPageNumber <> (thisPageNumber+1) then utils.SeekPage(fs, pb.PageSize, nextPageNumber)
-                    nodelist.Add(thisPageNumber, lastKey)
-                    prevPageNumber <- thisPageNumber
-                    pb.Reset()
+                csr.Next()
+
+                if pb.Position > 0 then
+                    let avail = pb.Available - sizeof<int32> // for the lastInt32
+                    let fitBothInline = (avail >= neededForBothInline)
+                    let wouldFitBothInlineOnNextPage = ((pb.PageSize - LEAF_PAGE_OVERHEAD) >= neededForBothInline)
+                    let fitKeyInlineValueOverflow = (avail >= neededForKeyInlineValueOverflow)
+                    let fitBothOverflow = (avail >= neededForBothOverflow)
+                    let flushThisPage = (not fitBothInline) && (wouldFitBothInlineOnNextPage || ( (not fitKeyInlineValueOverflow) && (not fitBothOverflow) ) )
+
+                    if flushThisPage then
+                        // note similar flush code below at the end of the loop
+                        let thisPageNumber = nextPageNumber
+                        // assert -- it is not possible for this to be the last leaf.  so, at
+                        // this point in the code, we can be certain that there is going to be
+                        // another page.
+                        if thisPageNumber = boundaryPageNumber then
+                            pb.SetPageFlag FLAG_BOUNDARY_NODE
+                            let (nextPage,boundaryPage) = pageManager.GetRange(token)
+                            // assert pb.Position <= (pb.PageSize - 4)
+                            pb.SetLastInt32(nextPage)
+                            nextPageNumber <- nextPage
+                            boundaryPageNumber <- boundaryPage
+                        else
+                            nextPageNumber <- nextPageNumber + 1
+                        pb.PutInt16At (OFFSET_COUNT_PAIRS, countPairs)
+                        pb.Flush(fs)
+                        if nextPageNumber <> (thisPageNumber+1) then utils.SeekPage(fs, pb.PageSize, nextPageNumber)
+                        leaves.Add(thisPageNumber, lastKey)
+                        prevPageNumber <- thisPageNumber
+                        pb.Reset()
+                        countPairs <- 0
+                        lastKey <- null
+                if pb.Position = 0 then
+                    // we are here either because we just flushed a page
+                    // or because this is the very first page
                     countPairs <- 0
                     lastKey <- null
-            if pb.Position = 0 then
-                // we are here either because we just flushed a page
-                // or because this is the very first page
-                countPairs <- 0
-                lastKey <- null
-                pb.PutByte(LEAF_NODE)
-                pb.PutByte(0uy) // flags
+                    pb.PutByte(LEAF_NODE)
+                    pb.PutByte(0uy) // flags
 
-                pb.PutInt32 (prevPageNumber) // prev page num.
-                pb.PutInt16 (0) // number of pairs in this page. zero for now. written at end.
-                // assert pb.Position is 8 (LEAF_PAGE_OVERHEAD - sizeof(lastInt32))
-            (*
-             * one of the following cases must now be true:
-             * 
-             * - both the key and val will fit
-             * - key inline and overflow the val
-             * - overflow both
-             * 
-             * note that we don't care about the case where the
-             * val would fit if we overflowed the key.  if the key
-             * needs to be overflowed, then we're going to overflow
-             * the val as well, even if it would fit.
-             * 
-             * if bumping to the next page would help, we have
-             * already done it above.
-             * 
-             *)
-            let available = pb.Available - sizeof<int32> // for the lastInt32
-            if (available >= neededForBothInline) then
-                putArrayWithLength pb k
-                putStreamWithLength pb v vlen
-            else
-                if (available >= neededForKeyInlineValueOverflow) then
+                    pb.PutInt32 (prevPageNumber) // prev page num.
+                    pb.PutInt16 (0) // number of pairs in this page. zero for now. written at end.
+                    // assert pb.Position is 8 (LEAF_PAGE_OVERHEAD - sizeof(lastInt32))
+                (*
+                 * one of the following cases must now be true:
+                 * 
+                 * - both the key and val will fit
+                 * - key inline and overflow the val
+                 * - overflow both
+                 * 
+                 * note that we don't care about the case where the
+                 * val would fit if we overflowed the key.  if the key
+                 * needs to be overflowed, then we're going to overflow
+                 * the val as well, even if it would fit.
+                 * 
+                 * if bumping to the next page would help, we have
+                 * already done it above.
+                 * 
+                 *)
+                let available = pb.Available - sizeof<int32> // for the lastInt32
+                if (available >= neededForBothInline) then
                     putArrayWithLength pb k
+                    putStreamWithLength pb v vlen
                 else
-                    let keyOverflowFirstPage = nextPageNumber
-                    let kRange = writeOverflow pageManager token nextPageNumber boundaryPageNumber pbOverflow fs (new MemoryStream(k))
-                    nextPageNumber <- fst kRange
-                    boundaryPageNumber <- snd kRange
+                    if (available >= neededForKeyInlineValueOverflow) then
+                        putArrayWithLength pb k
+                    else
+                        let keyOverflowFirstPage = nextPageNumber
+                        let kRange = writeOverflow pageManager token nextPageNumber boundaryPageNumber pbOverflow fs (new MemoryStream(k))
+                        nextPageNumber <- fst kRange
+                        boundaryPageNumber <- snd kRange
+
+                        pb.PutByte(FLAG_OVERFLOW)
+                        pb.PutVarint(int64 k.Length)
+                        pb.PutInt32(keyOverflowFirstPage)
+
+                    let valueOverflowFirstPage = nextPageNumber
+                    let vRange = writeOverflow pageManager token nextPageNumber boundaryPageNumber pbOverflow fs v
+                    nextPageNumber <- fst vRange
+                    boundaryPageNumber <- snd vRange
 
                     pb.PutByte(FLAG_OVERFLOW)
-                    pb.PutVarint(int64 k.Length)
-                    pb.PutInt32(keyOverflowFirstPage)
+                    pb.PutVarint(int64 vlen)
+                    pb.PutInt32(valueOverflowFirstPage)
+                lastKey <- k
+                countPairs <- countPairs + 1
 
-                let valueOverflowFirstPage = nextPageNumber
-                let vRange = writeOverflow pageManager token nextPageNumber boundaryPageNumber pbOverflow fs v
-                nextPageNumber <- fst vRange
-                boundaryPageNumber <- snd vRange
-
-                pb.PutByte(FLAG_OVERFLOW)
-                pb.PutVarint(int64 vlen)
-                pb.PutInt32(valueOverflowFirstPage)
-            lastKey <- k
-            countPairs <- countPairs + 1
-
-        // if the current page has anything in it, we need to
-        // write it out
-        if pb.Position > 0 then
-            // note similar flush code above
-            let thisPageNumber = nextPageNumber
-            if not (csr.IsValid()) && (0 = nodelist.Count) then
-                () // TODO
-                // this is the root page, even though it is a leaf
-            else
-                if thisPageNumber = boundaryPageNumber then
-                    pb.SetPageFlag FLAG_BOUNDARY_NODE
-                    let newRange = pageManager.GetRange(token)
-                    nextPageNumber <- fst newRange
-                    boundaryPageNumber <- snd newRange
-                    // assert pb.Position <= (pb.PageSize - 4)
-                    pb.SetLastInt32(nextPageNumber)
+            // if the current page has anything in it, we need to
+            // write it out
+            if pb.Position > 0 then
+                // note similar flush code above
+                let thisPageNumber = nextPageNumber
+                if not (csr.IsValid()) && (0 = leaves.Count) then
+                    () // TODO
+                    // this is the root page, even though it is a leaf
                 else
-                    nextPageNumber <- nextPageNumber + 1
-            pb.PutInt16At (OFFSET_COUNT_PAIRS, countPairs)
-            pb.Flush(fs)
-            if nextPageNumber <> (thisPageNumber+1) then utils.SeekPage(fs, pb.PageSize, nextPageNumber)
-            nodelist.Add(thisPageNumber, lastKey)
+                    if thisPageNumber = boundaryPageNumber then
+                        pb.SetPageFlag FLAG_BOUNDARY_NODE
+                        let newRange = pageManager.GetRange(token)
+                        nextPageNumber <- fst newRange
+                        boundaryPageNumber <- snd newRange
+                        // assert pb.Position <= (pb.PageSize - 4)
+                        pb.SetLastInt32(nextPageNumber)
+                    else
+                        nextPageNumber <- nextPageNumber + 1
+                pb.PutInt16At (OFFSET_COUNT_PAIRS, countPairs)
+                pb.Flush(fs)
+                if nextPageNumber <> (thisPageNumber+1) then utils.SeekPage(fs, pb.PageSize, nextPageNumber)
+                leaves.Add(thisPageNumber, lastKey)
+            (nextPageNumber,boundaryPageNumber,leaves)
+
+        let (startingPage,startingBoundary) = pageManager.GetRange(token)
+        utils.SeekPage(fs, pb.PageSize, startingPage)
+        csr.First()
+        let (pageAfterLeaves, boundaryAfterLeaves, leaves) = writeLeaves startingPage startingBoundary
 
         // all the leaves are written.
         // now write the parent pages.
         // maybe more than one level of them.
         // keep writing until we have written a level which has only one node,
         // which is the root node.
-        if nodelist.Count > 0 then
-            let firstLeaf = fst nodelist.[0]
-            let lastLeaf = fst nodelist.[nodelist.Count-1]
+        if leaves.Count > 0 then
+            let firstLeaf = fst leaves.[0]
+            let lastLeaf = fst leaves.[leaves.Count-1]
 
             let writeParentNodes (children:System.Collections.Generic.List<int32 * byte[]>) startingPageNumber startingBoundaryPageNumber =
-                let nextGeneration = new System.Collections.Generic.List<int32 * byte[]>()
-                let overflows = new System.Collections.Generic.Dictionary<int,int32>()
-                // TODO encapsulate mutables in a class?
-                let mutable sofar = 0
-                let mutable nextPageNumber = startingPageNumber
-                let mutable boundaryPageNumber = startingBoundaryPageNumber
-                let mutable first = 0
-
                 // 2 for the page type and flags
                 // 2 for the stored count
                 // 5 for the extra ptr we will add at the end, a varint, 5 is worst case
                 // 4 for lastInt32
                 let PARENT_PAGE_OVERHEAD = 2 + 2 + 5 + 4
+
+                let nextGeneration = new System.Collections.Generic.List<int32 * byte[]>()
+                let overflows = new System.Collections.Generic.Dictionary<int,int32>()
+
+                let mutable sofar = 0
+                let mutable nextPageNumber = startingPageNumber
+                let mutable boundaryPageNumber = startingBoundaryPageNumber
+                let mutable firstChildOnThisParentPage = 0
 
                 let calcAvailable currentSize couldBeRoot =
                     let basicSize = pageSize - currentSize
@@ -985,7 +990,7 @@ module BTreeSegment =
 
                         if flushThisPage then
                             let thisPageNumber = nextPageNumber
-                            buildParentPage overflows children i first
+                            buildParentPage overflows children i firstChildOnThisParentPage
                             if isRootNode then
                                 pb.SetPageFlag(FLAG_ROOT_NODE)
                                 // assert pb.Position <= (pageSize - 8)
@@ -1005,11 +1010,11 @@ module BTreeSegment =
                             if nextPageNumber <> (thisPageNumber+1) then utils.SeekPage(fs, pageSize, nextPageNumber)
                             nextGeneration.Add(thisPageNumber, snd children.[i-1])
                             sofar <- 0
-                            first <- 0
+                            firstChildOnThisParentPage <- 0
                             overflows.Clear()
                     if not isLastChild then 
                         if sofar = 0 then
-                            first <- i
+                            firstChildOnThisParentPage <- i
                             overflows.Clear()
                             sofar <- PARENT_PAGE_OVERHEAD
                         if calcAvailable sofar (nextGeneration.Count = 0) >= neededForInline then
@@ -1025,14 +1030,14 @@ module BTreeSegment =
                         sofar <- sofar + 1 + Varint.SpaceNeededFor(int64 k.Length) + Varint.SpaceNeededFor(int64 pagenum)
                 (nextPageNumber,boundaryPageNumber,nextGeneration)
 
-            let rec writeOneLayerOfParentPages next boundary (nodelist:System.Collections.Generic.List<int32 * byte[]>) :int32 =
-                if nodelist.Count > 1 then
-                    let (newNext,newBoundary,newChildren) = writeParentNodes nodelist next boundary 
+            let rec writeOneLayerOfParentPages next boundary (children:System.Collections.Generic.List<int32 * byte[]>) :int32 =
+                if children.Count > 1 then
+                    let (newNext,newBoundary,newChildren) = writeParentNodes children next boundary 
                     writeOneLayerOfParentPages newNext newBoundary newChildren
                 else
-                    fst nodelist.[0]
+                    fst children.[0]
 
-            let rootPage = writeOneLayerOfParentPages nextPageNumber boundaryPageNumber nodelist
+            let rootPage = writeOneLayerOfParentPages pageAfterLeaves boundaryAfterLeaves leaves
 
             pageManager.End(token, rootPage)
             rootPage
