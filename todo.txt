@@ -1,9 +1,9 @@
 
-could maybe remove support for a boundary <= 0.  there
-will always be a boundary, right?  but with no boundary,
-writing a btree segment into a stream probably doesn't
-require that stream to support seek.  would that be
-handy?
+write a test that verifies that BTreeSegment.Create
+never seeks if it has no boundary.  this preserves
+the ability to write a btree into almost any kind of
+stream.  common use case remains writing with an
+involved page manager.
 
 --------
 
@@ -44,14 +44,12 @@ and if the length is always zero, it's just a byte.
 needed a way to ask a cursor if a
 value is a tombstone without retrieving it.  it could be
 huge, and all we wanna know is if it exists.  why doesn't
-sqlite4's LSM have ICursor.vlen()?
+sqlite4's LSM have ICursor.ValueLength()?
 
 fix the realloc of leafKeys in the cs code as well?  or is
 the cs code just becoming part of the fs version's test suite?
 
 --------
-
-conceptually, we COULD write every new segment to disk after commit
 
 once "on disk", a segment is immutable.  reads only.
 only the first (in-memory) segment needs to support writes.
@@ -60,13 +58,12 @@ maybe the whole thing should implement IDictionary<byte[],byte[]> ?
 
 --------
 
-values where the stream can't do .Length:
+is there any chance we should be using things like Stream.ReadAsync?
+async-ness would propagate all the way up...  or should the decision
+to use async/threads be up to the caller, like the threads test I've
+got?
 
-we can't do calculations on whether a value will fit if
-we don't know its length.
-
-or maybe we just need to handle valueStreams which cannot
-do Length as a separate code path?
+--------
 
 can we write an overflow without knowing its length in
 advance?  that would be handy.  maybe we could chain a
@@ -74,5 +71,10 @@ zlib stream and compress as it goes in.  but how do we
 set the skip field?  we pretty much can't.  I suppose we
 could just write the whole thing and then go back and
 write the skip field.
+
+we can't do calculations on whether a value will fit if
+we don't know its length.  such a value automatically
+becomes an overflow.  after we write the overflow, then
+we know its length.
 
 

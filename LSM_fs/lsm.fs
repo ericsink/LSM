@@ -31,21 +31,18 @@ module utils =
         let newpos = strm.Seek(pos, SeekOrigin.Begin)
         if pos <> newpos then raise (new Exception())
 
-    let ReadFully(strm:Stream, buf, off, len) =
-        let mutable sofar = 0
-        while sofar<len do
-            let got = strm.Read(buf, off + sofar, len - sofar)
-            if 0 = got then raise (new Exception())
-            sofar <- sofar + got
+    let ReadFully(strm:Stream, buf, off, len) :unit =
+        let rec fn sofar =
+            if sofar < len then
+                let got = strm.Read(buf, off + sofar, len - sofar)
+                if 0 = got then raise (new Exception())
+                fn (sofar + got)
+        fn 0
 
-    let ReadAll (strm:Stream) =
+    let ReadAll(strm:Stream) =
         let len = int (strm.Length - strm.Position)
         let buf:byte[] = Array.zeroCreate len
-        let mutable sofar = 0
-        while sofar<len do
-            let got = strm.Read(buf, sofar, len - sofar)
-            if 0 = got then raise (new Exception())
-            sofar <- sofar + got
+        ReadFully(strm, buf, 0, len)
         buf
 
 (*
@@ -638,16 +635,18 @@ module BTreeSegment =
         sofar + num
 
     let private writeOverflowRegularPages (pb:PageBuilder) (fs:Stream) (ba:Stream) numPagesToWrite len _sofar =
-        let mutable sofar = _sofar
+        let rec fn i sofar =
+            if i < numPagesToWrite then
+                pb.Reset()
+                // check for the partial page at the end
+                let num = Math.Min(pb.PageSize, (len - sofar))
+                pb.PutStream(ba, num)
+                pb.Flush(fs)
+                fn (i+1) (sofar + num)
+            else
+                sofar
 
-        for i in 0 .. numPagesToWrite-1 do
-            pb.Reset()
-            // check for the partial page at the end
-            let num = Math.Min(pb.PageSize, (len - sofar))
-            pb.PutStream(ba, num)
-            sofar <- sofar + num
-            pb.Flush(fs)
-        sofar
+        fn 0 _sofar
 
     let private buildOverflowBoundaryPage (pb:PageBuilder) (ba:Stream) len sofar =
         pb.Reset()
