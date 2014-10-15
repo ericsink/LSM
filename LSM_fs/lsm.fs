@@ -624,47 +624,48 @@ module BTreeSegment =
             pb.PutVarint(int64 vlen)
             pb.PutStream(ba, int vlen)
 
-    let private buildOverflowFirstPage (pb:PageBuilder) (ba:Stream) len sofar =
-        pb.Reset()
-        pb.PutByte(OVERFLOW_NODE)
-        pb.PutByte(0uy) // starts 0, may be changed before the page is written
-        // check for the partial page at the end
-        let num = Math.Min((pb.PageSize - (2 + sizeof<int32>)), (len - sofar))
-        pb.PutStream(ba, num)
-        // something will be put in lastInt32 before the page is written
-        sofar + num
-
-    let private writeOverflowRegularPages (pb:PageBuilder) (fs:Stream) (ba:Stream) numPagesToWrite len _sofar =
-        let rec fn i sofar =
-            if i < numPagesToWrite then
-                pb.Reset()
-                // check for the partial page at the end
-                let num = Math.Min(pb.PageSize, (len - sofar))
-                pb.PutStream(ba, num)
-                pb.Flush(fs)
-                fn (i+1) (sofar + num)
-            else
-                sofar
-
-        fn 0 _sofar
-
-    let private buildOverflowBoundaryPage (pb:PageBuilder) (ba:Stream) len sofar =
-        pb.Reset()
-        // check for the partial page at the end
-        let num = Math.Min((pb.PageSize - sizeof<int32>), (len - sofar))
-        pb.PutStream(ba, num)
-        // something will be put in lastInt32 before the page is written
-        sofar + num
-
-    let private countOverflowPagesFor pageSize len = 
-        let pages = len / pageSize
-        let extra = if (len % pageSize) <> 0 then 1 else 0
-        pages + extra
-
     let private writeOverflow (pageManager:IPages) token startingNextPageNumber startingBoundaryPageNumber (pb:PageBuilder) (fs:Stream) (ba:Stream) =
         let len = (int ba.Length)
+        let pageSize = pb.PageSize
 
-        let rec fn sofarBeforeFirstPage firstPageNumber boundaryPageNumber :int*int =
+        let buildBoundaryPage sofar =
+            pb.Reset()
+            // check for the partial page at the end
+            let num = Math.Min((pageSize - sizeof<int32>), (len - sofar))
+            pb.PutStream(ba, num)
+            // something will be put in lastInt32 before the page is written
+            sofar + num
+
+        let buildFirstPage sofar =
+            pb.Reset()
+            pb.PutByte(OVERFLOW_NODE)
+            pb.PutByte(0uy) // starts 0, may be changed before the page is written
+            // check for the partial page at the end
+            let num = Math.Min((pageSize - (2 + sizeof<int32>)), (len - sofar))
+            pb.PutStream(ba, num)
+            // something will be put in lastInt32 before the page is written
+            sofar + num
+
+        let writeRegularPages numPagesToWrite _sofar =
+            let rec fn i sofar =
+                if i < numPagesToWrite then
+                    pb.Reset()
+                    // check for the partial page at the end
+                    let num = Math.Min(pageSize, (len - sofar))
+                    pb.PutStream(ba, num)
+                    pb.Flush(fs)
+                    fn (i+1) (sofar + num)
+                else
+                    sofar
+
+            fn 0 _sofar
+
+        let countRegularPagesNeeded siz = 
+            let pages = siz / pageSize
+            let extra = if (siz % pageSize) <> 0 then 1 else 0
+            pages + extra
+
+        let rec writeOneBlock sofarBeforeFirstPage firstPageNumber boundaryPageNumber :int*int =
             // each trip through this loop will write out one
             // block, starting with the overflow first page,
             // followed by zero-or-more "regular" overflow pages,
@@ -676,7 +677,7 @@ module BTreeSegment =
             if sofarBeforeFirstPage >= len then
                 (firstPageNumber, boundaryPageNumber)
             else
-                let sofarAfterFirstPage = buildOverflowFirstPage pb ba len sofarBeforeFirstPage
+                let sofarAfterFirstPage = buildFirstPage sofarBeforeFirstPage
                 // note that we haven't flushed this page yet.  we may have to fix
                 // a couple of things before it gets written out.
                 if firstPageNumber = boundaryPageNumber then
@@ -685,8 +686,8 @@ module BTreeSegment =
                     let (nextPage,boundaryPage) = pageManager.GetRange(token)
                     pb.SetLastInt32(nextPage)
                     pb.Flush(fs)
-                    utils.SeekPage(fs, pb.PageSize, nextPage)
-                    fn sofarAfterFirstPage nextPage boundaryPage
+                    utils.SeekPage(fs, pageSize, nextPage)
+                    writeOneBlock sofarAfterFirstPage nextPage boundaryPage
                 else 
                     let firstRegularPageNumber = firstPageNumber + 1
                     // assert sofar <= len
@@ -700,7 +701,7 @@ module BTreeSegment =
 
                         // needed gives us the number of pages, NOT including the first one
                         // which would be necessary to finish this overflow.
-                        let needed = countOverflowPagesFor (pb.PageSize) (len - sofarAfterFirstPage)
+                        let needed = countRegularPagesNeeded (len - sofarAfterFirstPage)
 
                         // availableBeforeBoundary is the number of pages until the boundary,
                         // NOT counting the boundary page, and the first page in the block
@@ -740,7 +741,7 @@ module BTreeSegment =
                         // these don't have a header, and they don't have a
                         // boundary ptr at the end.
 
-                        let sofarAfterRegularPages = writeOverflowRegularPages pb fs ba numRegularPages len sofarAfterFirstPage
+                        let sofarAfterRegularPages = writeRegularPages numRegularPages sofarAfterFirstPage
 
                         if needed > availableBeforeBoundary then
                             // assert sofar < len
@@ -751,16 +752,16 @@ module BTreeSegment =
                             // then FLAG_ENDS_ON_BOUNDARY was set on the first
                             // overflow page in this block, since we can't set it
                             // here on this page, because this page has no header.
-                            let sofarAfterBoundaryPage = buildOverflowBoundaryPage pb ba len sofarAfterRegularPages
+                            let sofarAfterBoundaryPage = buildBoundaryPage sofarAfterRegularPages
                             let (nextPage,boundaryPage) = pageManager.GetRange(token)
                             pb.SetLastInt32(nextPage)
                             pb.Flush(fs)
-                            utils.SeekPage(fs, pb.PageSize, nextPage)
-                            fn sofarAfterBoundaryPage nextPage boundaryPage
+                            utils.SeekPage(fs, pageSize, nextPage)
+                            writeOneBlock sofarAfterBoundaryPage nextPage boundaryPage
                         else
                             (firstRegularPageNumber + numRegularPages, boundaryPageNumber)
 
-        fn 0 startingNextPageNumber startingBoundaryPageNumber
+        writeOneBlock 0 startingNextPageNumber startingBoundaryPageNumber
 
     let private buildParentPage (overflows:System.Collections.Generic.Dictionary<int,int32>) (pb:PageBuilder) (children:System.Collections.Generic.List<int32 * byte[]>) stop start =
         // assert stop > start
