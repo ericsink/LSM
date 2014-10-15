@@ -18,7 +18,6 @@ namespace Zumero.LSM.fs
 
 open System
 open System.IO
-open System.Collections.Generic
 
 open Zumero.LSM
 
@@ -448,7 +447,7 @@ type MemorySegment() =
 
 type private Direction = FORWARD=0 | BACKWARD=1 | WANDERING=2
 
-type MultiCursor private (_subcursors:IEnumerable<ICursor>) =
+type MultiCursor private (_subcursors:seq<ICursor>) =
     let subcursors = List.ofSeq _subcursors
     let mutable cur:ICursor option = None
     let mutable dir = Direction.WANDERING
@@ -471,7 +470,7 @@ type MultiCursor private (_subcursors:IEnumerable<ICursor>) =
         let sortfunc (a:ICursor) (b:ICursor) = b.KeyCompare(a.Key())
         find sortfunc
 
-    static member Create(_subcursors:IEnumerable<ICursor>) :ICursor =
+    static member Create(_subcursors:seq<ICursor>) :ICursor =
         upcast (MultiCursor _subcursors)
                
     static member Create([<ParamArray>] _subcursors: ICursor[]) :ICursor =
