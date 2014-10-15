@@ -24,11 +24,100 @@ using Zumero.LSM;
 
 namespace lsm_tests
 {
+#if not
+
+    // need to allow multiple db connections to the same file.
+    // need a process-global list of files, each with their state.
+
+    public class db
+    {
+        // for each segment, we'll need a list of its blocks.
+        // this'll get written into a segmentinfo page perhaps?
+        //
+        // need to know about all the cursors currently open for
+        // any segment.  we can't release a segment unless we
+        // know it has no cursors open.
+        //
+        // need a file-wide list of all the segments.  once a
+        // segment is no longer used in the segment list (which
+        // can only happen after Work), then it is eligible to
+        // be removed (after it has no cursors left).
+        //
+        // removing a segment would be adding its pages/blocks
+        // back to a free list.  page manager needs to keep track
+        // of this and give out freed pages when it can.
+        //
+        // is there any reason we would need more than one
+        // segment list around?  an open multicursor has implicit
+        // knowledge of the seglist, but it doesn't need to be
+        // stored anywhere, right?  there is no need to be able
+        // to open old seglists?  the segment list for an open
+        // reader (mc) exists only in ram.
+
+        // the so-called "write lock" could just be a field
+        // that stores the current IWrite?
+
+        public db(string filename)
+        {
+            // read segment list from disk
+        }
+
+        IWrite BeginWrite()
+        {
+            // grab the write lock for this db
+            // create a new memory segment
+            // grab the seglist
+            // (no segment in the seglist can be deleted)
+            // get a multicursor for that seglist
+        }
+
+        // IWrite.OpenCursor needs to snapshot even the dictionary
+        // for that tx.  subsequent changes to that dictionary don't
+        // affect what a previously allocated cursor sees.
+
+        ICursor BeginRead()
+        {
+            // grab the seglist
+            // (no segment in the seglist can be deleted)
+            // get a multicursor for that seglist
+        }
+
+        void Commit(IWrite tx)
+        {
+            // create a btreesegment containing the mem segment
+            // prepend the new seg to the seglist
+            // release the write lock
+        }
+
+        void Rollback(IWrite tx)
+        {
+            // throw away the memory segment, dispose
+            // the cursors.  nothing has been written to the
+            // disk yet.
+            // release the write lock.
+        }
+
+        void Work()
+        {
+            // pick two adjacent segs from the seg list
+            // open cursors and each of them
+            // merge A and B to create C.  now locks needed.
+            // wait for the write lock
+            // (with the lock) read the seg list
+            // replace A+B with C
+            // write the seglist
+            // release the lock
+            // note that A and B are free to be removed after their cursors are done
+            // note that there should be no way to get a cursor on a segment no in the seglist
+        }
+    }
+#endif
+
 	public class SimplePageManager : IPages
 	{
 		private readonly Stream fs;
 		int cur = 1;
-		private readonly Dictionary<string,List<Tuple<int,int>>> segments;
+		private readonly Dictionary<Guid,List<Tuple<int,int>>> segments;
 		int pageSize;
 
 		// TODO could be a param
@@ -43,7 +132,7 @@ namespace lsm_tests
 		{
 			fs = _fs;
 			pageSize = _pageSize;
-			segments = new Dictionary<string, List<Tuple<int, int>>> ();
+			segments = new Dictionary<Guid, List<Tuple<int, int>>> ();
 		}
 
         int IPages.PageSize
@@ -53,23 +142,22 @@ namespace lsm_tests
             }
         }
 
-		string IPages.Begin()
+		Guid IPages.Begin()
 		{
 			lock (this) {
-				int count = segments.Count;
-				string token = count.ToString ("0000");
+				Guid token = Guid.NewGuid();
 				segments [token] = new List<Tuple<int, int>> ();
 				return token;
 			}
 		}
 
-		void IPages.End(string token, int lastPage)
+		void IPages.End(Guid token, int lastPage)
 		{
 			var blocks = segments [token];
 			//Console.WriteLine ("{0} is done", token);
 		}
 
-		Tuple<int,int> IPages.GetRange(string token)
+		Tuple<int,int> IPages.GetRange(Guid token)
 		{
 			lock (this) {
 				var t = new Tuple<int,int> (cur, cur + PAGES_PER_BLOCK - 1);

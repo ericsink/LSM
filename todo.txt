@@ -1,85 +1,9 @@
 
 could maybe remove support for a boundary <= 0.  there
-will always be a boundary, right?
-
---------
-
-page manager needs to keep track of all the pages and
-remember what's free.  and it needs to remember all
-the segments.  all the blocks.
-
-do we need a segment info thing written to the disk?
-like for each segment, a list of all its blocks?
-
-tx stuff:
-
-even for IWrite, open cursor, an ICursor always gives
-a view of data that cannot change while you are reading it.
-
-IWrite basically represents an open write transaction.
-commit: flush it to a btree and update the segment list.
-rollback: just throw it away.
-
-An open read transaction is just an ICursor (probably a
-multicursor) where nothing is changing.  it points to a
-segment list.  a readonly tx never needs to know about the
-in memory tree.
-
-a segment list is just a list of filenames for segments.
-or, in a single-file design, it's a list of starting page 
-numbers for segments.
-
-there is always one segment list which is the current one.
-the last step of committing a new write tx is to add a new
-segment list and update the "current segment list" pointer
-to refer to it.
-
-a readonly tx simply opens an ICursor on the current segment
-list.
-
-A segment list which is no longer current can be discarded
-once it has no open ICursors.
-
-A segment can be discarded if it is no longer a member of
-any segment lists.
-
-In a single file design, a segment list should probably be
-limited to a single page?
-
-Merging segments should not interfere with anything else
-until it needs to fiddle with the segments list.  For example,
-if we are merging A and B to make C.  We have ICursors on A
-and B, and we are creating C (which is not a write tx).  Once
-we are done, we should add a new segment list which is a copy
-of the current one, but with A+B replaced with C.  Then
-atomically update the current seglist.  So it kind of is a
-a write tx?
-
-is there some natural limit to the number of segment lists
-which can exist?
-
-segment lists should immutably share nodes.  it's just a linked
-list, right?
-
-merging segments, in principle, does not change the database.
-all queries will return what they did before, except faster.
-
-flushing a memory segment actually does change the db.  it
-inserts a new head into the segment list.
-
-maybe we only need one segment list?  a reader simply slurps
-the whole page into ram and doesn't need it again.  in other
-words, the segment list for an active reader exists only in
-RAM.
-
-hold a write lock as soon as the write tx object is created,
-so that when we are ready to write the segment list page,
-there won't have been any changes in the meantime.
-
-merging segments, no need for any lock (except read locks for
-the cursors) until we are ready to write the segment list page,
-at which time we can just wait for any writer to be done, then
-read the segment list, and write it back out.
+will always be a boundary, right?  but with no boundary,
+writing a btree segment into a stream probably doesn't
+require that stream to support seek.  would that be
+handy?
 
 --------
 

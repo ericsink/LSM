@@ -23,9 +23,9 @@ namespace Zumero.LSM
     public interface IPages
     {
 		int PageSize { get; }
-        string Begin();
-        Tuple<int,int> GetRange(string token);
-		void End(string token, int lastPage);
+        Guid Begin();
+        Tuple<int,int> GetRange(Guid token);
+		void End(Guid token, int lastPage);
     }
 
 	public interface IWrite

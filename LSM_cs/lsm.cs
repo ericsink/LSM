@@ -1010,7 +1010,7 @@ namespace Zumero.LSM.cs
 			return pages;
 		}
 
-		private static Tuple<int,int> writeOverflow(IPages pageManager, string token, int startingNextPageNumber, int startingBoundaryPageNumber, PageBuilder pb, Stream fs, Stream ba)
+		private static Tuple<int,int> writeOverflow(IPages pageManager, Guid token, int startingNextPageNumber, int startingBoundaryPageNumber, PageBuilder pb, Stream fs, Stream ba)
 		{
 			int sofar = 0;
 			int len = (int) ba.Length;
@@ -1122,7 +1122,7 @@ namespace Zumero.LSM.cs
 			return n;
 		}
 
-		private static Tuple<int,int,List<node>> writeParentNodes(IPages pageManager, string token, int firstLeaf, int lastLeaf, List<node> children, int startingPageNumber, int startingBoundaryPageNumber, Stream fs, PageBuilder pb, PageBuilder pbOverflow)
+		private static Tuple<int,int,List<node>> writeParentNodes(IPages pageManager, Guid token, int firstLeaf, int lastLeaf, List<node> children, int startingPageNumber, int startingBoundaryPageNumber, Stream fs, PageBuilder pb, PageBuilder pbOverflow)
 		{
 			int nextPageNumber = startingPageNumber;
             int boundaryPageNumber = startingBoundaryPageNumber;
