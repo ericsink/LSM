@@ -768,12 +768,6 @@ module BTreeSegment =
 
             let leaves = new System.Collections.Generic.List<int32 * byte[]>()
 
-            let mutable countPairs = 0
-            let mutable lastKey:byte[] = null
-            let mutable prevPageNumber:int32 = 0
-            let mutable nextPageNumber:int32 = leavesFirstPage
-            let mutable boundaryPageNumber:int32 = leavesBoundaryPage
-
             let flushLeaf countPairs lastKey thisPageNumber boundaryPageNumber = 
                 pb.PutInt16At (OFFSET_COUNT_PAIRS, countPairs)
                 let isRootPage = not (csr.IsValid()) && (0 = leaves.Count)
@@ -793,7 +787,25 @@ module BTreeSegment =
                 if nextPage <> (thisPageNumber+1) then utils.SeekPage(fs, pageSize, nextPage)
                 range
 
+            let mutable countPairs = 0
+            let mutable lastKey:byte[] = null
+            let mutable prevPageNumber:int32 = 0
+            let mutable nextPageNumber:int32 = leavesFirstPage
+            let mutable boundaryPageNumber:int32 = leavesBoundaryPage
+
             while csr.IsValid() do
+                if pb.Position = 0 then
+                    // we are here either because we just flushed a page
+                    // or because this is the very first page
+                    countPairs <- 0
+                    lastKey <- null
+                    pb.PutByte(LEAF_NODE)
+                    pb.PutByte(0uy) // flags
+
+                    pb.PutInt32 (prevPageNumber) // prev page num.
+                    pb.PutInt16 (0) // number of pairs in this page. zero for now. written at end.
+                    // assert pb.Position is 8 (LEAF_PAGE_OVERHEAD - sizeof(lastInt32))
+
                 let k = csr.Key()
                 let v = csr.Value()
                 // assert k <> null
@@ -812,87 +824,62 @@ module BTreeSegment =
                 let neededForBothInline = neededForKeyInline + neededForValueInline
                 let neededForKeyInlineValueOverflow = neededForKeyInline + neededForValueOverflow
 
-                csr.Next()
-
-                if pb.Position > 0 then
-                    // determine if we need to flush this page
-                    let spaceLeft = pb.Available - sizeof<int32> // for the lastInt32
-                    let fitBothInline = (spaceLeft >= neededForBothInline)
-                    let wouldFitBothInlineOnNextPage = ((pageSize - LEAF_PAGE_OVERHEAD) >= neededForBothInline)
-                    let fitKeyInlineValueOverflow = (spaceLeft >= neededForKeyInlineValueOverflow)
-                    let neededForKeyOverflow = neededForKeyBase + neededForOverflowPageNumber
-                    let neededForBothOverflow = neededForKeyOverflow + neededForValueOverflow
-                    let fitBothOverflow = (spaceLeft >= neededForBothOverflow)
-                    let flushThisPage = (not fitBothInline) && (wouldFitBothInlineOnNextPage || ( (not fitKeyInlineValueOverflow) && (not fitBothOverflow) ) )
-
-                    if flushThisPage then
-                        prevPageNumber <- nextPageNumber
-                        let (nextPage,boundaryPage) = flushLeaf countPairs lastKey nextPageNumber boundaryPageNumber
-                        nextPageNumber <- nextPage
-                        boundaryPageNumber <- boundaryPage
-
-                if pb.Position = 0 then
-                    // we are here either because we just flushed a page
-                    // or because this is the very first page
-                    countPairs <- 0
-                    lastKey <- null
-                    pb.PutByte(LEAF_NODE)
-                    pb.PutByte(0uy) // flags
-
-                    pb.PutInt32 (prevPageNumber) // prev page num.
-                    pb.PutInt16 (0) // number of pairs in this page. zero for now. written at end.
-                    // assert pb.Position is 8 (LEAF_PAGE_OVERHEAD - sizeof(lastInt32))
-
-                (*
-                 * one of the following cases must now be true:
-                 * 
-                 * - both the key and val will fit
-                 * - key inline and overflow the val
-                 * - overflow both
-                 * 
-                 * note that we don't care about the case where the
-                 * val would fit if we overflowed the key.  if the key
-                 * needs to be overflowed, then we're going to overflow
-                 * the val as well, even if it would fit.
-                 * 
-                 * if bumping to the next page would help, we have
-                 * already done it above.
-                 * 
-                 *)
-
+                // determine if we need to flush this page
                 let available = pb.Available - sizeof<int32> // for the lastInt32
-                if (available >= neededForBothInline) then
-                    putKeyWithLength k
-                    if null = v then
-                        pb.PutByte(FLAG_TOMBSTONE)
-                        pb.PutVarint(0L)
-                    else
-                        pb.PutByte(0uy)
-                        pb.PutVarint(int64 vlen)
-                        pb.PutStream(v, int vlen)
+                let fitBothInline = (available >= neededForBothInline)
+                let wouldFitBothInlineOnNextPage = ((pageSize - LEAF_PAGE_OVERHEAD) >= neededForBothInline)
+                let fitKeyInlineValueOverflow = (available >= neededForKeyInlineValueOverflow)
+                let neededForKeyOverflow = neededForKeyBase + neededForOverflowPageNumber
+                let neededForBothOverflow = neededForKeyOverflow + neededForValueOverflow
+                let fitBothOverflow = (available >= neededForBothOverflow)
+                let flushThisPage = (countPairs > 0) && (not fitBothInline) && (wouldFitBothInlineOnNextPage || ( (not fitKeyInlineValueOverflow) && (not fitBothOverflow) ) )
+
+                if flushThisPage then
+                    prevPageNumber <- nextPageNumber
+                    let (nextPage,boundaryPage) = flushLeaf countPairs lastKey nextPageNumber boundaryPageNumber
+                    nextPageNumber <- nextPage
+                    boundaryPageNumber <- boundaryPage
+                    // we have not advanced the cursor.  go back to the top of the loop
                 else
-                    if (available >= neededForKeyInlineValueOverflow) then
+                    if fitBothInline then
                         putKeyWithLength k
+                        if null = v then
+                            pb.PutByte(FLAG_TOMBSTONE)
+                            pb.PutVarint(0L)
+                        else
+                            pb.PutByte(0uy)
+                            pb.PutVarint(int64 vlen)
+                            pb.PutStream(v, int vlen)
                     else
-                        let keyOverflowFirstPage = nextPageNumber
-                        let kRange = writeOverflow pageManager token nextPageNumber boundaryPageNumber pbOverflow fs (new MemoryStream(k))
-                        nextPageNumber <- fst kRange
-                        boundaryPageNumber <- snd kRange
+                        let putOverflow strm nextPageNumber boundaryPageNumber =
+                            let overflowFirstPage = nextPageNumber
+                            let newRange = writeOverflow pageManager token nextPageNumber boundaryPageNumber pbOverflow fs strm
+                            pb.PutByte(FLAG_OVERFLOW)
+                            pb.PutVarint(strm.Length)
+                            pb.PutInt32(overflowFirstPage)
+                            newRange
 
-                        pb.PutByte(FLAG_OVERFLOW)
-                        pb.PutVarint(int64 k.Length)
-                        pb.PutInt32(keyOverflowFirstPage)
+                        // TODO is it possible for v to be a tombstone here?
 
-                    let valueOverflowFirstPage = nextPageNumber
-                    let vRange = writeOverflow pageManager token nextPageNumber boundaryPageNumber pbOverflow fs v
-                    nextPageNumber <- fst vRange
-                    boundaryPageNumber <- snd vRange
+                        if fitKeyInlineValueOverflow then
+                            putKeyWithLength k
 
-                    pb.PutByte(FLAG_OVERFLOW)
-                    pb.PutVarint(int64 vlen)
-                    pb.PutInt32(valueOverflowFirstPage)
-                lastKey <- k
-                countPairs <- countPairs + 1
+                            let vRange = putOverflow v nextPageNumber boundaryPageNumber
+                            nextPageNumber <- fst vRange
+                            boundaryPageNumber <- snd vRange
+                        else
+                            let kRange = putOverflow (new MemoryStream(k)) nextPageNumber boundaryPageNumber
+                            nextPageNumber <- fst kRange
+                            boundaryPageNumber <- snd kRange
+
+                            let vRange = putOverflow v nextPageNumber boundaryPageNumber
+                            nextPageNumber <- fst vRange
+                            boundaryPageNumber <- snd vRange
+
+                    csr.Next()
+
+                    lastKey <- k
+                    countPairs <- countPairs + 1
 
             // if the current page has anything in it, we need to
             // write it out
