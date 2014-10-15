@@ -785,6 +785,25 @@ module BTreeSegment =
             let mutable nextPageNumber:int32 = leavesFirstPage
             let mutable boundaryPageNumber:int32 = leavesBoundaryPage
 
+            let flushLeaf countPairs lastKey thisPageNumber boundaryPageNumber = 
+                pb.PutInt16At (OFFSET_COUNT_PAIRS, countPairs)
+                let isRootPage = not (csr.IsValid()) && (0 = leaves.Count)
+                let range = 
+                    if (not isRootPage) && (thisPageNumber = boundaryPageNumber) then
+                        pb.SetPageFlag FLAG_BOUNDARY_NODE
+                        let newRange = pageManager.GetRange(token)
+                        // assert pb.Position <= (pb.PageSize - 4)
+                        pb.SetLastInt32(fst newRange)
+                        newRange
+                    else
+                        (thisPageNumber + 1, boundaryPageNumber)
+                pb.Flush(fs)
+                pb.Reset()
+                leaves.Add(thisPageNumber, lastKey)
+                let nextPage = fst range
+                if nextPage <> (thisPageNumber+1) then utils.SeekPage(fs, pageSize, nextPage)
+                range
+
             while csr.IsValid() do
                 let k = csr.Key()
                 let v = csr.Value()
@@ -816,28 +835,13 @@ module BTreeSegment =
                     let flushThisPage = (not fitBothInline) && (wouldFitBothInlineOnNextPage || ( (not fitKeyInlineValueOverflow) && (not fitBothOverflow) ) )
 
                     if flushThisPage then
-                        // note similar flush code below at the end of the loop
-                        let thisPageNumber = nextPageNumber
-                        // assert -- it is not possible for this to be the last leaf.  so, at
-                        // this point in the code, we can be certain that there is going to be
-                        // another page.
-                        if thisPageNumber = boundaryPageNumber then
-                            pb.SetPageFlag FLAG_BOUNDARY_NODE
-                            let (nextPage,boundaryPage) = pageManager.GetRange(token)
-                            // assert pb.Position <= (pb.PageSize - 4)
-                            pb.SetLastInt32(nextPage)
-                            nextPageNumber <- nextPage
-                            boundaryPageNumber <- boundaryPage
-                        else
-                            nextPageNumber <- nextPageNumber + 1
-                        pb.PutInt16At (OFFSET_COUNT_PAIRS, countPairs)
-                        pb.Flush(fs)
-                        if nextPageNumber <> (thisPageNumber+1) then utils.SeekPage(fs, pb.PageSize, nextPageNumber)
-                        leaves.Add(thisPageNumber, lastKey)
-                        prevPageNumber <- thisPageNumber
-                        pb.Reset()
-                        countPairs <- 0
-                        lastKey <- null
+                        prevPageNumber <- nextPageNumber
+                        let (nextPage,boundaryPage) = flushLeaf countPairs lastKey nextPageNumber boundaryPageNumber
+                        nextPageNumber <- nextPage
+                        boundaryPageNumber <- boundaryPage
+                        //countPairs <- 0
+                        //lastKey <- null
+
                 if pb.Position = 0 then
                     // we are here either because we just flushed a page
                     // or because this is the very first page
@@ -896,25 +900,10 @@ module BTreeSegment =
             // if the current page has anything in it, we need to
             // write it out
             if pb.Position > 0 then
-                // note similar flush code above
-                let thisPageNumber = nextPageNumber
-                if not (csr.IsValid()) && (0 = leaves.Count) then
-                    () // TODO
-                    // this is the root page, even though it is a leaf
-                else
-                    if thisPageNumber = boundaryPageNumber then
-                        pb.SetPageFlag FLAG_BOUNDARY_NODE
-                        let newRange = pageManager.GetRange(token)
-                        nextPageNumber <- fst newRange
-                        boundaryPageNumber <- snd newRange
-                        // assert pb.Position <= (pb.PageSize - 4)
-                        pb.SetLastInt32(nextPageNumber)
-                    else
-                        nextPageNumber <- nextPageNumber + 1
-                pb.PutInt16At (OFFSET_COUNT_PAIRS, countPairs)
-                pb.Flush(fs)
-                if nextPageNumber <> (thisPageNumber+1) then utils.SeekPage(fs, pb.PageSize, nextPageNumber)
-                leaves.Add(thisPageNumber, lastKey)
+                let (nextPage,boundaryPage) = flushLeaf countPairs lastKey nextPageNumber boundaryPageNumber
+                nextPageNumber <- nextPage
+                boundaryPageNumber <- boundaryPage
+
             (nextPageNumber,boundaryPageNumber,leaves)
 
         let (startingPage,startingBoundary) = pageManager.GetRange(token)
