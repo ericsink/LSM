@@ -607,156 +607,163 @@ module BTreeSegment =
     let private FLAG_BOUNDARY_NODE:byte = 2uy
     let private FLAG_ENDS_ON_BOUNDARY:byte = 4uy
 
-    // TODO this could move inside Create
-    let private writeOverflow (pageManager:IPages) token startingNextPageNumber startingBoundaryPageNumber (pb:PageBuilder) (fs:Stream) (ba:Stream) =
-        let len = (int ba.Length)
-        let pageSize = pb.PageSize
-
-        let buildBoundaryPage sofar =
-            pb.Reset()
-            // check for the partial page at the end
-            let num = Math.Min((pageSize - sizeof<int32>), (len - sofar))
-            pb.PutStream(ba, num)
-            // something will be put in lastInt32 before the page is written
-            sofar + num
-
-        let buildFirstPage sofar =
-            pb.Reset()
-            pb.PutByte(OVERFLOW_NODE)
-            pb.PutByte(0uy) // starts 0, may be changed before the page is written
-            // check for the partial page at the end
-            let num = Math.Min((pageSize - (2 + sizeof<int32>)), (len - sofar))
-            pb.PutStream(ba, num)
-            // something will be put in lastInt32 before the page is written
-            sofar + num
-
-        let writeRegularPages numPagesToWrite _sofar =
-            let rec fn i sofar =
-                if i < numPagesToWrite then
-                    pb.Reset()
-                    // check for the partial page at the end
-                    let num = Math.Min(pageSize, (len - sofar))
-                    pb.PutStream(ba, num)
-                    pb.Flush(fs)
-                    fn (i+1) (sofar + num)
-                else
-                    sofar
-
-            fn 0 _sofar
-
-        let countRegularPagesNeeded siz = 
-            let pages = siz / pageSize
-            let extra = if (siz % pageSize) <> 0 then 1 else 0
-            pages + extra
-
-        let rec writeOneBlock sofarBeforeFirstPage firstPageNumber boundaryPageNumber :int*int =
-            // each trip through this loop will write out one
-            // block, starting with the overflow first page,
-            // followed by zero-or-more "regular" overflow pages,
-            // which have no header.  we'll stop at the block boundary,
-            // either because we land there or because the whole overflow
-            // won't fit and we have to continue into the next block.
-            // the boundary page will be like a regular overflow page,
-            // headerless, but it is four bytes smaller.
-            if sofarBeforeFirstPage >= len then
-                (firstPageNumber, boundaryPageNumber)
-            else
-                let sofarAfterFirstPage = buildFirstPage sofarBeforeFirstPage
-                // note that we haven't flushed this page yet.  we may have to fix
-                // a couple of things before it gets written out.
-                if firstPageNumber = boundaryPageNumber then
-                    // the first page landed on a boundary
-                    pb.SetPageFlag(FLAG_BOUNDARY_NODE)
-                    let (nextPage,boundaryPage) = pageManager.GetRange(token)
-                    pb.SetLastInt32(nextPage)
-                    pb.Flush(fs)
-                    utils.SeekPage(fs, pageSize, nextPage)
-                    writeOneBlock sofarAfterFirstPage nextPage boundaryPage
-                else 
-                    let firstRegularPageNumber = firstPageNumber + 1
-                    // assert sofar <= len
-                    if sofarAfterFirstPage = len then
-                        // the first page is also the last one
-                        pb.SetLastInt32(0) // number of regular pages following
-                        pb.Flush(fs)
-                        (firstRegularPageNumber,boundaryPageNumber)
-                    else
-                        // assert sofar < len
-
-                        // needed gives us the number of pages, NOT including the first one
-                        // which would be necessary to finish this overflow.
-                        let needed = countRegularPagesNeeded (len - sofarAfterFirstPage)
-
-                        // availableBeforeBoundary is the number of pages until the boundary,
-                        // NOT counting the boundary page, and the first page in the block
-                        // has already been accounted for, so we're just talking about data pages.
-                        let availableBeforeBoundary = 
-                            if boundaryPageNumber > 0 
-                            then (boundaryPageNumber - firstRegularPageNumber) 
-                            else needed
-
-                        // if needed <= availableBeforeBoundary then this will fit
-
-                        // if needed = (1 + availableBeforeBoundary) then this might fit, 
-                        // depending on whether the loss of the 4 bytes on the boundary
-                        // page makes a difference or not.  Either way, for this block,
-                        // the overflow ends on the boundary
-
-                        // if needed > (1 + availableBeforeBoundary), then this block will end 
-                        // on the boundary, but it will continue
-
-                        let numRegularPages = Math.Min(needed, availableBeforeBoundary)
-                        pb.SetLastInt32(numRegularPages)
-
-                        if needed > availableBeforeBoundary then
-                            // this part of the overflow will end on the boundary,
-                            // perhaps because it finishes exactly there, or perhaps
-                            // because it doesn't fit and needs to continue into the
-                            // next block.
-                            pb.SetPageFlag(FLAG_ENDS_ON_BOUNDARY)
-
-                        // now we can flush the first page
-                        pb.Flush(fs)
-
-                        // write out the regular pages.  these are full pages
-                        // of data, with no header and no footer.  the last
-                        // page actually might not be full, since it might be a
-                        // partial page at the end of the overflow.  either way,
-                        // these don't have a header, and they don't have a
-                        // boundary ptr at the end.
-
-                        let sofarAfterRegularPages = writeRegularPages numRegularPages sofarAfterFirstPage
-
-                        if needed > availableBeforeBoundary then
-                            // assert sofar < len
-                            // assert nextPageNumber = boundaryPageNumber
-                            //
-                            // we need to write out a regular page with a
-                            // boundary pointer in it.  if this is happening,
-                            // then FLAG_ENDS_ON_BOUNDARY was set on the first
-                            // overflow page in this block, since we can't set it
-                            // here on this page, because this page has no header.
-                            let sofarAfterBoundaryPage = buildBoundaryPage sofarAfterRegularPages
-                            let (nextPage,boundaryPage) = pageManager.GetRange(token)
-                            pb.SetLastInt32(nextPage)
-                            pb.Flush(fs)
-                            utils.SeekPage(fs, pageSize, nextPage)
-                            writeOneBlock sofarAfterBoundaryPage nextPage boundaryPage
-                        else
-                            (firstRegularPageNumber + numRegularPages, boundaryPageNumber)
-
-        writeOneBlock 0 startingNextPageNumber startingBoundaryPageNumber
-
     let Create(fs:Stream, pageManager:IPages, csr:ICursor) :int32 = 
         let pageSize = pageManager.PageSize
-        let pb = new PageBuilder(pageSize)
-        let pbOverflow = new PageBuilder(pageSize)
         let token = pageManager.Begin()
+        let pbOverflow = new PageBuilder(pageSize)
 
+        let writeOverflow startingNextPageNumber startingBoundaryPageNumber (ba:Stream) =
+            let len = (int ba.Length)
+            let pageSize = pbOverflow.PageSize
+
+            let buildBoundaryPage sofar =
+                pbOverflow.Reset()
+                // check for the partial page at the end
+                let num = Math.Min((pageSize - sizeof<int32>), (len - sofar))
+                pbOverflow.PutStream(ba, num)
+                // something will be put in lastInt32 before the page is written
+                sofar + num
+
+            let buildFirstPage sofar =
+                pbOverflow.Reset()
+                pbOverflow.PutByte(OVERFLOW_NODE)
+                pbOverflow.PutByte(0uy) // starts 0, may be changed before the page is written
+                // check for the partial page at the end
+                let num = Math.Min((pageSize - (2 + sizeof<int32>)), (len - sofar))
+                pbOverflow.PutStream(ba, num)
+                // something will be put in lastInt32 before the page is written
+                sofar + num
+
+            let writeRegularPages numPagesToWrite _sofar =
+                let rec fn i sofar =
+                    if i < numPagesToWrite then
+                        pbOverflow.Reset()
+                        // check for the partial page at the end
+                        let num = Math.Min(pageSize, (len - sofar))
+                        pbOverflow.PutStream(ba, num)
+                        pbOverflow.Flush(fs)
+                        fn (i+1) (sofar + num)
+                    else
+                        sofar
+
+                fn 0 _sofar
+
+            let countRegularPagesNeeded siz = 
+                let pages = siz / pageSize
+                let extra = if (siz % pageSize) <> 0 then 1 else 0
+                pages + extra
+
+            let rec writeOneBlock sofarBeforeFirstPage firstPageNumber boundaryPageNumber :int*int =
+                // each trip through this loop will write out one
+                // block, starting with the overflow first page,
+                // followed by zero-or-more "regular" overflow pages,
+                // which have no header.  we'll stop at the block boundary,
+                // either because we land there or because the whole overflow
+                // won't fit and we have to continue into the next block.
+                // the boundary page will be like a regular overflow page,
+                // headerless, but it is four bytes smaller.
+                if sofarBeforeFirstPage >= len then
+                    (firstPageNumber, boundaryPageNumber)
+                else
+                    let sofarAfterFirstPage = buildFirstPage sofarBeforeFirstPage
+                    // note that we haven't flushed this page yet.  we may have to fix
+                    // a couple of things before it gets written out.
+                    if firstPageNumber = boundaryPageNumber then
+                        // the first page landed on a boundary
+                        pbOverflow.SetPageFlag(FLAG_BOUNDARY_NODE)
+                        let (nextPage,boundaryPage) = pageManager.GetRange(token)
+                        pbOverflow.SetLastInt32(nextPage)
+                        pbOverflow.Flush(fs)
+                        utils.SeekPage(fs, pageSize, nextPage)
+                        writeOneBlock sofarAfterFirstPage nextPage boundaryPage
+                    else 
+                        let firstRegularPageNumber = firstPageNumber + 1
+                        // assert sofar <= len
+                        if sofarAfterFirstPage = len then
+                            // the first page is also the last one
+                            pbOverflow.SetLastInt32(0) // number of regular pages following
+                            pbOverflow.Flush(fs)
+                            (firstRegularPageNumber,boundaryPageNumber)
+                        else
+                            // assert sofar < len
+
+                            // needed gives us the number of pages, NOT including the first one
+                            // which would be necessary to finish this overflow.
+                            let needed = countRegularPagesNeeded (len - sofarAfterFirstPage)
+
+                            // availableBeforeBoundary is the number of pages until the boundary,
+                            // NOT counting the boundary page, and the first page in the block
+                            // has already been accounted for, so we're just talking about data pages.
+                            let availableBeforeBoundary = 
+                                if boundaryPageNumber > 0 
+                                then (boundaryPageNumber - firstRegularPageNumber) 
+                                else needed
+
+                            // if needed <= availableBeforeBoundary then this will fit
+
+                            // if needed = (1 + availableBeforeBoundary) then this might fit, 
+                            // depending on whether the loss of the 4 bytes on the boundary
+                            // page makes a difference or not.  Either way, for this block,
+                            // the overflow ends on the boundary
+
+                            // if needed > (1 + availableBeforeBoundary), then this block will end 
+                            // on the boundary, but it will continue
+
+                            let numRegularPages = Math.Min(needed, availableBeforeBoundary)
+                            pbOverflow.SetLastInt32(numRegularPages)
+
+                            if needed > availableBeforeBoundary then
+                                // this part of the overflow will end on the boundary,
+                                // perhaps because it finishes exactly there, or perhaps
+                                // because it doesn't fit and needs to continue into the
+                                // next block.
+                                pbOverflow.SetPageFlag(FLAG_ENDS_ON_BOUNDARY)
+
+                            // now we can flush the first page
+                            pbOverflow.Flush(fs)
+
+                            // write out the regular pages.  these are full pages
+                            // of data, with no header and no footer.  the last
+                            // page actually might not be full, since it might be a
+                            // partial page at the end of the overflow.  either way,
+                            // these don't have a header, and they don't have a
+                            // boundary ptr at the end.
+
+                            let sofarAfterRegularPages = writeRegularPages numRegularPages sofarAfterFirstPage
+
+                            if needed > availableBeforeBoundary then
+                                // assert sofar < len
+                                // assert nextPageNumber = boundaryPageNumber
+                                //
+                                // we need to write out a regular page with a
+                                // boundary pointer in it.  if this is happening,
+                                // then FLAG_ENDS_ON_BOUNDARY was set on the first
+                                // overflow page in this block, since we can't set it
+                                // here on this page, because this page has no header.
+                                let sofarAfterBoundaryPage = buildBoundaryPage sofarAfterRegularPages
+                                let (nextPage,boundaryPage) = pageManager.GetRange(token)
+                                pbOverflow.SetLastInt32(nextPage)
+                                pbOverflow.Flush(fs)
+                                utils.SeekPage(fs, pageSize, nextPage)
+                                writeOneBlock sofarAfterBoundaryPage nextPage boundaryPage
+                            else
+                                (firstRegularPageNumber + numRegularPages, boundaryPageNumber)
+
+            writeOneBlock 0 startingNextPageNumber startingBoundaryPageNumber
+
+        let pb = new PageBuilder(pageSize)
         let putKeyWithLength (k:byte[]) =
             pb.PutByte(0uy) // flags TODO are keys ever going to have flags?
             pb.PutVarint(int64 k.Length)
             pb.PutArray(k)
+
+        let putOverflow strm nextPageNumber boundaryPageNumber =
+            let overflowFirstPage = nextPageNumber
+            let newRange = writeOverflow nextPageNumber boundaryPageNumber strm
+            pb.PutByte(FLAG_OVERFLOW)
+            pb.PutVarint(strm.Length)
+            pb.PutInt32(overflowFirstPage)
+            newRange
 
         let writeLeaves leavesFirstPage leavesBoundaryPage :int*int*System.Collections.Generic.List<int32 * byte[]> =
             // 2 for the page type and flags
@@ -787,25 +794,7 @@ module BTreeSegment =
                 if nextPage <> (thisPageNumber+1) then utils.SeekPage(fs, pageSize, nextPage)
                 range
 
-            let mutable countPairs = 0
-            let mutable lastKey:byte[] = null
-            let mutable prevPageNumber:int32 = 0
-            let mutable nextPageNumber:int32 = leavesFirstPage
-            let mutable boundaryPageNumber:int32 = leavesBoundaryPage
-
-            while csr.IsValid() do
-                if pb.Position = 0 then
-                    // we are here either because we just flushed a page
-                    // or because this is the very first page
-                    countPairs <- 0
-                    lastKey <- null
-                    pb.PutByte(LEAF_NODE)
-                    pb.PutByte(0uy) // flags
-
-                    pb.PutInt32 (prevPageNumber) // prev page num.
-                    pb.PutInt16 (0) // number of pairs in this page. zero for now. written at end.
-                    // assert pb.Position is 8 (LEAF_PAGE_OVERHEAD - sizeof(lastInt32))
-
+            let rec putKeys countPairs lastKey nextPageNumber boundaryPageNumber =
                 let k = csr.Key()
                 let v = csr.Value()
                 // assert k <> null
@@ -835,60 +824,56 @@ module BTreeSegment =
                 let flushThisPage = (countPairs > 0) && (not fitBothInline) && (wouldFitBothInlineOnNextPage || ( (not fitKeyInlineValueOverflow) && (not fitBothOverflow) ) )
 
                 if flushThisPage then
-                    prevPageNumber <- nextPageNumber
-                    let (nextPage,boundaryPage) = flushLeaf countPairs lastKey nextPageNumber boundaryPageNumber
-                    nextPageNumber <- nextPage
-                    boundaryPageNumber <- boundaryPage
-                    // we have not advanced the cursor.  go back to the top of the loop
+                    (countPairs,lastKey,nextPageNumber,boundaryPageNumber)
                 else
-                    if fitBothInline then
-                        putKeyWithLength k
-                        if null = v then
-                            pb.PutByte(FLAG_TOMBSTONE)
-                            pb.PutVarint(0L)
-                        else
-                            pb.PutByte(0uy)
-                            pb.PutVarint(int64 vlen)
-                            pb.PutStream(v, int vlen)
-                    else
-                        let putOverflow strm nextPageNumber boundaryPageNumber =
-                            let overflowFirstPage = nextPageNumber
-                            let newRange = writeOverflow pageManager token nextPageNumber boundaryPageNumber pbOverflow fs strm
-                            pb.PutByte(FLAG_OVERFLOW)
-                            pb.PutVarint(strm.Length)
-                            pb.PutInt32(overflowFirstPage)
-                            newRange
-
-                        // TODO is it possible for v to be a tombstone here?
-
-                        if fitKeyInlineValueOverflow then
+                    let (newN, newB) = 
+                        if fitBothInline then
                             putKeyWithLength k
-
-                            let vRange = putOverflow v nextPageNumber boundaryPageNumber
-                            nextPageNumber <- fst vRange
-                            boundaryPageNumber <- snd vRange
+                            if null = v then
+                                pb.PutByte(FLAG_TOMBSTONE)
+                                pb.PutVarint(0L)
+                            else
+                                pb.PutByte(0uy)
+                                pb.PutVarint(int64 vlen)
+                                pb.PutStream(v, int vlen)
+                            (nextPageNumber,boundaryPageNumber)
                         else
-                            let kRange = putOverflow (new MemoryStream(k)) nextPageNumber boundaryPageNumber
-                            nextPageNumber <- fst kRange
-                            boundaryPageNumber <- snd kRange
+                            // TODO is it possible for v to be a tombstone here?
 
-                            let vRange = putOverflow v nextPageNumber boundaryPageNumber
-                            nextPageNumber <- fst vRange
-                            boundaryPageNumber <- snd vRange
+                            if fitKeyInlineValueOverflow then
+                                putKeyWithLength k
+
+                                putOverflow v nextPageNumber boundaryPageNumber
+                            else
+                                let (n,b) = putOverflow (new MemoryStream(k)) nextPageNumber boundaryPageNumber
+                                putOverflow v n b
 
                     csr.Next()
+                    if csr.IsValid() then
+                        putKeys (countPairs+1) k newN newB
+                    else
+                        (countPairs+1,k,newN,newB)
 
-                    lastKey <- k
-                    countPairs <- countPairs + 1
+            let rec writeLeaf prevPageNumber nextPageNumber boundaryPageNumber =
+                pb.PutByte(LEAF_NODE)
+                pb.PutByte(0uy) // flags
 
-            // if the current page has anything in it, we need to
-            // write it out
-            if pb.Position > 0 then
-                let (nextPage,boundaryPage) = flushLeaf countPairs lastKey nextPageNumber boundaryPageNumber
-                nextPageNumber <- nextPage
-                boundaryPageNumber <- boundaryPage
+                pb.PutInt32 (prevPageNumber) // prev page num.
+                pb.PutInt16 (0) // number of pairs in this page. zero for now. written at end.
+                // assert pb.Position is 8 (LEAF_PAGE_OVERHEAD - sizeof(lastInt32))
 
-            (nextPageNumber,boundaryPageNumber,leaves)
+                let (countPairs,lastKey,n,b) = putKeys 0 null nextPageNumber boundaryPageNumber
+
+                let thisPageNumber = n
+                let (nextPage,boundaryPage) = flushLeaf countPairs lastKey n b
+
+                if csr.IsValid() then
+                    writeLeaf thisPageNumber nextPage boundaryPage
+                else
+                    (nextPage, boundaryPage)
+
+            let (n,b) = writeLeaf 0 leavesFirstPage leavesBoundaryPage
+            (n,b,leaves)
 
         let (startingPage,startingBoundary) = pageManager.GetRange(token)
         utils.SeekPage(fs, pageSize, startingPage)
@@ -994,7 +979,7 @@ module BTreeSegment =
                             sofar <- sofar + k.Length
                         else
                             let keyOverflowFirstPage = nextPageNumber
-                            let kRange = writeOverflow pageManager token nextPageNumber boundaryPageNumber pbOverflow fs (new MemoryStream(k))
+                            let kRange = writeOverflow nextPageNumber boundaryPageNumber (new MemoryStream(k))
                             nextPageNumber <- fst kRange
                             boundaryPageNumber <- snd kRange
                             sofar <- sofar + sizeof<int32>
