@@ -98,6 +98,8 @@ module ByteComparer =
                 i <- i + 1
         if i>len then result else (xlen - ylen)
 
+// TODO this could move into BTreeSegment.Create.
+// and it doesn't need to be a class.
 type private PageBuilder(pgsz:int) =
     let mutable cur = 0
     let buf:byte[] = Array.zeroCreate pgsz
@@ -605,24 +607,7 @@ module BTreeSegment =
     let private FLAG_BOUNDARY_NODE:byte = 2uy
     let private FLAG_ENDS_ON_BOUNDARY:byte = 4uy
 
-    let private putArrayWithLength (pb:PageBuilder) (ba:byte[]) =
-        if null = ba then
-            pb.PutByte(FLAG_TOMBSTONE)
-            pb.PutVarint(0L)
-        else
-            pb.PutByte(0uy)
-            pb.PutVarint(int64 ba.Length)
-            pb.PutArray(ba)
-
-    let private putStreamWithLength (pb:PageBuilder) (ba:Stream) vlen =
-        if null = ba then
-            pb.PutByte(FLAG_TOMBSTONE)
-            pb.PutVarint(0L)
-        else
-            pb.PutByte(0uy)
-            pb.PutVarint(int64 vlen)
-            pb.PutStream(ba, int vlen)
-
+    // TODO this could move inside Create
     let private writeOverflow (pageManager:IPages) token startingNextPageNumber startingBoundaryPageNumber (pb:PageBuilder) (fs:Stream) (ba:Stream) =
         let len = (int ba.Length)
         let pageSize = pb.PageSize
@@ -768,6 +753,11 @@ module BTreeSegment =
         let pbOverflow = new PageBuilder(pageSize)
         let token = pageManager.Begin()
 
+        let putKeyWithLength (k:byte[]) =
+            pb.PutByte(0uy) // flags TODO are keys every going to have flags?
+            pb.PutVarint(int64 k.Length)
+            pb.PutArray(k)
+
         let writeLeaves leavesFirstPage leavesBoundaryPage :int*int*System.Collections.Generic.List<int32 * byte[]> =
             // 2 for the page type and flags
             // 4 for the prev page
@@ -870,11 +860,17 @@ module BTreeSegment =
                  *)
                 let available = pb.Available - sizeof<int32> // for the lastInt32
                 if (available >= neededForBothInline) then
-                    putArrayWithLength pb k
-                    putStreamWithLength pb v vlen
+                    putKeyWithLength k
+                    if null = v then
+                        pb.PutByte(FLAG_TOMBSTONE)
+                        pb.PutVarint(0L)
+                    else
+                        pb.PutByte(0uy)
+                        pb.PutVarint(int64 vlen)
+                        pb.PutStream(v, int vlen)
                 else
                     if (available >= neededForKeyInlineValueOverflow) then
-                        putArrayWithLength pb k
+                        putKeyWithLength k
                     else
                         let keyOverflowFirstPage = nextPageNumber
                         let kRange = writeOverflow pageManager token nextPageNumber boundaryPageNumber pbOverflow fs (new MemoryStream(k))
@@ -959,7 +955,7 @@ module BTreeSegment =
                             pb.PutVarint(int64 k.Length)
                             pb.PutInt32(overflows.[q])
                         else
-                            putArrayWithLength pb k
+                            putKeyWithLength k
 
                 // assert children.Count > 1
                 for i in 0 .. children.Count-1 do
