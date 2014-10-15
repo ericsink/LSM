@@ -924,11 +924,11 @@ module BTreeSegment =
                     // another page.
                     if thisPageNumber = boundaryPageNumber then
                         pb.SetPageFlag FLAG_BOUNDARY_NODE
-                        let newRange = pageManager.GetRange(token)
-                        nextPageNumber <- fst newRange
-                        boundaryPageNumber <- snd newRange
+                        let (nextPage,boundaryPage) = pageManager.GetRange(token)
                         // assert pb.Position <= (pb.PageSize - 4)
-                        pb.SetLastInt32(nextPageNumber)
+                        pb.SetLastInt32(nextPage)
+                        nextPageNumber <- nextPage
+                        boundaryPageNumber <- boundaryPage
                     else
                         nextPageNumber <- nextPageNumber + 1
                     pb.PutInt16At (OFFSET_COUNT_PAIRS, countPairs)
@@ -993,6 +993,9 @@ module BTreeSegment =
                 pb.PutInt32(valueOverflowFirstPage)
             lastKey <- k
             countPairs <- countPairs + 1
+
+        // if the current page has anything in it, we need to
+        // write it out
         if pb.Position > 0 then
             // note similar flush code above
             let thisPageNumber = nextPageNumber
@@ -1013,13 +1016,15 @@ module BTreeSegment =
             pb.Flush(fs)
             if nextPageNumber <> (thisPageNumber+1) then utils.SeekPage(fs, pb.PageSize, nextPageNumber)
             nodelist.Add(thisPageNumber, lastKey)
+
+        // all the leaves are written.
+        // now write the parent pages.
+        // maybe more than one level of them.
+        // keep writing until we have written a level which has only one node,
+        // which is the root node.
         if nodelist.Count > 0 then
             let firstLeaf = fst nodelist.[0]
             let lastLeaf = fst nodelist.[nodelist.Count-1]
-            // now write the parent pages.
-            // maybe more than one level of them.
-            // keep writing until we have written a level which has only one node,
-            // which is the root node.
             while nodelist.Count > 1 do
                 let (newNextPageNumber,newBoundaryPageNumber,newNodelist) = writeParentNodes pageManager token firstLeaf lastLeaf nodelist nextPageNumber boundaryPageNumber fs pb pbOverflow
                 nextPageNumber <- newNextPageNumber
