@@ -754,7 +754,7 @@ module BTreeSegment =
         let token = pageManager.Begin()
 
         let putKeyWithLength (k:byte[]) =
-            pb.PutByte(0uy) // flags TODO are keys every going to have flags?
+            pb.PutByte(0uy) // flags TODO are keys ever going to have flags?
             pb.PutVarint(int64 k.Length)
             pb.PutArray(k)
 
@@ -781,7 +781,7 @@ module BTreeSegment =
                     if (not isRootPage) && (thisPageNumber = boundaryPageNumber) then
                         pb.SetPageFlag FLAG_BOUNDARY_NODE
                         let newRange = pageManager.GetRange(token)
-                        // assert pb.Position <= (pb.PageSize - 4)
+                        // assert pb.Position <= (pageSize - 4)
                         pb.SetLastInt32(fst newRange)
                         newRange
                     else
@@ -798,29 +798,31 @@ module BTreeSegment =
                 let v = csr.Value()
                 // assert k <> null
                 // but v might be null (a tombstone)
+
                 let vlen = if v<>null then v.Length else int64 0
 
                 let neededForOverflowPageNumber = sizeof<int32>
 
                 let neededForKeyBase = 1 + Varint.SpaceNeededFor(int64 k.Length)
                 let neededForKeyInline = neededForKeyBase + k.Length
-                let neededForKeyOverflow = neededForKeyBase + neededForOverflowPageNumber
 
                 let neededForValueInline = 1 + if v<>null then Varint.SpaceNeededFor(int64 vlen) + int vlen else 0
                 let neededForValueOverflow = 1 + if v<>null then Varint.SpaceNeededFor(int64 vlen) + neededForOverflowPageNumber else 0
 
                 let neededForBothInline = neededForKeyInline + neededForValueInline
                 let neededForKeyInlineValueOverflow = neededForKeyInline + neededForValueOverflow
-                let neededForBothOverflow = neededForKeyOverflow + neededForValueOverflow
 
                 csr.Next()
 
                 if pb.Position > 0 then
-                    let avail = pb.Available - sizeof<int32> // for the lastInt32
-                    let fitBothInline = (avail >= neededForBothInline)
-                    let wouldFitBothInlineOnNextPage = ((pb.PageSize - LEAF_PAGE_OVERHEAD) >= neededForBothInline)
-                    let fitKeyInlineValueOverflow = (avail >= neededForKeyInlineValueOverflow)
-                    let fitBothOverflow = (avail >= neededForBothOverflow)
+                    // determine if we need to flush this page
+                    let spaceLeft = pb.Available - sizeof<int32> // for the lastInt32
+                    let fitBothInline = (spaceLeft >= neededForBothInline)
+                    let wouldFitBothInlineOnNextPage = ((pageSize - LEAF_PAGE_OVERHEAD) >= neededForBothInline)
+                    let fitKeyInlineValueOverflow = (spaceLeft >= neededForKeyInlineValueOverflow)
+                    let neededForKeyOverflow = neededForKeyBase + neededForOverflowPageNumber
+                    let neededForBothOverflow = neededForKeyOverflow + neededForValueOverflow
+                    let fitBothOverflow = (spaceLeft >= neededForBothOverflow)
                     let flushThisPage = (not fitBothInline) && (wouldFitBothInlineOnNextPage || ( (not fitKeyInlineValueOverflow) && (not fitBothOverflow) ) )
 
                     if flushThisPage then
@@ -828,8 +830,6 @@ module BTreeSegment =
                         let (nextPage,boundaryPage) = flushLeaf countPairs lastKey nextPageNumber boundaryPageNumber
                         nextPageNumber <- nextPage
                         boundaryPageNumber <- boundaryPage
-                        //countPairs <- 0
-                        //lastKey <- null
 
                 if pb.Position = 0 then
                     // we are here either because we just flushed a page
@@ -842,6 +842,7 @@ module BTreeSegment =
                     pb.PutInt32 (prevPageNumber) // prev page num.
                     pb.PutInt16 (0) // number of pairs in this page. zero for now. written at end.
                     // assert pb.Position is 8 (LEAF_PAGE_OVERHEAD - sizeof(lastInt32))
+
                 (*
                  * one of the following cases must now be true:
                  * 
@@ -858,6 +859,7 @@ module BTreeSegment =
                  * already done it above.
                  * 
                  *)
+
                 let available = pb.Available - sizeof<int32> // for the lastInt32
                 if (available >= neededForBothInline) then
                     putKeyWithLength k
@@ -902,7 +904,7 @@ module BTreeSegment =
             (nextPageNumber,boundaryPageNumber,leaves)
 
         let (startingPage,startingBoundary) = pageManager.GetRange(token)
-        utils.SeekPage(fs, pb.PageSize, startingPage)
+        utils.SeekPage(fs, pageSize, startingPage)
         csr.First()
         let (pageAfterLeaves, boundaryAfterLeaves, leaves) = writeLeaves startingPage startingBoundary
 
