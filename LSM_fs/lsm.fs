@@ -763,34 +763,8 @@ module BTreeSegment =
 
         writeOneBlock 0 startingNextPageNumber startingBoundaryPageNumber
 
-    let private buildParentPage (overflows:System.Collections.Generic.Dictionary<int,int32>) (pb:PageBuilder) (children:System.Collections.Generic.List<int32 * byte[]>) stop start =
-        // assert stop > start
-        let countKeys = stop - start
-        pb.Reset ()
-        pb.PutByte (PARENT_NODE)
-        pb.PutByte (0uy)
-        pb.PutInt16 (countKeys)
-        // store all the ptrs, n+1 of them
-        // note loop bounds
-        for q in start .. stop do
-            pb.PutVarint(int64 (fst (children.[q])))
-        // store all the keys, n of them
-        // note loop bounds
-        for q in start .. (stop-1) do
-            let k = snd children.[q]
-            if ((overflows <> null) && overflows.ContainsKey (q)) then
-                pb.PutByte(FLAG_OVERFLOW)
-                pb.PutVarint(int64 k.Length)
-                pb.PutInt32(overflows.[q])
-            else
-                putArrayWithLength pb k
-
-    let private calcAvailable pageSize currentSize couldBeRoot =
-        let basicSize = pageSize - currentSize
-        let allowanceForRootNode = if couldBeRoot then sizeof<int32> else 0 // first/last Leaf, lastInt32 already
-        basicSize - allowanceForRootNode
-
     let private writeParentNodes (pageManager:IPages) token firstLeaf lastLeaf (children:System.Collections.Generic.List<int32 * byte[]>) startingPageNumber startingBoundaryPageNumber fs (pb:PageBuilder) (pbOverflow:PageBuilder) =
+        let pageSize = pb.PageSize
         let nextGeneration = new System.Collections.Generic.List<int32 * byte[]>()
         let overflows = new System.Collections.Generic.Dictionary<int,int32>()
         // TODO encapsulate mutables in a class?
@@ -805,6 +779,33 @@ module BTreeSegment =
         // 4 for lastInt32
         let PAGE_OVERHEAD = 2 + 2 + 5 + 4
 
+        let calcAvailable currentSize couldBeRoot =
+            let basicSize = pageSize - currentSize
+            let allowanceForRootNode = if couldBeRoot then sizeof<int32> else 0 // first/last Leaf, lastInt32 already
+            basicSize - allowanceForRootNode
+
+        let buildParentPage (overflows:System.Collections.Generic.Dictionary<int,int32>) (children:System.Collections.Generic.List<int32 * byte[]>) stop start =
+            // assert stop > start
+            let countKeys = stop - start
+            pb.Reset ()
+            pb.PutByte (PARENT_NODE)
+            pb.PutByte (0uy)
+            pb.PutInt16 (countKeys)
+            // store all the ptrs, n+1 of them
+            // note loop bounds
+            for q in start .. stop do
+                pb.PutVarint(int64 (fst (children.[q])))
+            // store all the keys, n of them
+            // note loop bounds
+            for q in start .. (stop-1) do
+                let k = snd children.[q]
+                if ((overflows <> null) && overflows.ContainsKey (q)) then
+                    pb.PutByte(FLAG_OVERFLOW)
+                    pb.PutVarint(int64 k.Length)
+                    pb.PutInt32(overflows.[q])
+                else
+                    putArrayWithLength pb k
+
         // assert children.Count > 1
         for i in 0 .. children.Count-1 do
             let (pagenum,k) = children.[i]
@@ -813,19 +814,19 @@ module BTreeSegment =
             let isLastChild = (i = (children.Count - 1))
             if (sofar > 0) then
                 let couldBeRoot = (nextGeneration.Count = 0)
-                let avail = calcAvailable (pb.PageSize) sofar couldBeRoot
+                let avail = calcAvailable sofar couldBeRoot
                 let fitsInline = (avail >= neededForInline)
-                let wouldFitInlineOnNextPage = ((pb.PageSize - PAGE_OVERHEAD) >= neededForInline)
+                let wouldFitInlineOnNextPage = ((pageSize - PAGE_OVERHEAD) >= neededForInline)
                 let fitsOverflow = (avail >= neededForOverflow)
                 let flushThisPage = isLastChild || ((not fitsInline) && (wouldFitInlineOnNextPage || (not fitsOverflow))) 
                 let isRootNode = isLastChild && couldBeRoot
 
                 if flushThisPage then
                     let thisPageNumber = nextPageNumber
-                    buildParentPage overflows pb children i first
+                    buildParentPage overflows children i first
                     if isRootNode then
                         pb.SetPageFlag(FLAG_ROOT_NODE)
-                        // assert pb.Position <= (pb.PageSize - 8)
+                        // assert pb.Position <= (pageSize - 8)
                         pb.SetSecondToLastInt32(firstLeaf)
                         pb.SetLastInt32(lastLeaf)
                     else
@@ -834,12 +835,12 @@ module BTreeSegment =
                             let newRange = pageManager.GetRange(token)
                             nextPageNumber <- fst newRange
                             boundaryPageNumber <- snd newRange
-                            // assert pb.Position <= (pb.PageSize - 4)
+                            // assert pb.Position <= (pageSize - 4)
                             pb.SetLastInt32(nextPageNumber)
                         else
                             nextPageNumber <- nextPageNumber + 1
                     pb.Flush(fs)
-                    if nextPageNumber <> (thisPageNumber+1) then utils.SeekPage(fs, pb.PageSize, nextPageNumber)
+                    if nextPageNumber <> (thisPageNumber+1) then utils.SeekPage(fs, pageSize, nextPageNumber)
                     nextGeneration.Add(thisPageNumber, snd children.[i-1])
                     sofar <- 0
                     first <- 0
@@ -849,7 +850,7 @@ module BTreeSegment =
                     first <- i
                     overflows.Clear()
                     sofar <- PAGE_OVERHEAD
-                if calcAvailable (pb.PageSize) sofar (nextGeneration.Count = 0) >= neededForInline then
+                if calcAvailable sofar (nextGeneration.Count = 0) >= neededForInline then
                     sofar <- sofar + k.Length
                 else
                     let keyOverflowFirstPage = nextPageNumber
