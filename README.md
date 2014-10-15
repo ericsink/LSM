@@ -9,10 +9,12 @@ This is not a complete implementation.  You can't grab this and just use
 it like LevelDB.  Lots of stuff is missing.  There is no support for 
 transactions.  There is no code to manage the merge between levels.
 
-There are two complete implementations here, one in C# and one in 
-F#.  Both implement the same API.  The C# version was written first.
-The F# version is mostly a straight port, and its quality of code
-is probably dreadful by F# standards.
+There are two implementations here, one in C# and one in 
+F#.  Both implement the same API.  Originally, the C# version was written 
+first.  The F# version started as mostly a straight port, and its quality 
+of code is probably dreadful by F# standards.  But hopefully it is
+improving.  And as the project moves forward, some features are implemented
+the other direction, in F# first and then ported to C#.
 
 # What is a log structured merge tree?
 
@@ -88,9 +90,6 @@ currently absent here.
 This is basically a bulk-loaded B+tree.  Since it doesn't need to support
 insert/update/delete, every node is "full".
 
-Each disk segment is stored in a single file.  The page size is currently
-hard-coded to 4K.
-
 The pages are written in order in a single pass.  First all the leaves
 are written.  Then the parent nodes of the tree are written depth-first
 until we get a tree layer that has only one node, which becomes the root
@@ -105,6 +104,11 @@ a page.
 
 Each leaf node knows the page number of the previous leaf, which, because of
 overflow nodes, may not be the immediately preceding page.
+
+Construction of a B+Tree segment relies on a "page manager" which provides
+with pages from the file.  Multiple B+Tree segments can exist in the
+same file.  The page manager divides the file into blocks of pages
+and hands them out on request.
 
 # The Code
 
@@ -137,11 +141,11 @@ related to my skill differential and probably-not-at-all related
 to any broad perf differences between the two languages.
 
 The C# version is a profile 78 PCL.  So far it would seem that F#
-does not have tooling support for PCLs.
+(under Xamarin Studio anyway) does not have tooling support for PCLs.
 
 # The F# Code
 
-It's rather object oriented.  In some ways, it probably has to be.  I could
+It's rather object oriented.  In some ways, it probably needs to be.  I could
 find no purely functional way of dealing with the basic idea of ICursor.
 
 But even if this code needs to stay object-oriented in the large, 

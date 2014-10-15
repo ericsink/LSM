@@ -28,7 +28,16 @@ namespace lsm_tests
 
     // need to allow multiple db connections to the same file.
     // need a process-global list of files, each with their state.
+    //
+    // actually, we need multiple db connections to the same
+    // file, but we want them all to get the same copy of
+    // this class instance, right?  we don't need each one to
+    // have their own state.  we want them all to share the
+    // same state.
 
+    // ability to "attach" multiple files to a connection?
+    // or is that a concept that exists at a higher level like sql?
+    //
     public class db
     {
         // for each segment, we'll need a list of its blocks.
@@ -62,13 +71,31 @@ namespace lsm_tests
             // read segment list from disk
         }
 
-        IWrite BeginWrite()
+        ITransaction BeginWrite()
         {
+            // ITransaction implements IWrite-ish, with
+            // insert and delete, but its constructor takes a
+            // cursor which is the snapshot of the seglist when
+            // the tx was opened, and its OpenCursor returns a
+            // multicursor containing (memsegcursor, seglistmulti)
+            //
             // grab the write lock for this db
             // create a new memory segment
             // grab the seglist
             // (no segment in the seglist can be deleted)
             // get a multicursor for that seglist
+
+            // interesting that the only reason to grab a write lock
+            // here and hold it is to make sure that when we finally do
+            // want to write the seglist, nothing has changed in the
+            // meantime.  we don't need a lock to allow the caller
+            // to work with the in memory segment.  we don't even
+            // need a lock to flush the in memory segment out do
+            // a btree segment.  we just don't want to arrive at
+            // the end to prepend our new segment to the seglist
+            // and then find out that somebody else prepended one
+            // before us.  because then we would have to either
+            // find conflicts or just fail.
         }
 
         // IWrite.OpenCursor needs to snapshot even the dictionary
@@ -82,14 +109,14 @@ namespace lsm_tests
             // get a multicursor for that seglist
         }
 
-        void Commit(IWrite tx)
+        void Commit()
         {
             // create a btreesegment containing the mem segment
             // prepend the new seg to the seglist
             // release the write lock
         }
 
-        void Rollback(IWrite tx)
+        void Rollback()
         {
             // throw away the memory segment, dispose
             // the cursors.  nothing has been written to the

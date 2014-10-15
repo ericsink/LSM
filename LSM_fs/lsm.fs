@@ -361,6 +361,9 @@ type private PageReader(pgsz:int) =
             int64 r
 
 type MemorySegment() =
+    // TODO this will need to be an immutable collection so that
+    // openCursor will see a snapshot while it may continue
+    // being modified further.
     let pairs = new System.Collections.Generic.Dictionary<byte[],Stream>()
 
      // Here in the F# version, the cursor is implemented as an object
@@ -373,6 +376,10 @@ type MemorySegment() =
         // The following is a ref cell because mutable variables
         // cannot be captured by a closure.
         let cur = ref -1
+        // TODO could this be a list?  but we need prev, and fs list
+        // is a linked list in only one direction.  but once we
+        // construct it, it is immutable for the life of this cursor,
+        // so array isn't ideal either.
         let keys:byte[][] = (Array.ofSeq pairs.Keys)
         let sortfunc x y = ByteComparer.Compare x y
         Array.sortInPlaceWith sortfunc keys
@@ -414,11 +421,13 @@ type MemorySegment() =
                 ByteComparer.Compare (keys.[!cur]) k
 
             member this.Value() =
+                // TODO the pairs array in the IWrite may have changed
                 let v = pairs.[keys.[!cur]]
                 if v <> null then ignore (v.Seek(0L, SeekOrigin.Begin))
                 v
 
             member this.ValueLength() =
+                // TODO the pairs array in the IWrite may have changed
                 let v = pairs.[keys.[!cur]]
                 if v <> null then (int v.Length) else -1
 
@@ -434,6 +443,7 @@ type MemorySegment() =
             pairs.[k] <- null
 
         member this.OpenCursor() =
+            // note that this opens a cursor just for this memory segment.
             openCursor()
 
     static member Create() :IWrite =
