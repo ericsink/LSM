@@ -781,7 +781,7 @@ module BTreeSegment =
         // 4 for the prev page
         // 2 for the stored count
         // 4 for lastInt32 (which isn't in pb.Available)
-        let PAGE_OVERHEAD = 2 + 4 + 2 + 4
+        let LEAF_PAGE_OVERHEAD = 2 + 4 + 2 + 4
         let OFFSET_COUNT_PAIRS = 6
 
         utils.SeekPage(fs, pb.PageSize, nextPageNumber)
@@ -811,7 +811,7 @@ module BTreeSegment =
             if pb.Position > 0 then
                 let avail = pb.Available - sizeof<int32> // for the lastInt32
                 let fitBothInline = (avail >= neededForBothInline)
-                let wouldFitBothInlineOnNextPage = ((pb.PageSize - PAGE_OVERHEAD) >= neededForBothInline)
+                let wouldFitBothInlineOnNextPage = ((pb.PageSize - LEAF_PAGE_OVERHEAD) >= neededForBothInline)
                 let fitKeyInlineValueOverflow = (avail >= neededForKeyInlineValueOverflow)
                 let fitBothOverflow = (avail >= neededForBothOverflow)
                 let flushThisPage = (not fitBothInline) && (wouldFitBothInlineOnNextPage || ( (not fitKeyInlineValueOverflow) && (not fitBothOverflow) ) )
@@ -849,7 +849,7 @@ module BTreeSegment =
 
                 pb.PutInt32 (prevPageNumber) // prev page num.
                 pb.PutInt16 (0) // number of pairs in this page. zero for now. written at end.
-                // assert pb.Position is 8 (PAGE_OVERHEAD - sizeof(lastInt32))
+                // assert pb.Position is 8 (LEAF_PAGE_OVERHEAD - sizeof(lastInt32))
             (*
              * one of the following cases must now be true:
              * 
@@ -927,7 +927,6 @@ module BTreeSegment =
             let lastLeaf = fst nodelist.[nodelist.Count-1]
 
             let writeParentNodes (children:System.Collections.Generic.List<int32 * byte[]>) startingPageNumber startingBoundaryPageNumber =
-                let pageSize = pb.PageSize
                 let nextGeneration = new System.Collections.Generic.List<int32 * byte[]>()
                 let overflows = new System.Collections.Generic.Dictionary<int,int32>()
                 // TODO encapsulate mutables in a class?
@@ -940,7 +939,7 @@ module BTreeSegment =
                 // 2 for the stored count
                 // 5 for the extra ptr we will add at the end, a varint, 5 is worst case
                 // 4 for lastInt32
-                let PAGE_OVERHEAD = 2 + 2 + 5 + 4
+                let PARENT_PAGE_OVERHEAD = 2 + 2 + 5 + 4
 
                 let calcAvailable currentSize couldBeRoot =
                     let basicSize = pageSize - currentSize
@@ -979,7 +978,7 @@ module BTreeSegment =
                         let couldBeRoot = (nextGeneration.Count = 0)
                         let avail = calcAvailable sofar couldBeRoot
                         let fitsInline = (avail >= neededForInline)
-                        let wouldFitInlineOnNextPage = ((pageSize - PAGE_OVERHEAD) >= neededForInline)
+                        let wouldFitInlineOnNextPage = ((pageSize - PARENT_PAGE_OVERHEAD) >= neededForInline)
                         let fitsOverflow = (avail >= neededForOverflow)
                         let flushThisPage = isLastChild || ((not fitsInline) && (wouldFitInlineOnNextPage || (not fitsOverflow))) 
                         let isRootNode = isLastChild && couldBeRoot
@@ -1012,7 +1011,7 @@ module BTreeSegment =
                         if sofar = 0 then
                             first <- i
                             overflows.Clear()
-                            sofar <- PAGE_OVERHEAD
+                            sofar <- PARENT_PAGE_OVERHEAD
                         if calcAvailable sofar (nextGeneration.Count = 0) >= neededForInline then
                             sofar <- sofar + k.Length
                         else
