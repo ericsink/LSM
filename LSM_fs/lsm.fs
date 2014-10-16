@@ -926,14 +926,8 @@ module BTreeSegment =
                         else
                             putKeyWithLength k
 
-                let mutable sofar = 0
-                let mutable nextPageNumber = startingPageNumber
-                let mutable boundaryPageNumber = startingBoundaryPageNumber
-                let mutable firstChild = 0
-
-                // assert children.Count > 1
-                for i in 0 .. children.Count-1 do
-                    let (pagenum,k) = children.[i]
+                let folder st (pagenum,k:byte[]) =
+                    let (i, sofar, firstChild, nextPageNumber, boundaryPageNumber) = st
 
                     let neededEitherWay = 1 + Varint.SpaceNeededFor (int64 k.Length) + Varint.SpaceNeededFor (int64 pagenum)
                     let neededForInline = neededEitherWay + k.Length
@@ -998,13 +992,14 @@ module BTreeSegment =
                                     (neededForOverflow, (fst kRange), (snd kRange))
                             (sf1 + sf2, first, nextN, nextB)
 
-                    let (s,f,n,b) = maybeFlush sofar firstChild nextPageNumber boundaryPageNumber |> addKeyToParent
-                    sofar <- s
-                    firstChild <- f
-                    nextPageNumber <- n
-                    boundaryPageNumber <- b
 
-                (nextPageNumber,boundaryPageNumber,nextGeneration)
+                    let (s,f,n,b) = maybeFlush sofar firstChild nextPageNumber boundaryPageNumber |> addKeyToParent
+                    (i+1,s,f,n,b) 
+
+                let m = List.ofSeq children
+                let r = List.fold folder (0,0,0,startingPageNumber,startingBoundaryPageNumber) m
+                let (_,_,_,n,b) = r
+                (n,b,nextGeneration)
 
             let rec writeOneLayerOfParentPages next boundary (children:System.Collections.Generic.List<int32 * byte[]>) :int32 =
                 if children.Count > 1 then
