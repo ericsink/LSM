@@ -899,17 +899,12 @@ module BTreeSegment =
                 let nextGeneration = new System.Collections.Generic.List<int32 * byte[]>()
                 let overflows = new System.Collections.Generic.Dictionary<int,int32>()
 
-                let mutable sofar = 0
-                let mutable nextPageNumber = startingPageNumber
-                let mutable boundaryPageNumber = startingBoundaryPageNumber
-                let mutable firstChildOnThisParentPage = 0
-
                 let calcAvailable currentSize couldBeRoot =
                     let basicSize = pageSize - currentSize
                     let allowanceForRootNode = if couldBeRoot then sizeof<int32> else 0 // first/last Leaf, lastInt32 already
                     basicSize - allowanceForRootNode
 
-                let buildParentPage (overflows:System.Collections.Generic.Dictionary<int,int32>) (children:System.Collections.Generic.List<int32 * byte[]>) stop start =
+                let buildParentPage stop start =
                     // assert stop > start
                     let countKeys = stop - start
                     pb.Reset ()
@@ -931,62 +926,69 @@ module BTreeSegment =
                         else
                             putKeyWithLength k
 
-                // assert children.Count > 1
-                for i in 0 .. children.Count-1 do
+                let rec putKeysInParent i sofar nextPageNumber boundaryPageNumber = 
                     let (pagenum,k) = children.[i]
                     let neededForInline = 1 + Varint.SpaceNeededFor (int64 k.Length) + k.Length + Varint.SpaceNeededFor (int64 pagenum)
                     let neededForOverflow = 1 + Varint.SpaceNeededFor (int64 k.Length) + sizeof<int32> + Varint.SpaceNeededFor (int64 pagenum)
                     let isLastChild = (i = (children.Count - 1))
-                    if (sofar > 0) then
-                        let couldBeRoot = (nextGeneration.Count = 0)
-                        let avail = calcAvailable sofar couldBeRoot
-                        let fitsInline = (avail >= neededForInline)
-                        let wouldFitInlineOnNextPage = ((pageSize - PARENT_PAGE_OVERHEAD) >= neededForInline)
-                        let fitsOverflow = (avail >= neededForOverflow)
-                        let flushThisPage = isLastChild || ((not fitsInline) && (wouldFitInlineOnNextPage || (not fitsOverflow))) 
-                        let isRootNode = isLastChild && couldBeRoot
+                    let couldBeRoot = (nextGeneration.Count = 0)
+                    let available = calcAvailable sofar couldBeRoot
+                    let fitsInline = (available >= neededForInline)
+                    let wouldFitInlineOnNextPage = ((pageSize - PARENT_PAGE_OVERHEAD) >= neededForInline)
+                    let fitsOverflow = (available >= neededForOverflow)
+                    let flushThisPage = isLastChild || ((not fitsInline) && (wouldFitInlineOnNextPage || (not fitsOverflow))) 
 
-                        if flushThisPage then
-                            let thisPageNumber = nextPageNumber
-                            buildParentPage overflows children i firstChildOnThisParentPage
-                            if isRootNode then
-                                pb.SetPageFlag(FLAG_ROOT_NODE)
-                                // assert pb.Position <= (pageSize - 8)
-                                pb.SetSecondToLastInt32(firstLeaf)
-                                pb.SetLastInt32(lastLeaf)
-                            else
-                                if (nextPageNumber = boundaryPageNumber) then
-                                    pb.SetPageFlag(FLAG_BOUNDARY_NODE)
-                                    let newRange = pageManager.GetRange(token)
-                                    nextPageNumber <- fst newRange
-                                    boundaryPageNumber <- snd newRange
-                                    // assert pb.Position <= (pageSize - 4)
-                                    pb.SetLastInt32(nextPageNumber)
-                                else
-                                    nextPageNumber <- nextPageNumber + 1
-                            pb.Flush(fs)
-                            if nextPageNumber <> (thisPageNumber+1) then utils.SeekPage(fs, pageSize, nextPageNumber)
-                            nextGeneration.Add(thisPageNumber, snd children.[i-1])
-                            sofar <- 0
-                            firstChildOnThisParentPage <- 0
-                            overflows.Clear()
-                    if not isLastChild then 
-                        if sofar = 0 then
-                            firstChildOnThisParentPage <- i
-                            overflows.Clear()
-                            sofar <- PARENT_PAGE_OVERHEAD
-                        if calcAvailable sofar (nextGeneration.Count = 0) >= neededForInline then
-                            sofar <- sofar + k.Length
+                    if flushThisPage then 
+                        (i,nextPageNumber,boundaryPageNumber)
+                    else
+                        // inline or not, we need space for the following things
+                        let baseNeed = 1 + Varint.SpaceNeededFor(int64 k.Length) + Varint.SpaceNeededFor(int64 pagenum)
+                        if fitsInline then
+                            putKeysInParent (i+1) (sofar + baseNeed + k.Length) nextPageNumber boundaryPageNumber
                         else
                             let keyOverflowFirstPage = nextPageNumber
-                            let kRange = writeOverflow nextPageNumber boundaryPageNumber (new MemoryStream(k))
-                            nextPageNumber <- fst kRange
-                            boundaryPageNumber <- snd kRange
-                            sofar <- sofar + sizeof<int32>
+                            let (nextN,nextB) = writeOverflow nextPageNumber boundaryPageNumber (new MemoryStream(k))
                             overflows.[i] <- keyOverflowFirstPage
-                        // inline or not, we need space for the following things
-                        sofar <- sofar + 1 + Varint.SpaceNeededFor(int64 k.Length) + Varint.SpaceNeededFor(int64 pagenum)
-                (nextPageNumber,boundaryPageNumber,nextGeneration)
+                            putKeysInParent (i+1) (sofar + baseNeed + sizeof<int32>) nextN nextB
+
+                let rec writeParent firstChildOnThisParentPage nextPageNumber boundaryPageNumber =
+                    let (stop, nextPageAfterOverflows, boundaryPageAfterOverflows) = putKeysInParent firstChildOnThisParentPage PARENT_PAGE_OVERHEAD nextPageNumber boundaryPageNumber
+
+                    let isLastChild = (stop = (children.Count - 1))
+                    let couldBeRoot = (nextGeneration.Count = 0)
+                    let thisPageNumber = nextPageAfterOverflows
+                    buildParentPage stop firstChildOnThisParentPage
+
+                    let isRootNode = isLastChild && couldBeRoot
+                    let range =
+                        if isRootNode then
+                            pb.SetPageFlag(FLAG_ROOT_NODE)
+                            // assert pb.Position <= (pageSize - 8)
+                            pb.SetSecondToLastInt32(firstLeaf)
+                            pb.SetLastInt32(lastLeaf)
+                            (thisPageNumber,boundaryPageAfterOverflows)
+                        else
+                            if (nextPageAfterOverflows = boundaryPageAfterOverflows) then
+                                pb.SetPageFlag(FLAG_BOUNDARY_NODE)
+                                let newRange = pageManager.GetRange(token)
+                                // assert pb.Position <= (pageSize - 4)
+                                pb.SetLastInt32(fst newRange)
+                                newRange
+                            else
+                                (thisPageNumber + 1, boundaryPageAfterOverflows)
+                    pb.Flush(fs)
+                    let (newNext,newBoundary) = range
+                    if newNext <> (thisPageNumber+1) then utils.SeekPage(fs, pageSize, newNext)
+                    nextGeneration.Add(thisPageNumber, snd children.[stop-1])
+
+                    overflows.Clear()
+                    if not isLastChild then
+                        writeParent stop newNext newBoundary
+                    else
+                        range
+
+                let (n,b) = writeParent 0 startingPageNumber startingBoundaryPageNumber
+                (n,b,nextGeneration)
 
             let rec writeOneLayerOfParentPages next boundary (children:System.Collections.Generic.List<int32 * byte[]>) :int32 =
                 if children.Count > 1 then
