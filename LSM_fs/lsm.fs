@@ -362,6 +362,8 @@ type MemorySegment() =
     // TODO this will need to be an immutable collection so that
     // openCursor will see a snapshot while it may continue
     // being modified further.
+
+    // TODO without using the ByteArrayComparer class, this is broken.
     let pairs = new System.Collections.Generic.Dictionary<byte[],Stream>()
 
      // Here in the F# version, the cursor is implemented as an object

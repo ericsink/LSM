@@ -497,6 +497,29 @@ namespace Zumero.LSM.cs
 
 	public class MemorySegment : IWrite
 	{
+		#if not
+		private class ByteArrayComparer : IEqualityComparer<byte[]> {
+			public bool Equals(byte[] left, byte[] right) {
+				if ( left == null || right == null ) {
+					return left == right;
+				}
+				return 0 == ByteComparer.cmp (left, right);
+			}
+			public int GetHashCode(byte[] key) {
+				if (key == null) {
+					throw new ArgumentNullException ("key");
+				}
+				int sum = 0;
+				// TODO faster hash needed here
+				for (int i = 0; i < key.Length; i++) {
+					sum += key [i];
+				}
+				return sum;
+			}
+		}
+		#endif
+
+		// TODO without using the ByteArrayComparer class, this is broken.
 		private Dictionary<byte[],Stream> pairs = new Dictionary<byte[],Stream>();
 
 		private class myCursor : ICursor

@@ -86,6 +86,27 @@ namespace lsm_tests
 			return x.Length.CompareTo(y.Length);
 		}
 
+		#if not // TODO
+		[Fact]
+		public void memory_segment_no_dups()
+		{
+			Action<combo> f = (combo c) => {
+				var t1 = c.create_memory_segment ();
+				t1.Insert ("a", "foo");
+				t1.Insert ("a", "bar");
+
+				var csr = t1.OpenCursor();
+				csr.First();
+				Assert.True(csr.IsValid());
+				Assert.Equal("a", csr.Key().UTF8ToString());
+				Assert.Equal("bar", ReadAll(csr.Value()).UTF8ToString());
+				csr.Next();
+				Assert.False(csr.IsValid());
+			};
+			foreach (combo c in combo.get_combos()) f(c);
+		}
+		#endif
+
 		[Fact]
 		public void ten()
 		{
