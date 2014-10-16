@@ -932,7 +932,7 @@ module BTreeSegment =
                             putKeyWithLength k
 
                 let folder st (pagenum,k:byte[]) =
-                    let (i, sofar, firstChild, nextPageNumber, boundaryPageNumber) = st
+                    let (i, _) = st
 
                     let neededEitherWay = 1 + Varint.SpaceNeededFor (int64 k.Length) + Varint.SpaceNeededFor (int64 pagenum)
                     let neededForInline = neededEitherWay + k.Length
@@ -940,7 +940,8 @@ module BTreeSegment =
                     let isLastChild = (i = (children.Count - 1))
                     let couldBeRoot = (nextGeneration.Count = 0)
 
-                    let maybeFlush sofar first nextPageNumber boundaryPageNumber = 
+                    let maybeFlush args = 
+                        let (sofar, first, nextPageNumber, boundaryPageNumber) = args
                         // TODO flush logic used to be guarded by if sofar > 0.  should it still be?
                         let available = calcAvailable sofar couldBeRoot
                         let fitsInline = (available >= neededForInline)
@@ -976,7 +977,8 @@ module BTreeSegment =
                         else
                             (sofar, first, nextPageNumber, boundaryPageNumber)
 
-                    let addKeyToParent (sofar, firstChild, nextPageNumber, boundaryPageNumber) = 
+                    let addKeyToParent args = 
+                        let (sofar, firstChild, nextPageNumber, boundaryPageNumber) = args
                         if isLastChild then 
                             (sofar, firstChild, nextPageNumber, boundaryPageNumber)
                         else
@@ -998,13 +1000,17 @@ module BTreeSegment =
                             (sf1 + sf2, first, nextN, nextB)
 
 
-                    let (s,f,n,b) = maybeFlush sofar firstChild nextPageNumber boundaryPageNumber |> addKeyToParent
-                    (i+1,s,f,n,b) 
+                    // this is the body of the folder function
+                    let (_,args) = st
+                    let args' = maybeFlush args |> addKeyToParent
+                    (i+1,args') 
 
                 // TODO this would be much happier if children were already an F# list
-                let m = List.ofSeq children
-                let r = List.fold folder (0,0,0,startingPageNumber,startingBoundaryPageNumber) m
-                let (_,_,_,n,b) = r
+                let fsChildren = List.ofSeq children
+                let initialArgs = (0,0,startingPageNumber,startingBoundaryPageNumber)
+                let initialState = (0,initialArgs)
+                let finalState = List.fold folder initialState fsChildren
+                let (_,(_,_,n,b)) = finalState
                 (n,b,nextGeneration)
 
             let rec writeOneLayerOfParentPages next boundary (children:System.Collections.Generic.List<int32 * byte[]>) :int32 =
