@@ -954,12 +954,13 @@ module BTreeSegment =
                 let rec writeParent firstChildOnThisParentPage nextPageNumber boundaryPageNumber =
                     let (stop, nextPageAfterOverflows, boundaryPageAfterOverflows) = putKeysInParent firstChildOnThisParentPage PARENT_PAGE_OVERHEAD nextPageNumber boundaryPageNumber
 
-                    let isLastChild = (stop = (children.Count - 1))
-                    let couldBeRoot = (nextGeneration.Count = 0)
                     let thisPageNumber = nextPageAfterOverflows
                     buildParentPage stop firstChildOnThisParentPage
 
+                    let isLastChild = (stop = (children.Count - 1))
+                    let couldBeRoot = (nextGeneration.Count = 0)
                     let isRootNode = isLastChild && couldBeRoot
+
                     let (newNext,newBoundary) =
                         if isRootNode then
                             pb.SetPageFlag(FLAG_ROOT_NODE)
