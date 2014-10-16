@@ -599,10 +599,14 @@ module BTreeSegment =
     let private LEAF_NODE:byte = 1uy
     let private PARENT_NODE:byte = 2uy
     let private OVERFLOW_NODE:byte = 3uy
+
     // flags on values
+    // TODO enum
     let private FLAG_OVERFLOW:byte = 1uy
     let private FLAG_TOMBSTONE:byte = 2uy
+
     // flags on pages
+    // TODO enum
     let private FLAG_ROOT_NODE:byte = 1uy
     let private FLAG_BOUNDARY_NODE:byte = 2uy
     let private FLAG_ENDS_ON_BOUNDARY:byte = 4uy
@@ -773,6 +777,7 @@ module BTreeSegment =
             let LEAF_PAGE_OVERHEAD = 2 + 4 + 2 + 4
             let OFFSET_COUNT_PAIRS = 6
 
+            // TODO this wants to be an F# list
             let leaves = new System.Collections.Generic.List<int32 * byte[]>()
 
             let flushLeaf countPairs lastKey thisPageNumber boundaryPageNumber = 
@@ -996,6 +1001,7 @@ module BTreeSegment =
                     let (s,f,n,b) = maybeFlush sofar firstChild nextPageNumber boundaryPageNumber |> addKeyToParent
                     (i+1,s,f,n,b) 
 
+                // TODO this would be much happier if children were already an F# list
                 let m = List.ofSeq children
                 let r = List.fold folder (0,0,0,startingPageNumber,startingBoundaryPageNumber) m
                 let (_,_,_,n,b) = r
