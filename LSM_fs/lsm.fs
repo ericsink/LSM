@@ -977,13 +977,11 @@ module BTreeSegment =
                         else
                             (sofar, first, nextPageNumber, boundaryPageNumber)
 
-                    let fn (sofar, firstChild, nextPageNumber, boundaryPageNumber) = 
+                    let addKeyToParent (sofar, firstChild, nextPageNumber, boundaryPageNumber) = 
                         if isLastChild then 
                             (sofar, firstChild, nextPageNumber, boundaryPageNumber)
                         else
                             let first = if sofar=0 then i else firstChild
-                            // inline or not, we need space for the following things
-                            let sf0 = 1 + Varint.SpaceNeededFor(int64 k.Length) + Varint.SpaceNeededFor(int64 pagenum)
                             let sf1 = 
                                 if sofar = 0 then
                                     overflows.Clear()
@@ -992,20 +990,19 @@ module BTreeSegment =
                                     sofar
                             let (sf2,nextN,nextB) = 
                                 if calcAvailable sofar (nextGeneration.Count = 0) >= neededForInline then
-                                    (k.Length, nextPageNumber, boundaryPageNumber)
+                                    (neededForInline, nextPageNumber, boundaryPageNumber)
                                 else
                                     let keyOverflowFirstPage = nextPageNumber
                                     let kRange = writeOverflow nextPageNumber boundaryPageNumber (new MemoryStream(k))
                                     overflows.[i] <- keyOverflowFirstPage
-                                    (sizeof<int32>, (fst kRange), (snd kRange))
-                            (sf0 + sf1 + sf2, first, nextN, nextB)
+                                    (neededForOverflow, (fst kRange), (snd kRange))
+                            (sf1 + sf2, first, nextN, nextB)
 
-                    let step1 = maybeFlush sofar firstChild nextPageNumber boundaryPageNumber
-                    let (sofar',firstChild',nextPageNumber',boundaryPageNumber') = fn step1
-                    sofar <- sofar'
-                    firstChild <- firstChild'
-                    nextPageNumber <- nextPageNumber'
-                    boundaryPageNumber <- boundaryPageNumber'
+                    let (s,f,n,b) = maybeFlush sofar firstChild nextPageNumber boundaryPageNumber |> addKeyToParent
+                    sofar <- s
+                    firstChild <- f
+                    nextPageNumber <- n
+                    boundaryPageNumber <- b
 
                 (nextPageNumber,boundaryPageNumber,nextGeneration)
 
