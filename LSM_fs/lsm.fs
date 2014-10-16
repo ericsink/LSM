@@ -934,48 +934,50 @@ module BTreeSegment =
                 // assert children.Count > 1
                 for i in 0 .. children.Count-1 do
                     let (pagenum,k) = children.[i]
+
                     let neededForInline = 1 + Varint.SpaceNeededFor (int64 k.Length) + k.Length + Varint.SpaceNeededFor (int64 pagenum)
                     let neededForOverflow = 1 + Varint.SpaceNeededFor (int64 k.Length) + sizeof<int32> + Varint.SpaceNeededFor (int64 pagenum)
+                    // TODO flush logic used to be guarded by if sofar > 0.  should it still be?
                     let isLastChild = (i = (children.Count - 1))
-                    if (sofar > 0) then
-                        let couldBeRoot = (nextGeneration.Count = 0)
-                        let avail = calcAvailable sofar couldBeRoot
-                        let fitsInline = (avail >= neededForInline)
-                        let wouldFitInlineOnNextPage = ((pageSize - PARENT_PAGE_OVERHEAD) >= neededForInline)
-                        let fitsOverflow = (avail >= neededForOverflow)
-                        let flushThisPage = isLastChild || ((not fitsInline) && (wouldFitInlineOnNextPage || (not fitsOverflow))) 
-                        let isRootNode = isLastChild && couldBeRoot
+                    let couldBeRoot = (nextGeneration.Count = 0)
+                    let avail = calcAvailable sofar couldBeRoot
+                    let fitsInline = (avail >= neededForInline)
+                    let wouldFitInlineOnNextPage = ((pageSize - PARENT_PAGE_OVERHEAD) >= neededForInline)
+                    let fitsOverflow = (avail >= neededForOverflow)
+                    let flushThisPage = isLastChild || ((not fitsInline) && (wouldFitInlineOnNextPage || (not fitsOverflow))) 
 
-                        if flushThisPage then
-                            let thisPageNumber = nextPageNumber
-                            buildParentPage i firstChildOnThisParentPage
-                            let (nextN,nextB) =
-                                if isRootNode then
-                                    pb.SetPageFlag(FLAG_ROOT_NODE)
-                                    // assert pb.Position <= (pageSize - 8)
-                                    pb.SetSecondToLastInt32(firstLeaf)
-                                    pb.SetLastInt32(lastLeaf)
-                                    (thisPageNumber+1,boundaryPageNumber)
+                    if flushThisPage then
+                        // assert sofar > 0
+                        let thisPageNumber = nextPageNumber
+                        buildParentPage i firstChildOnThisParentPage
+                        let isRootNode = isLastChild && couldBeRoot
+                        let (nextN,nextB) =
+                            if isRootNode then
+                                pb.SetPageFlag(FLAG_ROOT_NODE)
+                                // assert pb.Position <= (pageSize - 8)
+                                pb.SetSecondToLastInt32(firstLeaf)
+                                pb.SetLastInt32(lastLeaf)
+                                (thisPageNumber+1,boundaryPageNumber)
+                            else
+                                if (nextPageNumber = boundaryPageNumber) then
+                                    pb.SetPageFlag(FLAG_BOUNDARY_NODE)
+                                    let newRange = pageManager.GetRange(token)
+                                    pb.SetLastInt32(fst newRange)
+                                    newRange
                                 else
-                                    if (nextPageNumber = boundaryPageNumber) then
-                                        pb.SetPageFlag(FLAG_BOUNDARY_NODE)
-                                        let newRange = pageManager.GetRange(token)
-                                        pb.SetLastInt32(fst newRange)
-                                        newRange
-                                    else
-                                        (thisPageNumber+1,boundaryPageNumber)
-                            pb.Flush(fs)
-                            if nextN <> (thisPageNumber+1) then utils.SeekPage(fs, pageSize, nextN)
-                            nextGeneration.Add(thisPageNumber, snd children.[i-1])
-                            overflows.Clear()
-                            sofar <- 0
-                            firstChildOnThisParentPage <- 0
-                            nextPageNumber <- nextN
-                            boundaryPageNumber <- nextB
+                                    (thisPageNumber+1,boundaryPageNumber)
+                        pb.Flush(fs)
+                        if nextN <> (thisPageNumber+1) then utils.SeekPage(fs, pageSize, nextN)
+                        nextGeneration.Add(thisPageNumber, snd children.[i-1])
+                        overflows.Clear()
+                        sofar <- 0
+                        firstChildOnThisParentPage <- 0
+                        nextPageNumber <- nextN
+                        boundaryPageNumber <- nextB
                     if not isLastChild then 
                         if sofar = 0 then
-                            firstChildOnThisParentPage <- i
                             overflows.Clear()
+                            firstChildOnThisParentPage <- i
                             sofar <- PARENT_PAGE_OVERHEAD
                         if calcAvailable sofar (nextGeneration.Count = 0) >= neededForInline then
                             sofar <- sofar + k.Length
@@ -986,6 +988,7 @@ module BTreeSegment =
                             boundaryPageNumber <- snd kRange
                             sofar <- sofar + sizeof<int32>
                             overflows.[i] <- keyOverflowFirstPage
+
                         // inline or not, we need space for the following things
                         sofar <- sofar + 1 + Varint.SpaceNeededFor(int64 k.Length) + Varint.SpaceNeededFor(int64 pagenum)
                 (nextPageNumber,boundaryPageNumber,nextGeneration)
