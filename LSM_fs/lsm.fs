@@ -929,68 +929,84 @@ module BTreeSegment =
                 let mutable sofar = 0
                 let mutable nextPageNumber = startingPageNumber
                 let mutable boundaryPageNumber = startingBoundaryPageNumber
-                let mutable firstChildOnThisParentPage = 0
+                let mutable firstChild = 0
 
                 // assert children.Count > 1
                 for i in 0 .. children.Count-1 do
                     let (pagenum,k) = children.[i]
 
-                    let neededForInline = 1 + Varint.SpaceNeededFor (int64 k.Length) + k.Length + Varint.SpaceNeededFor (int64 pagenum)
-                    let neededForOverflow = 1 + Varint.SpaceNeededFor (int64 k.Length) + sizeof<int32> + Varint.SpaceNeededFor (int64 pagenum)
-                    // TODO flush logic used to be guarded by if sofar > 0.  should it still be?
+                    let neededEitherWay = 1 + Varint.SpaceNeededFor (int64 k.Length) + Varint.SpaceNeededFor (int64 pagenum)
+                    let neededForInline = neededEitherWay + k.Length
+                    let neededForOverflow = neededEitherWay + sizeof<int32>
                     let isLastChild = (i = (children.Count - 1))
                     let couldBeRoot = (nextGeneration.Count = 0)
-                    let avail = calcAvailable sofar couldBeRoot
-                    let fitsInline = (avail >= neededForInline)
-                    let wouldFitInlineOnNextPage = ((pageSize - PARENT_PAGE_OVERHEAD) >= neededForInline)
-                    let fitsOverflow = (avail >= neededForOverflow)
-                    let flushThisPage = isLastChild || ((not fitsInline) && (wouldFitInlineOnNextPage || (not fitsOverflow))) 
 
-                    if flushThisPage then
-                        // assert sofar > 0
-                        let thisPageNumber = nextPageNumber
-                        buildParentPage i firstChildOnThisParentPage
-                        let isRootNode = isLastChild && couldBeRoot
-                        let (nextN,nextB) =
-                            if isRootNode then
-                                pb.SetPageFlag(FLAG_ROOT_NODE)
-                                // assert pb.Position <= (pageSize - 8)
-                                pb.SetSecondToLastInt32(firstLeaf)
-                                pb.SetLastInt32(lastLeaf)
-                                (thisPageNumber+1,boundaryPageNumber)
-                            else
-                                if (nextPageNumber = boundaryPageNumber) then
-                                    pb.SetPageFlag(FLAG_BOUNDARY_NODE)
-                                    let newRange = pageManager.GetRange(token)
-                                    pb.SetLastInt32(fst newRange)
-                                    newRange
-                                else
+                    let maybeFlush sofar first nextPageNumber boundaryPageNumber = 
+                        // TODO flush logic used to be guarded by if sofar > 0.  should it still be?
+                        let available = calcAvailable sofar couldBeRoot
+                        let fitsInline = (available >= neededForInline)
+                        let wouldFitInlineOnNextPage = ((pageSize - PARENT_PAGE_OVERHEAD) >= neededForInline)
+                        let fitsOverflow = (available >= neededForOverflow)
+                        let flushThisPage = isLastChild || ((not fitsInline) && (wouldFitInlineOnNextPage || (not fitsOverflow))) 
+
+                        if flushThisPage then
+                            // assert sofar > 0
+                            let thisPageNumber = nextPageNumber
+                            buildParentPage i first
+                            let isRootNode = isLastChild && couldBeRoot
+                            let (nextN,nextB) =
+                                if isRootNode then
+                                    pb.SetPageFlag(FLAG_ROOT_NODE)
+                                    // assert pb.Position <= (pageSize - 8)
+                                    pb.SetSecondToLastInt32(firstLeaf)
+                                    pb.SetLastInt32(lastLeaf)
                                     (thisPageNumber+1,boundaryPageNumber)
-                        pb.Flush(fs)
-                        if nextN <> (thisPageNumber+1) then utils.SeekPage(fs, pageSize, nextN)
-                        nextGeneration.Add(thisPageNumber, snd children.[i-1])
-                        overflows.Clear()
-                        sofar <- 0
-                        firstChildOnThisParentPage <- 0
-                        nextPageNumber <- nextN
-                        boundaryPageNumber <- nextB
-                    if not isLastChild then 
-                        if sofar = 0 then
+                                else
+                                    if (nextPageNumber = boundaryPageNumber) then
+                                        pb.SetPageFlag(FLAG_BOUNDARY_NODE)
+                                        let newRange = pageManager.GetRange(token)
+                                        pb.SetLastInt32(fst newRange)
+                                        newRange
+                                    else
+                                        (thisPageNumber+1,boundaryPageNumber)
+                            pb.Flush(fs)
+                            if nextN <> (thisPageNumber+1) then utils.SeekPage(fs, pageSize, nextN)
+                            nextGeneration.Add(thisPageNumber, snd children.[i-1])
                             overflows.Clear()
-                            firstChildOnThisParentPage <- i
-                            sofar <- PARENT_PAGE_OVERHEAD
-                        if calcAvailable sofar (nextGeneration.Count = 0) >= neededForInline then
-                            sofar <- sofar + k.Length
+                            (0, 0, nextN, nextB)
                         else
-                            let keyOverflowFirstPage = nextPageNumber
-                            let kRange = writeOverflow nextPageNumber boundaryPageNumber (new MemoryStream(k))
-                            nextPageNumber <- fst kRange
-                            boundaryPageNumber <- snd kRange
-                            sofar <- sofar + sizeof<int32>
-                            overflows.[i] <- keyOverflowFirstPage
+                            (sofar, first, nextPageNumber, boundaryPageNumber)
 
-                        // inline or not, we need space for the following things
-                        sofar <- sofar + 1 + Varint.SpaceNeededFor(int64 k.Length) + Varint.SpaceNeededFor(int64 pagenum)
+                    let fn (sofar, firstChild, nextPageNumber, boundaryPageNumber) = 
+                        if isLastChild then 
+                            (sofar, firstChild, nextPageNumber, boundaryPageNumber)
+                        else
+                            let first = if sofar=0 then i else firstChild
+                            // inline or not, we need space for the following things
+                            let sf0 = 1 + Varint.SpaceNeededFor(int64 k.Length) + Varint.SpaceNeededFor(int64 pagenum)
+                            let sf1 = 
+                                if sofar = 0 then
+                                    overflows.Clear()
+                                    PARENT_PAGE_OVERHEAD
+                                else
+                                    sofar
+                            let (sf2,nextN,nextB) = 
+                                if calcAvailable sofar (nextGeneration.Count = 0) >= neededForInline then
+                                    (k.Length, nextPageNumber, boundaryPageNumber)
+                                else
+                                    let keyOverflowFirstPage = nextPageNumber
+                                    let kRange = writeOverflow nextPageNumber boundaryPageNumber (new MemoryStream(k))
+                                    overflows.[i] <- keyOverflowFirstPage
+                                    (sizeof<int32>, (fst kRange), (snd kRange))
+                            (sf0 + sf1 + sf2, first, nextN, nextB)
+
+                    let step1 = maybeFlush sofar firstChild nextPageNumber boundaryPageNumber
+                    let (sofar',firstChild',nextPageNumber',boundaryPageNumber') = fn step1
+                    sofar <- sofar'
+                    firstChild <- firstChild'
+                    nextPageNumber <- nextPageNumber'
+                    boundaryPageNumber <- boundaryPageNumber'
+
                 (nextPageNumber,boundaryPageNumber,nextGeneration)
 
             let rec writeOneLayerOfParentPages next boundary (children:System.Collections.Generic.List<int32 * byte[]>) :int32 =
