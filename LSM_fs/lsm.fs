@@ -967,11 +967,7 @@ module BTreeSegment =
                             // assert pb.Position <= (pageSize - 8)
                             pb.SetSecondToLastInt32(firstLeaf)
                             pb.SetLastInt32(lastLeaf)
-                            // TODO the following line seems wrong, but the tests pass.
-                            // seems like it should be thisPageNumber+1, to avoid the
-                            // SeekPage call below.  but if I make that change, the tests
-                            // fail.
-                            (thisPageNumber,boundaryPageAfterOverflows)
+                            (thisPageNumber+1,boundaryPageAfterOverflows) // just to avoid the seek below
                         else
                             if (nextPageAfterOverflows = boundaryPageAfterOverflows) then
                                 pb.SetPageFlag(FLAG_BOUNDARY_NODE)
@@ -982,9 +978,6 @@ module BTreeSegment =
                             else
                                 (thisPageNumber + 1, boundaryPageAfterOverflows)
                     pb.Flush(fs)
-                    // TODO see comment above.  if we just wrote the root node,
-                    // we are about to seek back to it.  which is apparently
-                    // necessary for the tests to pass.  and that makes no sense.
                     if newNext <> (thisPageNumber+1) then utils.SeekPage(fs, pageSize, newNext)
                     nextGeneration.Add(thisPageNumber, snd children.[stop-1])
 

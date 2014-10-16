@@ -105,6 +105,8 @@ namespace lsm_tests
 						rootPages[i] = c.create_btree_segment (fs, pageManager, t1.OpenCursor ());
 					}
 
+					fs.Seek(0, SeekOrigin.Begin);
+
 					int s5;
 					ICursor[] csrs = new ICursor[10];
 					FileStream[] strms = new FileStream[10];
