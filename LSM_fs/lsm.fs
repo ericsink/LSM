@@ -960,12 +960,16 @@ module BTreeSegment =
                     buildParentPage stop firstChildOnThisParentPage
 
                     let isRootNode = isLastChild && couldBeRoot
-                    let range =
+                    let (newNext,newBoundary) =
                         if isRootNode then
                             pb.SetPageFlag(FLAG_ROOT_NODE)
                             // assert pb.Position <= (pageSize - 8)
                             pb.SetSecondToLastInt32(firstLeaf)
                             pb.SetLastInt32(lastLeaf)
+                            // TODO the following line seems wrong, but the tests pass.
+                            // seems like it should be thisPageNumber+1, to avoid the
+                            // SeekPage call below.  but if I make that change, the tests
+                            // fail.
                             (thisPageNumber,boundaryPageAfterOverflows)
                         else
                             if (nextPageAfterOverflows = boundaryPageAfterOverflows) then
@@ -977,15 +981,17 @@ module BTreeSegment =
                             else
                                 (thisPageNumber + 1, boundaryPageAfterOverflows)
                     pb.Flush(fs)
-                    let (newNext,newBoundary) = range
+                    // TODO see comment above.  if we just wrote the root node,
+                    // we are about to seek back to it.  which is apparently
+                    // necessary for the tests to pass.  and that makes no sense.
                     if newNext <> (thisPageNumber+1) then utils.SeekPage(fs, pageSize, newNext)
                     nextGeneration.Add(thisPageNumber, snd children.[stop-1])
 
-                    overflows.Clear()
                     if not isLastChild then
+                        overflows.Clear()
                         writeParent stop newNext newBoundary
                     else
-                        range
+                        (newNext,newBoundary)
 
                 let (n,b) = writeParent 0 startingPageNumber startingBoundaryPageNumber
                 (n,b,nextGeneration)
