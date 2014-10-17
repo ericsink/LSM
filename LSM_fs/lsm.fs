@@ -622,7 +622,7 @@ module BTreeSegment =
             nextPage:int; 
             boundaryPage:int; 
             //children:(int32*byte[]); 
-            overflows:Map<int,int32>;
+            overflows:Map<byte[],int32>;
         }
 
     let Create(fs:Stream, pageManager:IPages, csr:ICursor) :int32 = 
@@ -922,7 +922,7 @@ module BTreeSegment =
                     let allowanceForRootNode = if couldBeRoot then sizeof<int32> else 0 // first/last Leaf, lastInt32 already
                     basicSize - allowanceForRootNode
 
-                let buildParentPage stop start (overflows:Map<int,int32>) =
+                let buildParentPage stop start (overflows:Map<byte[],int32>) =
                     // assert stop > start
                     let countKeys = stop - start
                     pb.Reset ()
@@ -937,7 +937,7 @@ module BTreeSegment =
                     // note loop bounds
                     for q in start .. (stop-1) do
                         let k = snd children.[q]
-                        match overflows.TryFind(q) with
+                        match overflows.TryFind(k) with
                         | Some pg ->
                             pb.PutByte(FLAG_OVERFLOW)
                             pb.PutVarint(int64 k.Length)
@@ -1010,7 +1010,7 @@ module BTreeSegment =
                             else
                                 let keyOverflowFirstPage = nextPageNumber
                                 let kRange = writeOverflow nextPageNumber boundaryPageNumber (new MemoryStream(k))
-                                {args with sofar=sofar + neededForOverflow; nextPage=fst kRange; boundaryPage=snd kRange; overflows=overflows.Add(i,keyOverflowFirstPage)}
+                                {args with sofar=sofar + neededForOverflow; nextPage=fst kRange; boundaryPage=snd kRange; overflows=overflows.Add(k,keyOverflowFirstPage)}
 
 
                     // this is the body of the folder function
