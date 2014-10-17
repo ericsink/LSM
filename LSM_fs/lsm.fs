@@ -941,6 +941,33 @@ module BTreeSegment =
                             putKeyWithLength k
                     List.iter fn items
 
+                let flushParentPage args pair isRootNode =
+                    let (pagenum,k:byte[]) = pair
+                    let {items=items; nextPage=nextPageNumber; boundaryPage=boundaryPageNumber; overflows=overflows} = args
+                    // assert args.sofar > 0
+                    let thisPageNumber = nextPageNumber
+                    // TODO needing to reverse the items list is rather unfortunate
+                    buildParentPage (List.rev items) pagenum overflows
+                    let (nextN,nextB) =
+                        if isRootNode then
+                            pb.SetPageFlag(FLAG_ROOT_NODE)
+                            // assert pb.Position <= (pageSize - 8)
+                            pb.SetSecondToLastInt32(firstLeaf)
+                            pb.SetLastInt32(lastLeaf)
+                            (thisPageNumber+1,boundaryPageNumber)
+                        else
+                            if (nextPageNumber = boundaryPageNumber) then
+                                pb.SetPageFlag(FLAG_BOUNDARY_NODE)
+                                let newRange = pageManager.GetRange(token)
+                                pb.SetLastInt32(fst newRange)
+                                newRange
+                            else
+                                (thisPageNumber+1,boundaryPageNumber)
+                    pb.Flush(fs)
+                    if nextN <> (thisPageNumber+1) then utils.SeekPage(fs, pageSize, nextN)
+                    nextGeneration.Add(thisPageNumber, k)
+                    {sofar=0; items=[]; nextPage=nextN; boundaryPage=nextB; overflows=Map.empty}
+
                 let folder st pair =
                     let (pagenum,k:byte[]) = pair
                     let (i, _) = st
@@ -952,39 +979,17 @@ module BTreeSegment =
                     let couldBeRoot = (nextGeneration.Count = 0)
 
                     let maybeFlush args = 
-                        let {sofar=sofar; items=items; nextPage=nextPageNumber; boundaryPage=boundaryPageNumber; overflows=overflows} = args
-                        // TODO flush logic used to be guarded by if sofar > 0.  should it still be?
-                        let available = calcAvailable sofar couldBeRoot
+                        let available = calcAvailable (args.sofar) couldBeRoot
                         let fitsInline = (available >= neededForInline)
                         let wouldFitInlineOnNextPage = ((pageSize - PARENT_PAGE_OVERHEAD) >= neededForInline)
                         let fitsOverflow = (available >= neededForOverflow)
+                        // TODO flush logic used to be guarded by if sofar > 0.  should it still be?
                         let flushThisPage = isLastChild || ((not fitsInline) && (wouldFitInlineOnNextPage || (not fitsOverflow))) 
 
                         if flushThisPage then
                             // assert sofar > 0
-                            let thisPageNumber = nextPageNumber
-                            // TODO needing to reverse the items list is rather unfortunate
-                            buildParentPage (List.rev items) pagenum overflows
                             let isRootNode = isLastChild && couldBeRoot
-                            let (nextN,nextB) =
-                                if isRootNode then
-                                    pb.SetPageFlag(FLAG_ROOT_NODE)
-                                    // assert pb.Position <= (pageSize - 8)
-                                    pb.SetSecondToLastInt32(firstLeaf)
-                                    pb.SetLastInt32(lastLeaf)
-                                    (thisPageNumber+1,boundaryPageNumber)
-                                else
-                                    if (nextPageNumber = boundaryPageNumber) then
-                                        pb.SetPageFlag(FLAG_BOUNDARY_NODE)
-                                        let newRange = pageManager.GetRange(token)
-                                        pb.SetLastInt32(fst newRange)
-                                        newRange
-                                    else
-                                        (thisPageNumber+1,boundaryPageNumber)
-                            pb.Flush(fs)
-                            if nextN <> (thisPageNumber+1) then utils.SeekPage(fs, pageSize, nextN)
-                            nextGeneration.Add(thisPageNumber, k)
-                            {sofar=0; items=[]; nextPage=nextN; boundaryPage=nextB; overflows=Map.empty}
+                            flushParentPage args pair isRootNode
                         else
                             args
 
