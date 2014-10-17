@@ -614,14 +614,22 @@ module BTreeSegment =
     let private FLAG_ENDS_ON_BOUNDARY:byte = 4uy
 
 
-    type writeParentPagesState = 
+    type private ParentState = 
         { 
             sofar:int; 
             items:(int32*byte[]) list; 
+            overflows:Map<byte[],int32>;
+            nextGeneration:(int32*byte[]) list; 
             nextPage:int; 
             boundaryPage:int; 
-            nextGeneration:(int32*byte[]) list; 
-            overflows:Map<byte[],int32>;
+        }
+
+    type private LeafState =
+        {
+            keys:(byte[] list);
+            leaves:(int32*byte[]) list; 
+            nextPage:int; 
+            boundaryPage:int; 
         }
 
     let Create(fs:Stream, pageManager:IPages, csr:ICursor) :int32 = 
@@ -782,7 +790,7 @@ module BTreeSegment =
             pb.PutInt32(overflowFirstPage)
             newRange
 
-        let writeLeaves leavesFirstPage leavesBoundaryPage :int*int*System.Collections.Generic.List<int32 * byte[]> =
+        let writeLeaves leavesFirstPage leavesBoundaryPage :int*int*((int32*byte[]) list) =
             // 2 for the page type and flags
             // 4 for the prev page
             // 2 for the stored count
@@ -790,31 +798,25 @@ module BTreeSegment =
             let LEAF_PAGE_OVERHEAD = 2 + 4 + 2 + 4
             let OFFSET_COUNT_PAIRS = 6
 
-            // TODO this wants to be an F# list
-            let leaves = new System.Collections.Generic.List<int32 * byte[]>()
-
-            let flushLeaf countPairs lastKey thisPageNumber boundaryPageNumber = 
-                pb.PutInt16At (OFFSET_COUNT_PAIRS, countPairs)
-                let isRootPage = not (csr.IsValid()) && (0 = leaves.Count)
-                let range = 
-                    if (not isRootPage) && (thisPageNumber = boundaryPageNumber) then
+            let flushLeaf st isRootPage = 
+                pb.PutInt16At (OFFSET_COUNT_PAIRS, st.keys.Length)
+                let thisPageNumber = st.nextPage
+                let (nextN,nextB) = 
+                    if (not isRootPage) && (thisPageNumber = st.boundaryPage) then
                         pb.SetPageFlag FLAG_BOUNDARY_NODE
                         let newRange = pageManager.GetRange(token)
                         // assert pb.Position <= (pageSize - 4)
                         pb.SetLastInt32(fst newRange)
                         newRange
                     else
-                        (thisPageNumber + 1, boundaryPageNumber)
+                        (thisPageNumber + 1, st.boundaryPage)
                 pb.Flush(fs)
                 pb.Reset()
-                leaves.Add(thisPageNumber, lastKey)
-                let nextPage = fst range
-                if nextPage <> (thisPageNumber+1) then utils.SeekPage(fs, pageSize, nextPage)
-                range
+                if nextN <> (thisPageNumber+1) then utils.SeekPage(fs, pageSize, nextN)
+                {keys=[]; nextPage=nextN; boundaryPage=nextB; leaves=(thisPageNumber,List.head st.keys)::st.leaves}
 
-            let rec putKeys countPairs lastKey nextPageNumber boundaryPageNumber =
-                let k = csr.Key()
-                let v = csr.Value()
+            let folder st (pair:(byte[]*Stream)) = 
+                let (k,v) = pair
                 // assert k <> null
                 // but v might be null (a tombstone)
 
@@ -831,19 +833,40 @@ module BTreeSegment =
                 let neededForBothInline = neededForKeyInline + neededForValueInline
                 let neededForKeyInlineValueOverflow = neededForKeyInline + neededForValueOverflow
 
-                // determine if we need to flush this page
-                let available = pb.Available - sizeof<int32> // for the lastInt32
-                let fitBothInline = (available >= neededForBothInline)
-                let wouldFitBothInlineOnNextPage = ((pageSize - LEAF_PAGE_OVERHEAD) >= neededForBothInline)
-                let fitKeyInlineValueOverflow = (available >= neededForKeyInlineValueOverflow)
-                let neededForKeyOverflow = neededForKeyBase + neededForOverflowPageNumber
-                let neededForBothOverflow = neededForKeyOverflow + neededForValueOverflow
-                let fitBothOverflow = (available >= neededForBothOverflow)
-                let flushThisPage = (countPairs > 0) && (not fitBothInline) && (wouldFitBothInlineOnNextPage || ( (not fitKeyInlineValueOverflow) && (not fitBothOverflow) ) )
+                let maybeFlushLeaf st = 
+                    let available = pb.Available - sizeof<int32> // for the lastInt32
+                    let fitBothInline = (available >= neededForBothInline)
+                    let wouldFitBothInlineOnNextPage = ((pageSize - LEAF_PAGE_OVERHEAD) >= neededForBothInline)
+                    let fitKeyInlineValueOverflow = (available >= neededForKeyInlineValueOverflow)
+                    let neededForKeyOverflow = neededForKeyBase + neededForOverflowPageNumber
+                    let neededForBothOverflow = neededForKeyOverflow + neededForValueOverflow
+                    let fitBothOverflow = (available >= neededForBothOverflow)
+                    let flushThisPage = (st.keys.Length > 0) && (not fitBothInline) && (wouldFitBothInlineOnNextPage || ( (not fitKeyInlineValueOverflow) && (not fitBothOverflow) ) )
 
-                if flushThisPage then
-                    (countPairs,lastKey,nextPageNumber,boundaryPageNumber)
-                else
+                    if flushThisPage then
+                        flushLeaf st false
+                    else
+                        st
+
+                let initLeaf (st:LeafState) =
+                    if pb.Position = 0 then
+                        pb.PutByte(LEAF_NODE)
+                        pb.PutByte(0uy) // flags
+
+                        let prevPage = if List.isEmpty st.leaves then 0 else fst (List.head st.leaves)
+                        pb.PutInt32 (prevPage) // prev page num.
+                        pb.PutInt16 (0) // number of pairs in this page. zero for now. written at end.
+                        // assert pb.Position is 8 (LEAF_PAGE_OVERHEAD - sizeof(lastInt32))
+                        {st with keys=[];}
+                    else
+                        st
+
+                let addPairToLeaf (st:LeafState) =
+                    let available = pb.Available - sizeof<int32> // for the lastInt32
+                    let fitBothInline = (available >= neededForBothInline)
+                    let wouldFitBothInlineOnNextPage = ((pageSize - LEAF_PAGE_OVERHEAD) >= neededForBothInline)
+                    let fitKeyInlineValueOverflow = (available >= neededForKeyInlineValueOverflow)
+                    let {nextPage=nextPageNumber;boundaryPage=boundaryPageNumber} = st
                     let (newN, newB) = 
                         if fitBothInline then
                             putKeyWithLength k
@@ -865,37 +888,28 @@ module BTreeSegment =
                             else
                                 let (n,b) = putOverflow (new MemoryStream(k)) nextPageNumber boundaryPageNumber
                                 putOverflow v n b
+                    {st with nextPage=newN;boundaryPage=newB;keys=k::st.keys}
+                        
+                // this is the body of the folder function
+                maybeFlushLeaf st |> initLeaf |> addPairToLeaf
 
-                    csr.Next()
-                    if csr.IsValid() then
-                        putKeys (countPairs+1) k newN newB
-                    else
-                        (countPairs+1,k,newN,newB)
-
-            let rec writeLeaf prevPageNumber nextPageNumber boundaryPageNumber =
-                pb.PutByte(LEAF_NODE)
-                pb.PutByte(0uy) // flags
-
-                pb.PutInt32 (prevPageNumber) // prev page num.
-                pb.PutInt16 (0) // number of pairs in this page. zero for now. written at end.
-                // assert pb.Position is 8 (LEAF_PAGE_OVERHEAD - sizeof(lastInt32))
-
-                let (countPairs,lastKey,n,b) = putKeys 0 null nextPageNumber boundaryPageNumber
-
-                let thisPageNumber = n
-                let (nextPage,boundaryPage) = flushLeaf countPairs lastKey n b
-
-                if csr.IsValid() then
-                    writeLeaf thisPageNumber nextPage boundaryPage
+            // this is the body of writeLeaves
+            let source = seq { csr.First(); while csr.IsValid() do yield (csr.Key(), csr.Value()); csr.Next(); done }
+            let initialState = {keys=[];leaves=[];nextPage=leavesFirstPage;boundaryPage=leavesBoundaryPage}
+            let middleState = Seq.fold folder initialState source
+            let finalState = 
+                if middleState.keys.Length > 0 then
+                    let isRootNode = middleState.leaves.Length=0
+                    flushLeaf middleState isRootNode
                 else
-                    (nextPage, boundaryPage)
-
-            let (n,b) = writeLeaf 0 leavesFirstPage leavesBoundaryPage
+                    middleState
+            let {nextPage=n;boundaryPage=b;leaves=leaves} = finalState
             (n,b,leaves)
 
+        // this is the body of Create
         let (startingPage,startingBoundary) = pageManager.GetRange(token)
         utils.SeekPage(fs, pageSize, startingPage)
-        csr.First()
+
         let (pageAfterLeaves, boundaryAfterLeaves, leaves) = writeLeaves startingPage startingBoundary
 
         // all the leaves are written.
@@ -903,9 +917,9 @@ module BTreeSegment =
         // maybe more than one level of them.
         // keep writing until we have written a level which has only one node,
         // which is the root node.
-        if leaves.Count > 0 then
-            let firstLeaf = fst leaves.[0]
-            let lastLeaf = fst leaves.[leaves.Count-1]
+        if leaves.Length > 0 then
+            let lastLeaf = fst leaves.[0]
+            let firstLeaf = fst (List.nth leaves (leaves.Length-1)) // TODO slow
 
             let writeParentNodes children startingPageNumber startingBoundaryPageNumber =
                 // 2 for the page type and flags
@@ -973,7 +987,7 @@ module BTreeSegment =
                     let neededForOverflow = neededEitherWay + sizeof<int32>
                     let couldBeRoot = (st.nextGeneration.Length = 0)
 
-                    let maybeFlush st = 
+                    let maybeFlushParent st = 
                         let available = calcAvailable (st.sofar) couldBeRoot
                         let fitsInline = (available >= neededForInline)
                         let wouldFitInlineOnNextPage = ((pageSize - PARENT_PAGE_OVERHEAD) >= neededForInline)
@@ -1005,7 +1019,7 @@ module BTreeSegment =
 
 
                     // this is the body of the folder function
-                    maybeFlush st |> initParent |> addKeyToParent
+                    maybeFlushParent st |> initParent |> addKeyToParent
 
                 // this is the body of writeParentNodes
                 // children is in reverse order.  so List.head children is actually the very last child.
@@ -1024,7 +1038,7 @@ module BTreeSegment =
                 else
                     fst children.[0]
 
-            let rootPage = writeOneLayerOfParentPages pageAfterLeaves boundaryAfterLeaves (List.rev (List.ofSeq leaves))
+            let rootPage = writeOneLayerOfParentPages pageAfterLeaves boundaryAfterLeaves leaves
 
             pageManager.End(token, rootPage)
             rootPage
