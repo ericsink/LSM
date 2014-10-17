@@ -622,7 +622,7 @@ module BTreeSegment =
             nextPage:int; 
             boundaryPage:int; 
             //children:(int32*byte[]); 
-            //overflows:Map<byte[],int32>;
+            overflows:Map<int,int32>;
         }
 
     let Create(fs:Stream, pageManager:IPages, csr:ICursor) :int32 = 
@@ -916,14 +916,13 @@ module BTreeSegment =
                 let PARENT_PAGE_OVERHEAD = 2 + 2 + 5 + 4
 
                 let nextGeneration = new System.Collections.Generic.List<int32 * byte[]>()
-                let overflows = new System.Collections.Generic.Dictionary<int,int32>()
 
                 let calcAvailable currentSize couldBeRoot =
                     let basicSize = pageSize - currentSize
                     let allowanceForRootNode = if couldBeRoot then sizeof<int32> else 0 // first/last Leaf, lastInt32 already
                     basicSize - allowanceForRootNode
 
-                let buildParentPage stop start =
+                let buildParentPage stop start (overflows:Map<int,int32>) =
                     // assert stop > start
                     let countKeys = stop - start
                     pb.Reset ()
@@ -938,11 +937,12 @@ module BTreeSegment =
                     // note loop bounds
                     for q in start .. (stop-1) do
                         let k = snd children.[q]
-                        if ((overflows <> null) && overflows.ContainsKey (q)) then
+                        match overflows.TryFind(q) with
+                        | Some pg ->
                             pb.PutByte(FLAG_OVERFLOW)
                             pb.PutVarint(int64 k.Length)
-                            pb.PutInt32(overflows.[q])
-                        else
+                            pb.PutInt32(pg)
+                        | None ->
                             putKeyWithLength k
 
                 let folder st (pagenum,k:byte[]) =
@@ -955,7 +955,7 @@ module BTreeSegment =
                     let couldBeRoot = (nextGeneration.Count = 0)
 
                     let maybeFlush args = 
-                        let {sofar=sofar; first=first; nextPage=nextPageNumber; boundaryPage=boundaryPageNumber} = args
+                        let {sofar=sofar; first=first; nextPage=nextPageNumber; boundaryPage=boundaryPageNumber; overflows=overflows} = args
                         // TODO flush logic used to be guarded by if sofar > 0.  should it still be?
                         let available = calcAvailable sofar couldBeRoot
                         let fitsInline = (available >= neededForInline)
@@ -966,7 +966,7 @@ module BTreeSegment =
                         if flushThisPage then
                             // assert sofar > 0
                             let thisPageNumber = nextPageNumber
-                            buildParentPage i first
+                            buildParentPage i first overflows
                             let isRootNode = isLastChild && couldBeRoot
                             let (nextN,nextB) =
                                 if isRootNode then
@@ -986,42 +986,41 @@ module BTreeSegment =
                             pb.Flush(fs)
                             if nextN <> (thisPageNumber+1) then utils.SeekPage(fs, pageSize, nextN)
                             nextGeneration.Add(thisPageNumber, snd children.[i-1])
-                            overflows.Clear()
-                            {sofar=0; first=0; nextPage=nextN; boundaryPage=nextB}
+                            {sofar=0; first=0; nextPage=nextN; boundaryPage=nextB; overflows=Map.empty}
                         else
-                            {sofar=sofar; first=first; nextPage=nextPageNumber; boundaryPage=boundaryPageNumber}
+                            args
+
+                    let initParent args = 
+                        if isLastChild then 
+                            args
+                        else
+                            let sofar = args.sofar
+                            if sofar = 0 then
+                                {args with sofar=PARENT_PAGE_OVERHEAD; first=i; }
+                            else
+                                args
 
                     let addKeyToParent args = 
-                        let {sofar=sofar; first=first; nextPage=nextPageNumber; boundaryPage=boundaryPageNumber} = args
                         if isLastChild then 
-                            {sofar=sofar; first=first; nextPage=nextPageNumber; boundaryPage=boundaryPageNumber}
+                            args
                         else
-                            let f1 = if sofar=0 then i else first
-                            let sf1 = 
-                                if sofar = 0 then
-                                    overflows.Clear()
-                                    PARENT_PAGE_OVERHEAD
-                                else
-                                    sofar
-                            let (sf2,nextN,nextB) = 
-                                if calcAvailable sofar (nextGeneration.Count = 0) >= neededForInline then
-                                    (neededForInline, nextPageNumber, boundaryPageNumber)
-                                else
-                                    let keyOverflowFirstPage = nextPageNumber
-                                    let kRange = writeOverflow nextPageNumber boundaryPageNumber (new MemoryStream(k))
-                                    overflows.[i] <- keyOverflowFirstPage
-                                    (neededForOverflow, (fst kRange), (snd kRange))
-                            {sofar=sf1 + sf2; first=f1; nextPage=nextN; boundaryPage=nextB}
+                            let {sofar=sofar; nextPage=nextPageNumber; boundaryPage=boundaryPageNumber; overflows=overflows} = args
+                            if calcAvailable sofar (nextGeneration.Count = 0) >= neededForInline then
+                                {args with sofar=sofar + neededForInline}
+                            else
+                                let keyOverflowFirstPage = nextPageNumber
+                                let kRange = writeOverflow nextPageNumber boundaryPageNumber (new MemoryStream(k))
+                                {args with sofar=sofar + neededForOverflow; nextPage=fst kRange; boundaryPage=snd kRange; overflows=overflows.Add(i,keyOverflowFirstPage)}
 
 
                     // this is the body of the folder function
                     let (_,args) = st
-                    let args' = maybeFlush args |> addKeyToParent
+                    let args' = maybeFlush args |> initParent |> addKeyToParent
                     (i+1,args') 
 
                 // TODO this would be much happier if children were already an F# list
                 let fsChildren = List.ofSeq children
-                let initialArgs = {sofar=0;first=0;nextPage=startingPageNumber;boundaryPage=startingBoundaryPageNumber}
+                let initialArgs = {sofar=0;first=0;nextPage=startingPageNumber;boundaryPage=startingBoundaryPageNumber;overflows=Map.empty}
                 let initialState = (0,initialArgs)
                 let finalState = List.fold folder initialState fsChildren
                 let (_,{sofar=_;first=_;nextPage=n;boundaryPage=b}) = finalState
