@@ -922,21 +922,17 @@ module BTreeSegment =
                     let allowanceForRootNode = if couldBeRoot then sizeof<int32> else 0 // first/last Leaf, lastInt32 already
                     basicSize - allowanceForRootNode
 
-                let buildParentPage stop start (overflows:Map<byte[],int32>) =
-                    // assert stop > start
-                    let countKeys = stop - start
+                let buildParentPage (items:(int32*byte[]) list) lastPtr (overflows:Map<byte[],int32>) =
                     pb.Reset ()
                     pb.PutByte (PARENT_NODE)
                     pb.PutByte (0uy)
-                    pb.PutInt16 (countKeys)
+                    pb.PutInt16 (items.Length)
                     // store all the ptrs, n+1 of them
-                    // note loop bounds
-                    for q in start .. stop do
-                        pb.PutVarint(int64 (fst (children.[q])))
+                    List.iter (fun x -> pb.PutVarint(int64 (fst x))) items
+                    pb.PutVarint(int64 lastPtr)
                     // store all the keys, n of them
-                    // note loop bounds
-                    for q in start .. (stop-1) do
-                        let k = snd children.[q]
+                    let fn x = 
+                        let k = snd x
                         match overflows.TryFind(k) with
                         | Some pg ->
                             pb.PutByte(FLAG_OVERFLOW)
@@ -944,6 +940,7 @@ module BTreeSegment =
                             pb.PutInt32(pg)
                         | None ->
                             putKeyWithLength k
+                    List.iter fn items
 
                 let folder st (pagenum,k:byte[]) =
                     let (i, _) = st
@@ -966,7 +963,8 @@ module BTreeSegment =
                         if flushThisPage then
                             // assert sofar > 0
                             let thisPageNumber = nextPageNumber
-                            buildParentPage i first overflows
+                            let subList = children |> Seq.skip first |> Seq.take (i - first) |> Seq.toList
+                            buildParentPage subList (fst children.[i]) overflows
                             let isRootNode = isLastChild && couldBeRoot
                             let (nextN,nextB) =
                                 if isRootNode then
