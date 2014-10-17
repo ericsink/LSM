@@ -627,6 +627,7 @@ module BTreeSegment =
     type private LeafState =
         {
             keys:(byte[] list);
+            firstLeaf:int32;
             leaves:(int32*byte[]) list; 
             nextPage:int; 
             boundaryPage:int; 
@@ -790,7 +791,7 @@ module BTreeSegment =
             pb.PutInt32(overflowFirstPage)
             newRange
 
-        let writeLeaves leavesFirstPage leavesBoundaryPage :int*int*((int32*byte[]) list) =
+        let writeLeaves leavesFirstPage leavesBoundaryPage :int*int*((int32*byte[]) list)*int =
             // 2 for the page type and flags
             // 4 for the prev page
             // 2 for the stored count
@@ -801,11 +802,11 @@ module BTreeSegment =
             let flushLeaf st isRootPage = 
                 pb.PutInt16At (OFFSET_COUNT_PAIRS, st.keys.Length)
                 let thisPageNumber = st.nextPage
+                let firstLeaf = if st.leaves.Length=0 then thisPageNumber else st.firstLeaf
                 let (nextN,nextB) = 
                     if (not isRootPage) && (thisPageNumber = st.boundaryPage) then
                         pb.SetPageFlag FLAG_BOUNDARY_NODE
                         let newRange = pageManager.GetRange(token)
-                        // assert pb.Position <= (pageSize - 4)
                         pb.SetLastInt32(fst newRange)
                         newRange
                     else
@@ -813,7 +814,7 @@ module BTreeSegment =
                 pb.Flush(fs)
                 pb.Reset()
                 if nextN <> (thisPageNumber+1) then utils.SeekPage(fs, pageSize, nextN)
-                {keys=[]; nextPage=nextN; boundaryPage=nextB; leaves=(thisPageNumber,List.head st.keys)::st.leaves}
+                {keys=[]; firstLeaf=firstLeaf; nextPage=nextN; boundaryPage=nextB; leaves=(thisPageNumber,List.head st.keys)::st.leaves}
 
             let folder st (pair:(byte[]*Stream)) = 
                 let (k,v) = pair
@@ -895,7 +896,7 @@ module BTreeSegment =
 
             // this is the body of writeLeaves
             let source = seq { csr.First(); while csr.IsValid() do yield (csr.Key(), csr.Value()); csr.Next(); done }
-            let initialState = {keys=[];leaves=[];nextPage=leavesFirstPage;boundaryPage=leavesBoundaryPage}
+            let initialState = {firstLeaf=0;keys=[];leaves=[];nextPage=leavesFirstPage;boundaryPage=leavesBoundaryPage}
             let middleState = Seq.fold folder initialState source
             let finalState = 
                 if middleState.keys.Length > 0 then
@@ -903,148 +904,144 @@ module BTreeSegment =
                     flushLeaf middleState isRootNode
                 else
                     middleState
-            let {nextPage=n;boundaryPage=b;leaves=leaves} = finalState
-            (n,b,leaves)
+            let {nextPage=n;boundaryPage=b;leaves=leaves;firstLeaf=firstLeaf} = finalState
+            (n,b,leaves,firstLeaf)
 
         // this is the body of Create
         let (startingPage,startingBoundary) = pageManager.GetRange(token)
         utils.SeekPage(fs, pageSize, startingPage)
 
-        let (pageAfterLeaves, boundaryAfterLeaves, leaves) = writeLeaves startingPage startingBoundary
+        let (pageAfterLeaves, boundaryAfterLeaves, leaves, firstLeaf) = writeLeaves startingPage startingBoundary
 
         // all the leaves are written.
         // now write the parent pages.
         // maybe more than one level of them.
         // keep writing until we have written a level which has only one node,
         // which is the root node.
-        if leaves.Length > 0 then
-            let lastLeaf = fst leaves.[0]
-            let firstLeaf = fst (List.nth leaves (leaves.Length-1)) // TODO slow
 
-            let writeParentNodes children startingPageNumber startingBoundaryPageNumber =
-                // 2 for the page type and flags
-                // 2 for the stored count
-                // 5 for the extra ptr we will add at the end, a varint, 5 is worst case
-                // 4 for lastInt32
-                let PARENT_PAGE_OVERHEAD = 2 + 2 + 5 + 4
+        let lastLeaf = fst leaves.[0]
 
-                let calcAvailable currentSize couldBeRoot =
-                    let basicSize = pageSize - currentSize
-                    let allowanceForRootNode = if couldBeRoot then sizeof<int32> else 0 // first/last Leaf, lastInt32 already
-                    basicSize - allowanceForRootNode
+        let writeParentNodes children startingPageNumber startingBoundaryPageNumber =
+            // 2 for the page type and flags
+            // 2 for the stored count
+            // 5 for the extra ptr we will add at the end, a varint, 5 is worst case
+            // 4 for lastInt32
+            let PARENT_PAGE_OVERHEAD = 2 + 2 + 5 + 4
 
-                let buildParentPage (items:(int32*byte[]) list) lastPtr (overflows:Map<byte[],int32>) =
-                    pb.Reset ()
-                    pb.PutByte (PARENT_NODE)
-                    pb.PutByte (0uy)
-                    pb.PutInt16 (items.Length)
-                    // store all the ptrs, n+1 of them
-                    List.iter (fun x -> pb.PutVarint(int64 (fst x))) items
-                    pb.PutVarint(int64 lastPtr)
-                    // store all the keys, n of them
-                    let fn x = 
-                        let k = snd x
-                        match overflows.TryFind(k) with
-                        | Some pg ->
-                            pb.PutByte(FLAG_OVERFLOW)
-                            pb.PutVarint(int64 k.Length)
-                            pb.PutInt32(pg)
-                        | None ->
-                            putKeyWithLength k
-                    List.iter fn items
+            let calcAvailable currentSize couldBeRoot =
+                let basicSize = pageSize - currentSize
+                let allowanceForRootNode = if couldBeRoot then sizeof<int32> else 0 // first/last Leaf, lastInt32 already
+                basicSize - allowanceForRootNode
 
-                let flushParentPage st pair isRootNode =
-                    let (pagenum,k:byte[]) = pair
-                    let {items=items; nextPage=nextPageNumber; boundaryPage=boundaryPageNumber; overflows=overflows; nextGeneration=nextGeneration} = st
-                    // assert st.sofar > 0
-                    let thisPageNumber = nextPageNumber
-                    // TODO needing to reverse the items list is rather unfortunate
-                    buildParentPage (List.rev items) pagenum overflows
-                    let (nextN,nextB) =
-                        if isRootNode then
-                            pb.SetPageFlag(FLAG_ROOT_NODE)
-                            // assert pb.Position <= (pageSize - 8)
-                            pb.SetSecondToLastInt32(firstLeaf)
-                            pb.SetLastInt32(lastLeaf)
+            let buildParentPage (items:(int32*byte[]) list) lastPtr (overflows:Map<byte[],int32>) =
+                pb.Reset ()
+                pb.PutByte (PARENT_NODE)
+                pb.PutByte (0uy)
+                pb.PutInt16 (items.Length)
+                // store all the ptrs, n+1 of them
+                List.iter (fun x -> pb.PutVarint(int64 (fst x))) items
+                pb.PutVarint(int64 lastPtr)
+                // store all the keys, n of them
+                let fn x = 
+                    let k = snd x
+                    match overflows.TryFind(k) with
+                    | Some pg ->
+                        pb.PutByte(FLAG_OVERFLOW)
+                        pb.PutVarint(int64 k.Length)
+                        pb.PutInt32(pg)
+                    | None ->
+                        putKeyWithLength k
+                List.iter fn items
+
+            let flushParentPage st pair isRootNode =
+                let (pagenum,k:byte[]) = pair
+                let {items=items; nextPage=nextPageNumber; boundaryPage=boundaryPageNumber; overflows=overflows; nextGeneration=nextGeneration} = st
+                // assert st.sofar > 0
+                let thisPageNumber = nextPageNumber
+                // TODO needing to reverse the items list is rather unfortunate
+                buildParentPage (List.rev items) pagenum overflows
+                let (nextN,nextB) =
+                    if isRootNode then
+                        pb.SetPageFlag(FLAG_ROOT_NODE)
+                        // assert pb.Position <= (pageSize - 8)
+                        pb.SetSecondToLastInt32(firstLeaf)
+                        pb.SetLastInt32(lastLeaf)
+                        (thisPageNumber+1,boundaryPageNumber)
+                    else
+                        if (nextPageNumber = boundaryPageNumber) then
+                            pb.SetPageFlag(FLAG_BOUNDARY_NODE)
+                            let newRange = pageManager.GetRange(token)
+                            pb.SetLastInt32(fst newRange)
+                            newRange
+                        else
                             (thisPageNumber+1,boundaryPageNumber)
-                        else
-                            if (nextPageNumber = boundaryPageNumber) then
-                                pb.SetPageFlag(FLAG_BOUNDARY_NODE)
-                                let newRange = pageManager.GetRange(token)
-                                pb.SetLastInt32(fst newRange)
-                                newRange
-                            else
-                                (thisPageNumber+1,boundaryPageNumber)
-                    pb.Flush(fs)
-                    if nextN <> (thisPageNumber+1) then utils.SeekPage(fs, pageSize, nextN)
-                    {sofar=0; items=[]; nextPage=nextN; boundaryPage=nextB; overflows=Map.empty; nextGeneration=(thisPageNumber,k)::nextGeneration}
+                pb.Flush(fs)
+                if nextN <> (thisPageNumber+1) then utils.SeekPage(fs, pageSize, nextN)
+                {sofar=0; items=[]; nextPage=nextN; boundaryPage=nextB; overflows=Map.empty; nextGeneration=(thisPageNumber,k)::nextGeneration}
 
-                let folder pair st =
-                    let (pagenum,k:byte[]) = pair
+            let folder pair st =
+                let (pagenum,k:byte[]) = pair
 
-                    let neededEitherWay = 1 + Varint.SpaceNeededFor (int64 k.Length) + Varint.SpaceNeededFor (int64 pagenum)
-                    let neededForInline = neededEitherWay + k.Length
-                    let neededForOverflow = neededEitherWay + sizeof<int32>
-                    let couldBeRoot = (st.nextGeneration.Length = 0)
+                let neededEitherWay = 1 + Varint.SpaceNeededFor (int64 k.Length) + Varint.SpaceNeededFor (int64 pagenum)
+                let neededForInline = neededEitherWay + k.Length
+                let neededForOverflow = neededEitherWay + sizeof<int32>
+                let couldBeRoot = (st.nextGeneration.Length = 0)
 
-                    let maybeFlushParent st = 
-                        let available = calcAvailable (st.sofar) couldBeRoot
-                        let fitsInline = (available >= neededForInline)
-                        let wouldFitInlineOnNextPage = ((pageSize - PARENT_PAGE_OVERHEAD) >= neededForInline)
-                        let fitsOverflow = (available >= neededForOverflow)
-                        // TODO flush logic used to be guarded by if sofar > 0.  should it still be?
-                        let flushThisPage = (not fitsInline) && (wouldFitInlineOnNextPage || (not fitsOverflow))
+                let maybeFlushParent st = 
+                    let available = calcAvailable (st.sofar) couldBeRoot
+                    let fitsInline = (available >= neededForInline)
+                    let wouldFitInlineOnNextPage = ((pageSize - PARENT_PAGE_OVERHEAD) >= neededForInline)
+                    let fitsOverflow = (available >= neededForOverflow)
+                    // TODO flush logic used to be guarded by if sofar > 0.  should it still be?
+                    let flushThisPage = (not fitsInline) && (wouldFitInlineOnNextPage || (not fitsOverflow))
 
-                        if flushThisPage then
-                            // assert sofar > 0
-                            flushParentPage st pair false
-                        else
-                            st
+                    if flushThisPage then
+                        // assert sofar > 0
+                        flushParentPage st pair false
+                    else
+                        st
 
-                    let initParent st = 
-                        if st.sofar = 0 then
-                            {st with sofar=PARENT_PAGE_OVERHEAD; items=[]; }
-                        else
-                            st
+                let initParent st = 
+                    if st.sofar = 0 then
+                        {st with sofar=PARENT_PAGE_OVERHEAD; items=[]; }
+                    else
+                        st
 
-                    let addKeyToParent st = 
-                        let {sofar=sofar; items=items; nextPage=nextPageNumber; boundaryPage=boundaryPageNumber; overflows=overflows} = st
-                        let stateWithK = {st with items=pair :: items}
-                        if calcAvailable sofar (st.nextGeneration.Length = 0) >= neededForInline then
-                            {stateWithK with sofar=sofar + neededForInline}
-                        else
-                            let keyOverflowFirstPage = nextPageNumber
-                            let kRange = writeOverflow nextPageNumber boundaryPageNumber (new MemoryStream(k))
-                            {stateWithK with sofar=sofar + neededForOverflow; nextPage=fst kRange; boundaryPage=snd kRange; overflows=overflows.Add(k,keyOverflowFirstPage)}
+                let addKeyToParent st = 
+                    let {sofar=sofar; items=items; nextPage=nextPageNumber; boundaryPage=boundaryPageNumber; overflows=overflows} = st
+                    let stateWithK = {st with items=pair :: items}
+                    if calcAvailable sofar (st.nextGeneration.Length = 0) >= neededForInline then
+                        {stateWithK with sofar=sofar + neededForInline}
+                    else
+                        let keyOverflowFirstPage = nextPageNumber
+                        let kRange = writeOverflow nextPageNumber boundaryPageNumber (new MemoryStream(k))
+                        {stateWithK with sofar=sofar + neededForOverflow; nextPage=fst kRange; boundaryPage=snd kRange; overflows=overflows.Add(k,keyOverflowFirstPage)}
 
 
-                    // this is the body of the folder function
-                    maybeFlushParent st |> initParent |> addKeyToParent
+                // this is the body of the folder function
+                maybeFlushParent st |> initParent |> addKeyToParent
 
-                // this is the body of writeParentNodes
-                // children is in reverse order.  so List.head children is actually the very last child.
-                let lastChild = List.head children
-                let initialState = {nextGeneration=[];sofar=0;items=[];nextPage=startingPageNumber;boundaryPage=startingBoundaryPageNumber;overflows=Map.empty}
-                let middleState = List.foldBack folder (List.tail children) initialState 
-                let isRootNode = (middleState.nextGeneration.Length=0)
-                let finalState = flushParentPage middleState lastChild isRootNode
-                let {nextPage=n;boundaryPage=b;nextGeneration=ng} = finalState
-                (n,b,ng)
+            // this is the body of writeParentNodes
+            // children is in reverse order.  so List.head children is actually the very last child.
+            let lastChild = List.head children
+            let initialState = {nextGeneration=[];sofar=0;items=[];nextPage=startingPageNumber;boundaryPage=startingBoundaryPageNumber;overflows=Map.empty}
+            let middleState = List.foldBack folder (List.tail children) initialState 
+            let isRootNode = (middleState.nextGeneration.Length=0)
+            let finalState = flushParentPage middleState lastChild isRootNode
+            let {nextPage=n;boundaryPage=b;nextGeneration=ng} = finalState
+            (n,b,ng)
 
-            let rec writeOneLayerOfParentPages next boundary (children:(int32*byte[]) list) :int32 =
-                if children.Length > 1 then
-                    let (newNext,newBoundary,newChildren) = writeParentNodes children next boundary 
-                    writeOneLayerOfParentPages newNext newBoundary newChildren
-                else
-                    fst children.[0]
+        let rec writeOneLayerOfParentPages next boundary (children:(int32*byte[]) list) :int32 =
+            if children.Length > 1 then
+                let (newNext,newBoundary,newChildren) = writeParentNodes children next boundary 
+                writeOneLayerOfParentPages newNext newBoundary newChildren
+            else
+                fst children.[0]
 
-            let rootPage = writeOneLayerOfParentPages pageAfterLeaves boundaryAfterLeaves leaves
+        let rootPage = writeOneLayerOfParentPages pageAfterLeaves boundaryAfterLeaves leaves
 
-            pageManager.End(token, rootPage)
-            rootPage
-        else
-            pageManager.End(token, 0)
-            0
+        pageManager.End(token, rootPage)
+        rootPage
 
     type private myOverflowReadStream(_fs:Stream, pageSize:int, _firstPage:int, _len:int) =
         inherit Stream()
