@@ -620,7 +620,7 @@ module BTreeSegment =
             items:(int32*byte[]) list; 
             nextPage:int; 
             boundaryPage:int; 
-            //children:(int32*byte[]); 
+            nextGeneration:(int32*byte[]) list; 
             overflows:Map<byte[],int32>;
         }
 
@@ -907,14 +907,12 @@ module BTreeSegment =
             let firstLeaf = fst leaves.[0]
             let lastLeaf = fst leaves.[leaves.Count-1]
 
-            let writeParentNodes (children:System.Collections.Generic.List<int32 * byte[]>) startingPageNumber startingBoundaryPageNumber =
+            let writeParentNodes children startingPageNumber startingBoundaryPageNumber =
                 // 2 for the page type and flags
                 // 2 for the stored count
                 // 5 for the extra ptr we will add at the end, a varint, 5 is worst case
                 // 4 for lastInt32
                 let PARENT_PAGE_OVERHEAD = 2 + 2 + 5 + 4
-
-                let nextGeneration = new System.Collections.Generic.List<int32 * byte[]>()
 
                 let calcAvailable currentSize couldBeRoot =
                     let basicSize = pageSize - currentSize
@@ -943,7 +941,7 @@ module BTreeSegment =
 
                 let flushParentPage st pair isRootNode =
                     let (pagenum,k:byte[]) = pair
-                    let {items=items; nextPage=nextPageNumber; boundaryPage=boundaryPageNumber; overflows=overflows} = st
+                    let {items=items; nextPage=nextPageNumber; boundaryPage=boundaryPageNumber; overflows=overflows; nextGeneration=nextGeneration} = st
                     // assert st.sofar > 0
                     let thisPageNumber = nextPageNumber
                     // TODO needing to reverse the items list is rather unfortunate
@@ -965,8 +963,7 @@ module BTreeSegment =
                                 (thisPageNumber+1,boundaryPageNumber)
                     pb.Flush(fs)
                     if nextN <> (thisPageNumber+1) then utils.SeekPage(fs, pageSize, nextN)
-                    nextGeneration.Add(thisPageNumber, k)
-                    {sofar=0; items=[]; nextPage=nextN; boundaryPage=nextB; overflows=Map.empty}
+                    {sofar=0; items=[]; nextPage=nextN; boundaryPage=nextB; overflows=Map.empty; nextGeneration=(thisPageNumber,k)::nextGeneration}
 
                 let folder pair st =
                     let (pagenum,k:byte[]) = pair
@@ -974,7 +971,7 @@ module BTreeSegment =
                     let neededEitherWay = 1 + Varint.SpaceNeededFor (int64 k.Length) + Varint.SpaceNeededFor (int64 pagenum)
                     let neededForInline = neededEitherWay + k.Length
                     let neededForOverflow = neededEitherWay + sizeof<int32>
-                    let couldBeRoot = (nextGeneration.Count = 0)
+                    let couldBeRoot = (st.nextGeneration.Length = 0)
 
                     let maybeFlush st = 
                         let available = calcAvailable (st.sofar) couldBeRoot
@@ -999,7 +996,7 @@ module BTreeSegment =
                     let addKeyToParent st = 
                         let {sofar=sofar; items=items; nextPage=nextPageNumber; boundaryPage=boundaryPageNumber; overflows=overflows} = st
                         let stateWithK = {st with items=pair :: items}
-                        if calcAvailable sofar (nextGeneration.Count = 0) >= neededForInline then
+                        if calcAvailable sofar (st.nextGeneration.Length = 0) >= neededForInline then
                             {stateWithK with sofar=sofar + neededForInline}
                         else
                             let keyOverflowFirstPage = nextPageNumber
@@ -1011,24 +1008,23 @@ module BTreeSegment =
                     maybeFlush st |> initParent |> addKeyToParent
 
                 // this is the body of writeParentNodes
-                // TODO this would be much happier if children were already an F# list
-                let fsChildren = (List.ofSeq children) |> List.rev
-                let h = List.head fsChildren
-                let t = List.tail fsChildren
-                let initialState = {sofar=0;items=[];nextPage=startingPageNumber;boundaryPage=startingBoundaryPageNumber;overflows=Map.empty}
-                let middleState = List.foldBack folder t initialState 
-                let finalState = flushParentPage middleState h (nextGeneration.Count=0)
-                let {nextPage=n;boundaryPage=b} = finalState
-                (n,b,nextGeneration)
+                // children is in reverse order.  so List.head children is actually the very last child.
+                let lastChild = List.head children
+                let initialState = {nextGeneration=[];sofar=0;items=[];nextPage=startingPageNumber;boundaryPage=startingBoundaryPageNumber;overflows=Map.empty}
+                let middleState = List.foldBack folder (List.tail children) initialState 
+                let isRootNode = (middleState.nextGeneration.Length=0)
+                let finalState = flushParentPage middleState lastChild isRootNode
+                let {nextPage=n;boundaryPage=b;nextGeneration=ng} = finalState
+                (n,b,ng)
 
-            let rec writeOneLayerOfParentPages next boundary (children:System.Collections.Generic.List<int32 * byte[]>) :int32 =
-                if children.Count > 1 then
+            let rec writeOneLayerOfParentPages next boundary (children:(int32*byte[]) list) :int32 =
+                if children.Length > 1 then
                     let (newNext,newBoundary,newChildren) = writeParentNodes children next boundary 
                     writeOneLayerOfParentPages newNext newBoundary newChildren
                 else
                     fst children.[0]
 
-            let rootPage = writeOneLayerOfParentPages pageAfterLeaves boundaryAfterLeaves leaves
+            let rootPage = writeOneLayerOfParentPages pageAfterLeaves boundaryAfterLeaves (List.rev (List.ofSeq leaves))
 
             pageManager.End(token, rootPage)
             rootPage
