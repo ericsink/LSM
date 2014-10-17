@@ -941,7 +941,8 @@ module BTreeSegment =
                             putKeyWithLength k
                     List.iter fn items
 
-                let folder st (pagenum,k:byte[]) =
+                let folder st pair =
+                    let (pagenum,k:byte[]) = pair
                     let (i, _) = st
 
                     let neededEitherWay = 1 + Varint.SpaceNeededFor (int64 k.Length) + Varint.SpaceNeededFor (int64 pagenum)
@@ -963,7 +964,7 @@ module BTreeSegment =
                             // assert sofar > 0
                             let thisPageNumber = nextPageNumber
                             // TODO needing to reverse the items list is rather unfortunate
-                            buildParentPage (List.rev items) (fst children.[i]) overflows
+                            buildParentPage (List.rev items) pagenum overflows
                             let isRootNode = isLastChild && couldBeRoot
                             let (nextN,nextB) =
                                 if isRootNode then
@@ -982,7 +983,7 @@ module BTreeSegment =
                                         (thisPageNumber+1,boundaryPageNumber)
                             pb.Flush(fs)
                             if nextN <> (thisPageNumber+1) then utils.SeekPage(fs, pageSize, nextN)
-                            nextGeneration.Add(thisPageNumber, snd children.[i-1])
+                            nextGeneration.Add(thisPageNumber, k)
                             {sofar=0; items=[]; nextPage=nextN; boundaryPage=nextB; overflows=Map.empty}
                         else
                             args
@@ -1002,7 +1003,7 @@ module BTreeSegment =
                             args
                         else
                             let {sofar=sofar; items=items; nextPage=nextPageNumber; boundaryPage=boundaryPageNumber; overflows=overflows} = args
-                            let argsWithK = {args with items=children.[i] :: items}
+                            let argsWithK = {args with items=pair :: items}
                             if calcAvailable sofar (nextGeneration.Count = 0) >= neededForInline then
                                 {argsWithK with sofar=sofar + neededForInline}
                             else
