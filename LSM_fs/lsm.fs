@@ -941,10 +941,10 @@ module BTreeSegment =
                             putKeyWithLength k
                     List.iter fn items
 
-                let flushParentPage args pair isRootNode =
+                let flushParentPage st pair isRootNode =
                     let (pagenum,k:byte[]) = pair
-                    let {items=items; nextPage=nextPageNumber; boundaryPage=boundaryPageNumber; overflows=overflows} = args
-                    // assert args.sofar > 0
+                    let {items=items; nextPage=nextPageNumber; boundaryPage=boundaryPageNumber; overflows=overflows} = st
+                    // assert st.sofar > 0
                     let thisPageNumber = nextPageNumber
                     // TODO needing to reverse the items list is rather unfortunate
                     buildParentPage (List.rev items) pagenum overflows
@@ -970,15 +970,14 @@ module BTreeSegment =
 
                 let folder pair st =
                     let (pagenum,k:byte[]) = pair
-                    let (i, _) = st
 
                     let neededEitherWay = 1 + Varint.SpaceNeededFor (int64 k.Length) + Varint.SpaceNeededFor (int64 pagenum)
                     let neededForInline = neededEitherWay + k.Length
                     let neededForOverflow = neededEitherWay + sizeof<int32>
                     let couldBeRoot = (nextGeneration.Count = 0)
 
-                    let maybeFlush args = 
-                        let available = calcAvailable (args.sofar) couldBeRoot
+                    let maybeFlush st = 
+                        let available = calcAvailable (st.sofar) couldBeRoot
                         let fitsInline = (available >= neededForInline)
                         let wouldFitInlineOnNextPage = ((pageSize - PARENT_PAGE_OVERHEAD) >= neededForInline)
                         let fitsOverflow = (available >= neededForOverflow)
@@ -987,40 +986,37 @@ module BTreeSegment =
 
                         if flushThisPage then
                             // assert sofar > 0
-                            flushParentPage args pair false
+                            flushParentPage st pair false
                         else
-                            args
+                            st
 
-                    let initParent args = 
-                        let sofar = args.sofar
-                        if sofar = 0 then
-                            {args with sofar=PARENT_PAGE_OVERHEAD; items=[]; }
+                    let initParent st = 
+                        if st.sofar = 0 then
+                            {st with sofar=PARENT_PAGE_OVERHEAD; items=[]; }
                         else
-                            args
+                            st
 
-                    let addKeyToParent args = 
-                        let {sofar=sofar; items=items; nextPage=nextPageNumber; boundaryPage=boundaryPageNumber; overflows=overflows} = args
-                        let argsWithK = {args with items=pair :: items}
+                    let addKeyToParent st = 
+                        let {sofar=sofar; items=items; nextPage=nextPageNumber; boundaryPage=boundaryPageNumber; overflows=overflows} = st
+                        let stateWithK = {st with items=pair :: items}
                         if calcAvailable sofar (nextGeneration.Count = 0) >= neededForInline then
-                            {argsWithK with sofar=sofar + neededForInline}
+                            {stateWithK with sofar=sofar + neededForInline}
                         else
                             let keyOverflowFirstPage = nextPageNumber
                             let kRange = writeOverflow nextPageNumber boundaryPageNumber (new MemoryStream(k))
-                            {argsWithK with sofar=sofar + neededForOverflow; nextPage=fst kRange; boundaryPage=snd kRange; overflows=overflows.Add(k,keyOverflowFirstPage)}
+                            {stateWithK with sofar=sofar + neededForOverflow; nextPage=fst kRange; boundaryPage=snd kRange; overflows=overflows.Add(k,keyOverflowFirstPage)}
 
 
                     // this is the body of the folder function
-                    let (_,args) = st
-                    let args' = maybeFlush args |> initParent |> addKeyToParent
-                    (i+1,args') 
+                    maybeFlush st |> initParent |> addKeyToParent
 
+                // this is the body of writeParentNodes
                 // TODO this would be much happier if children were already an F# list
                 let fsChildren = (List.ofSeq children) |> List.rev
                 let h = List.head fsChildren
                 let t = List.tail fsChildren
-                let initialArgs = {sofar=0;items=[];nextPage=startingPageNumber;boundaryPage=startingBoundaryPageNumber;overflows=Map.empty}
-                let initialState = (0,initialArgs)
-                let (_,middleState) = List.foldBack folder t initialState 
+                let initialState = {sofar=0;items=[];nextPage=startingPageNumber;boundaryPage=startingBoundaryPageNumber;overflows=Map.empty}
+                let middleState = List.foldBack folder t initialState 
                 let finalState = flushParentPage middleState h (nextGeneration.Count=0)
                 let {nextPage=n;boundaryPage=b} = finalState
                 (n,b,nextGeneration)
