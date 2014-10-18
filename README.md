@@ -126,7 +126,7 @@ test four times:
 
  * B+trees written by C# and read by F#
 
-All the tests are written in C#.
+All the tests are in C#.
 
 All the work so far has been done on Mono in Xamarin Studio on my
 Mac.  I assume this code will run on .NET/Windows, but I haven't tried

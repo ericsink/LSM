@@ -1,8 +1,6 @@
 
 look at reducing memory allocations in writeLeaves
 
-failWith
-
 write a test that verifies that BTreeSegment.Create
 never seeks if it has no boundary.  this preserves
 the ability to write a btree into almost any kind of
@@ -19,17 +17,11 @@ test multicursor with two identical subs?
 
 fsharp stuff:
 
-encapuslate mutable local-function-variables in a class?
-
 way too many mutables in the fs code
 
 way too many if-then places in the fs code
 
 way too many for/while loops in the fs code
-
-no exception throwing?  everything needs to return status.
-but almost everything in .NET throws.  need F#-specific
-implementation of things like SortedDictionary?
 
 --------
 
