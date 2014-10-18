@@ -1,4 +1,8 @@
 
+look at reducing memory allocations in writeLeaves
+
+failWith
+
 write a test that verifies that BTreeSegment.Create
 never seeks if it has no boundary.  this preserves
 the ability to write a btree into almost any kind of
