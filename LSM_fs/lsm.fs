@@ -25,16 +25,16 @@ module utils =
     // TODO why aren't the functions here in utils using curried params?
 
     let SeekPage(strm:Stream, pageSize, pageNumber) =
-        if 0 = pageNumber then raise (new Exception())
+        if 0 = pageNumber then failwith "invalid page number"
         let pos = ((int64 pageNumber) - 1L) * int64 pageSize
         let newpos = strm.Seek(pos, SeekOrigin.Begin)
-        if pos <> newpos then raise (new Exception())
+        if pos <> newpos then failwith "Stream.Seek failed"
 
     let ReadFully(strm:Stream, buf, off, len) :unit =
         let rec fn sofar =
             if sofar < len then
                 let got = strm.Read(buf, off + sofar, len - sofar)
-                if 0 = got then raise (new Exception())
+                if 0 = got then failwith "end of stream in ReadFully"
                 fn (sofar + got)
         fn 0
 
@@ -141,11 +141,11 @@ type private PageBuilder(pgsz:int) =
         buf.[at+3] <- byte (v >>>  0)
 
     member this.SetSecondToLastInt32(page:int) = 
-        if cur > buf.Length - 8 then raise (new Exception())
+        if cur > buf.Length - 8 then failwith "SetSecondToLastInt32 is squashing data"
         this.PutInt32At(buf.Length - 2*sizeof<int32>, page)
 
     member this.SetLastInt32(page:int) = 
-        if cur > buf.Length - 4 then raise (new Exception())
+        if cur > buf.Length - 4 then failwith "SetLastInt32 is squashing data"
         this.PutInt32At(buf.Length - sizeof<int32>, page)
 
     member this.PutInt16(ov:int) =
@@ -865,9 +865,8 @@ module BTreeSegment =
                 let addPairToLeaf (st:LeafState) =
                     let available = pb.Available - sizeof<int32> // for the lastInt32
                     let fitBothInline = (available >= neededForBothInline)
-                    let wouldFitBothInlineOnNextPage = ((pageSize - LEAF_PAGE_OVERHEAD) >= neededForBothInline)
                     let fitKeyInlineValueOverflow = (available >= neededForKeyInlineValueOverflow)
-                    let {nextPage=nextPageNumber;boundaryPage=boundaryPageNumber} = st
+                    let {keys=_;nextPage=nextPageNumber;boundaryPage=boundaryPageNumber} = st
                     let (newN, newB) = 
                         if fitBothInline then
                             putKeyWithLength k
@@ -1093,8 +1092,7 @@ module BTreeSegment =
         let ReadFirstPage() =
             firstPageInBlock <- currentPage
             ReadPage()
-            if PageType() <> OVERFLOW_NODE then
-                raise (new Exception())
+            if PageType() <> OVERFLOW_NODE then failwith "first overflow page has invalid page type"
             if CheckPageFlag(FLAG_BOUNDARY_NODE) then
                 // first page landed on a boundary node
                 // lastInt32 is the next page number, which we'll fetch later
@@ -1183,13 +1181,13 @@ module BTreeSegment =
 
         override this.CanSeek = false
         override this.CanWrite = false
-        override this.SetLength(v) = raise (new NotSupportedException())
+        override this.SetLength(_) = raise (new NotSupportedException())
         override this.Flush() = raise (new NotSupportedException())
-        override this.Seek(offset,origin) = raise (new NotSupportedException())
-        override this.Write(buf,off,len) = raise (new NotSupportedException())
+        override this.Seek(_,_) = raise (new NotSupportedException())
+        override this.Write(_,_,_) = raise (new NotSupportedException())
         override this.Position
             with get() = int64 sofarOverall
-            and set(value) = raise (new NotSupportedException())
+            and set(_) = raise (new NotSupportedException())
 
     let private readOverflow len fs pageSize (firstPage:int) =
         let ostrm = new myOverflowReadStream(fs, pageSize, firstPage, len)
@@ -1224,17 +1222,15 @@ module BTreeSegment =
                     false
                     
         let getFirstAndLastLeaf() = 
-            if not (setCurrentPage rootPage) then raise (new Exception())
+            if not (setCurrentPage rootPage) then failwith "failed to read root page"
             if pr.PageType = LEAF_NODE then
                 (rootPage, rootPage)
             else if pr.PageType = PARENT_NODE then
-                if not (pr.CheckPageFlag(FLAG_ROOT_NODE)) then
-                    raise (new Exception())
+                if not (pr.CheckPageFlag(FLAG_ROOT_NODE)) then failwith "root page lacks flag"
                 let first = pr.GetSecondToLastInt32()
                 let last = pr.GetLastInt32()
                 (first, last)
-            else
-                raise (new Exception())
+            else failwith "root page has invalid page type"
               
         let (firstLeaf, lastLeaf) = getFirstAndLastLeaf()
 
@@ -1270,8 +1266,7 @@ module BTreeSegment =
         let readLeaf() =
             resetLeaf()
             pr.Reset()
-            if pr.GetByte() <> LEAF_NODE then 
-                raise (new Exception())
+            if pr.GetByte() <> LEAF_NODE then failwith "leaf has invalid page type"
             pr.GetByte() |> ignore
             previousLeaf <- pr.GetInt32()
             countLeafKeys <- pr.GetInt16() |> int
@@ -1320,9 +1315,8 @@ module BTreeSegment =
 
         let readParentPage() =
             pr.Reset()
-            if pr.GetByte() <> PARENT_NODE then 
-                raise (new Exception())
-            let pflag = pr.GetByte()
+            if pr.GetByte() <> PARENT_NODE then failwith "parent page has invalid page type"
+            pr.Skip(1) // page flags
             let count = pr.GetInt16()
             let ptrs:int[] = Array.zeroCreate (int (count+1))
             let keys:byte[][] = Array.zeroCreate (int count)
