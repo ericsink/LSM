@@ -1,4 +1,9 @@
 
+combo.create_btree_segment should probably take a seq not
+a cursor
+
+need C# versions of the other Create overloads?
+
 ICursor ToSeq should probably not be extension methods
 
 #if integrity_checks
@@ -9,9 +14,6 @@ called IDest?
 yeah, ICursor is really close to seq anyway.  next would return a bool.
 current would return the tuple pair.  first() would just be the
 initial call to movenext.  last(), prev(), seek() aren't there.
-
-maybe we don't need ValueLength anymore now that values are
-streams?
 
 get rid of IWrite.  choice of in-memory dictionary-ish
 thing is one level up.  we just provide ways to wrap
@@ -36,16 +38,6 @@ bcl.
 
 ImmutableSortedDictionary from System.Collections.Immutable.
 This one could wrap as an ICursor without problems I think.
-
-interesting to note that bt.create doesn't actually
-need a full icursor.  it just needs ienumerable<pair>.
-but it has to be sorted.
-
-maybe we should have two classes of these.  nothing
-can be a full icursor until it has been stuffed into
-a btree, either in memory or not.
-
-should icursor implement IEnumerable<pair> ?
 
 need a btree.create that just takes a dest stream
 and doesn't care about pagemanager?  or one that just
@@ -88,11 +80,6 @@ what are the embedded pointers in the runs in SQLite4 LSM?
 tombstones shouldn't need a length field as well.
 but the absence would mess up the space_needed calcs.
 and if the length is always zero, it's just a byte.
-
-needed a way to ask a cursor if a
-value is a tombstone without retrieving it.  it could be
-huge, and all we wanna know is if it exists.  why doesn't
-sqlite4's LSM have ICursor.ValueLength()?
 
 fix the realloc of leafKeys in the cs code as well?  or is
 the cs code just becoming part of the fs version's test suite?
