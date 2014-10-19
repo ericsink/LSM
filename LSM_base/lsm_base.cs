@@ -62,6 +62,24 @@ namespace Zumero.LSM
 
 	public static class ex
 	{
+		public static IEnumerable<Tuple<byte[],Stream>> ToSequenceOfTuples(this ICursor csr)
+		{
+			csr.First ();
+			while (csr.IsValid ()) {
+				yield return new Tuple<byte[], Stream> (csr.Key (), csr.Value ());
+				csr.Next ();
+			}
+		}
+
+		public static IEnumerable<KeyValuePair<byte[],Stream>> ToSequenceOfKeyValuePairs(this ICursor csr)
+		{
+			csr.First ();
+			while (csr.IsValid ()) {
+				yield return new KeyValuePair<byte[], Stream> (csr.Key (), csr.Value ());
+				csr.Next ();
+			}
+		}
+
 		public static void Insert(this IWrite w, byte[] k, byte[] v)
 		{
 			w.Insert (k, new MemoryStream(v) );

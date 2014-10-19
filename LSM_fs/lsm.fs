@@ -596,7 +596,7 @@ module Varint =
         else if v<=72057594037927935L then 8
         else 9
 
-module BTreeSegment =
+module bt =
     // page types
     let private LEAF_NODE:byte = 1uy
     let private PARENT_NODE:byte = 2uy
@@ -633,7 +633,7 @@ module BTreeSegment =
             boundaryPage:int; 
         }
 
-    let Create(fs:Stream, pageManager:IPages, csr:ICursor) :int32 = 
+    let CreateFromSortedSequenceOfTuples(fs:Stream, pageManager:IPages, source:seq<byte[]*Stream>) :int32 = 
         let pageSize = pageManager.PageSize
         let token = pageManager.Begin()
         let pbOverflow = new PageBuilder(pageSize)
@@ -894,7 +894,7 @@ module BTreeSegment =
                 maybeFlushLeaf st |> initLeaf |> addPairToLeaf
 
             // this is the body of writeLeaves
-            let source = seq { csr.First(); while csr.IsValid() do yield (csr.Key(), csr.Value()); csr.Next(); done }
+            //let source = seq { csr.First(); while csr.IsValid() do yield (csr.Key(), csr.Value()); csr.Next(); done }
             let initialState = {firstLeaf=0;keys=[];leaves=[];nextPage=leavesFirstPage;boundaryPage=leavesBoundaryPage}
             let middleState = Seq.fold folder initialState source
             let finalState = 
@@ -1489,4 +1489,31 @@ module BTreeSegment =
     
     let OpenCursor(fs, pageSize:int, rootPage:int) :ICursor =
         upcast (new myCursor(fs, pageSize, rootPage))
+
+[<AbstractClass;Sealed>]
+type BTreeSegment =
+    // the caller of this method is promising that the sequence is sorted
+    static member Create(fs:Stream, pageManager:IPages, source:seq<byte[]*Stream>) :int32 = 
+        bt.CreateFromSortedSequenceOfTuples (fs, pageManager, source)
+
+    static member Create(fs:Stream, pageManager:IPages, pairs:seq<System.Collections.Generic.KeyValuePair<byte[],Stream>>) :int32 = 
+        // TODO which should be the one in bt.Create?  the KVP or the tuple?
+        let source = seq { for kv in pairs do  yield (kv.Key,kv.Value) done }
+        bt.CreateFromSortedSequenceOfTuples (fs, pageManager, source)
+
+    static member Create(fs:Stream, pageManager:IPages, pairs:System.Collections.Generic.Dictionary<byte[],Stream>) =
+        // TODO this should maybe be IDictionary instead of just Dictionary?
+        let keys:byte[][] = (Array.ofSeq pairs.Keys)
+        let sortfunc x y = ByteComparer.Compare x y
+        Array.sortInPlaceWith sortfunc keys
+        let source = seq { for k in keys do  yield (k,pairs.[k]) done }
+        bt.CreateFromSortedSequenceOfTuples (fs, pageManager, source)
+
+    // TODO Create overload for Map
+    
+    // TODO Create overload for System.Collections.Immutable.SortedDictionary
+
+    static member OpenCursor(fs, pageSize:int, rootPage:int) :ICursor =
+        bt.OpenCursor(fs,pageSize,rootPage)
+
 

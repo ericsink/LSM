@@ -1266,7 +1266,7 @@ namespace Zumero.LSM.cs
 			return new Tuple<int,int,List<node>>(nextPageNumber, boundaryPageNumber, nextGeneration);
 		}
 
-		public static int Create(Stream fs, IPages pageManager, ICursor csr)
+		public static int Create(Stream fs, IPages pageManager, IEnumerable<Tuple<byte[],Stream>> source)
 		{
 			// TODO if !(fs.CanSeek()) throw?
             int pageSize = pageManager.PageSize;
@@ -1294,10 +1294,9 @@ namespace Zumero.LSM.cs
 
             utils.SeekPage(fs, pb.PageSize, nextPageNumber);
 
-			csr.First ();
-			while (csr.IsValid ()) {
-				byte[] k = csr.Key ();
-				Stream v = csr.Value ();
+            foreach (var kv in source) {
+				byte[] k = kv.Item1;
+				Stream v = kv.Item2;
 
 				// TODO get vlen here and don't call v.Length so much
 
@@ -1315,8 +1314,6 @@ namespace Zumero.LSM.cs
 				var neededForBothInline = neededForKeyInline + neededForValueInline;
 				var neededForKeyInlineValueOverflow = neededForKeyInline + neededForValueOverflow;
 				var neededForOverflowBoth = neededForKeyOverflow + neededForValueOverflow;
-
-				csr.Next ();
 
 				if (pb.Position > 0) {
 					// figure out if we need to just flush this page
@@ -1446,7 +1443,7 @@ namespace Zumero.LSM.cs
 
 				int thisPageNumber = nextPageNumber;
 
-				if (!csr.IsValid () && (0 == nodelist.Count)) {
+				if (0 == nodelist.Count) {
 					// this is the last page.  the only page.  the root page.
 					// even though it's a leaf.
 				} else {

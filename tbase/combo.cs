@@ -33,10 +33,10 @@ namespace lsm_tests
 		public static List<combo> get_combos()
 		{
 			List<combo> a = new List<combo>();
-			a.Add(new combo_cs());
 			a.Add(new combo_fs());
-			a.Add(new combo_cs_fs());
-			a.Add(new combo_fs_cs());
+			//a.Add(new combo_cs());
+			//a.Add(new combo_fs_cs());
+			//a.Add(new combo_cs_fs());
 			return a;
 		}
 	}
@@ -50,7 +50,7 @@ namespace lsm_tests
 
 		public override int create_btree_segment(Stream fs,IPages pageManager,ICursor csr)
         {
-            return Zumero.LSM.cs.BTreeSegment.Create(fs, pageManager, csr);
+			return Zumero.LSM.cs.BTreeSegment.Create(fs, pageManager, csr.ToSequenceOfTuples());
         }
 
 		public override ICursor open_btree_segment(Stream fs,int pageSize,int rootPage)
@@ -79,7 +79,7 @@ namespace lsm_tests
 
 		public override int create_btree_segment(Stream fs,IPages pageManager,ICursor csr)
         {
-            return Zumero.LSM.fs.BTreeSegment.Create(fs, pageManager, csr);
+			return Zumero.LSM.fs.BTreeSegment.Create(fs, pageManager, csr.ToSequenceOfTuples());
         }
 
 		public override ICursor open_btree_segment(Stream fs,int pageSize,int rootPage)
@@ -108,7 +108,7 @@ namespace lsm_tests
 
 		public override int create_btree_segment(Stream fs,IPages pageManager,ICursor csr)
         {
-            return Zumero.LSM.cs.BTreeSegment.Create(fs, pageManager, csr);
+			return Zumero.LSM.cs.BTreeSegment.Create(fs, pageManager, csr.ToSequenceOfTuples());
         }
 
 		public override ICursor open_btree_segment(Stream fs,int pageSize,int rootPage)
@@ -137,7 +137,7 @@ namespace lsm_tests
 
 		public override int create_btree_segment(Stream fs,IPages pageManager,ICursor csr)
         {
-            return Zumero.LSM.fs.BTreeSegment.Create(fs, pageManager, csr);
+			return Zumero.LSM.fs.BTreeSegment.Create(fs, pageManager, csr.ToSequenceOfTuples());
         }
 
 		public override ICursor open_btree_segment(Stream fs,int pageSize,int rootPage)

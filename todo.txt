@@ -1,4 +1,71 @@
 
+we have ICursor ToSeq (of tuples).  but it's an extension
+method and probably should not be.  and we probably also
+need ICursor ToSeq (of kvps).
+
+#if integrity_checks
+
+combine stream and its page manager into an object?  
+called IDest?
+
+what should the pair in the seq be?  a tuple?  a keyvaluepair?
+
+gotta support KeyValuePair coming in to Create.  Because that's
+what Dictionaries can give.
+
+maybe a Create that takes a Seq<byte[]> for the keys plus
+IDictionary<> for the values.
+
+hmmm.  KeyValuePair is a struct.
+
+yeah, ICursor is really close to seq anyway.  next would return a bool.
+current would return the tuple pair.  first() would just be the
+initial call to movenext.  last(), prev(), seek() aren't there.
+
+maybe we don't need ValueLength anymore now that values are
+streams?
+
+BTreeSegment.Create needs overloads?  like one that takes
+an ienumerable?
+
+get rid of IWrite.  choice of in-memory dictionary-ish
+thing is one level up.  we just provide ways to wrap
+dictionary as ICursor.
+
+comment on create that seq must be sorted.
+
+OpenCursorfor idictionary -- sort the keys and then
+create a memory btree?  or copy the dictionary (so the
+values don't change) and just keep them both?
+
+it would be nice to have an in-memory data structure
+that has the functionality needed for an icursor.
+sorted keys, with the ability to specify the comparer.
+
+dictionary won't work because it's not sorted.
+
+map won't work because it only sorts the way it wants.
+
+sorteddictionary is (1) not immutable and (2) not WinRT
+bcl.
+
+ImmutableSortedDictionary from System.Collections.Immutable.
+This one could wrap as an ICursor without problems I think.
+
+interesting to note that bt.create doesn't actually
+need a full icursor.  it just needs ienumerable<pair>.
+but it has to be sorted.
+
+maybe we should have two classes of these.  nothing
+can be a full icursor until it has been stuffed into
+a btree, either in memory or not.
+
+should icursor implement IEnumerable<pair> ?
+
+need a btree.create that just takes a dest stream
+and doesn't care about pagemanager?  or one that just
+writes to a memory stream?
+
 look at reducing memory allocations in writeLeaves
 
 write a test that verifies that BTreeSegment.Create
