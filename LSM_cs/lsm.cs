@@ -1266,7 +1266,7 @@ namespace Zumero.LSM.cs
 			return new Tuple<int,int,List<node>>(nextPageNumber, boundaryPageNumber, nextGeneration);
 		}
 
-		public static int Create(Stream fs, IPages pageManager, IEnumerable<Tuple<byte[],Stream>> source)
+		public static int Create(Stream fs, IPages pageManager, IEnumerable<KeyValuePair<byte[],Stream>> source)
 		{
 			// TODO if !(fs.CanSeek()) throw?
             int pageSize = pageManager.PageSize;
@@ -1295,8 +1295,8 @@ namespace Zumero.LSM.cs
             utils.SeekPage(fs, pb.PageSize, nextPageNumber);
 
             foreach (var kv in source) {
-				byte[] k = kv.Item1;
-				Stream v = kv.Item2;
+				byte[] k = kv.Key;
+				Stream v = kv.Value;
 
 				// TODO get vlen here and don't call v.Length so much
 

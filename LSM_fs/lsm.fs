@@ -21,6 +21,8 @@ open System.IO
 
 open Zumero.LSM
 
+type kvp = System.Collections.Generic.KeyValuePair<byte[],Stream>
+
 module utils =
     // TODO why aren't the functions here in utils using curried params?
 
@@ -633,7 +635,7 @@ module bt =
             boundaryPage:int; 
         }
 
-    let CreateFromSortedSequenceOfTuples(fs:Stream, pageManager:IPages, source:seq<byte[]*Stream>) :int32 = 
+    let CreateFromSortedSequenceOfKeyValuePairs(fs:Stream, pageManager:IPages, source:seq<kvp>) :int32 = 
         let pageSize = pageManager.PageSize
         let token = pageManager.Begin()
         let pbOverflow = new PageBuilder(pageSize)
@@ -816,8 +818,9 @@ module bt =
                 if nextN <> (thisPageNumber+1) then utils.SeekPage(fs, pageSize, nextN)
                 {keys=[]; firstLeaf=firstLeaf; nextPage=nextN; boundaryPage=nextB; leaves=(thisPageNumber,List.head st.keys)::st.leaves}
 
-            let folder st (pair:(byte[]*Stream)) = 
-                let (k,v) = pair
+            let folder st (pair:kvp) = 
+                let k = pair.Key
+                let v = pair.Value
                 // assert k <> null
                 // but v might be null (a tombstone)
 
@@ -1493,21 +1496,21 @@ module bt =
 [<AbstractClass;Sealed>]
 type BTreeSegment =
     // the caller of this method is promising that the sequence is sorted
-    static member Create(fs:Stream, pageManager:IPages, source:seq<byte[]*Stream>) :int32 = 
-        bt.CreateFromSortedSequenceOfTuples (fs, pageManager, source)
+    static member Create(fs:Stream, pageManager:IPages, source:seq<kvp>) :int32 = 
+        bt.CreateFromSortedSequenceOfKeyValuePairs (fs, pageManager, source)
 
-    static member Create(fs:Stream, pageManager:IPages, pairs:seq<System.Collections.Generic.KeyValuePair<byte[],Stream>>) :int32 = 
-        // TODO which should be the one in bt.Create?  the KVP or the tuple?
-        let source = seq { for kv in pairs do  yield (kv.Key,kv.Value) done }
-        bt.CreateFromSortedSequenceOfTuples (fs, pageManager, source)
+    // the caller of this method is promising that the sequence is sorted
+    static member Create(fs:Stream, pageManager:IPages, pairs:seq<byte[]*Stream>) :int32 = 
+        let source = seq { for t in pairs do yield new kvp(fst t,snd t) done }
+        bt.CreateFromSortedSequenceOfKeyValuePairs (fs, pageManager, source)
 
     static member Create(fs:Stream, pageManager:IPages, pairs:System.Collections.Generic.Dictionary<byte[],Stream>) =
         // TODO this should maybe be IDictionary instead of just Dictionary?
         let keys:byte[][] = (Array.ofSeq pairs.Keys)
         let sortfunc x y = ByteComparer.Compare x y
         Array.sortInPlaceWith sortfunc keys
-        let source = seq { for k in keys do  yield (k,pairs.[k]) done }
-        bt.CreateFromSortedSequenceOfTuples (fs, pageManager, source)
+        let source = seq { for k in keys do yield new kvp(k,pairs.[k]) done }
+        bt.CreateFromSortedSequenceOfKeyValuePairs (fs, pageManager, source)
 
     // TODO Create overload for Map
     
