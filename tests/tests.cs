@@ -679,7 +679,7 @@ namespace lsm_tests
 				Assert.Equal (13, count_keys_backward (t1.OpenCursor ()));
 
 				using (var fs = new MemoryStream()) {
-					IPages pageManager = new SimplePageManager(fs, PAGE_SIZE);
+					IPages pageManager = new MemoryPageManager(fs, PAGE_SIZE);
 					c.create_btree_segment(fs, pageManager, t1.OpenCursor());
 
 					{

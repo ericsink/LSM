@@ -140,6 +140,40 @@ namespace lsm_tests
     }
 #endif
 
+	public class MemoryPageManager : IPages
+	{
+		MemoryStream fs;
+		int pageSize;
+
+		public MemoryPageManager(MemoryStream _fs, int _pageSize)
+		{
+			fs = _fs;
+			pageSize = _pageSize;
+		}
+
+		int IPages.PageSize
+		{
+			get {
+				return pageSize;
+			}
+		}
+
+		Guid IPages.Begin()
+		{
+			return Guid.NewGuid();
+		}
+
+		void IPages.End(Guid token, int lastPage)
+		{
+		}
+
+		Tuple<int,int> IPages.GetRange(Guid token)
+		{
+			return new Tuple<int,int> (1, -1);
+		}
+
+	}
+
 	public class SimplePageManager : IPages
 	{
 		private readonly Stream fs;
