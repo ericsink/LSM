@@ -17,8 +17,6 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Threading;
-using System.Threading.Tasks;
 
 using Zumero.LSM;
 
@@ -109,6 +107,8 @@ namespace lsm_tests
             // get a multicursor for that seglist
         }
 
+        // TODO this should a method on the transaction object
+        // TODO this should take a dictionary as a param
         void Commit()
         {
             // create a btreesegment containing the mem segment
@@ -116,6 +116,7 @@ namespace lsm_tests
             // release the write lock
         }
 
+        // TODO this should a method on the transaction object
         void Rollback()
         {
             // throw away the memory segment, dispose

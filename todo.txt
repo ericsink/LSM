@@ -1,6 +1,5 @@
 
-combo.create_btree_segment should probably take a seq not
-a cursor
+the test suite is using the old memory_segment api
 
 need C# versions of the other Create overloads?
 
@@ -14,10 +13,6 @@ called IDest?
 yeah, ICursor is really close to seq anyway.  next would return a bool.
 current would return the tuple pair.  first() would just be the
 initial call to movenext.  last(), prev(), seek() aren't there.
-
-get rid of IWrite.  choice of in-memory dictionary-ish
-thing is one level up.  we just provide ways to wrap
-dictionary as ICursor.
 
 comment on create that seq must be sorted.
 
@@ -36,6 +31,14 @@ map won't work because it only sorts the way it wants.
 sorteddictionary is (1) not immutable and (2) not WinRT
 bcl.
 
+can we have a readonly byte array?
+
+wrap a ReadOnlyDictionary the way we wrap a dictionary now?
+problem is that ROD is designed for cases where you want to
+pass it to somebody else knowing that they won't modify
+it.  what we care about is receiving it and knowing that
+the originator will not modify it.  not quite the same.
+
 ImmutableSortedDictionary from System.Collections.Immutable.
 This one could wrap as an ICursor without problems I think.
 
@@ -48,7 +51,8 @@ writes to a memory stream?
 look at reducing memory allocations in writeLeaves
 
 write a test that verifies that BTreeSegment.Create
-never seeks if it has no boundary.  this preserves
+never seeks if it has no boundary.  need a stream
+that overrides seek and throws.  this test preserves
 the ability to write a btree into almost any kind of
 stream.  common use case remains writing with an
 involved page manager.
