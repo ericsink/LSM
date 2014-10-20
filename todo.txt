@@ -39,6 +39,8 @@ bcl.
 ImmutableSortedDictionary from System.Collections.Immutable.
 This one could wrap as an ICursor without problems I think.
 
+look at ExtCore.HashMap
+
 need a btree.create that just takes a dest stream
 and doesn't care about pagemanager?  or one that just
 writes to a memory stream?

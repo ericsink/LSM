@@ -495,6 +495,7 @@ namespace Zumero.LSM.cs
 
 	}
 
+#if not
 	public class MemorySegment : IWrite
 	{
 		#if not
@@ -645,6 +646,7 @@ namespace Zumero.LSM.cs
 			return new MemorySegment ();
 		}
 	}
+#endif
 
 	public class MultiCursor : ICursor
 	{

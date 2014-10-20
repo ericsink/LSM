@@ -360,6 +360,7 @@ type private PageReader(pgsz:int) =
             let r = (a1<<<56) ||| (a2<<<48) ||| (a3<<<40) ||| (a4<<<32) ||| (a5<<<24) ||| (a6<<<16) ||| (a7<<<8) ||| a8
             int64 r
 
+#if not
 type MemorySegment() =
     // TODO this will need to be an immutable collection so that
     // openCursor will see a snapshot while it may continue
@@ -450,6 +451,7 @@ type MemorySegment() =
 
     static member Create() :IWrite =
         upcast (new MemorySegment())
+#endif
 
 type private Direction = FORWARD=0 | BACKWARD=1 | WANDERING=2
 

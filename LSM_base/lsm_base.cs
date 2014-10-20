@@ -28,14 +28,6 @@ namespace Zumero.LSM
 		void End(Guid token, int lastPage);
     }
 
-	public interface IWrite
-	{
-		void Insert(byte[] k, Stream v);
-		void Delete(byte[] k);
-		// TODO delete_range
-		ICursor OpenCursor();
-	}
-
 	public enum SeekOp
 	{
 		SEEK_EQ,
@@ -78,26 +70,6 @@ namespace Zumero.LSM
 				yield return new KeyValuePair<byte[], Stream> (csr.Key (), csr.Value ());
 				csr.Next ();
 			}
-		}
-
-		public static void Insert(this IWrite w, byte[] k, byte[] v)
-		{
-			w.Insert (k, new MemoryStream(v) );
-		}
-
-		public static void Insert(this IWrite w, string k, byte[] v)
-		{
-			w.Insert (k.ToUTF8 (), new MemoryStream(v) );
-		}
-
-		public static void Insert(this IWrite w, string k, string v)
-		{
-			w.Insert (k.ToUTF8 (), new MemoryStream(v.ToUTF8 ()) );
-		}
-
-		public static void Delete(this IWrite w, string k)
-		{
-			w.Delete (k.ToUTF8 ());
 		}
 
 		public static void Seek(this ICursor csr, string k, SeekOp sop)
