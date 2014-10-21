@@ -25,7 +25,7 @@ namespace Zumero.LSM
 		int PageSize { get; }
         Guid Begin();
         Tuple<int,int> GetRange(Guid token);
-        int WriteBlockList(Guid token, int rootPage);
+        int ReserveBlockList(Guid token, int rootPage);
 		void End(Guid token);
     }
 

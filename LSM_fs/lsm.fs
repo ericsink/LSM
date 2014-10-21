@@ -813,7 +813,11 @@ module bt =
                 let thisPageNumber = st.nextPage
                 let firstLeaf = if st.leaves.Length=0 then thisPageNumber else st.firstLeaf
                 let (nextN,nextB) = 
-                    if (not isRootPage) && (thisPageNumber = st.boundaryPage) then
+                    if isRootPage then
+                        let blockListPage = pageManager.ReserveBlockList(token, thisPageNumber)
+                        pb.SetLastInt32(blockListPage)
+                        (thisPageNumber + 1, st.boundaryPage)
+                    else if thisPageNumber = st.boundaryPage then
                         pb.SetPageFlag FLAG_BOUNDARY_NODE
                         let newRange = pageManager.GetRange(token)
                         pb.SetLastInt32(fst newRange)
@@ -972,10 +976,10 @@ module bt =
                 let (nextN,nextB) =
                     if isRootNode then
                         pb.SetPageFlag(FLAG_ROOT_NODE)
-                        let blockListPage = pageManager.WriteBlockList(token, thisPageNumber)
-                        pb.SetThirdToLastInt32(blockListPage)
-                        pb.SetSecondToLastInt32(firstLeaf)
-                        pb.SetLastInt32(lastLeaf)
+                        let blockListPage = pageManager.ReserveBlockList(token, thisPageNumber)
+                        pb.SetThirdToLastInt32(firstLeaf)
+                        pb.SetSecondToLastInt32(lastLeaf)
+                        pb.SetLastInt32(blockListPage)
                         (thisPageNumber+1,boundaryPageNumber)
                     else
                         if (nextPageNumber = boundaryPageNumber) then
@@ -1238,8 +1242,9 @@ module bt =
                 (rootPage, rootPage)
             else if pr.PageType = PARENT_NODE then
                 if not (pr.CheckPageFlag(FLAG_ROOT_NODE)) then failwith "root page lacks flag"
-                let first = pr.GetSecondToLastInt32()
-                let last = pr.GetLastInt32()
+                let first = pr.GetThirdToLastInt32()
+                let last = pr.GetSecondToLastInt32()
+                // lastInt32 is the ptr to the block list
                 (first, last)
             else failwith "root page has invalid page type"
               

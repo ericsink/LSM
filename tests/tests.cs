@@ -28,11 +28,6 @@ namespace lsm_tests
 	{
 		private const int PAGE_SIZE = 256; // TODO very low, for testing purposes
 
-		private int lastPage(Stream fs)
-		{
-			return (int)(fs.Length / PAGE_SIZE);
-		}
-
 		private Stream openFile(string s)
 		{
 			return new FileStream (s, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
@@ -171,8 +166,8 @@ namespace lsm_tests
 				int s2;
 				int s3;
 				int s4;
-				IPages pageManager = new SimplePageManager(null, PAGE_SIZE); // TODO doesn't use fs anyway
-				using (var fs = new FileStream ("one_file", FileMode.Create, FileAccess.ReadWrite, FileShare.None)) {
+				using (var fs = new FileStream ("one_file", FileMode.Create, FileAccess.ReadWrite, FileShare.ReadWrite)) {
+                    IPages pageManager = new SimplePageManager(fs, PAGE_SIZE);
 					{
 						var t1 = c.create_memory_segment();
 						for (int i=0; i<500; i++) {
@@ -204,51 +199,53 @@ namespace lsm_tests
 						}
 						s4 = c.create_btree_segment (fs, pageManager, t1.OpenCursor ()).Item2;
 					}
-				}
 
-				int s1_2;
-				int s3_4;
-				using (var fs = new FileStream ("one_file", FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite)) {
+                    fs.Flush();
 
-					using (var fs1 = openFile("one_file")) {
-						var csr1 = c.open_btree_segment (fs1, PAGE_SIZE, s1);
-						using (var fs2 = openFile("one_file")) {
-							var csr2 = c.open_btree_segment (fs2, PAGE_SIZE, s2);
-							var mc = c.create_multicursor(csr1, csr2);
-							s1_2 = c.create_btree_segment (fs, pageManager, mc).Item2;
-						}
-					}
+                    int s1_2;
+                    int s3_4;
 
-					using (var fs3 = openFile("one_file")) {
-						var csr3 = c.open_btree_segment (fs3, PAGE_SIZE, s3);
-						using (var fs4 = openFile("one_file")) {
-							var csr4 = c.open_btree_segment (fs4, PAGE_SIZE, s4);
-							var mc = c.create_multicursor(csr3, csr4);
-							s3_4 = c.create_btree_segment (fs, pageManager, mc).Item2;
-						}
-					}
-				}
+                    using (var fs1 = openFile("one_file")) {
+                        var csr1 = c.open_btree_segment (fs1, PAGE_SIZE, s1);
+                        using (var fs2 = openFile("one_file")) {
+                            var csr2 = c.open_btree_segment (fs2, PAGE_SIZE, s2);
+                            var mc = c.create_multicursor(csr1, csr2);
+                            s1_2 = c.create_btree_segment (fs, pageManager, mc).Item2;
+                        }
+                    }
 
-				using (var fs = new FileStream ("one_file", FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite)) {
-					int s5;
+                    using (var fs3 = openFile("one_file")) {
+                        var csr3 = c.open_btree_segment (fs3, PAGE_SIZE, s3);
+                        using (var fs4 = openFile("one_file")) {
+                            var csr4 = c.open_btree_segment (fs4, PAGE_SIZE, s4);
+                            var mc = c.create_multicursor(csr3, csr4);
+                            s3_4 = c.create_btree_segment (fs, pageManager, mc).Item2;
+                        }
+                    }
 
-					using (var fs1_2 = openFile("one_file")) {
-						var csr1_2 = c.open_btree_segment (fs1_2, PAGE_SIZE, s1_2);
-						using (var fs3_4 = openFile("one_file")) {
-							var csr3_4 = c.open_btree_segment (fs3_4, PAGE_SIZE, s3_4);
-							var mc = c.create_multicursor(csr1_2, csr3_4);
-							s5 = c.create_btree_segment (fs, pageManager, mc).Item2;
-						}
-					}
+                    fs.Flush();
 
-					{
-						var csr = c.open_btree_segment(fs, PAGE_SIZE, s5);
+                    int s5;
 
-						csr.First();
-						while (csr.IsValid()) {
-							csr.Next();
-						}
-					}
+                    using (var fs1_2 = openFile("one_file")) {
+                        var csr1_2 = c.open_btree_segment (fs1_2, PAGE_SIZE, s1_2);
+                        using (var fs3_4 = openFile("one_file")) {
+                            var csr3_4 = c.open_btree_segment (fs3_4, PAGE_SIZE, s3_4);
+                            var mc = c.create_multicursor(csr1_2, csr3_4);
+                            s5 = c.create_btree_segment (fs, pageManager, mc).Item2;
+                        }
+                    }
+
+                    fs.Flush();
+
+                    {
+                        var csr = c.open_btree_segment(fs, PAGE_SIZE, s5);
+
+                        csr.First();
+                        while (csr.IsValid()) {
+                            csr.Next();
+                        }
+                    }
 				}
 			};
 			foreach (combo c in combo.get_combos()) f(c);
@@ -304,9 +301,9 @@ namespace lsm_tests
 
 					using (var fs = new FileStream ("lexographic", FileMode.Create)) {
 						IPages pageManager = new SimplePageManager(fs, PAGE_SIZE);
-						c.create_btree_segment (fs, pageManager, csr);
+						var root = c.create_btree_segment (fs, pageManager, csr).Item2;
 
-						do_checks(c.open_btree_segment(fs, PAGE_SIZE, lastPage(fs)));
+						do_checks(c.open_btree_segment(fs, PAGE_SIZE, root));
 					}
 				}
 			};
@@ -317,6 +314,7 @@ namespace lsm_tests
 		public void weird()
 		{
 			Action<combo> f = (combo c) => {
+                int root1;
 				{
 					var t1 = c.create_memory_segment();
 					for (int i=0; i<100; i++) {
@@ -325,9 +323,10 @@ namespace lsm_tests
 
 					using (var fs = new FileStream ("weird1", FileMode.Create)) {
 						IPages pageManager = new SimplePageManager(fs, PAGE_SIZE);
-						c.create_btree_segment (fs, pageManager, t1.OpenCursor ());
+						root1 = c.create_btree_segment (fs, pageManager, t1.OpenCursor ()).Item2;
 					}
 				}
+                int root2;
 				{
 					var t1 = c.create_memory_segment();
 					for (int i=0; i<1000; i++) {
@@ -336,14 +335,14 @@ namespace lsm_tests
 
 					using (var fs = new FileStream ("weird2", FileMode.Create)) {
 						IPages pageManager = new SimplePageManager(fs, PAGE_SIZE);
-						c.create_btree_segment (fs, pageManager, t1.OpenCursor ());
+						root2 = c.create_btree_segment (fs, pageManager, t1.OpenCursor ()).Item2;
 					}
 				}
 
 				using (var fs1 = new FileStream ("weird1", FileMode.Open, FileAccess.Read)) {
-					var csr1 = c.open_btree_segment(fs1, PAGE_SIZE, lastPage(fs1));
+					var csr1 = c.open_btree_segment(fs1, PAGE_SIZE, root1);
 					using (var fs2 = new FileStream ("weird2", FileMode.Open, FileAccess.Read)) {
-						var csr2 = c.open_btree_segment(fs2, PAGE_SIZE, lastPage(fs2));
+						var csr2 = c.open_btree_segment(fs2, PAGE_SIZE, root2);
 
 						var mc = c.create_multicursor(csr1, csr2);
 
@@ -465,13 +464,14 @@ namespace lsm_tests
 					}
 				}
 
+                int root;
 				using (var fs = new FileStream ("simple", FileMode.Create)) {
 					IPages pageManager = new SimplePageManager(fs, PAGE_SIZE);
-					c.create_btree_segment (fs, pageManager, t1.OpenCursor ());
+					root = c.create_btree_segment (fs, pageManager, t1.OpenCursor ()).Item2;
 				}
 
 				using (var fs = new FileStream ("simple", FileMode.Open, FileAccess.Read)) {
-					var csr = c.open_btree_segment (fs, PAGE_SIZE, lastPage(fs));
+					var csr = c.open_btree_segment (fs, PAGE_SIZE, root);
 
 					csr.First ();
 					while (csr.IsValid ()) {
@@ -503,6 +503,7 @@ namespace lsm_tests
 		public void no_le_ge_multicursor()
 		{
 			Action<combo> f = (combo c) => {
+				int root1;
 				{
 					var t1 = c.create_memory_segment();
 					t1.Insert ("c", "3");
@@ -510,24 +511,25 @@ namespace lsm_tests
 
 					using (var fs = new FileStream ("no_le_ge_multicursor_1", FileMode.Create)) {
 						IPages pageManager = new SimplePageManager(fs, PAGE_SIZE);
-						c.create_btree_segment(fs, pageManager, t1.OpenCursor ());
+						root1 = c.create_btree_segment(fs, pageManager, t1.OpenCursor ()).Item2;
 					}
 				}
 
+				int root2;
 				{
 					var t1 = c.create_memory_segment();
 					t1.Insert ("e", "5");
 
 					using (var fs = new FileStream ("no_le_ge_multicursor_2", FileMode.Create)) {
 						IPages pageManager = new SimplePageManager(fs, PAGE_SIZE);
-						c.create_btree_segment(fs, pageManager, t1.OpenCursor ());
+						root2 = c.create_btree_segment(fs, pageManager, t1.OpenCursor ()).Item2;
 					}
 				}
 
 				using (var fs1 = new FileStream ("no_le_ge_multicursor_1", FileMode.Open, FileAccess.Read)) {
-					var csr1 = c.open_btree_segment(fs1, PAGE_SIZE, lastPage(fs1));
+					var csr1 = c.open_btree_segment(fs1, PAGE_SIZE, root1);
 					using (var fs2 = new FileStream ("no_le_ge_multicursor_2", FileMode.Open, FileAccess.Read)) {
-						var csr2 = c.open_btree_segment(fs2, PAGE_SIZE, lastPage(fs2));
+						var csr2 = c.open_btree_segment(fs2, PAGE_SIZE, root2);
 
 						var csr = c.create_multicursor(csr2, csr1);
 
@@ -574,13 +576,14 @@ namespace lsm_tests
 					Assert.False (csr.IsValid ());
 				}
 
+				int root;
 				using (var fs = new FileStream ("no_le_ge", FileMode.Create)) {
 					IPages pageManager = new SimplePageManager(fs, PAGE_SIZE);
-					c.create_btree_segment(fs, pageManager, t1.OpenCursor ());
+					root = c.create_btree_segment(fs, pageManager, t1.OpenCursor ()).Item2;
 				}
 
 				using (var fs = new FileStream ("no_le_ge", FileMode.Open, FileAccess.Read)) {
-					var csr = c.open_btree_segment(fs, PAGE_SIZE, lastPage(fs));
+					var csr = c.open_btree_segment(fs, PAGE_SIZE, root);
 
 					csr.Seek ("a", SeekOp.SEEK_LE);
 					Assert.False (csr.IsValid ());
@@ -607,6 +610,7 @@ namespace lsm_tests
 					s = s + s;
 				}
 
+				int root;
 				{
 					var t1 = c.create_memory_segment();
 					t1.Insert ("k1", s);
@@ -616,12 +620,12 @@ namespace lsm_tests
 
 					using (var fs = new FileStream ("long_vals", FileMode.Create, FileAccess.ReadWrite)) {
 						IPages pageManager = new SimplePageManager(fs, PAGE_SIZE);
-						c.create_btree_segment(fs, pageManager, t1.OpenCursor ());
+						root = c.create_btree_segment(fs, pageManager, t1.OpenCursor ()).Item2;
 					}
 				}
 
 				using (var fs = new FileStream ("long_vals", FileMode.Open, FileAccess.Read)) {
-					var csr = c.open_btree_segment(fs, PAGE_SIZE, lastPage(fs));
+					var csr = c.open_btree_segment(fs, PAGE_SIZE, root);
 
 					csr.First ();
 					while (csr.IsValid ()) {
@@ -680,10 +684,10 @@ namespace lsm_tests
 
 				using (var fs = new MemoryStream()) {
 					IPages pageManager = new MemoryPageManager(fs, PAGE_SIZE);
-					c.create_btree_segment(fs, pageManager, t1.OpenCursor());
+					var root = c.create_btree_segment(fs, pageManager, t1.OpenCursor()).Item2;
 
 					{
-						var csr = c.open_btree_segment(fs, PAGE_SIZE, lastPage(fs));
+						var csr = c.open_btree_segment(fs, PAGE_SIZE, root);
 
 						Assert.Equal (13, count_keys_forward (csr));
 						Assert.Equal (13, count_keys_backward (csr));
@@ -715,10 +719,10 @@ namespace lsm_tests
 
 				using (var fs = new FileStream("test_seek_ge_le_bigger", FileMode.Create)) {
 					IPages pageManager = new SimplePageManager(fs, PAGE_SIZE);
-					c.create_btree_segment(fs, pageManager, t1.OpenCursor());
+					var root = c.create_btree_segment(fs, pageManager, t1.OpenCursor()).Item2;
 
 					{
-						var csr = c.open_btree_segment(fs, PAGE_SIZE, lastPage(fs));
+						var csr = c.open_btree_segment(fs, PAGE_SIZE, root);
 
 						csr.Seek ("8088", SeekOp.SEEK_EQ);
 						Assert.True (csr.IsValid ());
@@ -743,6 +747,7 @@ namespace lsm_tests
 		public void seek_ge_le_bigger_multicursor()
 		{
 			Action<combo> f = (combo c) => {
+				int root4;
 				{
 					var t1 = c.create_memory_segment();
 					for (int i = 0; i < 10000; i++) {
@@ -751,9 +756,10 @@ namespace lsm_tests
 
 					using (var fs = new FileStream ("test_seek_ge_le_bigger_multicursor_4", FileMode.Create)) {
 						IPages pageManager = new SimplePageManager(fs, PAGE_SIZE);
-						c.create_btree_segment(fs, pageManager, t1.OpenCursor ());
+						root4 = c.create_btree_segment(fs, pageManager, t1.OpenCursor ()).Item2;
 					}
 				}
+				int root7;
 				{
 					var t1 = c.create_memory_segment();
 					for (int i = 0; i < 10000; i++) {
@@ -762,14 +768,14 @@ namespace lsm_tests
 
 					using (var fs = new FileStream ("test_seek_ge_le_bigger_multicursor_7", FileMode.Create)) {
 						IPages pageManager = new SimplePageManager(fs, PAGE_SIZE);
-						c.create_btree_segment(fs, pageManager, t1.OpenCursor ());
+						root7 = c.create_btree_segment(fs, pageManager, t1.OpenCursor ()).Item2;
 					}
 				}
 
 				using (var fs_4 = new FileStream ("test_seek_ge_le_bigger_multicursor_4", FileMode.Open, FileAccess.Read)) {
-					var csr_4 = c.open_btree_segment(fs_4, PAGE_SIZE, lastPage(fs_4));
+					var csr_4 = c.open_btree_segment(fs_4, PAGE_SIZE, root4);
 					using (var fs_7 = new FileStream ("test_seek_ge_le_bigger_multicursor_7", FileMode.Open, FileAccess.Read)) {
-						var csr_7 = c.open_btree_segment(fs_7, PAGE_SIZE, lastPage(fs_7));
+						var csr_7 = c.open_btree_segment(fs_7, PAGE_SIZE, root7);
 
 						var csr = c.create_multicursor(csr_7, csr_4);
 
@@ -825,17 +831,17 @@ namespace lsm_tests
 
 				using (var fs = new MemoryStream()) {
                         IPages pageManager = new SimplePageManager(fs);
-					c.create_btree_segment(fs, PAGE_SIZE, t1.OpenCursor());
+					var root = c.create_btree_segment(fs, PAGE_SIZE, t1.OpenCursor()).Item2;
 
 					{
-						var csr = c.open_btree_segment(fs, PAGE_SIZE, lastPage(fs));
+						var csr = c.open_btree_segment(fs, PAGE_SIZE, root);
 
 						Assert.Equal (0, count_keys_forward (csr));
 						Assert.Equal (0, count_keys_backward (csr));
 					}
 
 					{
-						var csr = c.open_btree_segment(fs, PAGE_SIZE, lastPage(fs));
+						var csr = c.open_btree_segment(fs, PAGE_SIZE, root);
 						var t2 = c.create_memory_segment();
 						var mc = c.create_multicursor(t2.OpenCursor(),csr);
 						mc.Seek("", SeekOp.SEEK_LE);
@@ -861,10 +867,10 @@ namespace lsm_tests
 
 				using (var fs = new MemoryStream()) {
 					IPages pageManager = new SimplePageManager(fs, PAGE_SIZE);
-					c.create_btree_segment(fs, pageManager, t1.OpenCursor());
+					var root = c.create_btree_segment(fs, pageManager, t1.OpenCursor()).Item2;
 
 					{
-						var csr = c.open_btree_segment(fs, PAGE_SIZE, lastPage(fs));
+						var csr = c.open_btree_segment(fs, PAGE_SIZE, root);
 
 						csr.Seek ("b", SeekOp.SEEK_EQ);
 						Assert.True (csr.IsValid ());
@@ -887,13 +893,14 @@ namespace lsm_tests
 				Assert.True (csr.IsValid ());
 				Assert.Equal (0, csr.ValueLength ());
 
+				int root;
 				using (var fs = new FileStream ("empty_val", FileMode.Create, FileAccess.ReadWrite)) {
 					IPages pageManager = new SimplePageManager(fs, PAGE_SIZE);
-					c.create_btree_segment(fs, pageManager, csr);
+					root = c.create_btree_segment(fs, pageManager, csr).Item2;
 				}
 
 				using (var fs = new FileStream ("empty_val", FileMode.Open, FileAccess.Read)) {
-					csr = c.open_btree_segment(fs, PAGE_SIZE, lastPage(fs));
+					csr = c.open_btree_segment(fs, PAGE_SIZE, root);
 					csr.Seek ("_", SeekOp.SEEK_EQ);
 					Assert.True (csr.IsValid ());
 					Assert.Equal (0, csr.ValueLength ());
@@ -906,6 +913,7 @@ namespace lsm_tests
 		public void overwrite_val_mem()
 		{
 			Action<combo> f = (combo c) => {
+				int root;
 				{
 					var t1 = c.create_memory_segment();
 					t1.Insert ("a", "1");
@@ -922,12 +930,12 @@ namespace lsm_tests
 
 					using (var fs = new FileStream ("overwrite_val_mem", FileMode.Create, FileAccess.ReadWrite)) {
 						IPages pageManager = new SimplePageManager(fs, PAGE_SIZE);
-						c.create_btree_segment(fs, pageManager, t1.OpenCursor ());
+						root = c.create_btree_segment(fs, pageManager, t1.OpenCursor ()).Item2;
 					}
 				}
 
 				using (var fs = new FileStream ("overwrite_val_mem", FileMode.Open, FileAccess.Read)) {
-					var csr_b1 = c.open_btree_segment(fs, PAGE_SIZE, lastPage(fs));
+					var csr_b1 = c.open_btree_segment(fs, PAGE_SIZE, root);
 					csr_b1.Seek ("b", SeekOp.SEEK_EQ);
 					Assert.True (csr_b1.IsValid ());
 					Assert.Equal ("2", csr_b1.Value ().UTF8StreamToString());
@@ -963,6 +971,7 @@ namespace lsm_tests
 		public void tombstone()
 		{
 			Action<combo> f = (combo c) => {
+                int root1;
 				{
 					var t1 = c.create_memory_segment();
 					t1.Insert ("a", "1");
@@ -975,10 +984,11 @@ namespace lsm_tests
 
 					using (var fs = new FileStream ("tombstone_1", FileMode.Create, FileAccess.ReadWrite)) {
 						IPages pageManager = new SimplePageManager(fs, PAGE_SIZE);
-						c.create_btree_segment(fs, pageManager, t1.OpenCursor ());
+						root1 = c.create_btree_segment(fs, pageManager, t1.OpenCursor ()).Item2;
 					}
 				}
 
+                int root2;
 				{
 					var t1 = c.create_memory_segment();
 					t1.Delete ("b");
@@ -990,14 +1000,14 @@ namespace lsm_tests
 
 					using (var fs = new FileStream ("tombstone_2", FileMode.Create, FileAccess.ReadWrite)) {
 						IPages pageManager = new SimplePageManager(fs, PAGE_SIZE);
-						c.create_btree_segment(fs, pageManager, t1.OpenCursor ());
+						root2 = c.create_btree_segment(fs, pageManager, t1.OpenCursor ()).Item2;
 					}
 				}
 
 				using (var fs1 = new FileStream ("tombstone_1", FileMode.Open, FileAccess.Read)) {
-					var csr1 = c.open_btree_segment(fs1, PAGE_SIZE, lastPage(fs1));
+					var csr1 = c.open_btree_segment(fs1, PAGE_SIZE, root1);
 					using (var fs2 = new FileStream ("tombstone_2", FileMode.Open, FileAccess.Read)) {
-						var csr2 = c.open_btree_segment(fs2, PAGE_SIZE, lastPage(fs2));
+						var csr2 = c.open_btree_segment(fs2, PAGE_SIZE, root2);
 
 						{
 							var mc = c.create_multicursor(csr2, csr1);

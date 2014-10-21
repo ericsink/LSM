@@ -219,7 +219,7 @@ namespace lsm_tests
 			return Guid.NewGuid();
 		}
 
-		int IPages.WriteBlockList(Guid token, int lastPage)
+		int IPages.ReserveBlockList(Guid token, int lastPage)
         {
             return 0; // no need
         }
@@ -241,6 +241,7 @@ namespace lsm_tests
 		private readonly Stream fs;
 		int cur = 1;
 		private readonly Dictionary<Guid,List<Tuple<int,int>>> segments;
+		private readonly Dictionary<Guid,Tuple<int,int>> reservations;
 		int pageSize;
 
 		// TODO could be a param
@@ -256,6 +257,7 @@ namespace lsm_tests
 			fs = _fs;
 			pageSize = _pageSize;
 			segments = new Dictionary<Guid, List<Tuple<int, int>>> ();
+            reservations = new Dictionary<Guid, Tuple<int,int>>();
 		}
 
         int IPages.PageSize
@@ -274,35 +276,81 @@ namespace lsm_tests
 			}
 		}
 
-		int IPages.WriteBlockList(Guid token, int lastPage)
+		int IPages.ReserveBlockList(Guid token, int lastPage)
         {
+            // TODO
             // if lastPage is < the range we gave it, then this segment
             // is giving pages back.
             // if cur has not changed in the meantime, 
             // we could just adjust cur?  otherwise we need to add
             // the unused pages to a free list.
 
-			var blocks = segments [token];
-			//Console.WriteLine ("{0} is done", token);
+			var blocks = segments [token]; // TODO lock to get the list?
+            var bytesAvailableOnFirstPage = pageSize - (1 + 1 + 16 + sizeof(int));
+            var fitOnFirstPage = bytesAvailableOnFirstPage / (2 * sizeof(int));
+            var remainingAfterFirstPage = (blocks.Count > fitOnFirstPage) ? (blocks.Count - fitOnFirstPage) : 0;
+            var fitOnOtherPage = pageSize / (2 * sizeof(int));
+			var otherPages = remainingAfterFirstPage / fitOnOtherPage + ( ((remainingAfterFirstPage % fitOnOtherPage) != 0) ? 1 : 0 );
 
-            return 0; //TODO
+            var range = GetRange(1 + otherPages);
+
+            reservations[token] = range;
+
+			return range.Item1;
         }
 
 		void IPages.End(Guid token)
 		{
-            // TODO store the segment somewhere in a complete list of
-            // all segments.
+            var range = reservations[token];
+			var firstPage = range.Item1;
+            var pb = new Zumero.LSM.cs.PageBuilder(pageSize);
+			var blocks = segments [token]; // TODO lock to get the list?
+            var bytesAvailableOnFirstPage = pageSize - (1 + 1 + 16 + sizeof(int));
+            var fitOnFirstPage = bytesAvailableOnFirstPage / (2 * sizeof(int));
+            var fitOnOtherPage = pageSize / (2 * sizeof(int));
+
+			Zumero.LSM.cs.utils.SeekPage (fs, pageSize, firstPage);
+			int sofar = 0;
+			for (int i = firstPage; i <= range.Item2; i++) {
+				pb.Reset ();
+				if (firstPage == i) {
+					pb.PutByte (0); // TODO page type
+					pb.PutByte (0); // TODO page flags
+					pb.PutArray (token.ToByteArray ());
+					pb.PutInt32 (blocks.Count);
+				}
+				int fitOnThisPage = (firstPage == i) ? fitOnFirstPage : fitOnOtherPage;
+				int remaining = blocks.Count - sofar;
+				int num = Math.Min (fitOnThisPage, remaining);
+				for (int q = 0; q < num; q++) {
+					var b = blocks[q + sofar];
+					pb.PutInt32(b.Item1);
+					pb.PutInt32 (b.Item2);
+				}
+				sofar += num;
+                pb.Flush(fs);
+			}
+            // TODO get rid of the reservation
 		}
+
+		private Tuple<int,int> GetRange(int num)
+        {
+			lock (this) {
+				var t = new Tuple<int,int> (cur, cur + num - 1);
+				cur = cur + num + WASTE_PAGES_AFTER_EACH_BLOCK;
+				return t;
+			}
+        }
 
 		Tuple<int,int> IPages.GetRange(Guid token)
 		{
+            var t = GetRange(PAGES_PER_BLOCK);
+
 			lock (this) {
-				var t = new Tuple<int,int> (cur, cur + PAGES_PER_BLOCK - 1);
-				cur = cur + PAGES_PER_BLOCK + WASTE_PAGES_AFTER_EACH_BLOCK;
 				segments [token].Add (t);
-				//Console.WriteLine ("{0} gets {1} --> {2}", token, t.Item1, t.Item2);
-				return t;
 			}
+
+            return t;
 		}
 
 	}
