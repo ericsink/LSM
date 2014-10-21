@@ -197,7 +197,7 @@ namespace lsm_tests
 			return new Dictionary<byte[], Stream> ();
 		}
 
-		public int create_btree_segment(Stream fs,IPages pageManager,ICursor csr)
+		public Tuple<Guid,int> create_btree_segment(Stream fs,IPages pageManager,ICursor csr)
 		{
 			return create_btree_segment (fs, pageManager, csr.ToSequenceOfKeyValuePairs ());
 		}
@@ -207,7 +207,7 @@ namespace lsm_tests
 			return -1; // TODO
 		}
 
-		public abstract int create_btree_segment(Stream fs,IPages pageManager,IEnumerable<KeyValuePair<byte[],Stream>> source);
+		public abstract Tuple<Guid,int> create_btree_segment(Stream fs,IPages pageManager,IEnumerable<KeyValuePair<byte[],Stream>> source);
 		public abstract ICursor open_btree_segment(Stream fs,int pageSize,int rootPage);
 		public abstract ICursor create_living_cursor(ICursor csr);
 		public abstract ICursor create_multicursor(params ICursor[] a);
@@ -225,7 +225,7 @@ namespace lsm_tests
 
     public class combo_cs : combo
     {
-		public override int create_btree_segment(Stream fs,IPages pageManager,IEnumerable<KeyValuePair<byte[],Stream>> source)
+		public override Tuple<Guid,int> create_btree_segment(Stream fs,IPages pageManager,IEnumerable<KeyValuePair<byte[],Stream>> source)
         {
 			return Zumero.LSM.cs.BTreeSegment.Create(fs, pageManager, source);
         }
@@ -249,7 +249,7 @@ namespace lsm_tests
 
     public class combo_fs : combo
     {
-		public override int create_btree_segment(Stream fs,IPages pageManager,IEnumerable<KeyValuePair<byte[],Stream>> source)
+		public override Tuple<Guid,int> create_btree_segment(Stream fs,IPages pageManager,IEnumerable<KeyValuePair<byte[],Stream>> source)
         {
 			return Zumero.LSM.fs.BTreeSegment.Create(fs, pageManager, source);
         }
@@ -273,7 +273,7 @@ namespace lsm_tests
 
     public class combo_cs_fs : combo
     {
-		public override int create_btree_segment(Stream fs,IPages pageManager,IEnumerable<KeyValuePair<byte[],Stream>> source)
+		public override Tuple<Guid,int> create_btree_segment(Stream fs,IPages pageManager,IEnumerable<KeyValuePair<byte[],Stream>> source)
         {
 			return Zumero.LSM.cs.BTreeSegment.Create(fs, pageManager, source);
         }
@@ -297,7 +297,7 @@ namespace lsm_tests
 
     public class combo_fs_cs : combo
     {
-		public override int create_btree_segment(Stream fs,IPages pageManager,IEnumerable<KeyValuePair<byte[],Stream>> source)
+		public override Tuple<Guid,int> create_btree_segment(Stream fs,IPages pageManager,IEnumerable<KeyValuePair<byte[],Stream>> source)
         {
 			return Zumero.LSM.fs.BTreeSegment.Create(fs, pageManager, source);
         }

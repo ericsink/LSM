@@ -142,6 +142,11 @@ type private PageBuilder(pgsz:int) =
         buf.[at+2] <- byte (v >>>  8)
         buf.[at+3] <- byte (v >>>  0)
 
+    member this.SetGuid(g:Guid) = 
+        if cur > buf.Length - 24 then failwith "SetGuid is squashing data"
+        let ba = g.ToByteArray() // assert ba.Length is 16
+        System.Array.Copy (ba, 0, buf, buf.Length-24, ba.Length)
+
     member this.SetSecondToLastInt32(page:int) = 
         if cur > buf.Length - 8 then failwith "SetSecondToLastInt32 is squashing data"
         this.PutInt32At(buf.Length - 2*sizeof<int32>, page)
@@ -637,7 +642,7 @@ module bt =
             boundaryPage:int; 
         }
 
-    let CreateFromSortedSequenceOfKeyValuePairs(fs:Stream, pageManager:IPages, source:seq<kvp>) :int32 = 
+    let CreateFromSortedSequenceOfKeyValuePairs(fs:Stream, pageManager:IPages, source:seq<kvp>) = 
         let pageSize = pageManager.PageSize
         let token = pageManager.Begin()
         let pbOverflow = new PageBuilder(pageSize)
@@ -934,7 +939,7 @@ module bt =
 
             let calcAvailable currentSize couldBeRoot =
                 let basicSize = pageSize - currentSize
-                let allowanceForRootNode = if couldBeRoot then sizeof<int32> else 0 // first/last Leaf, lastInt32 already
+                let allowanceForRootNode = if couldBeRoot then (16 + sizeof<int32>) else 0 // guid, first/last Leaf, lastInt32 already
                 basicSize - allowanceForRootNode
 
             let buildParentPage (items:(int32*byte[]) list) lastPtr (overflows:Map<byte[],int32>) =
@@ -967,7 +972,7 @@ module bt =
                 let (nextN,nextB) =
                     if isRootNode then
                         pb.SetPageFlag(FLAG_ROOT_NODE)
-                        // assert pb.Position <= (pageSize - 8)
+                        pb.SetGuid(token);
                         pb.SetSecondToLastInt32(firstLeaf)
                         pb.SetLastInt32(lastLeaf)
                         (thisPageNumber+1,boundaryPageNumber)
@@ -1045,7 +1050,7 @@ module bt =
         let rootPage = writeOneLayerOfParentPages pageAfterLeaves boundaryAfterLeaves leaves
 
         pageManager.End(token, rootPage)
-        rootPage
+        (token,rootPage)
 
     type private myOverflowReadStream(_fs:Stream, pageSize:int, _firstPage:int, _len:int) =
         inherit Stream()
@@ -1498,11 +1503,11 @@ module bt =
 [<AbstractClass;Sealed>]
 type BTreeSegment =
     // the caller of this method is promising that the sequence is sorted
-    static member Create(fs:Stream, pageManager:IPages, source:seq<kvp>) :int32 = 
+    static member Create(fs:Stream, pageManager:IPages, source:seq<kvp>) = 
         bt.CreateFromSortedSequenceOfKeyValuePairs (fs, pageManager, source)
 
     // the caller of this method is promising that the sequence is sorted
-    static member Create(fs:Stream, pageManager:IPages, pairs:seq<byte[]*Stream>) :int32 = 
+    static member Create(fs:Stream, pageManager:IPages, pairs:seq<byte[]*Stream>) = 
         let source = seq { for t in pairs do yield new kvp(fst t,snd t) done }
         bt.CreateFromSortedSequenceOfKeyValuePairs (fs, pageManager, source)
 

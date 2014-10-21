@@ -91,7 +91,7 @@ namespace lsm_tests
 						for (int q=0; q<50; q++) {
 							t1.Insert((q*10+i).ToString("0000"), (i+q).ToString());
 						}
-						rootPages[i] = c.create_btree_segment (fs, pageManager, t1.OpenCursor ());
+						rootPages[i] = c.create_btree_segment (fs, pageManager, t1.OpenCursor ()).Item2;
 						Console.WriteLine("rootPage[{0}] = {1}", i, rootPages[i]);
 					}
 
@@ -110,7 +110,7 @@ namespace lsm_tests
 					}
 
 					var mc = c.create_multicursor(csrs);
-					s5 = c.create_btree_segment (fs, pageManager, mc);
+					s5 = c.create_btree_segment (fs, pageManager, mc).Item2;
 					csrs = null;
 
 					for (int i=0; i<10; i++) {

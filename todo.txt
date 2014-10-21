@@ -1,4 +1,8 @@
 
+shorter keys in the parent nodes?
+
+prefix key compression?
+
 the test suite is using the old memory_segment api
 
 need C# versions of the other Create overloads?
@@ -78,8 +82,6 @@ way too many for/while loops in the fs code
 checksums for data integrity
 
 still concerned about how much we are copying byte[] for keys
-
-prefix key compression?
 
 what are the embedded pointers in the runs in SQLite4 LSM?
 

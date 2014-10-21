@@ -123,7 +123,7 @@ namespace lsm_tests
 						for (int q=0; q<50; q++) {
 							t1.Insert((q*10+i).ToString("0000"), (i+q).ToString());
 						}
-						rootPages[i] = c.create_btree_segment (fs, pageManager, t1.OpenCursor ());
+						rootPages[i] = c.create_btree_segment (fs, pageManager, t1.OpenCursor ()).Item2;
 					}
 
 					fs.Seek(0, SeekOrigin.Begin);
@@ -137,7 +137,7 @@ namespace lsm_tests
 					}
 
 					var mc = c.create_multicursor(csrs);
-					s5 = c.create_btree_segment (fs, pageManager, mc);
+					s5 = c.create_btree_segment (fs, pageManager, mc).Item2;
 					csrs = null;
 
 					for (int i=0; i<10; i++) {
@@ -178,7 +178,7 @@ namespace lsm_tests
 						for (int i=0; i<500; i++) {
 							t1.Insert((i*2).ToString(), i.ToString());
 						}
-						s1 = c.create_btree_segment (fs, pageManager, t1.OpenCursor ());
+						s1 = c.create_btree_segment (fs, pageManager, t1.OpenCursor ()).Item2;
 					}
 
 					{
@@ -186,7 +186,7 @@ namespace lsm_tests
 						for (int i=0; i<500; i++) {
 							t1.Insert((i*3).ToString(), i.ToString());
 						}
-						s2 = c.create_btree_segment (fs, pageManager, t1.OpenCursor ());
+						s2 = c.create_btree_segment (fs, pageManager, t1.OpenCursor ()).Item2;
 					}
 
 					{
@@ -194,7 +194,7 @@ namespace lsm_tests
 						for (int i=0; i<500; i++) {
 							t1.Insert((i*5).ToString(), i.ToString());
 						}
-						s3 = c.create_btree_segment (fs, pageManager, t1.OpenCursor ());
+						s3 = c.create_btree_segment (fs, pageManager, t1.OpenCursor ()).Item2;
 					}
 
 					{
@@ -202,7 +202,7 @@ namespace lsm_tests
 						for (int i=0; i<500; i++) {
 							t1.Insert((i*7).ToString(), i.ToString());
 						}
-						s4 = c.create_btree_segment (fs, pageManager, t1.OpenCursor ());
+						s4 = c.create_btree_segment (fs, pageManager, t1.OpenCursor ()).Item2;
 					}
 				}
 
@@ -215,7 +215,7 @@ namespace lsm_tests
 						using (var fs2 = openFile("one_file")) {
 							var csr2 = c.open_btree_segment (fs2, PAGE_SIZE, s2);
 							var mc = c.create_multicursor(csr1, csr2);
-							s1_2 = c.create_btree_segment (fs, pageManager, mc);
+							s1_2 = c.create_btree_segment (fs, pageManager, mc).Item2;
 						}
 					}
 
@@ -224,7 +224,7 @@ namespace lsm_tests
 						using (var fs4 = openFile("one_file")) {
 							var csr4 = c.open_btree_segment (fs4, PAGE_SIZE, s4);
 							var mc = c.create_multicursor(csr3, csr4);
-							s3_4 = c.create_btree_segment (fs, pageManager, mc);
+							s3_4 = c.create_btree_segment (fs, pageManager, mc).Item2;
 						}
 					}
 				}
@@ -237,7 +237,7 @@ namespace lsm_tests
 						using (var fs3_4 = openFile("one_file")) {
 							var csr3_4 = c.open_btree_segment (fs3_4, PAGE_SIZE, s3_4);
 							var mc = c.create_multicursor(csr1_2, csr3_4);
-							s5 = c.create_btree_segment (fs, pageManager, mc);
+							s5 = c.create_btree_segment (fs, pageManager, mc).Item2;
 						}
 					}
 
@@ -420,7 +420,7 @@ namespace lsm_tests
 
 				using (var fs = new FileStream ("blobs", FileMode.Create)) {
 					IPages pageManager = new SimplePageManager(fs, PAGE_SIZE);
-					int pg = c.create_btree_segment (fs, pageManager, t1.OpenCursor ());
+					int pg = c.create_btree_segment (fs, pageManager, t1.OpenCursor ()).Item2;
 
 					ICursor t1csr = t1.OpenCursor();
 					ICursor btcsr = c.open_btree_segment(fs, PAGE_SIZE, pg);
