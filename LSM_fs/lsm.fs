@@ -829,7 +829,7 @@ module bt =
                 if nextN <> (thisPageNumber+1) then utils.SeekPage(fs, pageSize, nextN)
                 {keys=[]; firstLeaf=firstLeaf; nextPage=nextN; boundaryPage=nextB; leaves=(thisPageNumber,List.head st.keys)::st.leaves}
 
-            let folder st (pair:kvp) = 
+            let foldLeaf st (pair:kvp) = 
                 let k = pair.Key
                 let v = pair.Value
                 // assert k <> null
@@ -904,13 +904,13 @@ module bt =
                                 putOverflow v n b
                     {st with nextPage=newN;boundaryPage=newB;keys=k::st.keys}
                         
-                // this is the body of the folder function
+                // this is the body of the foldLeaf function
                 maybeWriteLeaf st |> initLeaf |> addPairToLeaf
 
             // this is the body of writeLeaves
             //let source = seq { csr.First(); while csr.IsValid() do yield (csr.Key(), csr.Value()); csr.Next(); done }
             let initialState = {firstLeaf=0;keys=[];leaves=[];nextPage=leavesFirstPage;boundaryPage=leavesBoundaryPage}
-            let middleState = Seq.fold folder initialState source
+            let middleState = Seq.fold foldLeaf initialState source
             let finalState = 
                 if not (List.isEmpty middleState.keys) then
                     let isRootNode = List.isEmpty middleState.leaves
@@ -993,7 +993,7 @@ module bt =
                 if nextN <> (thisPageNumber+1) then utils.SeekPage(fs, pageSize, nextN)
                 {sofar=0; items=[]; nextPage=nextN; boundaryPage=nextB; overflows=Map.empty; nextGeneration=(thisPageNumber,k)::nextGeneration}
 
-            let folder pair st =
+            let foldParent pair st =
                 let (pagenum,k:byte[]) = pair
 
                 let neededEitherWay = 1 + Varint.SpaceNeededFor (int64 k.Length) + Varint.SpaceNeededFor (int64 pagenum)
@@ -1032,14 +1032,14 @@ module bt =
                         {stateWithK with sofar=sofar + neededForOverflow; nextPage=fst kRange; boundaryPage=snd kRange; overflows=overflows.Add(k,keyOverflowFirstPage)}
 
 
-                // this is the body of the folder function
+                // this is the body of the foldParent function
                 maybeWriteParent st |> initParent |> addKeyToParent
 
             // this is the body of writeParentNodes
             // children is in reverse order.  so List.head children is actually the very last child.
             let lastChild = List.head children
             let initialState = {nextGeneration=[];sofar=0;items=[];nextPage=startingPageNumber;boundaryPage=startingBoundaryPageNumber;overflows=Map.empty}
-            let middleState = List.foldBack folder (List.tail children) initialState 
+            let middleState = List.foldBack foldParent (List.tail children) initialState 
             let isRootNode = (List.isEmpty middleState.nextGeneration)
             let finalState = writeParentPage middleState lastChild isRootNode
             let {nextPage=n;boundaryPage=b;nextGeneration=ng} = finalState
