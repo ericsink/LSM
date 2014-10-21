@@ -24,6 +24,30 @@ namespace lsm_tests
 {
 #if not
 
+    // format of the first page:
+    //
+    //     magic number
+    //     version
+    //     flags
+    //     page size
+    //
+    //     segment list
+    //
+    //     what else?
+    //
+    // might be a bad idea to waste a whole page on a segment list.
+    // what if a page is 16K?
+    //
+    // same goes for the block list that accompanies a btree.
+    // what if the root page has 15K left and the block list is
+    // only 50 bytes?  kinda silly.
+    //
+    // putting something in a page by itself might seem neater
+    // and easier to understand, but for large page sizes, it
+    // will be very wasteful.
+    //
+    // pages need to be a full as possible.
+    //
     // first page is the segment list.  if it gets full, then you
     // have to merge two segments to commit a new one.  list is
     // 20 bytes per segment (guid + pageNum).
@@ -51,6 +75,9 @@ namespace lsm_tests
     // maybe the list of all blocks in a segment should be written
     // by the segment itself.  then a segment could just be a page
     // number.
+    //
+    // should we allow a database file to contain more than one
+    // keyspace?  each keyspace is a segment list.
     //
     // a segment consists of
     //   its root page
@@ -219,12 +246,7 @@ namespace lsm_tests
 			return Guid.NewGuid();
 		}
 
-		int IPages.ReserveBlockList(Guid token, int lastPage)
-        {
-            return 0; // no need
-        }
-
-		void IPages.End(Guid token)
+		void IPages.End(Guid token, int lastPage)
 		{
             // TODO?
 		}
@@ -241,7 +263,6 @@ namespace lsm_tests
 		private readonly Stream fs;
 		int cur = 1;
 		private readonly Dictionary<Guid,List<Tuple<int,int>>> segments;
-		private readonly Dictionary<Guid,Tuple<int,int>> reservations;
 		int pageSize;
 
 		// TODO could be a param
@@ -257,7 +278,6 @@ namespace lsm_tests
 			fs = _fs;
 			pageSize = _pageSize;
 			segments = new Dictionary<Guid, List<Tuple<int, int>>> ();
-            reservations = new Dictionary<Guid, Tuple<int,int>>();
 		}
 
         int IPages.PageSize
@@ -276,8 +296,8 @@ namespace lsm_tests
 			}
 		}
 
-		int IPages.ReserveBlockList(Guid token, int lastPage)
-        {
+		void IPages.End(Guid token, int lastPage)
+		{
             // TODO
             // if lastPage is < the range we gave it, then this segment
             // is giving pages back.
@@ -285,51 +305,6 @@ namespace lsm_tests
             // we could just adjust cur?  otherwise we need to add
             // the unused pages to a free list.
 
-			var blocks = segments [token]; // TODO lock to get the list?
-            var bytesAvailableOnFirstPage = pageSize - (1 + 1 + 16 + sizeof(int));
-            var fitOnFirstPage = bytesAvailableOnFirstPage / (2 * sizeof(int));
-            var remainingAfterFirstPage = (blocks.Count > fitOnFirstPage) ? (blocks.Count - fitOnFirstPage) : 0;
-            var fitOnOtherPage = pageSize / (2 * sizeof(int));
-			var otherPages = remainingAfterFirstPage / fitOnOtherPage + ( ((remainingAfterFirstPage % fitOnOtherPage) != 0) ? 1 : 0 );
-
-            var range = GetRange(1 + otherPages);
-
-            reservations[token] = range;
-
-			return range.Item1;
-        }
-
-		void IPages.End(Guid token)
-		{
-            var range = reservations[token];
-			var firstPage = range.Item1;
-            var pb = new Zumero.LSM.cs.PageBuilder(pageSize);
-			var blocks = segments [token]; // TODO lock to get the list?
-            var bytesAvailableOnFirstPage = pageSize - (1 + 1 + 16 + sizeof(int));
-            var fitOnFirstPage = bytesAvailableOnFirstPage / (2 * sizeof(int));
-            var fitOnOtherPage = pageSize / (2 * sizeof(int));
-
-			Zumero.LSM.cs.utils.SeekPage (fs, pageSize, firstPage);
-			int sofar = 0;
-			for (int i = firstPage; i <= range.Item2; i++) {
-				pb.Reset ();
-				if (firstPage == i) {
-					pb.PutByte (0); // TODO page type
-					pb.PutByte (0); // TODO page flags
-					pb.PutArray (token.ToByteArray ());
-					pb.PutInt32 (blocks.Count);
-				}
-				int fitOnThisPage = (firstPage == i) ? fitOnFirstPage : fitOnOtherPage;
-				int remaining = blocks.Count - sofar;
-				int num = Math.Min (fitOnThisPage, remaining);
-				for (int q = 0; q < num; q++) {
-					var b = blocks[q + sofar];
-					pb.PutInt32(b.Item1);
-					pb.PutInt32 (b.Item2);
-				}
-				sofar += num;
-                pb.Write(fs);
-			}
             // TODO get rid of the reservation
 		}
 

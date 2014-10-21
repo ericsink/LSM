@@ -25,8 +25,7 @@ namespace Zumero.LSM
 		int PageSize { get; }
         Guid Begin();
         Tuple<int,int> GetRange(Guid token);
-        int ReserveBlockList(Guid token, int rootPage);
-		void End(Guid token);
+		void End(Guid token, int lastPage);
     }
 
 	public enum SeekOp

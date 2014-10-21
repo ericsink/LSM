@@ -142,10 +142,6 @@ type private PageBuilder(pgsz:int) =
         buf.[at+2] <- byte (v >>>  8)
         buf.[at+3] <- byte (v >>>  0)
 
-    member this.SetThirdToLastInt32(page:int) = 
-        if cur > buf.Length - 12 then failwith "SetThirdToLastInt32 is squashing data"
-        this.PutInt32At(buf.Length - 3*sizeof<int32>, page)
-
     member this.SetSecondToLastInt32(page:int) = 
         if cur > buf.Length - 8 then failwith "SetSecondToLastInt32 is squashing data"
         this.PutInt32At(buf.Length - 2*sizeof<int32>, page)
@@ -272,7 +268,6 @@ type private PageReader(pgsz:int) =
         int r
 
     member this.CheckPageFlag(f) = 0uy <> (buf.[1] &&& f)
-    member this.GetThirdToLastInt32() = this.GetInt32At(buf.Length - 3*sizeof<int32>)
     member this.GetSecondToLastInt32() = this.GetInt32At(buf.Length - 2*sizeof<int32>)
     member this.GetLastInt32() = this.GetInt32At(buf.Length - sizeof<int32>)
 
@@ -814,8 +809,6 @@ module bt =
                 let firstLeaf = if List.isEmpty st.leaves then thisPageNumber else st.firstLeaf
                 let (nextN,nextB) = 
                     if isRootPage then
-                        let blockListPage = pageManager.ReserveBlockList(token, thisPageNumber)
-                        pb.SetLastInt32(blockListPage)
                         (thisPageNumber + 1, st.boundaryPage)
                     else if thisPageNumber = st.boundaryPage then
                         pb.SetPageFlag FLAG_BOUNDARY_NODE
@@ -943,7 +936,7 @@ module bt =
 
             let calcAvailable currentSize couldBeRoot =
                 let basicSize = pageSize - currentSize
-                let allowanceForRootNode = if couldBeRoot then (sizeof<int32> + sizeof<int32>) else 0 // blocklist, first/last Leaf, lastInt32 already
+                let allowanceForRootNode = if couldBeRoot then (sizeof<int32>) else 0 // first/last Leaf, lastInt32 already
                 basicSize - allowanceForRootNode
 
             let buildParentPage (items:(int32*byte[]) list) lastPtr (overflows:Map<byte[],int32>) =
@@ -976,10 +969,8 @@ module bt =
                 let (nextN,nextB) =
                     if isRootNode then
                         pb.SetPageFlag(FLAG_ROOT_NODE)
-                        let blockListPage = pageManager.ReserveBlockList(token, thisPageNumber)
-                        pb.SetThirdToLastInt32(firstLeaf)
-                        pb.SetSecondToLastInt32(lastLeaf)
-                        pb.SetLastInt32(blockListPage)
+                        pb.SetSecondToLastInt32(firstLeaf)
+                        pb.SetLastInt32(lastLeaf)
                         (thisPageNumber+1,boundaryPageNumber)
                     else
                         if (nextPageNumber = boundaryPageNumber) then
@@ -1054,7 +1045,7 @@ module bt =
 
         let rootPage = writeOneLayerOfParentPages pageAfterLeaves boundaryAfterLeaves leaves
 
-        pageManager.End(token)
+        pageManager.End(token, rootPage)
         (token,rootPage)
 
     type private myOverflowReadStream(_fs:Stream, pageSize:int, _firstPage:int, _len:int) =
@@ -1242,9 +1233,8 @@ module bt =
                 (rootPage, rootPage)
             else if pr.PageType = PARENT_NODE then
                 if not (pr.CheckPageFlag(FLAG_ROOT_NODE)) then failwith "root page lacks flag"
-                let first = pr.GetThirdToLastInt32()
-                let last = pr.GetSecondToLastInt32()
-                // lastInt32 is the ptr to the block list
+                let first = pr.GetSecondToLastInt32()
+                let last = pr.GetLastInt32()
                 (first, last)
             else failwith "root page has invalid page type"
               

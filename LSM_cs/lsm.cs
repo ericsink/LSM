@@ -222,11 +222,6 @@ namespace Zumero.LSM.cs
             return 0 != (buf[1] & f);
         }
 
-        public int GetThirdToLastInt32()
-        {
-            return GetInt32At(buf.Length - 12);
-        }
-
         public int GetSecondToLastInt32()
         {
             return GetInt32At(buf.Length - 8);
@@ -391,14 +386,6 @@ namespace Zumero.LSM.cs
         public void SetPageFlag(byte f)
         {
             buf[1] |= f;
-        }
-
-        public void SetThirdToLastInt32(int page)
-        {
-            if (cur > buf.Length - 12) {
-				throw new Exception();
-            }
-            PutInt32At(buf.Length - 12, page);
         }
 
         public void SetSecondToLastInt32(int page)
@@ -1154,8 +1141,6 @@ namespace Zumero.LSM.cs
 			int n = (pageSize - currentSize - sizeof(int)); // for the lastInt32
 			if (couldBeRoot)
 			{
-                // make space for the ptr to the block list page
-                n -= sizeof(int);
 				// make space for the firstLeaf and lastLeaf fields (lastInt32 already there)
 				n -= sizeof(int);
 			}
@@ -1224,10 +1209,8 @@ namespace Zumero.LSM.cs
 
 						if (isRootNode) {
                             pb.SetPageFlag(FLAG_ROOT_NODE);
-                            var blockListPage = pageManager.ReserveBlockList(token, thisPageNumber);
-                            pb.SetThirdToLastInt32(firstLeaf);
-                            pb.SetSecondToLastInt32(lastLeaf);
-                            pb.SetLastInt32(blockListPage);
+                            pb.SetSecondToLastInt32(firstLeaf);
+                            pb.SetLastInt32(lastLeaf);
                         } else {
 							if (isBoundary) {
                                 pb.SetPageFlag(FLAG_BOUNDARY_NODE);
@@ -1465,8 +1448,6 @@ namespace Zumero.LSM.cs
 				if (0 == nodelist.Count) {
 					// this is the last page.  the only page.  the root page.
 					// even though it's a leaf.
-                    var blockListPage = pageManager.ReserveBlockList(token, thisPageNumber);
-                    pb.SetLastInt32(blockListPage);
 				} else {
 					if (thisPageNumber == boundaryPageNumber) {
                         pb.SetPageFlag(FLAG_BOUNDARY_NODE);
@@ -1507,11 +1488,11 @@ namespace Zumero.LSM.cs
 
 				// assert nodelist.Count == 1
 
-				pageManager.End (token);
+				pageManager.End (token, nodelist [0].PageNumber);
 
 				return new Tuple<Guid,int>(token, nodelist [0].PageNumber);
 			} else {
-				pageManager.End (token);
+				pageManager.End (token, 0);
 
 				return new Tuple<Guid,int>(token, 0);
 			}
@@ -1790,9 +1771,8 @@ namespace Zumero.LSM.cs
                     if (!pr.CheckPageFlag(FLAG_ROOT_NODE)) {
 						throw new Exception ();
 					}
-					firstLeaf = pr.GetThirdToLastInt32 ();
-					lastLeaf = pr.GetSecondToLastInt32 ();
-                    // lastInt32 is the ptr to the block list
+					firstLeaf = pr.GetSecondToLastInt32 ();
+					lastLeaf = pr.GetLastInt32 ();
 				}
 				else {
 					throw new Exception();

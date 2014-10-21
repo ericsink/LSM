@@ -1,7 +1,7 @@
 
-shorter keys in the parent nodes?
+db class should accept delegates for other implementations
 
-prefix key compression?
+combo should maybe have a thing that gets a simple page mgr
 
 the test suite is using the old memory_segment api
 
@@ -121,5 +121,12 @@ we can't do calculations on whether a value will fit if
 we don't know its length.  such a value automatically
 becomes an overflow.  after we write the overflow, then
 we know its length.
+
+--------
+
+
+shorter keys in the parent nodes?
+
+prefix key compression?
 
 
