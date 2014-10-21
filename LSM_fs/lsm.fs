@@ -69,7 +69,7 @@ type IWrite =
 
 module ByteComparer = 
     // this code is very non-F#-ish.  but it's much faster than the
-    // idiomatic version which precedded it.
+    // idiomatic version which preceded it.
 
     let Compare (x:byte[]) (y:byte[]) =
         let xlen = x.Length
@@ -971,7 +971,7 @@ module bt =
                 let {items=items; nextPage=nextPageNumber; boundaryPage=boundaryPageNumber; overflows=overflows; nextGeneration=nextGeneration} = st
                 // assert st.sofar > 0
                 let thisPageNumber = nextPageNumber
-                // TODO needing to reverse the items list is rather unfortunate
+                // TODO needing to reverse the items list here is rather unfortunate
                 buildParentPage (List.rev items) pagenum overflows
                 let (nextN,nextB) =
                     if isRootNode then
