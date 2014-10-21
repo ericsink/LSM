@@ -346,7 +346,7 @@ namespace Zumero.LSM.cs
 			cur = 0;
 		}
 
-		public void Flush(Stream s)
+		public void Write(Stream s)
 		{
 			s.Write (buf, 0, buf.Length);
 		}
@@ -1023,7 +1023,7 @@ namespace Zumero.LSM.cs
 				int num = Math.Min (pb.PageSize, (int) (len - sofar));
 				pb.PutStream (ba, num);
 				sofar += num;
-				pb.Flush (fs);
+				pb.Write (fs);
 			}
             return sofar;
         }
@@ -1070,7 +1070,7 @@ namespace Zumero.LSM.cs
                     nextPageNumber = newRange.Item1;
                     boundaryPageNumber = newRange.Item2;
                     pb.SetLastInt32(nextPageNumber);
-                    pb.Flush(fs);
+                    pb.Write(fs);
                     utils.SeekPage(fs, pb.PageSize, nextPageNumber);
                 }
                 else {
@@ -1079,7 +1079,7 @@ namespace Zumero.LSM.cs
                     if (sofar == len) {
                         // the first page is also the last one
 						pb.SetLastInt32 (0); // number of regular pages following
-                        pb.Flush(fs);
+                        pb.Write(fs);
                     }
                     else {
                         // assert sofar < len
@@ -1115,7 +1115,7 @@ namespace Zumero.LSM.cs
                         }
 
                         // now we can flush the first page
-                        pb.Flush(fs);
+                        pb.Write(fs);
 
                         // write out the regular pages.  these are full pages
                         // of data, with no header and no footer.  the last
@@ -1139,7 +1139,7 @@ namespace Zumero.LSM.cs
                             nextPageNumber = newRange.Item1;
                             boundaryPageNumber = newRange.Item2;
                             pb.SetLastInt32(nextPageNumber);
-                            pb.Flush(fs);
+                            pb.Write(fs);
                             utils.SeekPage(fs, pb.PageSize, nextPageNumber);
                         }
                     }
@@ -1240,7 +1240,7 @@ namespace Zumero.LSM.cs
 							}
 						}
 
-						pb.Flush (fs);
+						pb.Write (fs);
 
                         if (nextPageNumber != (thisPageNumber+1)) {
                             utils.SeekPage(fs, pb.PageSize, nextPageNumber);
@@ -1374,7 +1374,7 @@ namespace Zumero.LSM.cs
 						// now that we know how many pairs are in this page, we can write that out
 						pb.PutInt16At (OFFSET_COUNT_PAIRS, countPairs);
 
-						pb.Flush (fs);
+						pb.Write (fs);
 
                         if (nextPageNumber != (thisPageNumber+1)) {
                             utils.SeekPage(fs, pb.PageSize, nextPageNumber);
@@ -1482,7 +1482,7 @@ namespace Zumero.LSM.cs
 				// now that we know how many pairs are in this page, we can write that out
 				pb.PutInt16At (OFFSET_COUNT_PAIRS, countPairs);
 
-				pb.Flush (fs);
+				pb.Write (fs);
 
                 if (nextPageNumber != (thisPageNumber+1)) {
                     utils.SeekPage(fs, pb.PageSize, nextPageNumber);

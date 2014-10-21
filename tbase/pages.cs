@@ -328,7 +328,7 @@ namespace lsm_tests
 					pb.PutInt32 (b.Item2);
 				}
 				sofar += num;
-                pb.Flush(fs);
+                pb.Write(fs);
 			}
             // TODO get rid of the reservation
 		}

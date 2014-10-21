@@ -107,7 +107,7 @@ type private PageBuilder(pgsz:int) =
     let buf:byte[] = Array.zeroCreate pgsz
 
     member this.Reset() = cur <- 0
-    member this.Flush(s:Stream) = s.Write(buf, 0, buf.Length)
+    member this.Write(s:Stream) = s.Write(buf, 0, buf.Length)
     member this.PageSize = buf.Length
     member this.Position = cur
     member this.Available = buf.Length - cur
@@ -676,7 +676,7 @@ module bt =
                         // check for the partial page at the end
                         let num = Math.Min(pageSize, (len - sofar))
                         pbOverflow.PutStream(ba, num)
-                        pbOverflow.Flush(fs)
+                        pbOverflow.Write(fs)
                         fn (i+1) (sofar + num)
                     else
                         sofar
@@ -708,7 +708,7 @@ module bt =
                         pbOverflow.SetPageFlag(FLAG_BOUNDARY_NODE)
                         let (nextPage,boundaryPage) = pageManager.GetRange(token)
                         pbOverflow.SetLastInt32(nextPage)
-                        pbOverflow.Flush(fs)
+                        pbOverflow.Write(fs)
                         utils.SeekPage(fs, pageSize, nextPage)
                         writeOneBlock sofarAfterFirstPage nextPage boundaryPage
                     else 
@@ -717,7 +717,7 @@ module bt =
                         if sofarAfterFirstPage = len then
                             // the first page is also the last one
                             pbOverflow.SetLastInt32(0) // number of regular pages following
-                            pbOverflow.Flush(fs)
+                            pbOverflow.Write(fs)
                             (firstRegularPageNumber,boundaryPageNumber)
                         else
                             // assert sofar < len
@@ -755,7 +755,7 @@ module bt =
                                 pbOverflow.SetPageFlag(FLAG_ENDS_ON_BOUNDARY)
 
                             // now we can flush the first page
-                            pbOverflow.Flush(fs)
+                            pbOverflow.Write(fs)
 
                             // write out the regular pages.  these are full pages
                             // of data, with no header and no footer.  the last
@@ -778,7 +778,7 @@ module bt =
                                 let sofarAfterBoundaryPage = buildBoundaryPage sofarAfterRegularPages
                                 let (nextPage,boundaryPage) = pageManager.GetRange(token)
                                 pbOverflow.SetLastInt32(nextPage)
-                                pbOverflow.Flush(fs)
+                                pbOverflow.Write(fs)
                                 utils.SeekPage(fs, pageSize, nextPage)
                                 writeOneBlock sofarAfterBoundaryPage nextPage boundaryPage
                             else
@@ -824,7 +824,7 @@ module bt =
                         newRange
                     else
                         (thisPageNumber + 1, st.boundaryPage)
-                pb.Flush(fs)
+                pb.Write(fs)
                 pb.Reset()
                 if nextN <> (thisPageNumber+1) then utils.SeekPage(fs, pageSize, nextN)
                 {keys=[]; firstLeaf=firstLeaf; nextPage=nextN; boundaryPage=nextB; leaves=(thisPageNumber,List.head st.keys)::st.leaves}
@@ -848,7 +848,7 @@ module bt =
                 let neededForBothInline = neededForKeyInline + neededForValueInline
                 let neededForKeyInlineValueOverflow = neededForKeyInline + neededForValueOverflow
 
-                let maybeFlushLeaf st = 
+                let maybeWriteLeaf st = 
                     let available = pb.Available - sizeof<int32> // for the lastInt32
                     let fitBothInline = (available >= neededForBothInline)
                     let wouldFitBothInlineOnNextPage = ((pageSize - LEAF_PAGE_OVERHEAD) >= neededForBothInline)
@@ -905,7 +905,7 @@ module bt =
                     {st with nextPage=newN;boundaryPage=newB;keys=k::st.keys}
                         
                 // this is the body of the folder function
-                maybeFlushLeaf st |> initLeaf |> addPairToLeaf
+                maybeWriteLeaf st |> initLeaf |> addPairToLeaf
 
             // this is the body of writeLeaves
             //let source = seq { csr.First(); while csr.IsValid() do yield (csr.Key(), csr.Value()); csr.Next(); done }
@@ -989,7 +989,7 @@ module bt =
                             newRange
                         else
                             (thisPageNumber+1,boundaryPageNumber)
-                pb.Flush(fs)
+                pb.Write(fs)
                 if nextN <> (thisPageNumber+1) then utils.SeekPage(fs, pageSize, nextN)
                 {sofar=0; items=[]; nextPage=nextN; boundaryPage=nextB; overflows=Map.empty; nextGeneration=(thisPageNumber,k)::nextGeneration}
 
@@ -1001,7 +1001,7 @@ module bt =
                 let neededForOverflow = neededEitherWay + sizeof<int32>
                 let couldBeRoot = (List.isEmpty st.nextGeneration)
 
-                let maybeFlushParent st = 
+                let maybeWriteParent st = 
                     let available = calcAvailable (st.sofar) couldBeRoot
                     let fitsInline = (available >= neededForInline)
                     let wouldFitInlineOnNextPage = ((pageSize - PARENT_PAGE_OVERHEAD) >= neededForInline)
@@ -1033,7 +1033,7 @@ module bt =
 
 
                 // this is the body of the folder function
-                maybeFlushParent st |> initParent |> addKeyToParent
+                maybeWriteParent st |> initParent |> addKeyToParent
 
             // this is the body of writeParentNodes
             // children is in reverse order.  so List.head children is actually the very last child.
