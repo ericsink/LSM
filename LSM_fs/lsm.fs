@@ -811,7 +811,7 @@ module bt =
             let flushLeaf st isRootPage = 
                 pb.PutInt16At (OFFSET_COUNT_PAIRS, st.keys.Length)
                 let thisPageNumber = st.nextPage
-                let firstLeaf = if st.leaves.Length=0 then thisPageNumber else st.firstLeaf
+                let firstLeaf = if List.isEmpty st.leaves then thisPageNumber else st.firstLeaf
                 let (nextN,nextB) = 
                     if isRootPage then
                         let blockListPage = pageManager.ReserveBlockList(token, thisPageNumber)
@@ -856,7 +856,7 @@ module bt =
                     let neededForKeyOverflow = neededForKeyBase + neededForOverflowPageNumber
                     let neededForBothOverflow = neededForKeyOverflow + neededForValueOverflow
                     let fitBothOverflow = (available >= neededForBothOverflow)
-                    let flushThisPage = (st.keys.Length > 0) && (not fitBothInline) && (wouldFitBothInlineOnNextPage || ( (not fitKeyInlineValueOverflow) && (not fitBothOverflow) ) )
+                    let flushThisPage = (not (List.isEmpty st.keys)) && (not fitBothInline) && (wouldFitBothInlineOnNextPage || ( (not fitKeyInlineValueOverflow) && (not fitBothOverflow) ) )
 
                     if flushThisPage then
                         flushLeaf st false
@@ -912,8 +912,8 @@ module bt =
             let initialState = {firstLeaf=0;keys=[];leaves=[];nextPage=leavesFirstPage;boundaryPage=leavesBoundaryPage}
             let middleState = Seq.fold folder initialState source
             let finalState = 
-                if middleState.keys.Length > 0 then
-                    let isRootNode = middleState.leaves.Length=0
+                if not (List.isEmpty middleState.keys) then
+                    let isRootNode = List.isEmpty middleState.leaves
                     flushLeaf middleState isRootNode
                 else
                     middleState
@@ -999,7 +999,7 @@ module bt =
                 let neededEitherWay = 1 + Varint.SpaceNeededFor (int64 k.Length) + Varint.SpaceNeededFor (int64 pagenum)
                 let neededForInline = neededEitherWay + k.Length
                 let neededForOverflow = neededEitherWay + sizeof<int32>
-                let couldBeRoot = (st.nextGeneration.Length = 0)
+                let couldBeRoot = (List.isEmpty st.nextGeneration)
 
                 let maybeFlushParent st = 
                     let available = calcAvailable (st.sofar) couldBeRoot
@@ -1024,7 +1024,7 @@ module bt =
                 let addKeyToParent st = 
                     let {sofar=sofar; items=items; nextPage=nextPageNumber; boundaryPage=boundaryPageNumber; overflows=overflows} = st
                     let stateWithK = {st with items=pair :: items}
-                    if calcAvailable sofar (st.nextGeneration.Length = 0) >= neededForInline then
+                    if calcAvailable sofar (List.isEmpty st.nextGeneration) >= neededForInline then
                         {stateWithK with sofar=sofar + neededForInline}
                     else
                         let keyOverflowFirstPage = nextPageNumber
@@ -1040,7 +1040,7 @@ module bt =
             let lastChild = List.head children
             let initialState = {nextGeneration=[];sofar=0;items=[];nextPage=startingPageNumber;boundaryPage=startingBoundaryPageNumber;overflows=Map.empty}
             let middleState = List.foldBack folder (List.tail children) initialState 
-            let isRootNode = (middleState.nextGeneration.Length=0)
+            let isRootNode = (List.isEmpty middleState.nextGeneration)
             let finalState = flushParentPage middleState lastChild isRootNode
             let {nextPage=n;boundaryPage=b;nextGeneration=ng} = finalState
             (n,b,ng)
