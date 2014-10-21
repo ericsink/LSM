@@ -701,7 +701,7 @@ module bt =
                     (firstPageNumber, boundaryPageNumber)
                 else
                     let sofarAfterFirstPage = buildFirstPage sofarBeforeFirstPage
-                    // note that we haven't flushed this page yet.  we may have to fix
+                    // note that we haven't written this page yet.  we may have to fix
                     // a couple of things before it gets written out.
                     if firstPageNumber = boundaryPageNumber then
                         // the first page landed on a boundary
@@ -754,7 +754,7 @@ module bt =
                                 // next block.
                                 pbOverflow.SetPageFlag(FLAG_ENDS_ON_BOUNDARY)
 
-                            // now we can flush the first page
+                            // now we can write the first page
                             pbOverflow.Write(fs)
 
                             // write out the regular pages.  these are full pages
@@ -808,7 +808,7 @@ module bt =
             let LEAF_PAGE_OVERHEAD = 2 + 4 + 2 + 4
             let OFFSET_COUNT_PAIRS = 6
 
-            let flushLeaf st isRootPage = 
+            let writeLeaf st isRootPage = 
                 pb.PutInt16At (OFFSET_COUNT_PAIRS, st.keys.Length)
                 let thisPageNumber = st.nextPage
                 let firstLeaf = if List.isEmpty st.leaves then thisPageNumber else st.firstLeaf
@@ -856,10 +856,10 @@ module bt =
                     let neededForKeyOverflow = neededForKeyBase + neededForOverflowPageNumber
                     let neededForBothOverflow = neededForKeyOverflow + neededForValueOverflow
                     let fitBothOverflow = (available >= neededForBothOverflow)
-                    let flushThisPage = (not (List.isEmpty st.keys)) && (not fitBothInline) && (wouldFitBothInlineOnNextPage || ( (not fitKeyInlineValueOverflow) && (not fitBothOverflow) ) )
+                    let writeThisPage = (not (List.isEmpty st.keys)) && (not fitBothInline) && (wouldFitBothInlineOnNextPage || ( (not fitKeyInlineValueOverflow) && (not fitBothOverflow) ) )
 
-                    if flushThisPage then
-                        flushLeaf st false
+                    if writeThisPage then
+                        writeLeaf st false
                     else
                         st
 
@@ -914,7 +914,7 @@ module bt =
             let finalState = 
                 if not (List.isEmpty middleState.keys) then
                     let isRootNode = List.isEmpty middleState.leaves
-                    flushLeaf middleState isRootNode
+                    writeLeaf middleState isRootNode
                 else
                     middleState
             let {nextPage=n;boundaryPage=b;leaves=leaves;firstLeaf=firstLeaf} = finalState
@@ -966,7 +966,7 @@ module bt =
                         putKeyWithLength k
                 List.iter fn items
 
-            let flushParentPage st pair isRootNode =
+            let writeParentPage st pair isRootNode =
                 let (pagenum,k:byte[]) = pair
                 let {items=items; nextPage=nextPageNumber; boundaryPage=boundaryPageNumber; overflows=overflows; nextGeneration=nextGeneration} = st
                 // assert st.sofar > 0
@@ -1006,12 +1006,12 @@ module bt =
                     let fitsInline = (available >= neededForInline)
                     let wouldFitInlineOnNextPage = ((pageSize - PARENT_PAGE_OVERHEAD) >= neededForInline)
                     let fitsOverflow = (available >= neededForOverflow)
-                    // TODO flush logic used to be guarded by if sofar > 0.  should it still be?
-                    let flushThisPage = (not fitsInline) && (wouldFitInlineOnNextPage || (not fitsOverflow))
+                    // TODO this logic used to be guarded by if sofar > 0.  should it still be?
+                    let writeThisPage = (not fitsInline) && (wouldFitInlineOnNextPage || (not fitsOverflow))
 
-                    if flushThisPage then
+                    if writeThisPage then
                         // assert sofar > 0
-                        flushParentPage st pair false
+                        writeParentPage st pair false
                     else
                         st
 
@@ -1041,7 +1041,7 @@ module bt =
             let initialState = {nextGeneration=[];sofar=0;items=[];nextPage=startingPageNumber;boundaryPage=startingBoundaryPageNumber;overflows=Map.empty}
             let middleState = List.foldBack folder (List.tail children) initialState 
             let isRootNode = (List.isEmpty middleState.nextGeneration)
-            let finalState = flushParentPage middleState lastChild isRootNode
+            let finalState = writeParentPage middleState lastChild isRootNode
             let {nextPage=n;boundaryPage=b;nextGeneration=ng} = finalState
             (n,b,ng)
 

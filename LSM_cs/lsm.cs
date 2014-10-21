@@ -1061,7 +1061,7 @@ namespace Zumero.LSM.cs
                 // which have no header.  we'll stop at the boundary
                 // if the whole thing won't fit.
                 sofar = buildOverflowFirstPage(pb, ba, len, sofar);
-                // note that we haven't flushed this page yet.
+                // note that we haven't written this page yet.
                 var thisPageNumber = nextPageNumber;
                 if (thisPageNumber == boundaryPageNumber) {
                     // the first page landed on a boundary
@@ -1114,7 +1114,7 @@ namespace Zumero.LSM.cs
                             pb.SetPageFlag(FLAG_ENDS_ON_BOUNDARY);
                         }
 
-                        // now we can flush the first page
+                        // now we can write the first page
                         pb.Write(fs);
 
                         // write out the regular pages.  these are full pages
@@ -1196,20 +1196,20 @@ namespace Zumero.LSM.cs
 				bool isLastChild = (i == (children.Count - 1));
 
 				if (sofar > 0) {
-					var flushThisPage = false;
+					var writeThisPage = false;
 					var isBoundary = (nextPageNumber == boundaryPageNumber);
                     var couldBeRoot = (nextGeneration.Count == 0);
                     var avail = calcAvailable(pb.PageSize, sofar, couldBeRoot);
 					if (isLastChild) {
-						flushThisPage = true;
+						writeThisPage = true;
 					} else if (avail >= neededForInline) {
 						// no problem.
 					} else if ((pb.PageSize - PAGE_OVERHEAD) >= neededForInline) {
 						// it won't fit here, but it would fully fit on the next page.
-						flushThisPage = true;
+						writeThisPage = true;
 					} else if (avail < neededForOverflow) {
 						// we can't even put this key in this page if we overflow it.
-						flushThisPage = true;
+						writeThisPage = true;
 					}
 
 					bool isRootNode = false;
@@ -1217,7 +1217,7 @@ namespace Zumero.LSM.cs
 						isRootNode = true;
 					}
 
-					if (flushThisPage) {
+					if (writeThisPage) {
 						int thisPageNumber = nextPageNumber;
 
 						buildParentPage (overflows, pb, children, i, first);
@@ -1335,24 +1335,24 @@ namespace Zumero.LSM.cs
 				var neededForOverflowBoth = neededForKeyOverflow + neededForValueOverflow;
 
 				if (pb.Position > 0) {
-					// figure out if we need to just flush this page
+					// figure out if we need to just write this page
 
 					int avail = pb.Available - sizeof(int); // for lastInt32
 
-					bool flushThisPage = false;
+					bool writeThisPage = false;
 					if (avail >= neededForBothInline) {
 						// no problem.  both the key and the value are going to fit
 					} else if ((pb.PageSize - PAGE_OVERHEAD) >= neededForBothInline) {
 						// it won't fit here, but it would fully fit on the next page.
-						flushThisPage = true;
+						writeThisPage = true;
 					} else if (avail >= neededForKeyInlineValueOverflow) {
 						// the key will fit inline if we just overflow the val
 					} else if (avail < neededForOverflowBoth) {
 						// we can't even put this pair in this page if we overflow both.
-						flushThisPage = true;
+						writeThisPage = true;
 					}
 
-					if (flushThisPage) {
+					if (writeThisPage) {
 						// note that this code is duplicated with slight differences below, after the loop
 
 						int thisPageNumber = nextPageNumber;
@@ -1390,7 +1390,7 @@ namespace Zumero.LSM.cs
 				}
 
 				if (pb.Position == 0) {
-					// we could be here because we just flushed the page.
+					// we could be here because we just wrote the page.
 					// or because this is the very first page.
 					countPairs = 0;
 					lastKey = null;
