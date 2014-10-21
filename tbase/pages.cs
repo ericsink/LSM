@@ -24,6 +24,39 @@ namespace lsm_tests
 {
 #if not
 
+    // first page is the segment list.  if it gets full, then you
+    // have to merge two segments to commit a new one.  list is
+    // 20 bytes per segment (guid + pageNum).
+    //
+    // or we could write out a list of dead segments.  just the page
+    // number.
+    //
+    // or the segment list could have dead segments still in it, with
+    // a flag.  leave them there until they are reclaimed.
+    //
+    // db needs place to store:
+    //   list of all segments
+    //   list of free pages
+    //   current segment list
+    //
+    // maybe the current segment list *IS* the list of all segments.
+    // a segment that has been written but is not yet in the
+    // list doesn't really exist anyway.  it'll need to be found on
+    // recovery.
+    //
+    // maybe the free page list isn't stored.  maybe it's just
+    // found when the db is opened by searching all the segments
+    // and building a list of which pages aren't used.
+    //
+    // maybe the list of all blocks in a segment should be written
+    // by the segment itself.  then a segment could just be a page
+    // number.
+    //
+    // a segment consists of
+    //   its root page
+    //   its guid
+    //   a list of all its blocks
+    //
     // need to allow multiple db connections to the same file.
     // need a process-global list of files, each with their state.
     //
@@ -36,7 +69,47 @@ namespace lsm_tests
     // ability to "attach" multiple files to a connection?
     // or is that a concept that exists at a higher level like sql?
     //
-    public class db
+
+    // can a/the current segment list be a btree?  key is list index plus
+    // page number plus guid.  values are empty.  this allows reuse
+    // of the btree code to deal with case where seglist is long
+    // and spills over into multiple pages.  no need to devise another
+    // page format just to store the segment list.  final step of
+    // commit is to just store the segment list root page in the
+    // header.  once a segment list is written, the old one can
+    // be thrown away.  every old segment list represents an old
+    // state of the db.
+    //
+    // can the list of all data segments be a btree?  storing every
+    // data segment except itself?  segment registry?
+    //
+    // how would we keep track of segments in the segment registry?
+    //
+    // abstraction:  a bunch of segments plus the list of which ones
+    // are current comprises a section.  multiple sections are allowed.
+    // one is for the main data.  one if for internal use administrative.
+
+    public interface ITransaction
+    {
+        // TODO this should take a dictionary-ish thing as a param
+        void Commit()
+        {
+            // create a btreesegment containing the mem segment
+            // prepend the new seg to the seglist
+            // release the write lock
+        }
+
+        void Rollback()
+        {
+            // throw away the memory segment, dispose
+            // the cursors.  nothing has been written to the
+            // disk yet.
+            // release the write lock.
+        }
+
+    }
+
+    public class db : IPages, ITransaction
     {
         // for each segment, we'll need a list of its blocks.
         // this'll get written into a segmentinfo page perhaps?
@@ -107,24 +180,6 @@ namespace lsm_tests
             // get a multicursor for that seglist
         }
 
-        // TODO this should a method on the transaction object
-        // TODO this should take a dictionary as a param
-        void Commit()
-        {
-            // create a btreesegment containing the mem segment
-            // prepend the new seg to the seglist
-            // release the write lock
-        }
-
-        // TODO this should a method on the transaction object
-        void Rollback()
-        {
-            // throw away the memory segment, dispose
-            // the cursors.  nothing has been written to the
-            // disk yet.
-            // release the write lock.
-        }
-
         void Work()
         {
             // pick two adjacent segs from the seg list
@@ -164,8 +219,14 @@ namespace lsm_tests
 			return Guid.NewGuid();
 		}
 
-		void IPages.End(Guid token, int lastPage)
+		int IPages.WriteBlockList(Guid token, int lastPage)
+        {
+            return 0; // no need
+        }
+
+		void IPages.End(Guid token)
 		{
+            // TODO?
 		}
 
 		Tuple<int,int> IPages.GetRange(Guid token)
@@ -213,10 +274,24 @@ namespace lsm_tests
 			}
 		}
 
-		void IPages.End(Guid token, int lastPage)
-		{
+		int IPages.WriteBlockList(Guid token, int lastPage)
+        {
+            // if lastPage is < the range we gave it, then this segment
+            // is giving pages back.
+            // if cur has not changed in the meantime, 
+            // we could just adjust cur?  otherwise we need to add
+            // the unused pages to a free list.
+
 			var blocks = segments [token];
 			//Console.WriteLine ("{0} is done", token);
+
+            return 0; //TODO
+        }
+
+		void IPages.End(Guid token)
+		{
+            // TODO store the segment somewhere in a complete list of
+            // all segments.
 		}
 
 		Tuple<int,int> IPages.GetRange(Guid token)

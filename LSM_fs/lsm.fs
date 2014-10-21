@@ -142,10 +142,9 @@ type private PageBuilder(pgsz:int) =
         buf.[at+2] <- byte (v >>>  8)
         buf.[at+3] <- byte (v >>>  0)
 
-    member this.SetGuid(g:Guid) = 
-        if cur > buf.Length - 24 then failwith "SetGuid is squashing data"
-        let ba = g.ToByteArray() // assert ba.Length is 16
-        System.Array.Copy (ba, 0, buf, buf.Length-24, ba.Length)
+    member this.SetThirdToLastInt32(page:int) = 
+        if cur > buf.Length - 12 then failwith "SetThirdToLastInt32 is squashing data"
+        this.PutInt32At(buf.Length - 3*sizeof<int32>, page)
 
     member this.SetSecondToLastInt32(page:int) = 
         if cur > buf.Length - 8 then failwith "SetSecondToLastInt32 is squashing data"
@@ -273,6 +272,7 @@ type private PageReader(pgsz:int) =
         int r
 
     member this.CheckPageFlag(f) = 0uy <> (buf.[1] &&& f)
+    member this.GetThirdToLastInt32() = this.GetInt32At(buf.Length - 3*sizeof<int32>)
     member this.GetSecondToLastInt32() = this.GetInt32At(buf.Length - 2*sizeof<int32>)
     member this.GetLastInt32() = this.GetInt32At(buf.Length - sizeof<int32>)
 
@@ -939,7 +939,7 @@ module bt =
 
             let calcAvailable currentSize couldBeRoot =
                 let basicSize = pageSize - currentSize
-                let allowanceForRootNode = if couldBeRoot then (16 + sizeof<int32>) else 0 // guid, first/last Leaf, lastInt32 already
+                let allowanceForRootNode = if couldBeRoot then (sizeof<int32> + sizeof<int32>) else 0 // blocklist, first/last Leaf, lastInt32 already
                 basicSize - allowanceForRootNode
 
             let buildParentPage (items:(int32*byte[]) list) lastPtr (overflows:Map<byte[],int32>) =
@@ -972,7 +972,8 @@ module bt =
                 let (nextN,nextB) =
                     if isRootNode then
                         pb.SetPageFlag(FLAG_ROOT_NODE)
-                        pb.SetGuid(token);
+                        let blockListPage = pageManager.WriteBlockList(token, thisPageNumber)
+                        pb.SetThirdToLastInt32(blockListPage)
                         pb.SetSecondToLastInt32(firstLeaf)
                         pb.SetLastInt32(lastLeaf)
                         (thisPageNumber+1,boundaryPageNumber)
@@ -1049,7 +1050,7 @@ module bt =
 
         let rootPage = writeOneLayerOfParentPages pageAfterLeaves boundaryAfterLeaves leaves
 
-        pageManager.End(token, rootPage)
+        pageManager.End(token)
         (token,rootPage)
 
     type private myOverflowReadStream(_fs:Stream, pageSize:int, _firstPage:int, _len:int) =

@@ -222,6 +222,11 @@ namespace Zumero.LSM.cs
             return 0 != (buf[1] & f);
         }
 
+        public int GetThirdToLastInt32()
+        {
+            return GetInt32At(buf.Length - 12);
+        }
+
         public int GetSecondToLastInt32()
         {
             return GetInt32At(buf.Length - 8);
@@ -388,21 +393,20 @@ namespace Zumero.LSM.cs
             buf[1] |= f;
         }
 
+        public void SetThirdToLastInt32(int page)
+        {
+            if (cur > buf.Length - 12) {
+				throw new Exception();
+            }
+            PutInt32At(buf.Length - 12, page);
+        }
+
         public void SetSecondToLastInt32(int page)
         {
             if (cur > buf.Length - 8) {
 				throw new Exception();
             }
             PutInt32At(buf.Length - 8, page);
-        }
-
-        public void SetGuid(Guid g)
-        {
-            if (cur > buf.Length - 24) {
-				throw new Exception();
-            }
-			var ba = g.ToByteArray (); // assert ba.Length is 16
-			Array.Copy (ba, 0, buf, buf.Length-24, ba.Length);
         }
 
         public void SetLastInt32(int page)
@@ -1150,8 +1154,8 @@ namespace Zumero.LSM.cs
 			int n = (pageSize - currentSize - sizeof(int)); // for the lastInt32
 			if (couldBeRoot)
 			{
-                // make space for the guid
-                n -= 16;
+                // make space for the ptr to the block list page
+                n -= sizeof(int);
 				// make space for the firstLeaf and lastLeaf fields (lastInt32 already there)
 				n -= sizeof(int);
 			}
@@ -1220,7 +1224,8 @@ namespace Zumero.LSM.cs
 
 						if (isRootNode) {
                             pb.SetPageFlag(FLAG_ROOT_NODE);
-                            pb.SetGuid(token);
+                            var blockListPage = pageManager.WriteBlockList(token, thisPageNumber);
+                            pb.SetThirdToLastInt32(blockListPage);
                             pb.SetSecondToLastInt32(firstLeaf);
                             pb.SetLastInt32(lastLeaf);
                         } else {
@@ -1500,11 +1505,11 @@ namespace Zumero.LSM.cs
 
 				// assert nodelist.Count == 1
 
-				pageManager.End (token, nodelist [0].PageNumber);
+				pageManager.End (token);
 
 				return new Tuple<Guid,int>(token, nodelist [0].PageNumber);
 			} else {
-				pageManager.End (token, 0);
+				pageManager.End (token);
 
 				return new Tuple<Guid,int>(token, 0);
 			}

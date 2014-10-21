@@ -1,4 +1,6 @@
 
+chg use of the word flush in pagebuilder
+
 shorter keys in the parent nodes?
 
 prefix key compression?
@@ -98,6 +100,8 @@ once "on disk", a segment is immutable.  reads only.
 only the first (in-memory) segment needs to support writes.
 
 maybe the whole thing should implement IDictionary<byte[],byte[]> ?
+
+bloom filters?
 
 --------
 
