@@ -32,25 +32,13 @@ namespace lsm_tests
     //
     // segments need an age.  timestamps?
     //
-    // segment info could record the guids of the segments
-    // which built up another.
-    //
-    // a blocklist per bt segment is stored in a separate place.
-    // maybe as yet another bt.  reference to the location of
-    // this list is stored in the header.  and the blocklist
-    // for this thing as well.  it would be nice if it were
-    // stored contiguously so its blocklist would actually just
-    // be 2 ints.
-    //
-    // in fact, consider storing this segment info list as
-    // just a big blob of data, not as a btree, so that it can
-    // be built in ram and then written anywhere.
-    //
-    // a 2 GB btree with 1 MB blocks would need 2048 blocks,
-    // which would be 16K just for the int pairs of its blocklist.
-    // probably smaller with varints.  we might still want
-    // separate storage for all the blocklists for all the
-    // segments.
+    // segment info list contains block list for each segment.
+    // every segment in the current segment list must be in this
+    // info list.  but the info list can also have other segments
+    // in it, which are in the process of being deleted.  (or we
+    // could delete them and just rely on the page mgr to know
+    // that it can't give out those pages until the last cursor
+    // on that segment is gone.)
     //
     // format of the first page:
     //
@@ -59,53 +47,20 @@ namespace lsm_tests
     //     flags
     //     page size
     //     block size
+    //     etc
     //
     //     address of segment info list (firstPage, lastPage, size in 512 pages)
     //
-    //     segment list
+    //     current segment list
     //
-    //     what else?
+    // if the current segment list gets too big to fit in the header,
+    // then it has to shrink.  each segment entry is 20 bytes.
+    // or should the age be in there too?
+    // merge some segments to make it smaller.
     //
-    // might be a bad idea to waste a whole page on a segment list.
-    // what if a page is 16K?
-    //
-    // same goes for the block list that accompanies a btree.
-    // what if the root page has 15K left and the block list is
-    // only 50 bytes?  kinda silly.
-    //
-    // putting something in a page by itself might seem neater
-    // and easier to understand, but for large page sizes, it
-    // will be very wasteful.
-    //
-    // pages need to be a full as possible.
-    //
-    // first page is the segment list.  if it gets full, then you
-    // have to merge two segments to commit a new one.  list is
-    // 20 bytes per segment (guid + pageNum).
-    //
-    // or we could write out a list of dead segments.  just the page
-    // number.
-    //
-    // or the segment list could have dead segments still in it, with
-    // a flag.  leave them there until they are reclaimed.
-    //
-    // db needs place to store:
-    //   list of all segments
-    //   list of free pages
-    //   current segment list
-    //
-    // maybe the current segment list *IS* the list of all segments.
-    // a segment that has been written but is not yet in the
-    // list doesn't really exist anyway.  it'll need to be found on
-    // recovery.
-    //
-    // maybe the free page list isn't stored.  maybe it's just
+    // free page list isn't stored.  it's just
     // found when the db is opened by searching all the segments
     // and building a list of which pages aren't used.
-    //
-    // maybe the list of all blocks in a segment should be written
-    // by the segment itself.  then a segment could just be a page
-    // number.
     //
     // should we allow a database file to contain more than one
     // keyspace?  each keyspace is a segment list.
@@ -116,41 +71,26 @@ namespace lsm_tests
     //   its age
     //   a list of all its blocks
     //
-    // need to allow multiple db connections to the same file.
-    // need a process-global list of files, each with their state.
+    // multiple db connections to the same file.  the object
+    // representing the state of the file is global to the process,
+    // a singleton, shared by all connections thread-safe.
     //
-    // actually, we need multiple db connections to the same
-    // file, but we want them all to get the same copy of
-    // this class instance, right?  we don't need each one to
-    // have their own state.  we want them all to share the
-    // same state.
-
-    // ability to "attach" multiple files to a connection?
-    // or is that a concept that exists at a higher level like sql?
+    // page mgr needs to have a list of free blocks/pages, but
+    // it's only in RAM.  init on startup.  keep it updated as
+    // segments get released.  try to reuse pages as much as
+    // possible rather than appending everything to the end of
+    // the file and making it larger.
     //
-
-    // can a/the current segment list be a btree?  key is list index plus
-    // page number plus guid.  values are empty.  this allows reuse
-    // of the btree code to deal with case where seglist is long
-    // and spills over into multiple pages.  no need to devise another
-    // page format just to store the segment list.  final step of
-    // commit is to just store the segment list root page in the
-    // header.  once a segment list is written, the old one can
-    // be thrown away.  every old segment list represents an old
-    // state of the db.
-    //
-    // can the list of all data segments be a btree?  storing every
-    // data segment except itself?  segment registry?
-    //
-    // how would we keep track of segments in the segment registry?
-    //
-    // abstraction:  a bunch of segments plus the list of which ones
-    // are current comprises a section.  multiple sections are allowed.
-    // one is for the main data.  one if for internal use administrative.
+    // need to know about all the cursors currently open for
+    // any segment.  we can't release a segment unless we
+    // know it has no cursors open.
 
     public interface ITransaction
     {
-        // TODO this should take a dictionary-ish thing as a param
+        // one you have one of these (the only one of these), you
+        // have the write lock.
+        //
+        // TODO commit should take a dictionary-ish thing as a param
         void Commit()
         {
             // create a btreesegment containing the mem segment
@@ -166,53 +106,35 @@ namespace lsm_tests
             // release the write lock.
         }
 
+        // TODO need a way to get a cursor which includes a dictionary
+        // as the first element.  a way to see/query stuff that the tx
+        // knows about but has not been committed yet.
+
     }
 
     public class db : IPages, ITransaction
     {
-        // for each segment, we'll need a list of its blocks.
-        // this'll get written into a segmentinfo page perhaps?
-        //
-        // need to know about all the cursors currently open for
-        // any segment.  we can't release a segment unless we
-        // know it has no cursors open.
-        //
-        // need a file-wide list of all the segments.  once a
-        // segment is no longer used in the segment list (which
-        // can only happen after Work), then it is eligible to
-        // be removed (after it has no cursors left).
-        //
-        // removing a segment would be adding its pages/blocks
-        // back to a free list.  page manager needs to keep track
-        // of this and give out freed pages when it can.
-        //
-        // is there any reason we would need more than one
-        // segment list around?  an open multicursor has implicit
-        // knowledge of the seglist, but it doesn't need to be
-        // stored anywhere, right?  there is no need to be able
-        // to open old seglists?  the segment list for an open
-        // reader (mc) exists only in ram.
-
-        // the so-called "write lock" could just be a field
-        // that stores the current IWrite?
-
         public db(string filename)
         {
             // read segment list from disk
+            // read block lists and look for free pages
+        }
+
+        private Dictionary<Guid,List<ICursor>> cursors;
+        private ICursor getCursorForSegment()
+        {
+            // all cursors come through here so we can keep an
+            // accurate list of which cursors exist.  a cursor
+            // is kind of a read lock.  if a cursor exists for
+            // a given segment, we can't delete that segment
+            // or reuse its pages.
         }
 
         ITransaction BeginWrite()
         {
-            // ITransaction implements IWrite-ish, with
-            // insert and delete, but its constructor takes a
-            // cursor which is the snapshot of the seglist when
-            // the tx was opened, and its OpenCursor returns a
-            // multicursor containing (memsegcursor, seglistmulti)
-            //
             // grab the write lock for this db
-            // create a new memory segment
-            // grab the seglist
-            // (no segment in the seglist can be deleted)
+            // grab the seglist -- TODO atomically grab the seglist and all its cursors
+            // (now no segment in the seglist can be deleted)
             // get a multicursor for that seglist
 
             // interesting that the only reason to grab a write lock
@@ -227,10 +149,6 @@ namespace lsm_tests
             // before us.  because then we would have to either
             // find conflicts or just fail.
         }
-
-        // IWrite.OpenCursor needs to snapshot even the dictionary
-        // for that tx.  subsequent changes to that dictionary don't
-        // affect what a previously allocated cursor sees.
 
         ICursor BeginRead()
         {
