@@ -23,6 +23,14 @@ open Zumero.LSM
 
 type kvp = System.Collections.Generic.KeyValuePair<byte[],Stream>
 
+type pgitem = 
+    struct
+        val page: int32
+        val key: byte[]
+        new (p,k) = { page = p; key = k; }
+    end
+
+
 module utils =
     // TODO why aren't the functions here in utils using curried params?
 
@@ -33,6 +41,7 @@ module utils =
         if pos <> newpos then failwith "Stream.Seek failed"
 
     let ReadFully(strm:Stream, buf, off, len) :unit =
+        // TODO consider memory alloc issue on this closure
         let rec fn sofar =
             if sofar < len then
                 let got = strm.Read(buf, off + sofar, len - sofar)
@@ -622,18 +631,19 @@ module bt =
     type private ParentState = 
         { 
             sofar:int; 
-            items:(int32*byte[]) list; 
+            items:pgitem list; 
             overflows:Map<byte[],int32>;
-            nextGeneration:(int32*byte[]) list; 
+            nextGeneration:pgitem list; 
             nextPage:int; 
             boundaryPage:int; 
         }
 
     type private LeafState =
+        // TODO consider making this a struct
         {
             keys:(byte[] list);
             firstLeaf:int32;
-            leaves:(int32*byte[]) list; 
+            leaves:pgitem list; 
             nextPage:int; 
             boundaryPage:int; 
         }
@@ -796,7 +806,7 @@ module bt =
             pb.PutInt32(overflowFirstPage)
             newRange
 
-        let writeLeaves leavesFirstPage leavesBoundaryPage :int*int*((int32*byte[]) list)*int =
+        let writeLeaves leavesFirstPage leavesBoundaryPage :int*int*(pgitem list)*int =
             // 2 for the page type and flags
             // 4 for the prev page
             // 2 for the stored count
@@ -821,7 +831,7 @@ module bt =
                 pb.Write(fs)
                 pb.Reset()
                 if nextN <> (thisPageNumber+1) then utils.SeekPage(fs, pageSize, nextN)
-                {keys=[]; firstLeaf=firstLeaf; nextPage=nextN; boundaryPage=nextB; leaves=(thisPageNumber,List.head st.keys)::st.leaves}
+                {keys=[]; firstLeaf=firstLeaf; nextPage=nextN; boundaryPage=nextB; leaves=new pgitem(thisPageNumber,List.head st.keys)::st.leaves}
 
             let foldLeaf st (pair:kvp) = 
                 let k = pair.Key
@@ -862,7 +872,7 @@ module bt =
                         pb.PutByte(LEAF_NODE)
                         pb.PutByte(0uy) // flags
 
-                        let prevPage = if List.isEmpty st.leaves then 0 else fst (List.head st.leaves)
+                        let prevPage = if List.isEmpty st.leaves then 0 else (List.head st.leaves).page
                         pb.PutInt32 (prevPage) // prev page num.
                         pb.PutInt16 (0) // number of pairs in this page. zero for now. written at end.
                         // assert pb.Position is 8 (LEAF_PAGE_OVERHEAD - sizeof(lastInt32))
@@ -926,7 +936,7 @@ module bt =
         // keep writing until we have written a level which has only one node,
         // which is the root node.
 
-        let lastLeaf = fst leaves.[0]
+        let lastLeaf = leaves.[0].page
 
         let writeParentNodes children startingPageNumber startingBoundaryPageNumber =
             // 2 for the page type and flags
@@ -940,17 +950,17 @@ module bt =
                 let allowanceForRootNode = if couldBeRoot then (sizeof<int32>) else 0 // first/last Leaf, lastInt32 already
                 basicSize - allowanceForRootNode
 
-            let buildParentPage (items:(int32*byte[]) list) lastPtr (overflows:Map<byte[],int32>) =
+            let buildParentPage (items:pgitem list) lastPtr (overflows:Map<byte[],int32>) =
                 pb.Reset ()
                 pb.PutByte (PARENT_NODE)
                 pb.PutByte (0uy)
                 pb.PutInt16 (items.Length)
                 // store all the ptrs, n+1 of them
-                List.iter (fun x -> pb.PutVarint(int64 (fst x))) items
+                List.iter (fun (x:pgitem) -> pb.PutVarint(int64 (x.page))) items
                 pb.PutVarint(int64 lastPtr)
                 // store all the keys, n of them
-                let fn x = 
-                    let k = snd x
+                let fn (x:pgitem) = 
+                    let k = x.key
                     match overflows.TryFind(k) with
                     | Some pg ->
                         pb.PutByte(FLAG_OVERFLOW)
@@ -960,8 +970,9 @@ module bt =
                         putKeyWithLength k
                 List.iter fn items
 
-            let writeParentPage st pair isRootNode =
-                let (pagenum,k:byte[]) = pair
+            let writeParentPage st (pair:pgitem) isRootNode =
+                let pagenum = pair.page
+                let k = pair.key
                 let {items=items; nextPage=nextPageNumber; boundaryPage=boundaryPageNumber; overflows=overflows; nextGeneration=nextGeneration} = st
                 // assert st.sofar > 0
                 let thisPageNumber = nextPageNumber
@@ -983,10 +994,11 @@ module bt =
                             (thisPageNumber+1,boundaryPageNumber)
                 pb.Write(fs)
                 if nextN <> (thisPageNumber+1) then utils.SeekPage(fs, pageSize, nextN)
-                {sofar=0; items=[]; nextPage=nextN; boundaryPage=nextB; overflows=Map.empty; nextGeneration=(thisPageNumber,k)::nextGeneration}
+                {sofar=0; items=[]; nextPage=nextN; boundaryPage=nextB; overflows=Map.empty; nextGeneration=new pgitem(thisPageNumber,k)::nextGeneration}
 
-            let foldParent pair st =
-                let (pagenum,k:byte[]) = pair
+            let foldParent (pair:pgitem) st =
+                let pagenum = pair.page
+                let k = pair.key
 
                 let neededEitherWay = 1 + Varint.SpaceNeededFor (int64 k.Length) + Varint.SpaceNeededFor (int64 pagenum)
                 let neededForInline = neededEitherWay + k.Length
@@ -1037,12 +1049,12 @@ module bt =
             let {nextPage=n;boundaryPage=b;nextGeneration=ng} = finalState
             (n,b,ng)
 
-        let rec writeOneLayerOfParentPages next boundary (children:(int32*byte[]) list) :int32 =
+        let rec writeOneLayerOfParentPages next boundary (children:pgitem list) :int32 =
             if children.Length > 1 then
                 let (newNext,newBoundary,newChildren) = writeParentNodes children next boundary 
                 writeOneLayerOfParentPages newNext newBoundary newChildren
             else
-                fst children.[0]
+                children.[0].page
 
         let rootPage = writeOneLayerOfParentPages pageAfterLeaves boundaryAfterLeaves leaves
 
