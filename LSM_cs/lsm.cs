@@ -336,6 +336,13 @@ namespace Zumero.LSM.cs
 			}
         }
 
+		public byte[] Buffer
+		{
+			get {
+				return buf;
+			}
+		}
+
 		public void Reset()
 		{
 			cur = 0;

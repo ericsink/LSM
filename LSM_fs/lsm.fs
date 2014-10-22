@@ -109,6 +109,7 @@ type private PageBuilder(pgsz:int) =
     member this.Reset() = cur <- 0
     member this.Write(s:Stream) = s.Write(buf, 0, buf.Length)
     member this.PageSize = buf.Length
+    member this.Buffer = buf
     member this.Position = cur
     member this.Available = buf.Length - cur
     member this.SetPageFlag(x:byte) = buf.[1] <- buf.[1] ||| x

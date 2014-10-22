@@ -24,12 +24,43 @@ namespace lsm_tests
 {
 #if not
 
+    // header is 4K, regardless of page size.  if page size
+    // is >4K, the rest of page 1 is unused.
+    //
+    // header contains the segment list.  but it's just guids
+    // and page numbers.
+    //
+    // segments need an age.  timestamps?
+    //
+    // segment info could record the guids of the segments
+    // which built up another.
+    //
+    // a blocklist per bt segment is stored in a separate place.
+    // maybe as yet another bt.  reference to the location of
+    // this list is stored in the header.  and the blocklist
+    // for this thing as well.  it would be nice if it were
+    // stored contiguously so its blocklist would actually just
+    // be 2 ints.
+    //
+    // in fact, consider storing this segment info list as
+    // just a big blob of data, not as a btree, so that it can
+    // be built in ram and then written anywhere.
+    //
+    // a 2 GB btree with 1 MB blocks would need 2048 blocks,
+    // which would be 16K just for the int pairs of its blocklist.
+    // probably smaller with varints.  we might still want
+    // separate storage for all the blocklists for all the
+    // segments.
+    //
     // format of the first page:
     //
     //     magic number
     //     version
     //     flags
     //     page size
+    //     block size
+    //
+    //     address of segment info list (firstPage, lastPage, size in 512 pages)
     //
     //     segment list
     //
@@ -82,6 +113,7 @@ namespace lsm_tests
     // a segment consists of
     //   its root page
     //   its guid
+    //   its age
     //   a list of all its blocks
     //
     // need to allow multiple db connections to the same file.
@@ -296,16 +328,67 @@ namespace lsm_tests
 			}
 		}
 
+        private byte[] buildBlockList(List<Tuple<int,int>> blocks)
+        {
+            int space = 0;
+            for (int i=0; i<blocks.Count; i++) {
+                var t = blocks[i];
+                space += Zumero.LSM.cs.Varint.SpaceNeededFor(t.Item1);
+                space += Zumero.LSM.cs.Varint.SpaceNeededFor(t.Item2);
+            }
+			space += Zumero.LSM.cs.Varint.SpaceNeededFor(blocks.Count);
+			Zumero.LSM.cs.PageBuilder pb = new Zumero.LSM.cs.PageBuilder (space);
+			pb.PutVarint (blocks.Count);
+			for (int i=0; i<blocks.Count; i++) {
+				var t = blocks[i];
+				pb.PutVarint (t.Item1);
+				pb.PutVarint (t.Item2);
+			}
+			return pb.Buffer;
+        }
+
+        private MemoryStream buildSegmentInfoList(Dictionary<Guid,List<Tuple<int,int>>> sd)
+        {
+            var ms = new MemoryStream();
+            IPages pm = new MemoryPageManager(ms, 512);
+            var d = new Dictionary<byte[],Stream>();
+            foreach (Guid g in sd.Keys) {
+                d[g.ToByteArray()] = new MemoryStream(buildBlockList(sd[g]));
+            }
+			Zumero.LSM.cs.BTreeSegment.Create (ms, pm, d);
+            return ms;
+        }
+
+		private Tuple<int,int> saveSegmentInfoList(Dictionary<Guid,List<Tuple<int,int>>> sd)
+        {
+            var ms = buildSegmentInfoList(sd);
+			byte[] buf = ms.GetBuffer ();
+			int len = (int)ms.Length;
+            int pages = len / pageSize;
+            if (0 != (len % pageSize)) {
+                pages++;
+            }
+            var range = GetRange(pages);
+			Zumero.LSM.cs.utils.SeekPage(fs, pageSize, range.Item1);
+			fs.Write (buf, 0, len);
+			return range;
+        }
+
 		void IPages.End(Guid token, int lastPage)
 		{
-            // TODO
-            // if lastPage is < the range we gave it, then this segment
-            // is giving pages back.
-            // if cur has not changed in the meantime, 
-            // we could just adjust cur?  otherwise we need to add
-            // the unused pages to a free list.
+            var blocks = segments[token];
+            var lastBlock = blocks[blocks.Count-1];
+            // assert lastPage >= lastBlock.Item1;
+            if (lastPage < lastBlock.Item2) {
+                // this segment did not use all the pages we gave it
+				blocks.Remove (lastBlock);
+				blocks.Add (new Tuple<int, int> (lastBlock.Item1, lastPage));
 
-            // TODO get rid of the reservation
+                // TODO
+                // if cur has not changed in the meantime, 
+                // we could just adjust cur?  otherwise we need to add
+                // the unused pages to a free list.
+            }
 		}
 
 		private Tuple<int,int> GetRange(int num)
