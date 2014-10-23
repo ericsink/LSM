@@ -41,13 +41,13 @@
       <Project>{EC16340F-B28D-44EF-9101-FC496D16B255}</Project>
       <Name>lsm_fs_net45</Name>
     </ProjectReference>
-    <ProjectReference Include="..\cs\projects\lsm_cs_net45\lsm_cs_net45.csproj">
-      <Project>{D59C2E65-6C23-48F7-BE04-11B708142FC5}</Project>
-      <Name>lsm_cs_net45</Name>
-    </ProjectReference>
     <ProjectReference Include="..\fs\projects\base_fs_net45\base_fs_net45.fsproj">
       <Project>{06CDF0A2-9D0A-47CF-8681-8B92D136F9E9}</Project>
       <Name>base_fs_net45</Name>
+    </ProjectReference>
+    <ProjectReference Include="..\cs\projects\lsm_cs_pcl\lsm_cs_pcl.csproj">
+      <Project>{E27F39D7-16F2-4802-87F0-F3B42792E455}</Project>
+      <Name>lsm_cs_pcl</Name>
     </ProjectReference>
   </ItemGroup>
 </Project>
