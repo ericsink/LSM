@@ -36,13 +36,13 @@
   </ItemGroup>
   <Import Project="$(MSBuildBinPath)\Microsoft.CSharp.targets" />
   <ItemGroup>
-    <ProjectReference Include="..\LSM_base\LSM_base.csproj">
-      <Project>{E9E55FF3-EED9-457A-8CCD-2CBA6FEF5CF7}</Project>
-      <Name>LSM_base</Name>
-    </ProjectReference>
     <ProjectReference Include="..\tbase\tbase.csproj">
       <Project>{F05CCE04-5064-4948-8F55-AB29151D0B5F}</Project>
       <Name>tbase</Name>
+    </ProjectReference>
+    <ProjectReference Include="..\cs\projects\base_cs_pcl\LSM_base.csproj">
+      <Project>{E9E55FF3-EED9-457A-8CCD-2CBA6FEF5CF7}</Project>
+      <Name>LSM_base</Name>
     </ProjectReference>
   </ItemGroup>
 </Project>

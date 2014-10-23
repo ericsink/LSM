@@ -35,7 +35,7 @@
   </ItemGroup>
   <Import Project="$(MSBuildExtensionsPath32)\Microsoft\Portable\$(TargetFrameworkVersion)\Microsoft.Portable.CSharp.targets" />
   <ItemGroup>
-    <ProjectReference Include="..\LSM_base\LSM_base.csproj">
+    <ProjectReference Include="projects\base_cs_pcl\LSM_base.csproj">
       <Project>{E9E55FF3-EED9-457A-8CCD-2CBA6FEF5CF7}</Project>
       <Name>LSM_base</Name>
     </ProjectReference>

@@ -1,8 +1,10 @@
 *~
 */bin/**
+*/obj/**
 */*/bin/**
 */*/obj/**
-*/obj/**
+*/*/*/bin/**
+*/*/*/obj/**
 *.userprefs
 /packages/**
 
