@@ -30,11 +30,11 @@
     <ConsolePause>false</ConsolePause>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="lsm.cs" />
+    <Compile Include="..\..\lsm.cs" />
   </ItemGroup>
   <Import Project="$(MSBuildExtensionsPath32)\Microsoft\Portable\$(TargetFrameworkVersion)\Microsoft.Portable.CSharp.targets" />
   <ItemGroup>
-    <ProjectReference Include="projects\base_cs_pcl\base_cs_pcl.csproj">
+    <ProjectReference Include="..\base_cs_pcl\base_cs_pcl.csproj">
       <Project>{E9E55FF3-EED9-457A-8CCD-2CBA6FEF5CF7}</Project>
       <Name>base_cs_pcl</Name>
     </ProjectReference>

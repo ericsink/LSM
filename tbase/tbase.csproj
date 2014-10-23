@@ -37,9 +37,9 @@
   </ItemGroup>
   <Import Project="$(MSBuildBinPath)\Microsoft.CSharp.targets" />
   <ItemGroup>
-    <ProjectReference Include="..\cs\LSM_cs.csproj">
+    <ProjectReference Include="..\cs\projects\lsm_cs_pcl\lsm_cs_pcl.csproj">
       <Project>{E27F39D7-16F2-4802-87F0-F3B42792E455}</Project>
-      <Name>LSM_cs</Name>
+      <Name>lsm_cs_pcl</Name>
     </ProjectReference>
     <ProjectReference Include="..\fs\LSM_fs.fsproj">
       <Project>{EC16340F-B28D-44EF-9101-FC496D16B255}</Project>

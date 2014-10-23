@@ -1,7 +1,7 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio 2012
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LSM_cs", "cs\LSM_cs.csproj", "{E27F39D7-16F2-4802-87F0-F3B42792E455}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "lsm_cs_pcl", "cs\projects\lsm_cs_pcl\lsm_cs_pcl.csproj", "{E27F39D7-16F2-4802-87F0-F3B42792E455}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "tests", "tests\tests.csproj", "{DECC0B0D-5240-42D4-9BEB-238BE7317F79}"
 EndProject
