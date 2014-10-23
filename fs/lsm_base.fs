@@ -39,4 +39,7 @@ type ICursor =
     abstract member ValueLength : unit -> int
     abstract member KeyCompare : k:byte[] -> int
 
-// TODO tbase relies on this assembly having some additional extension methods.
+module ICursorExtensions =
+    let ToSequenceOfKeyValuePairs (csr:ICursor) = seq { csr.First(); while csr.IsValid() do yield new System.Collections.Generic.KeyValuePair<byte[],Stream>(csr.Key(), csr.Value()); csr.Next(); done }
+    let ToSequenceOfTuples (csr:ICursor) = seq { csr.First(); while csr.IsValid() do yield (csr.Key(), csr.Value()); csr.Next(); done }
+

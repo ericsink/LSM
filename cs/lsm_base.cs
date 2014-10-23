@@ -52,9 +52,9 @@ namespace Zumero.LSM
 		int KeyCompare(byte[] k);
 	}
 
-	public static class ex
+	public static class ICursorExtensions
 	{
-		public static IEnumerable<Tuple<byte[],Stream>> ToSequenceOfTuples(this ICursor csr)
+		public static IEnumerable<Tuple<byte[],Stream>> ToSequenceOfTuples(ICursor csr)
 		{
 			csr.First ();
 			while (csr.IsValid ()) {
@@ -63,7 +63,7 @@ namespace Zumero.LSM
 			}
 		}
 
-		public static IEnumerable<KeyValuePair<byte[],Stream>> ToSequenceOfKeyValuePairs(this ICursor csr)
+		public static IEnumerable<KeyValuePair<byte[],Stream>> ToSequenceOfKeyValuePairs(ICursor csr)
 		{
 			csr.First ();
 			while (csr.IsValid ()) {
@@ -72,20 +72,6 @@ namespace Zumero.LSM
 			}
 		}
 
-		public static void Seek(this ICursor csr, string k, SeekOp sop)
-		{
-			csr.Seek (k.ToUTF8(), sop);
-		}
-
-		public static byte[] ToUTF8(this string s)
-		{
-			return System.Text.Encoding.UTF8.GetBytes (s);
-		}
-
-		public static string UTF8ToString(this byte[] ba)
-		{
-			return System.Text.Encoding.UTF8.GetString (ba, 0, ba.Length);
-		}
 	}
 
 }

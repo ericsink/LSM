@@ -168,6 +168,21 @@ namespace lsm_tests
 
 	public static class exd
 	{
+		public static byte[] ToUTF8(this string s)
+		{
+			return System.Text.Encoding.UTF8.GetBytes (s);
+		}
+
+		public static string UTF8ToString(this byte[] ba)
+		{
+			return System.Text.Encoding.UTF8.GetString (ba, 0, ba.Length);
+		}
+
+		public static void Seek(this ICursor csr, string k, SeekOp sop)
+		{
+			csr.Seek (k.ToUTF8(), sop);
+		}
+
 		public static void Insert(this Dictionary<byte[],Stream> d, byte[] k, byte[] v)
 		{
 			d [k] = new MemoryStream (v);
@@ -199,7 +214,7 @@ namespace lsm_tests
 
 		public Tuple<Guid,int> create_btree_segment(Stream fs,IPages pageManager,ICursor csr)
 		{
-			return create_btree_segment (fs, pageManager, csr.ToSequenceOfKeyValuePairs ());
+			return create_btree_segment (fs, pageManager, ICursorExtensions.ToSequenceOfKeyValuePairs (csr));
 		}
 
 		public int create_btree_segment(Stream fs,IPages pageManager,Dictionary<string,string> d)

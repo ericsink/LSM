@@ -7,8 +7,6 @@ the test suite is using the old memory_segment api
 
 need C# versions of the other Create overloads?
 
-ICursor ToSeq should probably not be extension methods
-
 #if integrity_checks
 
 combine stream and its page manager into an object?  
