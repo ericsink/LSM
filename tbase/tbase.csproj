@@ -41,9 +41,9 @@
       <Project>{E27F39D7-16F2-4802-87F0-F3B42792E455}</Project>
       <Name>lsm_cs_pcl</Name>
     </ProjectReference>
-    <ProjectReference Include="..\fs\LSM_fs.fsproj">
+    <ProjectReference Include="..\fs\projects\lsm_fs_net45\lsm_fs_net45.fsproj">
       <Project>{EC16340F-B28D-44EF-9101-FC496D16B255}</Project>
-      <Name>LSM_fs</Name>
+      <Name>lsm_fs_net45</Name>
     </ProjectReference>
     <ProjectReference Include="..\cs\projects\base_cs_pcl\base_cs_pcl.csproj">
       <Project>{E9E55FF3-EED9-457A-8CCD-2CBA6FEF5CF7}</Project>
