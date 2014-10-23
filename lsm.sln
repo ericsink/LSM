@@ -13,6 +13,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "tapp", "tapp\tapp.csproj", 
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "tbase", "tbase\tbase.csproj", "{F05CCE04-5064-4948-8F55-AB29151D0B5F}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "lsm_cs_net45", "cs\projects\lsm_cs_net45\lsm_cs_net45.csproj", "{D59C2E65-6C23-48F7-BE04-11B708142FC5}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -23,6 +25,10 @@ Global
 		{2FE3B216-F994-4BE4-BD1B-F7DBA3C0D63E}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{2FE3B216-F994-4BE4-BD1B-F7DBA3C0D63E}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{2FE3B216-F994-4BE4-BD1B-F7DBA3C0D63E}.Release|Any CPU.Build.0 = Release|Any CPU
+		{D59C2E65-6C23-48F7-BE04-11B708142FC5}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D59C2E65-6C23-48F7-BE04-11B708142FC5}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{D59C2E65-6C23-48F7-BE04-11B708142FC5}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{D59C2E65-6C23-48F7-BE04-11B708142FC5}.Release|Any CPU.Build.0 = Release|Any CPU
 		{DECC0B0D-5240-42D4-9BEB-238BE7317F79}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
 		{DECC0B0D-5240-42D4-9BEB-238BE7317F79}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{DECC0B0D-5240-42D4-9BEB-238BE7317F79}.Release|Any CPU.ActiveCfg = Release|Any CPU
