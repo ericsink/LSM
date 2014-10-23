@@ -630,22 +630,22 @@ module bt =
 
     type private ParentState = 
         { 
-            sofar:int; 
-            items:pgitem list; 
-            overflows:Map<byte[],int32>;
-            nextGeneration:pgitem list; 
-            nextPage:int; 
-            boundaryPage:int; 
+            sofar:int 
+            items:pgitem list 
+            overflows:Map<byte[],int32>
+            nextGeneration:pgitem list 
+            nextPage:int 
+            boundaryPage:int 
         }
 
     type private LeafState =
-        // TODO consider making this a struct
+        // TODO considered making this a struct, but it doesn't make much/any perf difference
         {
-            keys:(byte[] list);
-            firstLeaf:int32;
-            leaves:pgitem list; 
-            nextPage:int; 
-            boundaryPage:int; 
+            keys:(byte[] list)
+            firstLeaf:int32
+            leaves:pgitem list 
+            nextPage:int 
+            boundaryPage:int 
         }
 
     let CreateFromSortedSequenceOfKeyValuePairs(fs:Stream, pageManager:IPages, source:seq<kvp>) = 

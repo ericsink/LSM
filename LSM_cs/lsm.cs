@@ -935,7 +935,8 @@ namespace Zumero.LSM.cs
 		private const byte FLAG_BOUNDARY_NODE = 2;
 		private const byte FLAG_ENDS_ON_BOUNDARY = 4;
 
-		private class node
+		// TODO in the F# version, pgitem is a struct
+		private class pgitem
 		{
 			public int PageNumber;
 			public byte[] Key;
@@ -965,7 +966,7 @@ namespace Zumero.LSM.cs
 			}
 		}
 
-		private static void buildParentPage(Dictionary<int,int> overflows, PageBuilder pb, List<node> children, int stop, int start)
+		private static void buildParentPage(Dictionary<int,int> overflows, PageBuilder pb, List<pgitem> children, int stop, int start)
 		{
 			// assert stop >= start
 			int countKeys = (stop - start); 
@@ -1154,11 +1155,11 @@ namespace Zumero.LSM.cs
 			return n;
 		}
 
-		private static Tuple<int,int,List<node>> writeParentNodes(IPages pageManager, Guid token, int firstLeaf, int lastLeaf, List<node> children, int startingPageNumber, int startingBoundaryPageNumber, Stream fs, PageBuilder pb, PageBuilder pbOverflow)
+		private static Tuple<int,int,List<pgitem>> writeParentNodes(IPages pageManager, Guid token, int firstLeaf, int lastLeaf, List<pgitem> children, int startingPageNumber, int startingBoundaryPageNumber, Stream fs, PageBuilder pb, PageBuilder pbOverflow)
 		{
 			int nextPageNumber = startingPageNumber;
             int boundaryPageNumber = startingBoundaryPageNumber;
-			var nextGeneration = new List<node> ();
+			var nextGeneration = new List<pgitem> ();
 
             // 2 for the page type and flags
             // 2 for the stored count
@@ -1172,7 +1173,7 @@ namespace Zumero.LSM.cs
 
 			// assert children.Count > 1
 			for (int i = 0; i < children.Count; i++) {
-				node n = children [i];
+				pgitem n = children [i];
 				byte[] k = n.Key;
 
 				int neededForInline = 1 
@@ -1236,7 +1237,7 @@ namespace Zumero.LSM.cs
                             utils.SeekPage(fs, pb.PageSize, nextPageNumber);
                         }
 
-						nextGeneration.Add (new node {PageNumber = thisPageNumber, Key=children[i-1].Key});
+						nextGeneration.Add (new pgitem {PageNumber = thisPageNumber, Key=children[i-1].Key});
 
 						sofar = 0;
 						first = 0;
@@ -1272,7 +1273,7 @@ namespace Zumero.LSM.cs
 
 			// assert cur is null
 
-			return new Tuple<int,int,List<node>>(nextPageNumber, boundaryPageNumber, nextGeneration);
+			return new Tuple<int,int,List<pgitem>>(nextPageNumber, boundaryPageNumber, nextGeneration);
 		}
 
 		public static Tuple<Guid,int> Create(Stream fs, IPages pageManager, IEnumerable<KeyValuePair<byte[],Stream>> source)
@@ -1294,7 +1295,7 @@ namespace Zumero.LSM.cs
 			const int PAGE_OVERHEAD = 2 + 4 + 2 + 4;
             const int OFFSET_COUNT_PAIRS = 6;
 
-			var nodelist = new List<node> ();
+			var nodelist = new List<pgitem> ();
 
 			ushort countPairs = 0;
 			byte[] lastKey = null;
@@ -1370,7 +1371,7 @@ namespace Zumero.LSM.cs
                             utils.SeekPage(fs, pb.PageSize, nextPageNumber);
                         }
 
-						nodelist.Add (new node { PageNumber = thisPageNumber, Key = lastKey });
+						nodelist.Add (new pgitem { PageNumber = thisPageNumber, Key = lastKey });
 
 						prevPageNumber = thisPageNumber;
 						pb.Reset ();
@@ -1476,7 +1477,7 @@ namespace Zumero.LSM.cs
                     utils.SeekPage(fs, pb.PageSize, nextPageNumber);
                 }
 
-				nodelist.Add (new node { PageNumber = thisPageNumber, Key = lastKey });
+				nodelist.Add (new pgitem { PageNumber = thisPageNumber, Key = lastKey });
 			}
 
 			if (nodelist.Count > 0) {
