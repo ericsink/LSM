@@ -1,11 +1,11 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio 2012
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LSM_cs", "LSM_cs\LSM_cs.csproj", "{E27F39D7-16F2-4802-87F0-F3B42792E455}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LSM_cs", "cs\LSM_cs.csproj", "{E27F39D7-16F2-4802-87F0-F3B42792E455}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "tests", "tests\tests.csproj", "{DECC0B0D-5240-42D4-9BEB-238BE7317F79}"
 EndProject
-Project("{f2a71f9b-5d33-465a-a702-920d77279786}") = "LSM_fs", "LSM_fs\LSM_fs.fsproj", "{EC16340F-B28D-44EF-9101-FC496D16B255}"
+Project("{f2a71f9b-5d33-465a-a702-920d77279786}") = "LSM_fs", "fs\LSM_fs.fsproj", "{EC16340F-B28D-44EF-9101-FC496D16B255}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LSM_base", "LSM_base\LSM_base.csproj", "{E9E55FF3-EED9-457A-8CCD-2CBA6FEF5CF7}"
 EndProject
