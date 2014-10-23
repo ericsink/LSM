@@ -18,6 +18,7 @@ namespace Zumero.LSM
 
 open System
 open System.IO
+open System.Collections.Generic
 
 type IPages =
     abstract member PageSize : int with get
@@ -39,7 +40,16 @@ type ICursor =
     abstract member ValueLength : unit -> int
     abstract member KeyCompare : k:byte[] -> int
 
+type ITransaction =
+    abstract member Commit : seq<KeyValuePair<byte[],Stream>> -> unit
+    abstract member Rollback : unit->unit
+
+type IDatabase = 
+    abstract member BeginRead : unit->ICursor
+    // TODO what happens if it can't get the write lock?  throw?  null?  fs option?  wait?  async?
+    abstract member BeginWrite : unit->ITransaction
+
 module ICursorExtensions =
-    let ToSequenceOfKeyValuePairs (csr:ICursor) = seq { csr.First(); while csr.IsValid() do yield new System.Collections.Generic.KeyValuePair<byte[],Stream>(csr.Key(), csr.Value()); csr.Next(); done }
+    let ToSequenceOfKeyValuePairs (csr:ICursor) = seq { csr.First(); while csr.IsValid() do yield new KeyValuePair<byte[],Stream>(csr.Key(), csr.Value()); csr.Next(); done }
     let ToSequenceOfTuples (csr:ICursor) = seq { csr.First(); while csr.IsValid() do yield (csr.Key(), csr.Value()); csr.Next(); done }
 

@@ -1,4 +1,6 @@
 
+do we have a test the chains multicursors with other multicursors?
+
 db class should accept delegates for other implementations
 
 combo should maybe have a thing that gets a simple page mgr
