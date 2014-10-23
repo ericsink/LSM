@@ -5,7 +5,7 @@
     <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
     <ProjectGuid>{EC16340F-B28D-44EF-9101-FC496D16B255}</ProjectGuid>
     <OutputType>Library</OutputType>
-    <RootNamespace>LSM_fs</RootNamespace>
+    <RootNamespace>Zumero.LSM.fs</RootNamespace>
     <AssemblyName>LSM_fs</AssemblyName>
     <TargetFrameworkVersion>v4.5</TargetFrameworkVersion>
   </PropertyGroup>

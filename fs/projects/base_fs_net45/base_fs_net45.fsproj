@@ -5,8 +5,8 @@
     <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
     <ProjectGuid>{06CDF0A2-9D0A-47CF-8681-8B92D136F9E9}</ProjectGuid>
     <OutputType>Library</OutputType>
-    <RootNamespace>LSM_base</RootNamespace>
-    <AssemblyName>LSM_base</AssemblyName>
+    <RootNamespace>Zumero.LSM</RootNamespace>
+    <AssemblyName>LSM_base_fs</AssemblyName>
     <TargetFrameworkVersion>v4.5</TargetFrameworkVersion>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
