@@ -45,9 +45,9 @@
   </ItemGroup>
   <Import Project="$(MSBuildExtensionsPath32)\..\Microsoft SDKs\F#\3.1\Framework\v4.0\Microsoft.FSharp.Targets" />
   <ItemGroup>
-    <ProjectReference Include="..\..\..\cs\projects\base_cs_pcl\base_cs_pcl.csproj">
-      <Project>{E9E55FF3-EED9-457A-8CCD-2CBA6FEF5CF7}</Project>
-      <Name>base_cs_pcl</Name>
+    <ProjectReference Include="..\base_fs_net45\base_fs_net45.fsproj">
+      <Project>{06CDF0A2-9D0A-47CF-8681-8B92D136F9E9}</Project>
+      <Name>base_fs_net45</Name>
     </ProjectReference>
   </ItemGroup>
 </Project>

@@ -23,7 +23,7 @@ type IPages =
     abstract member PageSize : int with get
     abstract member Begin : unit->Guid
     abstract member GetRange : Guid->int*int
-    abstract member End : Guid->int->unit
+    abstract member End : Guid*int->unit
 
 type SeekOp = SEEK_EQ=0 | SEEK_LE=1 | SEEK_GE=2
 
@@ -39,3 +39,4 @@ type ICursor =
     abstract member ValueLength : unit -> int
     abstract member KeyCompare : k:byte[] -> int
 
+// TODO tbase relies on this assembly having some additional extension methods.
