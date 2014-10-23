@@ -46,9 +46,9 @@
   </ItemGroup>
   <Import Project="$(MSBuildExtensionsPath32)\..\Microsoft SDKs\F#\3.1\Framework\v4.0\Microsoft.FSharp.Targets" />
   <ItemGroup>
-    <ProjectReference Include="..\cs\projects\base_cs_pcl\LSM_base.csproj">
+    <ProjectReference Include="..\cs\projects\base_cs_pcl\base_cs_pcl.csproj">
       <Project>{E9E55FF3-EED9-457A-8CCD-2CBA6FEF5CF7}</Project>
-      <Name>LSM_base</Name>
+      <Name>base_cs_pcl</Name>
     </ProjectReference>
   </ItemGroup>
 </Project>

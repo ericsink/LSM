@@ -7,7 +7,7 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "tests", "tests\tests.csproj
 EndProject
 Project("{f2a71f9b-5d33-465a-a702-920d77279786}") = "LSM_fs", "fs\LSM_fs.fsproj", "{EC16340F-B28D-44EF-9101-FC496D16B255}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "base_cs_pcl", "cs\projects\base_cs_pcl\LSM_base.csproj", "{E9E55FF3-EED9-457A-8CCD-2CBA6FEF5CF7}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "base_cs_pcl", "cs\projects\base_cs_pcl\base_cs_pcl.csproj", "{E9E55FF3-EED9-457A-8CCD-2CBA6FEF5CF7}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "tapp", "tapp\tapp.csproj", "{2FE3B216-F994-4BE4-BD1B-F7DBA3C0D63E}"
 EndProject
