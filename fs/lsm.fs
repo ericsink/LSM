@@ -1531,67 +1531,82 @@ type BTreeSegment =
     // TODO Create overload for Map
     
     // TODO Create overload for System.Collections.Immutable.SortedDictionary
+    // which would be trusting that it was created with the right comparer?
 
     static member OpenCursor(fs, pageSize:int, rootPage:int) :ICursor =
         bt.OpenCursor(fs,pageSize,rootPage)
 
 type Database(_path) =
     let path = _path
-    let mutable locked = false // TODO encapulate this in a class?
-    let lck = [] // could be any object?
-    let currentState = [] // the current segment list
     let pageSize = 256 // TODO not hard-coded
-    let fs = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite)
-    let mutable segments:Map<Guid,(int*int) list> = Map.empty
-    let WASTE_PAGES_AFTER_EACH_BLOCK = 3
-    let PAGES_PER_BLOCK = 10
 
-    let mutable cur = 1
+    let fs = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite) 
+    // TODO file open here?  in a pcl wannabe?  but we can't pass in the filestream
+    // because we may need to open more of them?  because any operation that
+    // seeks on the stream will need its own copy of the stream.
+
+    let WASTE_PAGES_AFTER_EACH_BLOCK = 3 // TODO remove.  testing only.
+    let PAGES_PER_BLOCK = 10 // TODO a setting like pageSize
+
+    let lockInTransaction = [] // TODO could be any object?
+    let lockCur = [] // TODO could be any object?
+    let lockSegments = [] // TODO could be any object?
+
+    // TODO encapulate these mutables in their own little classes?
+    let mutable inTransaction = false 
+    let mutable cur = 1 // TODO header.  and size of pre-existing file.
+    let mutable currentState = [] // the current segment list
+    let mutable segments:Map<Guid,(int*int) list> = Map.empty
+
+    // TODO need a free block list
+
     let getRange num =
-        // TODO lock
-        let t = (cur, cur+num-1);
-        cur <- cur + num + WASTE_PAGES_AFTER_EACH_BLOCK
-        t
+        lock lockCur (fun () -> 
+            let t = (cur, cur+num-1) 
+            cur <- cur + num + WASTE_PAGES_AFTER_EACH_BLOCK
+            t
+            )
 
     interface ITransaction with
         member this.Commit(pairs:seq<kvp>) =
             let newSegment = BTreeSegment.Create(fs, this :> IPages, pairs)
-            // TODO put the segment in the current list
-            locked <- false
+            // TODO lockCurrentState?  or do we essentially have this lock already?
+            currentState <- newSegment :: currentState
+            inTransaction <- false
 
         member this.Rollback() =
-            locked <- false
+            inTransaction <- false
 
     interface IDatabase with
         member this.BeginRead() =
             let frozen = currentState
-            let cursors = List.map (fun x -> BTreeSegment.OpenCursor(fs, pageSize, x)) frozen
+            let cursors = List.map (fun x -> BTreeSegment.OpenCursor(fs, pageSize, snd x)) frozen
             MultiCursor.Create cursors
 
         member this.BeginWrite() =
-            let gotLock = lock lck (fun () -> if locked then false else locked <- true; true)
-            if not gotLock then failwith "already locked"
+            let gotLock = lock lockInTransaction (fun () -> if inTransaction then false else inTransaction <- true; true)
+            if not gotLock then failwith "already inTransaction"
             this :> ITransaction
 
 
     interface IPages with
         member this.PageSize = pageSize
         member this.Begin() = 
-            let token = Guid.NewGuid()
-            // TODO lock
-            segments <- segments.Add(token, List.empty)
-            token
+            lock lockSegments (fun () -> 
+                let token = Guid.NewGuid()
+                segments <- segments.Add(token, List.empty)
+                token
+                )
 
         member this.GetRange(token) =
             let t = getRange PAGES_PER_BLOCK
-            // TODO lock
-            segments <- segments.Add(token, t::segments.Item(token))
-            t
+            lock lockSegments (fun () -> segments <- segments.Add(token, t::segments.Item(token)); t)
 
         member this.End(token, lastPage) =
             let blocks = segments.Item(token)
             let lastBlock = List.head blocks
             let (_,lastGivenPage) = lastBlock
             if lastPage < lastGivenPage then
-                // TODO fix it
+                // TODO fix it.  rebuild the whole map just to change one int?
                 ()
+

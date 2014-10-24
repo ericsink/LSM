@@ -1,4 +1,7 @@
 
+maybe change GetRange to return a struct with firstPage,lastPage
+instead of a tuple.
+
 do we have a test the chains multicursors with other multicursors?
 
 db class should accept delegates for other implementations
