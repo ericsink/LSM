@@ -211,7 +211,7 @@ namespace lsm_tests
 	public class SimplePageManager : IPages
 	{
 		private readonly Stream fs;
-		int cur = 1;
+		int cur = 1; // TODO make room for header
 		private readonly Dictionary<Guid,List<Tuple<int,int>>> segments;
 		int pageSize;
 

@@ -489,10 +489,10 @@ type MultiCursor private (_subcursors:seq<ICursor>) =
         find sortfunc
 
     static member Create(_subcursors:seq<ICursor>) :ICursor =
-        upcast (MultiCursor _subcursors)
+        MultiCursor _subcursors :> ICursor
                
     static member Create([<ParamArray>] _subcursors: ICursor[]) :ICursor =
-        upcast (MultiCursor _subcursors)
+        MultiCursor _subcursors :> ICursor
                
     interface ICursor with
         member this.IsValid() = 
@@ -1461,9 +1461,9 @@ module bt =
                 if 0uy <> (vflag &&& FLAG_TOMBSTONE) then null
                 else if 0uy <> (vflag &&& FLAG_OVERFLOW) then 
                     let pagenum = pr.GetInt32()
-                    upcast (new myOverflowReadStream(fs, pr.PageSize, pagenum, vlen))
+                    new myOverflowReadStream(fs, pr.PageSize, pagenum, vlen) :> Stream
                 else 
-                    upcast (new MemoryStream(pr.GetArray (vlen)))
+                    new MemoryStream(pr.GetArray (vlen)) :> Stream
 
             member this.ValueLength() =
                 pr.SetPosition(leafKeys.[currentKey])
@@ -1507,7 +1507,7 @@ module bt =
                         currentKey <- countLeafKeys - 1
     
     let OpenCursor(fs, pageSize:int, rootPage:int) :ICursor =
-        upcast (new myCursor(fs, pageSize, rootPage))
+        new myCursor(fs, pageSize, rootPage) :> ICursor
 
 [<AbstractClass;Sealed>]
 type BTreeSegment =
@@ -1535,4 +1535,63 @@ type BTreeSegment =
     static member OpenCursor(fs, pageSize:int, rootPage:int) :ICursor =
         bt.OpenCursor(fs,pageSize,rootPage)
 
+type Database(_path) =
+    let path = _path
+    let mutable locked = false // TODO encapulate this in a class?
+    let lck = [] // could be any object?
+    let currentState = [] // the current segment list
+    let pageSize = 256 // TODO not hard-coded
+    let fs = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite)
+    let mutable segments:Map<Guid,(int*int) list> = Map.empty
+    let WASTE_PAGES_AFTER_EACH_BLOCK = 3
+    let PAGES_PER_BLOCK = 10
 
+    let mutable cur = 1
+    let getRange num =
+        // TODO lock
+        let t = (cur, cur+num-1);
+        cur <- cur + num + WASTE_PAGES_AFTER_EACH_BLOCK
+        t
+
+    interface ITransaction with
+        member this.Commit(pairs:seq<kvp>) =
+            let newSegment = BTreeSegment.Create(fs, this :> IPages, pairs)
+            // TODO put the segment in the current list
+            locked <- false
+
+        member this.Rollback() =
+            locked <- false
+
+    interface IDatabase with
+        member this.BeginRead() =
+            let frozen = currentState
+            let cursors = List.map (fun x -> BTreeSegment.OpenCursor(fs, pageSize, x)) frozen
+            MultiCursor.Create cursors
+
+        member this.BeginWrite() =
+            let gotLock = lock lck (fun () -> if locked then false else locked <- true; true)
+            if not gotLock then failwith "already locked"
+            this :> ITransaction
+
+
+    interface IPages with
+        member this.PageSize = pageSize
+        member this.Begin() = 
+            let token = Guid.NewGuid()
+            // TODO lock
+            segments <- segments.Add(token, List.empty)
+            token
+
+        member this.GetRange(token) =
+            let t = getRange PAGES_PER_BLOCK
+            // TODO lock
+            segments <- segments.Add(token, t::segments.Item(token))
+            t
+
+        member this.End(token, lastPage) =
+            let blocks = segments.Item(token)
+            let lastBlock = List.head blocks
+            let (_,lastGivenPage) = lastBlock
+            if lastPage < lastGivenPage then
+                // TODO fix it
+                ()
