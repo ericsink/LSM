@@ -21,6 +21,7 @@ open System.IO
 open System.Collections.Generic
 
 type IPages =
+    // TODO consider having IPages return a SegmentInProgressState instead of a Guid
     abstract member PageSize : int with get
     abstract member Begin : unit->Guid
     abstract member GetRange : Guid->int*int
@@ -42,6 +43,7 @@ type ICursor =
     abstract member KeyCompare : k:byte[] -> int
 
 type ITransaction =
+    // consider inherit IDisposable and rollback if commit is never called
     abstract member Commit : (Guid*int) list -> unit
     abstract member Rollback : unit->unit
 

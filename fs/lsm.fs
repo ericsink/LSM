@@ -1577,8 +1577,7 @@ type BTreeSegment =
     static member OpenCursor(fs, pageSize:int, rootPage:int, hook:Action<ICursor>) :ICursor =
         bt.OpenCursor(fs,pageSize,rootPage,hook)
 
-type MemoryPageManager(_ms, _pageSize) =
-    let ms = _ms
+type trivialMemoryPageManager(_pageSize) =
     let pageSize = _pageSize
 
     interface IPages with
@@ -1607,25 +1606,28 @@ type Database(_io:IDatabaseFile) =
     let fsMine = io.OpenForWriting()
 
     let WASTE_PAGES_AFTER_EACH_BLOCK = 3 // TODO remove.  testing only.
-    let PAGES_PER_BLOCK = 10 // TODO a setting like pageSize
+    let PAGES_PER_BLOCK = 10 // TODO not hard-coded
 
-    let lockInTransaction = [] // TODO could be any object?
-    let lockCur = [] // TODO could be any object?
-    let lockSegments = [] // TODO could be any object?
-
-    // TODO need a free block list
+    let critSectionInTransaction = [] // TODO could be any object?
+    let critSectionNextPage = [] // TODO could be any object?
+    let critSectionSegments = [] // TODO could be any object?
+    let critSectionCursors = [] // TODO could be any object?
 
     // TODO encapulate these mutables in their own little classes?
     let mutable inTransaction = false 
-    let mutable cur = 1 // TODO header.  and size of pre-existing file.
+    let mutable nextPage = 1 // TODO header.  and size of pre-existing file.
     let mutable currentState = [] // the current segment list
     let mutable segments:Map<Guid,(int*int) list> = Map.empty
     let mutable cursors = []
 
+    // TODO need a free block list so the following code can reuse
+    // pages.  right now it always returns more blocks at the end
+    // of the file.
+
     let getRange num =
-        lock lockCur (fun () -> 
-            let t = (cur, cur+num-1) 
-            cur <- cur + num + WASTE_PAGES_AFTER_EACH_BLOCK
+        lock critSectionNextPage (fun () -> 
+            let t = (nextPage, nextPage+num-1) 
+            nextPage <- nextPage + num + WASTE_PAGES_AFTER_EACH_BLOCK
             t
             )
 
@@ -1652,7 +1654,7 @@ type Database(_io:IDatabaseFile) =
 
     let buildSegmentInfoList (sd:Map<Guid,(int*int) list>) = 
         let ms = new MemoryStream()
-        let pm = new MemoryPageManager(ms, 512)
+        let pm = new trivialMemoryPageManager(512)
         let d = new System.Collections.Generic.Dictionary<byte[],Stream>()
         Map.iter (fun (g:Guid) blocks -> d.[g.ToByteArray()] <- new MemoryStream(buildBlockList blocks)) sd
         BTreeSegment.Create(ms, pm, d) |> ignore
@@ -1682,15 +1684,15 @@ type Database(_io:IDatabaseFile) =
             // TODO remove csr from cursors list
             fs.Close()
         let csr = BTreeSegment.OpenCursor(fs, pageSize, page, new Action<ICursor>(hook))
-        cursors <- (seg,csr) :: cursors
+        lock critSectionCursors (fun () -> cursors <- (seg,csr) :: cursors; )
         csr
 
 
     interface ITransaction with
         member this.Commit(newSegments:(Guid*int) list) =
-            // TODO lockCurrentState?  or do we essentially have this lock already?
-            currentState <- newSegments @ currentState
-            // TODO write currentState to the first page
+            let newState = newSegments @ currentState
+            // TODO write newState to the first page
+            currentState <- newState
             inTransaction <- false
 
         member this.Rollback() =
@@ -1707,15 +1709,20 @@ type Database(_io:IDatabaseFile) =
             MultiCursor.Create cursors
 
         member this.BeginTransaction() =
-            let gotLock = lock lockInTransaction (fun () -> if inTransaction then false else inTransaction <- true; true)
+            let gotLock = lock critSectionInTransaction (fun () -> if inTransaction then false else inTransaction <- true; true)
             if not gotLock then failwith "already inTransaction"
             this :> ITransaction
 
 
     interface IPages with
         member this.PageSize = pageSize
+
+        // TODO consider returning a segment in progress thing
+        // instead of mutable segments map getting modified every
+        // time through these calls.
+
         member this.Begin() = 
-            lock lockSegments (fun () -> 
+            lock critSectionSegments (fun () -> 
                 let token = Guid.NewGuid()
                 segments <- segments.Add(token, List.empty)
                 token
@@ -1723,7 +1730,7 @@ type Database(_io:IDatabaseFile) =
 
         member this.GetRange(token) =
             let t = getRange PAGES_PER_BLOCK
-            lock lockSegments (fun () -> segments <- segments.Add(token, t::segments.Item(token)); t)
+            lock critSectionSegments (fun () -> segments <- segments.Add(token, t::segments.Item(token)); t)
 
         member this.End(token, lastPage) =
             let blocks = segments.Item(token)
@@ -1732,5 +1739,8 @@ type Database(_io:IDatabaseFile) =
             if lastPage < lastGivenPage then
                 // TODO fix it.  rebuild the whole map just to change one int?
                 ()
-            // TODO save segment info list
+            let locationOfSegmentInfoList = saveSegmentInfoList segments
+            // TODO the old location of the segment info list is now free pages
+            // TODO rewrite the header.
+            ()
 
