@@ -1,8 +1,16 @@
 
+check exists in constructor.  if so, read the file header.
+read the segment info list.  construct a list of all free
+pages (ranges).
+
+read/write the file header
+
+SegmentInProgress
+
 maybe change GetRange to return a struct with firstPage,lastPage
 instead of a tuple.
 
-do we have a test the chains multicursors with other multicursors?
+do we have a test that chains multicursors with other multicursors?
 
 db class should accept delegates for other implementations
 
