@@ -132,4 +132,6 @@ shorter keys in the parent nodes?
 
 prefix key compression?
 
+how to plug in page-level encryption?
+
 

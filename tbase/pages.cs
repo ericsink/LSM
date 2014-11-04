@@ -30,7 +30,7 @@ namespace lsm_tests
     // header contains the segment list.  but it's just guids
     // and page numbers.
     //
-    // segments need an age.  timestamps?
+    // and maybe segments need an age?  and timestamps?
     //
     // segment info list contains block list for each segment.
     // every segment in the current segment list must be in this

@@ -1536,6 +1536,16 @@ type BTreeSegment =
     static member OpenCursor(fs, pageSize:int, rootPage:int) :ICursor =
         bt.OpenCursor(fs,pageSize,rootPage)
 
+type MemoryPageManager(_ms, _pageSize) =
+    let ms = _ms
+    let pageSize = _pageSize
+
+    interface IPages with
+        member this.PageSize = pageSize
+        member this.Begin() = Guid.NewGuid()
+        member this.End(token,lastPage) = ()
+        member this.GetRange(token) = (1,-1)
+
 type Database(_path) =
     let path = _path
     let pageSize = 256 // TODO not hard-coded
@@ -1552,13 +1562,14 @@ type Database(_path) =
     let lockCur = [] // TODO could be any object?
     let lockSegments = [] // TODO could be any object?
 
+    // TODO need a free block list
+
     // TODO encapulate these mutables in their own little classes?
     let mutable inTransaction = false 
     let mutable cur = 1 // TODO header.  and size of pre-existing file.
     let mutable currentState = [] // the current segment list
     let mutable segments:Map<Guid,(int*int) list> = Map.empty
-
-    // TODO need a free block list
+    let mutable cursors = []
 
     let getRange num =
         lock lockCur (fun () -> 
@@ -1567,23 +1578,82 @@ type Database(_path) =
             t
             )
 
+    // a block list for a segment is a single blob of bytes.
+    // number of pairs
+    // each pair is startBlock,lastBlock
+    // all in varints
+
+    let spaceNeededForBlockList (blocks:(int*int) list) =
+        let a = List.sumBy (fun t -> Varint.SpaceNeededFor(fst t |> int64) + Varint.SpaceNeededFor(snd t |> int64)) blocks
+        let b = Varint.SpaceNeededFor(List.length blocks |> int64)
+        a + b
+
+    let buildBlockList (blocks:(int*int) list) =
+        let space = spaceNeededForBlockList blocks
+        let pb = new PageBuilder(space)
+        pb.PutVarint(List.length blocks |> int64)
+        List.iter (fun t -> pb.PutVarint(fst t |> int64); pb.PutVarint(snd t |> int64);) blocks
+        pb.Buffer
+
+    // the segment info list is a list of segments (by guid), and for
+    // each one, a block list (a blob described above).  it is written
+    // into a memory btree which always has page size 512.
+
+    let buildSegmentInfoList (sd:Map<Guid,(int*int) list>) = 
+        let ms = new MemoryStream()
+        let pm = new MemoryPageManager(ms, 512)
+        let d = new System.Collections.Generic.Dictionary<byte[],Stream>()
+        Map.iter (fun (g:Guid) blocks -> d.[g.ToByteArray()] <- new MemoryStream(buildBlockList blocks)) sd
+        BTreeSegment.Create(ms, pm, d) |> ignore
+        ms
+
+    // the segment info list is written to a contiguous set of pages.
+    // those pages are special.  they are not obtained from the "page manager"
+    // (this class's implementation of IPages below).  the segment info list
+    // is not a segment in the segment info list.  it is a btree segment,
+    // but it is written into a set of pages obtained directly from getRange.
+    // a reference to the segment info list page range is recorded in the
+    // header of the file.
+
+    let saveSegmentInfoList (sd:Map<Guid,(int*int) list>) = 
+        let ms = buildSegmentInfoList sd
+        let len = ms.Length |> int
+        let pagesNeeded = len / pageSize + if 0 <> len % pageSize then 1 else 0
+        let range = getRange (pagesNeeded)
+        utils.SeekPage(fs, pageSize, fst range)
+        fs.Write(ms.GetBuffer(), 0, len)
+        range
+
+    let getCursor seg =
+        let page = snd seg
+        // TODO get a new filestream for this
+        let csr = BTreeSegment.OpenCursor(fs, pageSize, page)
+        // TODO need a way for a cursor to get off this list when it's closed
+        cursors <- (seg,csr) :: cursors
+        csr
+
+
     interface ITransaction with
-        member this.Commit(pairs:seq<kvp>) =
-            let newSegment = BTreeSegment.Create(fs, this :> IPages, pairs)
+        member this.Commit(newSegments:(Guid*int) list) =
             // TODO lockCurrentState?  or do we essentially have this lock already?
-            currentState <- newSegment :: currentState
+            currentState <- newSegments @ currentState
+            // TODO write currentState to the first page
             inTransaction <- false
 
         member this.Rollback() =
             inTransaction <- false
 
+
     interface IDatabase with
+        member this.WriteSegment(pairs:seq<kvp>) =
+            // TODO get a new filestream for this
+            BTreeSegment.Create(fs, this :> IPages, pairs)
+
         member this.BeginRead() =
-            let frozen = currentState
-            let cursors = List.map (fun x -> BTreeSegment.OpenCursor(fs, pageSize, snd x)) frozen
+            let cursors = List.map (fun x -> getCursor x) currentState
             MultiCursor.Create cursors
 
-        member this.BeginWrite() =
+        member this.BeginTransaction() =
             let gotLock = lock lockInTransaction (fun () -> if inTransaction then false else inTransaction <- true; true)
             if not gotLock then failwith "already inTransaction"
             this :> ITransaction

@@ -41,13 +41,14 @@ type ICursor =
     abstract member KeyCompare : k:byte[] -> int
 
 type ITransaction =
-    abstract member Commit : seq<KeyValuePair<byte[],Stream>> -> unit
+    abstract member Commit : (Guid*int) list -> unit
     abstract member Rollback : unit->unit
 
 type IDatabase = 
+    abstract member WriteSegment : seq<KeyValuePair<byte[],Stream>> -> Guid * int
     abstract member BeginRead : unit->ICursor
     // TODO what happens if it can't get the write lock?  throw?  null?  fs option?  wait?  async?
-    abstract member BeginWrite : unit->ITransaction
+    abstract member BeginTransaction : unit->ITransaction
 
 module ICursorExtensions =
     let ToSequenceOfKeyValuePairs (csr:ICursor) = seq { csr.First(); while csr.IsValid() do yield new KeyValuePair<byte[],Stream>(csr.Key(), csr.Value()); csr.Next(); done }
