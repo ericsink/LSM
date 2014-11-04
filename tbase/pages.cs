@@ -49,7 +49,7 @@ namespace lsm_tests
     //     block size
     //     etc
     //
-    //     address of segment info list (firstPage, lastPage, size in 512 pages)
+    //     address of segment info list (firstPage, lastPage, innerPageSize, lengthInBytes)
     //
     //     current segment list
     //

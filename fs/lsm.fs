@@ -1593,7 +1593,7 @@ type dbf(_path) =
 
     interface IDatabaseFile with
         member this.OpenForWriting() =
-            new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite) :> Stream
+            new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.ReadWrite) :> Stream
         member this.OpenForReading() =
             new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite) :> Stream
         member this.Exists() =
@@ -1601,29 +1601,67 @@ type dbf(_path) =
 
 type Database(_io:IDatabaseFile) =
     let io = _io
-    let pageSize = 256 // TODO not hard-coded
-
     let fsMine = io.OpenForWriting()
+
+    let HEADER_SIZE_IN_BYTES = 4096
 
     let WASTE_PAGES_AFTER_EACH_BLOCK = 3 // TODO remove.  testing only.
     let PAGES_PER_BLOCK = 10 // TODO not hard-coded
 
-    let critSectionInTransaction = [] // TODO could be any object?
-    let critSectionNextPage = [] // TODO could be any object?
-    let critSectionSegments = [] // TODO could be any object?
-    let critSectionCursors = [] // TODO could be any object?
-
-    // TODO encapulate these mutables in their own little classes?
-    let mutable inTransaction = false 
-    let mutable nextPage = 1 // TODO header.  and size of pre-existing file.
+    let mutable pageSize = 256 // TODO this doesn't really want to be mutable
+    let mutable nextPage = 1
     let mutable currentState = [] // the current segment list
     let mutable segments:Map<Guid,(int*int) list> = Map.empty
-    let mutable cursors = []
+
+    let readHeader() =
+        let read() =
+            if fsMine.Length >= (HEADER_SIZE_IN_BYTES |> int64) then
+                let pr = new PageReader(HEADER_SIZE_IN_BYTES)
+                pr.Read(fsMine)
+                Some pr
+            else
+                None
+
+        let parse (pr:PageReader) =
+            pageSize <- pr.GetInt32()
+            let segmentInfoListFirstPage = pr.GetInt32()
+            let segmentInfoListLastPage = pr.GetInt32()
+            let segmentInfoListInnerPageSize = pr.GetInt32()
+            let segmentInfoListLength = pr.GetInt32()
+            // TODO need to remember these four so we can free the pages later
+            // TODO read this into mutable segments map
+            let countCurrentSegments = pr.GetInt32()
+            // TODO do the following in a loop
+            let token = pr.GetArray(16)
+            let g = new Guid(token)
+            let page = pr.GetInt32()
+            // TODO need the list to be in the right order
+            currentState <- (g,page) :: currentState
+
+        let calcNextPage (len:int64) =
+            let numPagesSoFar = if (int64 pageSize) > len then 1 else (int (len / (int64 pageSize)))
+            numPagesSoFar + 1
+
+        fsMine.Seek(0L, SeekOrigin.Begin) |> ignore
+        let hdr = read()
+        match hdr with
+            | Some pr ->
+                parse pr
+                nextPage <- calcNextPage fsMine.Length
+            | None ->
+                // defaults
+                pageSize <- 256 // TODO very low default, only for testing
+                segments <- Map.empty
+                currentState <- []
+                nextPage <- calcNextPage (int64 HEADER_SIZE_IN_BYTES)
+
+    do readHeader() // TODO lock critSection on reading the header
 
     // TODO need a free block list so the following code can reuse
     // pages.  right now it always returns more blocks at the end
     // of the file.
 
+    let critSectionNextPage = [] // TODO could be any object?
     let getRange num =
         lock critSectionNextPage (fun () -> 
             let t = (nextPage, nextPage+num-1) 
@@ -1652,9 +1690,9 @@ type Database(_io:IDatabaseFile) =
     // each one, a block list (a blob described above).  it is written
     // into a memory btree which always has page size 512.
 
-    let buildSegmentInfoList (sd:Map<Guid,(int*int) list>) = 
+    let buildSegmentInfoList pageSize (sd:Map<Guid,(int*int) list>) = 
         let ms = new MemoryStream()
-        let pm = new trivialMemoryPageManager(512)
+        let pm = new trivialMemoryPageManager(pageSize)
         let d = new System.Collections.Generic.Dictionary<byte[],Stream>()
         Map.iter (fun (g:Guid) blocks -> d.[g.ToByteArray()] <- new MemoryStream(buildBlockList blocks)) sd
         BTreeSegment.Create(ms, pm, d) |> ignore
@@ -1669,24 +1707,31 @@ type Database(_io:IDatabaseFile) =
     // header of the file.
 
     let saveSegmentInfoList (sd:Map<Guid,(int*int) list>) = 
-        let ms = buildSegmentInfoList sd
+        let pageSize = 512
+        let ms = buildSegmentInfoList pageSize sd
         let len = ms.Length |> int
         let pagesNeeded = len / pageSize + if 0 <> len % pageSize then 1 else 0
         let range = getRange (pagesNeeded)
         utils.SeekPage(fsMine, pageSize, fst range)
         fsMine.Write(ms.GetBuffer(), 0, len)
-        range
+        (range, len, pageSize)
 
+    let critSectionCursors = [] // TODO could be any object?
+    let mutable cursors = []
     let getCursor seg =
         let page = snd seg
         let fs = io.OpenForReading()
         let hook (csr:ICursor) =
-            // TODO remove csr from cursors list
             fs.Close()
+            // TODO remove csr from cursors list
         let csr = BTreeSegment.OpenCursor(fs, pageSize, page, new Action<ICursor>(hook))
         lock critSectionCursors (fun () -> cursors <- (seg,csr) :: cursors; )
         csr
 
+    let critSectionInTransaction = [] // TODO could be any object?
+    let mutable inTransaction = false 
+
+    let critSectionSegments = [] // TODO could be any object?
 
     interface ITransaction with
         member this.Commit(newSegments:(Guid*int) list) =
