@@ -35,7 +35,7 @@ namespace Zumero.LSM
 		SEEK_GE
 	}
 
-	public interface ICursor
+	public interface ICursor : IDisposable
 	{
 		void Seek(byte[] k, SeekOp sop);
 

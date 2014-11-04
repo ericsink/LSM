@@ -69,6 +69,10 @@ namespace lsm_tests
 			}
 		}
 
+		public void Dispose()
+		{
+		}
+
 		public myCursor(Dictionary<byte[],Stream> _pairs)
 		{
 			pairs = _pairs;
@@ -223,9 +227,14 @@ namespace lsm_tests
 		}
 
 		public abstract Tuple<Guid,int> create_btree_segment(Stream fs,IPages pageManager,IEnumerable<KeyValuePair<byte[],Stream>> source);
-		public abstract ICursor open_btree_segment(Stream fs,int pageSize,int rootPage);
+		public abstract ICursor open_btree_segment(Stream fs,int pageSize,int rootPage,Action<ICursor> hook);
 		public abstract ICursor create_living_cursor(ICursor csr);
 		public abstract ICursor create_multicursor(params ICursor[] a);
+
+		public ICursor open_btree_segment(Stream fs,int pageSize,int rootPage)
+		{
+			return open_btree_segment (fs, pageSize, rootPage, null);
+		}
 
 		public static List<combo> get_combos()
 		{
@@ -245,9 +254,9 @@ namespace lsm_tests
 			return Zumero.LSM.cs.BTreeSegment.Create(fs, pageManager, source);
         }
 
-		public override ICursor open_btree_segment(Stream fs,int pageSize,int rootPage)
+		public override ICursor open_btree_segment(Stream fs,int pageSize,int rootPage,Action<ICursor> hook)
         {
-            return Zumero.LSM.cs.BTreeSegment.OpenCursor(fs,pageSize,rootPage);
+            return Zumero.LSM.cs.BTreeSegment.OpenCursor(fs,pageSize,rootPage,hook);
         }
 
 		public override ICursor create_living_cursor(ICursor csr)
@@ -269,9 +278,9 @@ namespace lsm_tests
 			return Zumero.LSM.fs.BTreeSegment.Create(fs, pageManager, source);
         }
 
-		public override ICursor open_btree_segment(Stream fs,int pageSize,int rootPage)
+		public override ICursor open_btree_segment(Stream fs,int pageSize,int rootPage,Action<ICursor> hook)
         {
-            return Zumero.LSM.fs.BTreeSegment.OpenCursor(fs,pageSize,rootPage);
+            return Zumero.LSM.fs.BTreeSegment.OpenCursor(fs,pageSize,rootPage,hook);
         }
 
 		public override ICursor create_living_cursor(ICursor csr)
@@ -293,9 +302,9 @@ namespace lsm_tests
 			return Zumero.LSM.cs.BTreeSegment.Create(fs, pageManager, source);
         }
 
-		public override ICursor open_btree_segment(Stream fs,int pageSize,int rootPage)
+		public override ICursor open_btree_segment(Stream fs,int pageSize,int rootPage,Action<ICursor> hook)
         {
-            return Zumero.LSM.fs.BTreeSegment.OpenCursor(fs,pageSize,rootPage);
+            return Zumero.LSM.fs.BTreeSegment.OpenCursor(fs,pageSize,rootPage,hook);
         }
 
 		public override ICursor create_living_cursor(ICursor csr)
@@ -317,9 +326,9 @@ namespace lsm_tests
 			return Zumero.LSM.fs.BTreeSegment.Create(fs, pageManager, source);
         }
 
-		public override ICursor open_btree_segment(Stream fs,int pageSize,int rootPage)
+		public override ICursor open_btree_segment(Stream fs,int pageSize,int rootPage,Action<ICursor> hook)
         {
-            return Zumero.LSM.cs.BTreeSegment.OpenCursor(fs,pageSize,rootPage);
+            return Zumero.LSM.cs.BTreeSegment.OpenCursor(fs,pageSize,rootPage,hook);
         }
 
 		public override ICursor create_living_cursor(ICursor csr)

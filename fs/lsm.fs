@@ -488,13 +488,27 @@ type MultiCursor private (_subcursors:seq<ICursor>) =
         let sortfunc (a:ICursor) (b:ICursor) = b.KeyCompare(a.Key())
         find sortfunc
 
+    let dispose itIsSafeToAlsoFreeManagedObjects =
+        // TODO dispose subcursors?
+        if itIsSafeToAlsoFreeManagedObjects then
+            ()
+
+    override this.Finalize() =
+        dispose false
+
     static member Create(_subcursors:seq<ICursor>) :ICursor =
-        MultiCursor _subcursors :> ICursor
+        let mc = new MultiCursor(_subcursors)
+        mc :> ICursor
                
     static member Create([<ParamArray>] _subcursors: ICursor[]) :ICursor =
-        MultiCursor _subcursors :> ICursor
+        let mc = new MultiCursor(_subcursors)
+        mc :> ICursor
                
     interface ICursor with
+        member this.Dispose() =
+            dispose true
+            GC.SuppressFinalize(this)
+
         member this.IsValid() = 
             match cur with
             | Some csr -> csr.IsValid()
@@ -568,7 +582,19 @@ type LivingCursor(ch:ICursor) =
         while (chain.IsValid() && (chain.ValueLength() < 0)) do
             chain.Prev()
 
+    let dispose itIsSafeToAlsoFreeManagedObjects =
+        // TODO dispose chain?
+        if itIsSafeToAlsoFreeManagedObjects then
+            ()
+
+    override this.Finalize() =
+        dispose false
+
     interface ICursor with
+        member this.Dispose() =
+            dispose true
+            GC.SuppressFinalize(this)
+
         member this.First() = 
             chain.First()
             skipTombstonesForward()
@@ -1212,10 +1238,11 @@ module bt =
         let ostrm = new myOverflowReadStream(fs, pageSize, firstPage, len)
         utils.ReadAll(ostrm)
 
-    type private myCursor(_fs:Stream, pageSize:int, _rootPage:int) =
+    type private myCursor(_fs:Stream, pageSize:int, _rootPage:int, _hook:Action<ICursor>) =
         let fs = _fs
         let rootPage = _rootPage
         let pr = new PageReader(pageSize)
+        let hook = _hook
 
         let mutable currentPage:int = 0
         let mutable leafKeys:int[] = null
@@ -1441,7 +1468,21 @@ module bt =
                     else
                         search found k sop
 
+        let dispose itIsSafeToAlsoFreeManagedObjects this =
+            if itIsSafeToAlsoFreeManagedObjects then
+                ()
+            if hook <> null then 
+                let fsHook = FuncConvert.ToFSharpFunc hook
+                fsHook(this)
+
+        override this.Finalize() =
+            dispose false this
+
         interface ICursor with
+            member this.Dispose() =
+                dispose true this
+                GC.SuppressFinalize(this)
+
             member this.IsValid() =
                 leafIsValid()
 
@@ -1506,8 +1547,8 @@ module bt =
                         readLeaf()
                         currentKey <- countLeafKeys - 1
     
-    let OpenCursor(fs, pageSize:int, rootPage:int) :ICursor =
-        new myCursor(fs, pageSize, rootPage) :> ICursor
+    let OpenCursor(fs, pageSize:int, rootPage:int, hook:Action<ICursor>) :ICursor =
+        new myCursor(fs, pageSize, rootPage, hook) :> ICursor
 
 [<AbstractClass;Sealed>]
 type BTreeSegment =
@@ -1533,8 +1574,8 @@ type BTreeSegment =
     // TODO Create overload for System.Collections.Immutable.SortedDictionary
     // which would be trusting that it was created with the right comparer?
 
-    static member OpenCursor(fs, pageSize:int, rootPage:int) :ICursor =
-        bt.OpenCursor(fs,pageSize,rootPage)
+    static member OpenCursor(fs, pageSize:int, rootPage:int, hook:Action<ICursor>) :ICursor =
+        bt.OpenCursor(fs,pageSize,rootPage,hook)
 
 type MemoryPageManager(_ms, _pageSize) =
     let ms = _ms
@@ -1543,17 +1584,27 @@ type MemoryPageManager(_ms, _pageSize) =
     interface IPages with
         member this.PageSize = pageSize
         member this.Begin() = Guid.NewGuid()
-        member this.End(token,lastPage) = ()
-        member this.GetRange(token) = (1,-1)
+        member this.End(_,_) = ()
+        member this.GetRange(_) = (1,-1)
 
-type Database(_path) =
+type dbf(_path) = 
     let path = _path
+
+    // TODO this code should move elsewhere, since this file wants to be a PCL
+
+    interface IDatabaseFile with
+        member this.OpenForWriting() =
+            new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite) :> Stream
+        member this.OpenForReading() =
+            new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite) :> Stream
+        member this.Exists() =
+            File.Exists(path)
+
+type Database(_io:IDatabaseFile) =
+    let io = _io
     let pageSize = 256 // TODO not hard-coded
 
-    let fs = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite) 
-    // TODO file open here?  in a pcl wannabe?  but we can't pass in the filestream
-    // because we may need to open more of them?  because any operation that
-    // seeks on the stream will need its own copy of the stream.
+    let fsMine = io.OpenForWriting()
 
     let WASTE_PAGES_AFTER_EACH_BLOCK = 3 // TODO remove.  testing only.
     let PAGES_PER_BLOCK = 10 // TODO a setting like pageSize
@@ -1620,15 +1671,17 @@ type Database(_path) =
         let len = ms.Length |> int
         let pagesNeeded = len / pageSize + if 0 <> len % pageSize then 1 else 0
         let range = getRange (pagesNeeded)
-        utils.SeekPage(fs, pageSize, fst range)
-        fs.Write(ms.GetBuffer(), 0, len)
+        utils.SeekPage(fsMine, pageSize, fst range)
+        fsMine.Write(ms.GetBuffer(), 0, len)
         range
 
     let getCursor seg =
         let page = snd seg
-        // TODO get a new filestream for this
-        let csr = BTreeSegment.OpenCursor(fs, pageSize, page)
-        // TODO need a way for a cursor to get off this list when it's closed
+        let fs = io.OpenForReading()
+        let hook (csr:ICursor) =
+            // TODO remove csr from cursors list
+            fs.Close()
+        let csr = BTreeSegment.OpenCursor(fs, pageSize, page, new Action<ICursor>(hook))
         cursors <- (seg,csr) :: cursors
         csr
 
@@ -1646,7 +1699,7 @@ type Database(_path) =
 
     interface IDatabase with
         member this.WriteSegment(pairs:seq<kvp>) =
-            // TODO get a new filestream for this
+            use fs = io.OpenForWriting()
             BTreeSegment.Create(fs, this :> IPages, pairs)
 
         member this.BeginRead() =
@@ -1679,4 +1732,5 @@ type Database(_path) =
             if lastPage < lastGivenPage then
                 // TODO fix it.  rebuild the whole map just to change one int?
                 ()
+            // TODO save segment info list
 

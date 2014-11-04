@@ -668,6 +668,22 @@ namespace Zumero.LSM.cs
 		private ICursor cur;
 		private Direction dir;
 
+		protected void Dispose(bool itIsSafeToAlsoFreeManagedObjects)
+		{
+			// TODO call Dispose on subcursors?
+		}
+
+		public void Dispose()
+		{
+			Dispose (true);
+			GC.SuppressFinalize (this);
+		}
+
+		~MultiCursor()
+		{
+			Dispose (false);
+		}
+
 		public static ICursor Create(params ICursor[] _subcursors)
 		{
 			return new MultiCursor(_subcursors);
@@ -842,6 +858,22 @@ namespace Zumero.LSM.cs
 		public LivingCursor(ICursor _chain)
 		{
 			chain = _chain;
+		}
+
+		protected void Dispose(bool itIsSafeToAlsoFreeManagedObjects)
+		{
+			// TODO call Dispose on chain?
+		}
+
+		public void Dispose()
+		{
+			Dispose (true);
+			GC.SuppressFinalize (this);
+		}
+
+		~LivingCursor()
+		{
+			Dispose (false);
 		}
 
 		bool ICursor.IsValid()
@@ -1757,6 +1789,7 @@ namespace Zumero.LSM.cs
 			private readonly int firstLeaf;
 			private readonly int lastLeaf;
 			private readonly PageReader pr;
+			private readonly Action<ICursor> hook;
 
 			private int currentPage = 0;
 
@@ -1764,11 +1797,30 @@ namespace Zumero.LSM.cs
 			private int previousLeaf;
 			private int currentKey;
 
-			public myCursor(Stream _fs, int pageSize, int _rootPage)
+			protected void Dispose(bool itIsSafeToAlsoFreeManagedObjects)
+			{
+				if (hook != null) {
+					hook (this);
+				}
+			}
+
+			public void Dispose()
+			{
+				Dispose (true);
+				GC.SuppressFinalize (this);
+			}
+
+			~myCursor()
+			{
+				Dispose (false);
+			}
+
+			public myCursor(Stream _fs, int pageSize, int _rootPage, Action<ICursor> _hook)
 			{
 				// TODO if !(strm.CanSeek()) throw?
 				rootPage = _rootPage;
 				fs = _fs;
+				hook = _hook;
                 pr = new PageReader(pageSize);
 				if (!setCurrentPage(rootPage)) {
 					throw new Exception();
@@ -2196,9 +2248,9 @@ namespace Zumero.LSM.cs
 
 		}
 
-		public static ICursor OpenCursor(Stream fs, int pageSize, int rootPage)
+		public static ICursor OpenCursor(Stream fs, int pageSize, int rootPage, Action<ICursor> hook)
 		{
-			return new myCursor(fs, pageSize, rootPage);
+			return new myCursor(fs, pageSize, rootPage, hook);
 		}
 
 	}

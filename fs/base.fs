@@ -29,6 +29,7 @@ type IPages =
 type SeekOp = SEEK_EQ=0 | SEEK_LE=1 | SEEK_GE=2
 
 type ICursor =
+    inherit IDisposable
     abstract member Seek : k:byte[] * sop:SeekOp -> unit
     abstract member First : unit -> unit
     abstract member Last : unit -> unit
@@ -43,6 +44,11 @@ type ICursor =
 type ITransaction =
     abstract member Commit : (Guid*int) list -> unit
     abstract member Rollback : unit->unit
+
+type IDatabaseFile =
+    abstract member Exists : unit -> bool
+    abstract member OpenForReading : unit -> Stream
+    abstract member OpenForWriting : unit -> Stream
 
 type IDatabase = 
     abstract member WriteSegment : seq<KeyValuePair<byte[],Stream>> -> Guid * int
