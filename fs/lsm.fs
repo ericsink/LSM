@@ -1608,6 +1608,9 @@ type Database(_io:IDatabaseFile) =
     let WASTE_PAGES_AFTER_EACH_BLOCK = 3 // TODO remove.  testing only.
     let PAGES_PER_BLOCK = 10 // TODO not hard-coded
 
+    // the following init values aren't really defaults.  they just establish
+    // the type.  the real defaults occur when the header is read, or rather,
+    // not-read because it is not present.
     let mutable pageSize = 256 // TODO this doesn't really want to be mutable
     let mutable nextPage = 1
     let mutable currentState = [] // the current segment list
@@ -1623,24 +1626,70 @@ type Database(_io:IDatabaseFile) =
                 None
 
         let parse (pr:PageReader) =
+            let readSegmentList () =
+                let rec f more cur =
+                    if more > 0 then
+                        let token = pr.GetArray(16)
+                        let g = new Guid(token)
+                        let page = pr.GetInt32()
+                        // TODO need the list to be in the right order
+                        f (more-1) ( (g,page) :: cur)
+                    else
+                        cur
+                let count = pr.GetVarint() |> int
+                f count []
+
+            let readBlockList (prBlocks:PageReader) =
+                let rec f more cur =
+                    if more > 0 then
+                        let firstPage = prBlocks.GetVarint() |> int
+                        let lastPage = prBlocks.GetVarint() |> int
+                        f (more-1) ((firstPage,lastPage) :: cur)
+                    else
+                        cur
+
+                let count = prBlocks.GetVarint() |> int
+                f count []
+
+            let readSegmentInfoList firstPage =
+                let segmentInfoListInnerPageSize = pr.GetInt32()
+                let segmentInfoListLength = pr.GetInt32()
+                utils.SeekPage(fsMine, pageSize, firstPage)
+                let buf:byte[] = Array.zeroCreate segmentInfoListLength
+                utils.ReadFully(fsMine, buf, 0, segmentInfoListLength)
+                let csr = BTreeSegment.OpenCursor(fsMine, segmentInfoListInnerPageSize, segmentInfoListLength / segmentInfoListInnerPageSize, null)
+                csr.First()
+
+                let rec f (cur:Map<Guid,(int*int) list>) =
+                    if csr.IsValid() then
+                        let g = new Guid(csr.Key())
+                        let prBlocks = new PageReader(csr.ValueLength())
+                        prBlocks.Read(csr.Value())
+                        let blocks = readBlockList(prBlocks)
+                        csr.Next()
+                        f (cur.Add(g, blocks))
+                    else
+                        cur
+
+                f Map.empty
+
+            // --------
+
             pageSize <- pr.GetInt32()
+
+            // TODO need to remember the following two so we can free the pages later
             let segmentInfoListFirstPage = pr.GetInt32()
             let segmentInfoListLastPage = pr.GetInt32()
-            let segmentInfoListInnerPageSize = pr.GetInt32()
-            let segmentInfoListLength = pr.GetInt32()
-            // TODO need to remember these four so we can free the pages later
-            // TODO read this into mutable segments map
-            let countCurrentSegments = pr.GetInt32()
-            // TODO do the following in a loop
-            let token = pr.GetArray(16)
-            let g = new Guid(token)
-            let page = pr.GetInt32()
-            // TODO need the list to be in the right order
-            currentState <- (g,page) :: currentState
+
+            segments <- readSegmentInfoList segmentInfoListFirstPage
+
+            currentState <- readSegmentList()
 
         let calcNextPage (len:int64) =
             let numPagesSoFar = if (int64 pageSize) > len then 1 else (int (len / (int64 pageSize)))
             numPagesSoFar + 1
+
+        // --------
 
         fsMine.Seek(0L, SeekOrigin.Begin) |> ignore
         let hdr = read()
