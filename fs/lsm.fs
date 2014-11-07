@@ -1851,6 +1851,7 @@ type Database(_io:IDatabaseFile) =
             BTreeSegment.Create(fs, this :> IPages, pairs)
 
         member this.BeginRead() =
+            // TODO if the db is empty?
             let cursors = List.map (fun x -> getCursor x) header.currentState
             MultiCursor.Create cursors
 

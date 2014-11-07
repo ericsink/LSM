@@ -44,7 +44,7 @@ type ICursor =
     abstract member KeyCompare : k:byte[] -> int
 
 type ITransaction =
-    // consider inherit IDisposable and rollback if commit is never called
+    // TODO consider inherit IDisposable and rollback if commit is never called
     abstract member Commit : (Guid*int) list -> unit
     abstract member Rollback : unit->unit
 
@@ -54,6 +54,8 @@ type IDatabaseFile =
     abstract member OpenForWriting : unit -> Stream
 
 type IDatabase = 
+    // TODO probably need IDisposable here
+    // or a close method
     abstract member WriteSegment : seq<KeyValuePair<byte[],Stream>> -> Guid * int
     abstract member BeginRead : unit->ICursor
     // TODO what happens if it can't get the write lock?  throw?  null?  fs option?  wait?  async?
