@@ -55,27 +55,6 @@ module utils =
         ReadFully(strm, buf, 0, len)
         buf
 
-(*
-type SeekOp = SEEK_EQ=0 | SEEK_LE=1 | SEEK_GE=2
-
-type ICursor =
-    abstract member Seek : k:byte[] * sop:SeekOp -> unit
-    abstract member First : unit -> unit
-    abstract member Last : unit -> unit
-    abstract member Next : unit -> unit
-    abstract member Prev : unit -> unit
-    abstract member IsValid : unit -> bool
-    abstract member Key : unit -> byte[]
-    abstract member Value : unit -> Stream
-    abstract member ValueLength : unit -> int
-    abstract member KeyCompare : k:byte[] -> int
-
-type IWrite = 
-    abstract member Insert: k:byte[] * s:Stream -> unit
-    abstract member Delete: k:byte[] -> unit
-    abstract member OpenCursor: unit -> ICursor
-*)
-
 module ByteComparer = 
     // this code is very non-F#-ish.  but it's much faster than the
     // idiomatic version which preceded it.
@@ -109,8 +88,6 @@ module ByteComparer =
                 i <- i + 1
         if i>len then result else (xlen - ylen)
 
-// TODO this could move into BTreeSegment.Create.
-// and it doesn't need to be a class.
 type private PageBuilder(pgsz:int) =
     let mutable cur = 0
     let buf:byte[] = Array.zeroCreate pgsz
@@ -638,17 +615,18 @@ module Varint =
 
 module bt =
     // page types
+    // TODO enum?
     let private LEAF_NODE:byte = 1uy
     let private PARENT_NODE:byte = 2uy
     let private OVERFLOW_NODE:byte = 3uy
 
     // flags on values
-    // TODO enum
+    // TODO enum?
     let private FLAG_OVERFLOW:byte = 1uy
     let private FLAG_TOMBSTONE:byte = 2uy
 
     // flags on pages
-    // TODO enum
+    // TODO enum?
     let private FLAG_ROOT_NODE:byte = 1uy
     let private FLAG_BOUNDARY_NODE:byte = 2uy
     let private FLAG_ENDS_ON_BOUNDARY:byte = 4uy
@@ -1612,7 +1590,6 @@ type private SegmentInfoListLocation =
 
 type private HeaderData =
     {
-        pageSize: int
         currentState: (Guid*int) list
         sill: SegmentInfoListLocation
         segments: Map<Guid,(int*int) list>
@@ -1639,25 +1616,6 @@ type Database(_io:IDatabaseFile) =
 
     let WASTE_PAGES_AFTER_EACH_BLOCK = 3 // TODO remove.  testing only.
     let PAGES_PER_BLOCK = 10 // TODO not hard-coded
-
-    let writeHeader hdr =
-        let pb = new PageBuilder(HEADER_SIZE_IN_BYTES)
-        pb.PutInt32(hdr.pageSize)
-
-        pb.PutInt32(hdr.sill.firstPage)
-        pb.PutInt32(hdr.sill.lastPage)
-        pb.PutInt32(hdr.sill.innerPageSize)
-        pb.PutInt32(hdr.sill.len)
-
-        pb.PutVarint(List.length hdr.currentState |> int64)
-        List.iter (fun x -> 
-            let g:Guid = fst x
-            pb.PutArray(g.ToByteArray())
-            pb.PutInt32(snd x)
-            ) hdr.currentState
-
-        fsMine.Seek(0L, SeekOrigin.Begin) |> ignore
-        pb.Write(fsMine)
 
     let readHeader() =
         let read() =
@@ -1737,12 +1695,11 @@ type Database(_io:IDatabaseFile) =
             let hd = 
                 {
                     currentState=state 
-                    pageSize=pageSize 
                     segments=segments 
                     sill = sill
                 }
 
-            hd
+            (hd, pageSize)
 
         let calcNextPage pageSize (len:int64) =
             let numPagesSoFar = if (int64 pageSize) > len then 1 else (int (len / (int64 pageSize)))
@@ -1754,25 +1711,24 @@ type Database(_io:IDatabaseFile) =
         let hdr = read()
         match hdr with
             | Some pr ->
-                let h = parse pr
-                let nextAvailablePage = calcNextPage h.pageSize fsMine.Length
-                (h, nextAvailablePage)
+                let (h, pageSize) = parse pr
+                let nextAvailablePage = calcNextPage pageSize fsMine.Length
+                (h, pageSize, nextAvailablePage)
             | None ->
-                // defaults
+                let defaultPageSize = 256 // TODO very low default, only for testing
                 let h = 
                     {
-                        pageSize = 256 // TODO very low default, only for testing
                         segments = Map.empty
                         currentState = []
                         sill = {firstPage=0;lastPage=0;innerPageSize=0;len=0;}
                     }
-                let nextAvailablePage = calcNextPage 256 (int64 HEADER_SIZE_IN_BYTES)
-                (h, nextAvailablePage)
+                let nextAvailablePage = calcNextPage defaultPageSize (int64 HEADER_SIZE_IN_BYTES)
+                (h, defaultPageSize, nextAvailablePage)
 
-    let (hdr,nextAvailablePage) = readHeader() // TODO lock critSectionHeader
+    let (firstReadOfHeader,pageSize,firstAvailablePage) = readHeader() // TODO lock critSectionHeader?
 
-    let mutable header = hdr
-    let mutable nextPage = nextAvailablePage
+    let mutable header = firstReadOfHeader
+    let mutable nextPage = firstAvailablePage
 
     // TODO need a free block list so the following code can reuse
     // pages.  right now it always returns more blocks at the end
@@ -1827,9 +1783,9 @@ type Database(_io:IDatabaseFile) =
         let innerPageSize = 512
         let ms = buildSegmentInfoList innerPageSize sd
         let len = ms.Length |> int
-        let pagesNeeded = len / header.pageSize + if 0 <> len % header.pageSize then 1 else 0
+        let pagesNeeded = len / pageSize + if 0 <> len % pageSize then 1 else 0
         let range = getRange (pagesNeeded)
-        utils.SeekPage(fsMine, header.pageSize, fst range)
+        utils.SeekPage(fsMine, pageSize, fst range)
         fsMine.Write(ms.GetBuffer(), 0, len)
         {firstPage=(fst range);lastPage=(snd range);innerPageSize=innerPageSize;len=len}
 
@@ -1841,7 +1797,7 @@ type Database(_io:IDatabaseFile) =
         let hook (csr:ICursor) =
             fs.Close()
             // TODO remove csr from cursors list
-        let csr = BTreeSegment.OpenCursor(fs, header.pageSize, page, new Action<ICursor>(hook))
+        let csr = BTreeSegment.OpenCursor(fs, pageSize, page, new Action<ICursor>(hook))
         lock critSectionCursors (fun () -> cursors <- (seg,csr) :: cursors; )
         csr
 
@@ -1850,11 +1806,32 @@ type Database(_io:IDatabaseFile) =
 
     let critSectionHeader = [] // TODO could be any object?
 
+    let writeHeader hdr =
+        let pb = new PageBuilder(HEADER_SIZE_IN_BYTES)
+        pb.PutInt32(pageSize)
+
+        pb.PutInt32(hdr.sill.firstPage)
+        pb.PutInt32(hdr.sill.lastPage)
+        pb.PutInt32(hdr.sill.innerPageSize)
+        pb.PutInt32(hdr.sill.len)
+
+        pb.PutVarint(List.length hdr.currentState |> int64)
+        List.iter (fun x -> 
+            let g:Guid = fst x
+            pb.PutArray(g.ToByteArray())
+            pb.PutInt32(snd x)
+            ) hdr.currentState
+
+        fsMine.Seek(0L, SeekOrigin.Begin) |> ignore
+        pb.Write(fsMine)
+
     interface ITransaction with
         member this.Commit(newSegments:(Guid*int) list) =
-            let newHeader = {header with currentState = newSegments @ header.currentState}
-            writeHeader newHeader
-            header <- newHeader // lock critSectionHeader
+            lock critSectionHeader (fun () -> 
+                let newHeader = {header with currentState = newSegments @ header.currentState}
+                writeHeader newHeader
+                header <- newHeader
+            )
             inTransaction <- false
 
         member this.Rollback() =
@@ -1877,7 +1854,7 @@ type Database(_io:IDatabaseFile) =
 
 
     interface IPages with
-        member this.PageSize = header.pageSize
+        member this.PageSize = pageSize
 
         member this.Begin() = new PendingSegment() :> IPendingSegment
 
@@ -1890,10 +1867,11 @@ type Database(_io:IDatabaseFile) =
         member this.End(token, lastPage) =
             let ps = token :?> PendingSegment
             let (g,blocks) = ps.End(lastPage)
-            let newSegments = header.segments.Add(g, blocks)
-            let newHeader = {header with sill = saveSegmentInfoList newSegments}
-            writeHeader newHeader
-            // TODO the old location of the segment info list is now free pages
-            header <- newHeader // lock critSectionHeader
+            lock critSectionHeader (fun () -> 
+                let newSegments = header.segments.Add(g, blocks)
+                let newHeader = {header with sill = saveSegmentInfoList newSegments}
+                writeHeader newHeader
+                // TODO the old location of the segment info list is now free pages
+                header <- newHeader // lock critSectionHeader
+            )
             g
-
