@@ -1766,6 +1766,7 @@ type Database(_io:IDatabaseFile) =
     let buildSegmentInfoList innerPageSize (sd:Map<Guid,(int*int) list>) = 
         let ms = new MemoryStream()
         let pm = new trivialMemoryPageManager(innerPageSize)
+        // TODO don't use a mutable collection here
         let d = new System.Collections.Generic.Dictionary<byte[],Stream>()
         Map.iter (fun (g:Guid) blocks -> d.[g.ToByteArray()] <- new MemoryStream(buildBlockList blocks)) sd
         BTreeSegment.Create(ms, pm, d) |> ignore
@@ -1832,9 +1833,15 @@ type Database(_io:IDatabaseFile) =
                 writeHeader newHeader
                 header <- newHeader
             )
+            // no need for lock critSectionInTransaction here because there is
+            // no way for the code to be here unless the caller is holding the
+            // lock.
             inTransaction <- false
 
         member this.Rollback() =
+            // no need for lock critSectionInTransaction here because there is
+            // no way for the code to be here unless the caller is holding the
+            // lock.
             inTransaction <- false
 
 
@@ -1875,3 +1882,4 @@ type Database(_io:IDatabaseFile) =
                 header <- newHeader // lock critSectionHeader
             )
             g
+
