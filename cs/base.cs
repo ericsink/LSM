@@ -20,12 +20,16 @@ namespace Zumero.LSM
 	using System.IO;
 	using System.Collections.Generic;
 
+	public interface IPendingSegment
+	{
+	}
+
     public interface IPages
     {
 		int PageSize { get; }
-        Guid Begin();
-        Tuple<int,int> GetRange(Guid token); // TODO consider making this a struct
-		void End(Guid token, int lastPage);
+		IPendingSegment Begin();
+		Tuple<int,int> GetRange(IPendingSegment token); // TODO struct instead of tuple
+		Guid End(IPendingSegment token, int lastPage);
     }
 
 	public enum SeekOp

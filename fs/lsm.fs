@@ -1084,8 +1084,8 @@ module bt =
 
         let rootPage = writeOneLayerOfParentPages pageAfterLeaves boundaryAfterLeaves leaves
 
-        pageManager.End(token, rootPage)
-        (token,rootPage)
+        let g = pageManager.End(token, rootPage)
+        (g,rootPage)
 
     type private myOverflowReadStream(_fs:Stream, pageSize:int, _firstPage:int, _len:int) =
         inherit Stream()
@@ -1577,13 +1577,16 @@ type BTreeSegment =
     static member OpenCursor(fs, pageSize:int, rootPage:int, hook:Action<ICursor>) :ICursor =
         bt.OpenCursor(fs,pageSize,rootPage,hook)
 
+type trivialPendingSegment() =
+    interface IPendingSegment
+
 type trivialMemoryPageManager(_pageSize) =
     let pageSize = _pageSize
 
     interface IPages with
         member this.PageSize = pageSize
-        member this.Begin() = Guid.NewGuid()
-        member this.End(_,_) = ()
+        member this.Begin() = new trivialPendingSegment() :> IPendingSegment
+        member this.End(_,_) = Guid.Empty
         member this.GetRange(_) = (1,-1)
 
 type dbf(_path) = 
@@ -1599,6 +1602,35 @@ type dbf(_path) =
         member this.Exists() =
             File.Exists(path)
 
+type private SegmentInfoListLocation =
+    {
+        firstPage: int
+        lastPage: int
+        innerPageSize: int
+        len: int
+    }
+
+type private HeaderData =
+    {
+        pageSize: int
+        currentState: (Guid*int) list
+        sill: SegmentInfoListLocation
+        segments: Map<Guid,(int*int) list>
+    }
+
+type PendingSegment() =
+    let mutable blockList = []
+    interface IPendingSegment
+    member this.AddRange(b) =
+        blockList <- b :: blockList
+    member this.End(lastPage) =
+        let lastBlock = List.head blockList
+        let (_,lastGivenPage) = lastBlock
+        if lastPage < lastGivenPage then
+            blockList <- ((fst lastBlock), lastPage) :: (List.tail blockList)
+        (Guid.NewGuid(), blockList)
+
+
 type Database(_io:IDatabaseFile) =
     let io = _io
     let fsMine = io.OpenForWriting()
@@ -1608,13 +1640,24 @@ type Database(_io:IDatabaseFile) =
     let WASTE_PAGES_AFTER_EACH_BLOCK = 3 // TODO remove.  testing only.
     let PAGES_PER_BLOCK = 10 // TODO not hard-coded
 
-    // the following init values aren't really defaults.  they just establish
-    // the type.  the real defaults occur when the header is read, or rather,
-    // not-read because it is not present.
-    let mutable pageSize = 256 // TODO this doesn't really want to be mutable
-    let mutable nextPage = 1
-    let mutable currentState = [] // the current segment list
-    let mutable segments:Map<Guid,(int*int) list> = Map.empty
+    let writeHeader hdr =
+        let pb = new PageBuilder(HEADER_SIZE_IN_BYTES)
+        pb.PutInt32(hdr.pageSize)
+
+        pb.PutInt32(hdr.sill.firstPage)
+        pb.PutInt32(hdr.sill.lastPage)
+        pb.PutInt32(hdr.sill.innerPageSize)
+        pb.PutInt32(hdr.sill.len)
+
+        pb.PutVarint(List.length hdr.currentState |> int64)
+        List.iter (fun x -> 
+            let g:Guid = fst x
+            pb.PutArray(g.ToByteArray())
+            pb.PutInt32(snd x)
+            ) hdr.currentState
+
+        fsMine.Seek(0L, SeekOrigin.Begin) |> ignore
+        pb.Write(fsMine)
 
     let readHeader() =
         let read() =
@@ -1651,13 +1694,11 @@ type Database(_io:IDatabaseFile) =
                 let count = prBlocks.GetVarint() |> int
                 f count []
 
-            let readSegmentInfoList firstPage =
-                let segmentInfoListInnerPageSize = pr.GetInt32()
-                let segmentInfoListLength = pr.GetInt32()
-                utils.SeekPage(fsMine, pageSize, firstPage)
-                let buf:byte[] = Array.zeroCreate segmentInfoListLength
-                utils.ReadFully(fsMine, buf, 0, segmentInfoListLength)
-                let csr = BTreeSegment.OpenCursor(fsMine, segmentInfoListInnerPageSize, segmentInfoListLength / segmentInfoListInnerPageSize, null)
+            let readSegmentInfoList pageSize sill =
+                utils.SeekPage(fsMine, pageSize, sill.firstPage)
+                let buf:byte[] = Array.zeroCreate sill.len
+                utils.ReadFully(fsMine, buf, 0, sill.len)
+                let csr = BTreeSegment.OpenCursor(fsMine, sill.innerPageSize, sill.len / sill.innerPageSize, null)
                 csr.First()
 
                 let rec f (cur:Map<Guid,(int*int) list>) =
@@ -1675,17 +1716,35 @@ type Database(_io:IDatabaseFile) =
 
             // --------
 
-            pageSize <- pr.GetInt32()
+            let pageSize = pr.GetInt32()
 
-            // TODO need to remember the following two so we can free the pages later
             let segmentInfoListFirstPage = pr.GetInt32()
             let segmentInfoListLastPage = pr.GetInt32()
+            let segmentInfoListInnerPageSize = pr.GetInt32()
+            let segmentInfoListLength = pr.GetInt32()
+            let sill = 
+                {
+                    firstPage=segmentInfoListFirstPage 
+                    lastPage=segmentInfoListLastPage
+                    innerPageSize=segmentInfoListInnerPageSize
+                    len = segmentInfoListLength
+                }
 
-            segments <- readSegmentInfoList segmentInfoListFirstPage
+            let state = readSegmentList()
 
-            currentState <- readSegmentList()
+            let segments = readSegmentInfoList pageSize sill
 
-        let calcNextPage (len:int64) =
+            let hd = 
+                {
+                    currentState=state 
+                    pageSize=pageSize 
+                    segments=segments 
+                    sill = sill
+                }
+
+            hd
+
+        let calcNextPage pageSize (len:int64) =
             let numPagesSoFar = if (int64 pageSize) > len then 1 else (int (len / (int64 pageSize)))
             numPagesSoFar + 1
 
@@ -1695,16 +1754,25 @@ type Database(_io:IDatabaseFile) =
         let hdr = read()
         match hdr with
             | Some pr ->
-                parse pr
-                nextPage <- calcNextPage fsMine.Length
+                let h = parse pr
+                let nextAvailablePage = calcNextPage h.pageSize fsMine.Length
+                (h, nextAvailablePage)
             | None ->
                 // defaults
-                pageSize <- 256 // TODO very low default, only for testing
-                segments <- Map.empty
-                currentState <- []
-                nextPage <- calcNextPage (int64 HEADER_SIZE_IN_BYTES)
+                let h = 
+                    {
+                        pageSize = 256 // TODO very low default, only for testing
+                        segments = Map.empty
+                        currentState = []
+                        sill = {firstPage=0;lastPage=0;innerPageSize=0;len=0;}
+                    }
+                let nextAvailablePage = calcNextPage 256 (int64 HEADER_SIZE_IN_BYTES)
+                (h, nextAvailablePage)
 
-    do readHeader() // TODO lock critSection on reading the header
+    let (hdr,nextAvailablePage) = readHeader() // TODO lock critSectionHeader
+
+    let mutable header = hdr
+    let mutable nextPage = nextAvailablePage
 
     // TODO need a free block list so the following code can reuse
     // pages.  right now it always returns more blocks at the end
@@ -1739,9 +1807,9 @@ type Database(_io:IDatabaseFile) =
     // each one, a block list (a blob described above).  it is written
     // into a memory btree which always has page size 512.
 
-    let buildSegmentInfoList pageSize (sd:Map<Guid,(int*int) list>) = 
+    let buildSegmentInfoList innerPageSize (sd:Map<Guid,(int*int) list>) = 
         let ms = new MemoryStream()
-        let pm = new trivialMemoryPageManager(pageSize)
+        let pm = new trivialMemoryPageManager(innerPageSize)
         let d = new System.Collections.Generic.Dictionary<byte[],Stream>()
         Map.iter (fun (g:Guid) blocks -> d.[g.ToByteArray()] <- new MemoryStream(buildBlockList blocks)) sd
         BTreeSegment.Create(ms, pm, d) |> ignore
@@ -1756,14 +1824,14 @@ type Database(_io:IDatabaseFile) =
     // header of the file.
 
     let saveSegmentInfoList (sd:Map<Guid,(int*int) list>) = 
-        let pageSize = 512
-        let ms = buildSegmentInfoList pageSize sd
+        let innerPageSize = 512
+        let ms = buildSegmentInfoList innerPageSize sd
         let len = ms.Length |> int
-        let pagesNeeded = len / pageSize + if 0 <> len % pageSize then 1 else 0
+        let pagesNeeded = len / header.pageSize + if 0 <> len % header.pageSize then 1 else 0
         let range = getRange (pagesNeeded)
-        utils.SeekPage(fsMine, pageSize, fst range)
+        utils.SeekPage(fsMine, header.pageSize, fst range)
         fsMine.Write(ms.GetBuffer(), 0, len)
-        (range, len, pageSize)
+        {firstPage=(fst range);lastPage=(snd range);innerPageSize=innerPageSize;len=len}
 
     let critSectionCursors = [] // TODO could be any object?
     let mutable cursors = []
@@ -1773,20 +1841,20 @@ type Database(_io:IDatabaseFile) =
         let hook (csr:ICursor) =
             fs.Close()
             // TODO remove csr from cursors list
-        let csr = BTreeSegment.OpenCursor(fs, pageSize, page, new Action<ICursor>(hook))
+        let csr = BTreeSegment.OpenCursor(fs, header.pageSize, page, new Action<ICursor>(hook))
         lock critSectionCursors (fun () -> cursors <- (seg,csr) :: cursors; )
         csr
 
     let critSectionInTransaction = [] // TODO could be any object?
     let mutable inTransaction = false 
 
-    let critSectionSegments = [] // TODO could be any object?
+    let critSectionHeader = [] // TODO could be any object?
 
     interface ITransaction with
         member this.Commit(newSegments:(Guid*int) list) =
-            let newState = newSegments @ currentState
-            // TODO write newState to the first page
-            currentState <- newState
+            let newHeader = {header with currentState = newSegments @ header.currentState}
+            writeHeader newHeader
+            header <- newHeader // lock critSectionHeader
             inTransaction <- false
 
         member this.Rollback() =
@@ -1799,7 +1867,7 @@ type Database(_io:IDatabaseFile) =
             BTreeSegment.Create(fs, this :> IPages, pairs)
 
         member this.BeginRead() =
-            let cursors = List.map (fun x -> getCursor x) currentState
+            let cursors = List.map (fun x -> getCursor x) header.currentState
             MultiCursor.Create cursors
 
         member this.BeginTransaction() =
@@ -1809,32 +1877,23 @@ type Database(_io:IDatabaseFile) =
 
 
     interface IPages with
-        member this.PageSize = pageSize
+        member this.PageSize = header.pageSize
 
-        // TODO consider returning a segment in progress thing
-        // instead of mutable segments map getting modified every
-        // time through these calls.
-
-        member this.Begin() = 
-            lock critSectionSegments (fun () -> 
-                let token = Guid.NewGuid()
-                segments <- segments.Add(token, List.empty)
-                token
-                )
+        member this.Begin() = new PendingSegment() :> IPendingSegment
 
         member this.GetRange(token) =
+            let ps = token :?> PendingSegment
             let t = getRange PAGES_PER_BLOCK
-            lock critSectionSegments (fun () -> segments <- segments.Add(token, t::segments.Item(token)); t)
+            ps.AddRange(t)
+            t
 
         member this.End(token, lastPage) =
-            let blocks = segments.Item(token)
-            let lastBlock = List.head blocks
-            let (_,lastGivenPage) = lastBlock
-            if lastPage < lastGivenPage then
-                // TODO fix it.  rebuild the whole map just to change one int?
-                ()
-            let locationOfSegmentInfoList = saveSegmentInfoList segments
+            let ps = token :?> PendingSegment
+            let (g,blocks) = ps.End(lastPage)
+            let newSegments = header.segments.Add(g, blocks)
+            let newHeader = {header with sill = saveSegmentInfoList newSegments}
+            writeHeader newHeader
             // TODO the old location of the segment info list is now free pages
-            // TODO rewrite the header.
-            ()
+            header <- newHeader // lock critSectionHeader
+            g
 

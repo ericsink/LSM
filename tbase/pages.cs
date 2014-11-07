@@ -173,14 +173,13 @@ namespace lsm_tests
     }
 #endif
 
-	public class MemoryPageManager : IPages
+	#if true
+	public class trivialMemoryPageManager : IPages
 	{
-		MemoryStream fs;
 		int pageSize;
 
-		public MemoryPageManager(MemoryStream _fs, int _pageSize)
+		public trivialMemoryPageManager(int _pageSize)
 		{
-			fs = _fs;
 			pageSize = _pageSize;
 		}
 
@@ -191,25 +190,53 @@ namespace lsm_tests
 			}
 		}
 
-		Guid IPages.Begin()
+		IPendingSegment IPages.Begin()
+		{
+			return null;
+		}
+
+		Guid IPages.End(IPendingSegment token, int lastPage)
 		{
 			return Guid.NewGuid();
 		}
 
-		void IPages.End(Guid token, int lastPage)
-		{
-            // TODO?
-		}
-
-		Tuple<int,int> IPages.GetRange(Guid token)
+		Tuple<int,int> IPages.GetRange(IPendingSegment token)
 		{
 			return new Tuple<int,int> (1, -1);
 		}
 
 	}
+	#endif
 
 	public class SimplePageManager : IPages
 	{
+		private class PendingSegment : IPendingSegment
+		{
+			private List<Tuple<int,int>> blockList = new List<Tuple<int, int>>();
+
+			public void Add(Tuple<int,int> t)
+			{
+				blockList.Add (t);
+			}
+
+			public Tuple<Guid,List<Tuple<int,int>>> End(int lastPage)
+			{
+				var lastBlock = blockList[blockList.Count-1];
+				// assert lastPage >= lastBlock.Item1;
+				if (lastPage < lastBlock.Item2) {
+					// this segment did not use all the pages we gave it
+					blockList.Remove (lastBlock);
+					blockList.Add (new Tuple<int, int> (lastBlock.Item1, lastPage));
+
+					// TODO
+					// if cur has not changed in the meantime, 
+					// we could just adjust cur?  otherwise we need to add
+					// the unused pages to a free list.
+				}
+				return new Tuple<Guid,List<Tuple<int,int>>> (Guid.NewGuid (), blockList);
+			}
+		}
+
 		private readonly Stream fs;
 		int cur = 1; // TODO make room for header
 		private readonly Dictionary<Guid,List<Tuple<int,int>>> segments;
@@ -237,15 +264,12 @@ namespace lsm_tests
             }
         }
 
-		Guid IPages.Begin()
+		IPendingSegment IPages.Begin()
 		{
-			lock (this) {
-				Guid token = Guid.NewGuid();
-				segments [token] = new List<Tuple<int, int>> ();
-				return token;
-			}
+			return new PendingSegment ();
 		}
 
+		#if not
         private byte[] buildBlockList(List<Tuple<int,int>> blocks)
         {
             int space = 0;
@@ -268,7 +292,7 @@ namespace lsm_tests
         private MemoryStream buildSegmentInfoList(Dictionary<Guid,List<Tuple<int,int>>> sd)
         {
             var ms = new MemoryStream();
-            IPages pm = new MemoryPageManager(ms, 512);
+            IPages pm = new trivialMemoryPageManager(512);
             var d = new Dictionary<byte[],Stream>();
             foreach (Guid g in sd.Keys) {
                 d[g.ToByteArray()] = new MemoryStream(buildBlockList(sd[g]));
@@ -291,22 +315,16 @@ namespace lsm_tests
 			fs.Write (buf, 0, len);
 			return range;
         }
+		#endif
 
-		void IPages.End(Guid token, int lastPage)
+		Guid IPages.End(IPendingSegment token, int lastPage)
 		{
-            var blocks = segments[token];
-            var lastBlock = blocks[blocks.Count-1];
-            // assert lastPage >= lastBlock.Item1;
-            if (lastPage < lastBlock.Item2) {
-                // this segment did not use all the pages we gave it
-				blocks.Remove (lastBlock);
-				blocks.Add (new Tuple<int, int> (lastBlock.Item1, lastPage));
-
-                // TODO
-                // if cur has not changed in the meantime, 
-                // we could just adjust cur?  otherwise we need to add
-                // the unused pages to a free list.
-            }
+			var ps = (token as PendingSegment);
+			var end = ps.End (lastPage);
+			lock (this) {
+				segments [end.Item1] = end.Item2;
+			}
+			return end.Item1;
 		}
 
 		private Tuple<int,int> GetRange(int num)
@@ -318,13 +336,11 @@ namespace lsm_tests
 			}
         }
 
-		Tuple<int,int> IPages.GetRange(Guid token)
+		Tuple<int,int> IPages.GetRange(IPendingSegment token)
 		{
+			var ps = (token as PendingSegment);
             var t = GetRange(PAGES_PER_BLOCK);
-
-			lock (this) {
-				segments [token].Add (t);
-			}
+			ps.Add (t);
 
             return t;
 		}

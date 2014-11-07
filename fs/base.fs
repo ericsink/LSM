@@ -20,12 +20,13 @@ open System
 open System.IO
 open System.Collections.Generic
 
+type IPendingSegment = interface end
+
 type IPages =
-    // TODO consider having IPages return a SegmentInProgressState instead of a Guid
     abstract member PageSize : int with get
-    abstract member Begin : unit->Guid
-    abstract member GetRange : Guid->int*int
-    abstract member End : Guid*int->unit
+    abstract member Begin : unit->IPendingSegment
+    abstract member GetRange : IPendingSegment->int*int
+    abstract member End : IPendingSegment*int->Guid
 
 type SeekOp = SEEK_EQ=0 | SEEK_LE=1 | SEEK_GE=2
 
