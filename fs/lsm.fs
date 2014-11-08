@@ -1793,7 +1793,7 @@ type Database(_io:IDatabaseFile) =
         {firstPage=(fst range);lastPage=(snd range);innerPageSize=innerPageSize;len=len}
 
     let critSectionCursors = [] // TODO could be any object?
-    let mutable cursors = []
+    let mutable cursors:Map<Guid,ICursor list> = Map.empty
 
     let getCursor h g =
         let seg = h.segments.Item(g)
@@ -1802,10 +1802,18 @@ type Database(_io:IDatabaseFile) =
         let fs = io.OpenForReading()
         let hook (csr:ICursor) =
             fs.Close()
-            // TODO linear search here is probably a bad idea
-            lock critSectionCursors (fun () -> cursors <- List.filter (fun x -> Object.ReferenceEquals(csr, snd x)) cursors; )
+            lock critSectionCursors (fun () -> 
+                let cur = Map.find g cursors
+                let removed = List.filter (fun x -> Object.ReferenceEquals(csr, x)) cur
+                cursors <- Map.add g removed cursors
+                )
         let csr = BTreeSegment.OpenCursor(fs, pageSize, rootPage, new Action<ICursor>(hook))
-        lock critSectionCursors (fun () -> cursors <- (g,csr) :: cursors; )
+        lock critSectionCursors (fun () -> 
+            let cur = match Map.tryFind g cursors with
+                       | Some c -> c
+                       | None -> []
+            cursors <- Map.add g (csr :: cur) cursors
+            )
         csr
 
     let critSectionInTransaction = [] // TODO could be any object?
