@@ -1811,6 +1811,7 @@ type Database(_io:IDatabaseFile) =
     let mutable inTransaction = false 
 
     let critSectionHeader = [] // TODO could be any object?
+    let critSectionSegmentsInWaiting = [] // TODO could be any object?
 
     let writeHeader hdr =
         let pb = new PageBuilder(HEADER_SIZE_IN_BYTES)
@@ -1831,10 +1832,9 @@ type Database(_io:IDatabaseFile) =
 
     interface ITransaction with
         member this.Commit(newGuids:seq<Guid>) =
+            let newGuidsAsMap = Seq.fold (fun acc g -> Map.add g () acc) Map.empty newGuids
+            let mySegmentsInWaiting = Map.filter (fun g _ -> Map.containsKey g newGuidsAsMap) segmentsInWaiting
             lock critSectionHeader (fun () -> 
-                let newGuidsAsMap = Seq.fold (fun acc g -> Map.add g () acc) Map.empty newGuids
-                let mySegmentsInWaiting = Map.filter (fun g _ -> Map.containsKey g newGuidsAsMap) segmentsInWaiting
-                let remainingSegmentsInWaiting = Map.filter (fun g _ -> Map.containsKey g newGuidsAsMap |> not) segmentsInWaiting
                 let newState = (List.ofSeq newGuids) @ header.currentState
                 let newSegments = Map.fold (fun acc key value -> Map.add key value acc) header.segments mySegmentsInWaiting
                 let newSill = saveSegmentInfoList newSegments
@@ -1842,12 +1842,17 @@ type Database(_io:IDatabaseFile) =
                 writeHeader newHeader
                 // TODO the old location of the segment info list is now free pages
                 header <- newHeader
-                segmentsInWaiting <- remainingSegmentsInWaiting
             )
             // no need for lock critSectionInTransaction here because there is
             // no way for the code to be here unless the caller is holding the
             // lock.
             inTransaction <- false
+            // all the segments we just committed can now be removed from
+            // the segments in waiting list
+            lock critSectionSegmentsInWaiting (fun () ->
+                let remainingSegmentsInWaiting = Map.filter (fun g _ -> Map.containsKey g newGuidsAsMap |> not) segmentsInWaiting
+                segmentsInWaiting <- remainingSegmentsInWaiting
+            )
 
         member this.Rollback() =
             // no need for lock critSectionInTransaction here because there is
@@ -1887,7 +1892,7 @@ type Database(_io:IDatabaseFile) =
         member this.End(token, lastPage) =
             let ps = token :?> PendingSegment
             let (g,blocks) = ps.End(lastPage)
-            lock critSectionHeader (fun () -> 
+            lock critSectionSegmentsInWaiting (fun () -> 
                 segmentsInWaiting <- segmentsInWaiting.Add(g, blocks)
             )
             g
