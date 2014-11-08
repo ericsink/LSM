@@ -389,7 +389,7 @@ type MemorySegment() =
                 else search k min (mid-1) sop le mid
 
         { new ICursor with
-            member this.IsValid =
+            member this.IsValid() =
                 (!cur >= 0) && (!cur < keys.Length)
 
             member this.First() =
@@ -404,19 +404,19 @@ type MemorySegment() =
             member this.Prev() =
                 cur := !cur - 1
 
-            member this.Key =
+            member this.Key() =
                 keys.[!cur]
             
             member this.KeyCompare(k) =
                 ByteComparer.Compare (keys.[!cur]) k
 
-            member this.Value =
+            member this.Value() =
                 // TODO the pairs array in the IWrite may have changed
                 let v = pairs.[keys.[!cur]]
                 if v <> null then ignore (v.Seek(0L, SeekOrigin.Begin))
                 v
 
-            member this.ValueLength =
+            member this.ValueLength() =
                 // TODO the pairs array in the IWrite may have changed
                 let v = pairs.[keys.[!cur]]
                 if v <> null then (int v.Length) else -1
@@ -448,7 +448,7 @@ type MultiCursor private (_subcursors:seq<ICursor>) =
     let mutable dir = Direction.WANDERING
 
     let validSorted sortfunc = 
-        let valids = List.filter (fun (csr:ICursor) -> csr.IsValid) subcursors
+        let valids = List.filter (fun (csr:ICursor) -> csr.IsValid()) subcursors
         let sorted = List.sortWith sortfunc valids
         sorted
 
@@ -458,11 +458,11 @@ type MultiCursor private (_subcursors:seq<ICursor>) =
         else Some vs.Head
 
     let findMin() = 
-        let sortfunc (a:ICursor) (b:ICursor) = a.KeyCompare(b.Key)
+        let sortfunc (a:ICursor) (b:ICursor) = a.KeyCompare(b.Key())
         find sortfunc
     
     let findMax() = 
-        let sortfunc (a:ICursor) (b:ICursor) = b.KeyCompare(a.Key)
+        let sortfunc (a:ICursor) (b:ICursor) = b.KeyCompare(a.Key())
         find sortfunc
 
     let dispose itIsSafeToAlsoFreeManagedObjects =
@@ -486,9 +486,9 @@ type MultiCursor private (_subcursors:seq<ICursor>) =
             dispose true
             GC.SuppressFinalize(this)
 
-        member this.IsValid = 
+        member this.IsValid() = 
             match cur with
-            | Some csr -> csr.IsValid
+            | Some csr -> csr.IsValid()
             | None -> false
 
         member this.First() =
@@ -505,25 +505,25 @@ type MultiCursor private (_subcursors:seq<ICursor>) =
         // without checking or matching on it.  they'll crash if cur is None.
         // this matches the C# behavior and the expected behavior of ICursor.
         // don't call these methods without checking IsValid() first.
-        member this.Key = cur.Value.Key
+        member this.Key() = cur.Value.Key()
         member this.KeyCompare(k) = cur.Value.KeyCompare(k)
-        member this.Value = cur.Value.Value
-        member this.ValueLength = cur.Value.ValueLength
+        member this.Value() = cur.Value.Value()
+        member this.ValueLength() = cur.Value.ValueLength()
 
         member this.Next() =
-            let k = cur.Value.Key
+            let k = cur.Value.Key()
             let f (csr:ICursor) :unit = 
                 if (dir <> Direction.FORWARD) && (csr <> cur.Value) then csr.Seek (k, SeekOp.SEEK_GE)
-                if csr.IsValid && (0 = csr.KeyCompare(k)) then csr.Next()
+                if csr.IsValid() && (0 = csr.KeyCompare(k)) then csr.Next()
             List.iter f subcursors
             cur <- findMin()
             dir <- Direction.FORWARD
 
         member this.Prev() =
-            let k = cur.Value.Key
+            let k = cur.Value.Key()
             let f (csr:ICursor) :unit = 
                 if (dir <> Direction.BACKWARD) && (csr <> cur.Value) then csr.Seek (k, SeekOp.SEEK_LE)
-                if csr.IsValid && (0 = csr.KeyCompare(k)) then csr.Prev()
+                if csr.IsValid() && (0 = csr.KeyCompare(k)) then csr.Prev()
             List.iter f subcursors
             cur <- findMax()
             dir <- Direction.BACKWARD
@@ -533,7 +533,7 @@ type MultiCursor private (_subcursors:seq<ICursor>) =
             dir <- Direction.WANDERING
             let f (csr:ICursor) :bool =
                 csr.Seek (k, sop)
-                if cur.IsNone && csr.IsValid && ( (SeekOp.SEEK_EQ = sop) || (0 = csr.KeyCompare (k)) ) then 
+                if cur.IsNone && csr.IsValid() && ( (SeekOp.SEEK_EQ = sop) || (0 = csr.KeyCompare (k)) ) then 
                     cur <- Some csr
                     true
                 else
@@ -552,11 +552,11 @@ type LivingCursor(ch:ICursor) =
     let chain = ch
 
     let skipTombstonesForward() =
-        while (chain.IsValid && (chain.ValueLength < 0)) do
+        while (chain.IsValid() && (chain.ValueLength() < 0)) do
             chain.Next()
 
     let skipTombstonesBackward() =
-        while (chain.IsValid && (chain.ValueLength < 0)) do
+        while (chain.IsValid() && (chain.ValueLength() < 0)) do
             chain.Prev()
 
     let dispose itIsSafeToAlsoFreeManagedObjects =
@@ -580,10 +580,10 @@ type LivingCursor(ch:ICursor) =
             chain.Last()
             skipTombstonesBackward()
 
-        member this.Key = chain.Key
-        member this.Value = chain.Value
-        member this.ValueLength = chain.ValueLength
-        member this.IsValid = chain.IsValid && (chain.ValueLength > 0)
+        member this.Key() = chain.Key()
+        member this.Value() = chain.Value()
+        member this.ValueLength() = chain.ValueLength()
+        member this.IsValid() = chain.IsValid() && (chain.ValueLength() > 0)
         member this.KeyCompare k = chain.KeyCompare k
 
         member this.Next() =
@@ -916,7 +916,7 @@ module bt =
                 maybeWriteLeaf st |> initLeaf |> addPairToLeaf
 
             // this is the body of writeLeaves
-            //let source = seq { csr.First(); while csr.IsValid do yield (csr.Key, csr.Value); csr.Next(); done }
+            //let source = seq { csr.First(); while csr.IsValid() do yield (csr.Key(), csr.Value()); csr.Next(); done }
             let initialState = {firstLeaf=0;keys=[];leaves=[];nextPage=leavesFirstPage;boundaryPage=leavesBoundaryPage}
             let middleState = Seq.fold foldLeaf initialState source
             let finalState = 
@@ -1461,16 +1461,16 @@ module bt =
                 dispose true this
                 GC.SuppressFinalize(this)
 
-            member this.IsValid =
+            member this.IsValid() =
                 leafIsValid()
 
             member this.Seek(k,sop) =
                 search rootPage k sop
 
-            member this.Key =
+            member this.Key() =
                 keyInLeaf currentKey
             
-            member this.Value =
+            member this.Value() =
                 pr.SetPosition(leafKeys.[currentKey])
 
                 skipKey()
@@ -1484,7 +1484,7 @@ module bt =
                 else 
                     new MemoryStream(pr.GetArray (vlen)) :> Stream
 
-            member this.ValueLength =
+            member this.ValueLength() =
                 pr.SetPosition(leafKeys.[currentKey])
 
                 skipKey()
@@ -1661,10 +1661,10 @@ type Database(_io:IDatabaseFile) =
                 csr.First()
 
                 let rec f (cur:Map<Guid,(int*int) list>) =
-                    if csr.IsValid then
-                        let g = new Guid(csr.Key)
-                        let prBlocks = new PageReader(csr.ValueLength)
-                        prBlocks.Read(csr.Value)
+                    if csr.IsValid() then
+                        let g = new Guid(csr.Key())
+                        let prBlocks = new PageReader(csr.ValueLength())
+                        prBlocks.Read(csr.Value())
                         let blocks = readBlockList(prBlocks)
                         csr.Next()
                         f (cur.Add(g, blocks))

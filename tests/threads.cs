@@ -146,12 +146,12 @@ namespace lsm_tests
 							var csr = c.open_btree_segment(fs, PAGE_SIZE, s5);
 
 							csr.First();
-							while (csr.IsValid) {
+							while (csr.IsValid()) {
 								csr.Next();
 							}
 
 							csr.Seek((42*3).ToString(), SeekOp.SEEK_EQ);
-							Assert.True(csr.IsValid);
+							Assert.True(csr.IsValid());
 						}
 					}
 				}

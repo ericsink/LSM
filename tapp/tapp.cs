@@ -124,8 +124,8 @@ namespace lsm_tests
 
 						csr.First();
 						int prev = -1;
-						while (csr.IsValid) {
-							int cur = int.Parse(csr.Key.UTF8ToString());
+						while (csr.IsValid()) {
+							int cur = int.Parse(csr.Key().UTF8ToString());
 							Assert.Equal(prev+1, cur);
 							prev = cur;
 							csr.Next();

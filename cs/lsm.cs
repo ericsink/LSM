@@ -608,12 +608,12 @@ namespace Zumero.LSM.cs
 				return ByteComparer.cmp ((this as ICursor).Key (), k);
 			}
 
-			byte[] ICursor.Key
+			byte[] ICursor.Key()
 			{
 				return keys[cur];
 			}
 
-			Stream ICursor.Value
+			Stream ICursor.Value()
 			{
 				Stream v = pairs [keys [cur]];
 				if (v != null) {
@@ -703,11 +703,9 @@ namespace Zumero.LSM.cs
 			}
 		}
 
-		bool ICursor.IsValid
+		bool ICursor.IsValid()
 		{
-			get {
-				return (cur != null) && cur.IsValid;
-			}
+			return (cur != null) && cur.IsValid ();
 		}
 
 		private ICursor find(Func<int,bool> f)
@@ -716,18 +714,18 @@ namespace Zumero.LSM.cs
 			byte[] kcur = null;
 			for (int i = 0; i < subcursors.Count; i++) {
 				ICursor csr = subcursors [i];
-				if (!csr.IsValid)
+				if (!csr.IsValid())
 				{
 					continue;
 				}
 				if (null == cur) {
 					cur = csr;
-					kcur = csr.Key;
+					kcur = csr.Key ();
 				} else {
 					int cmp = csr.KeyCompare (kcur);
 					if (f(cmp)) {
 						cur = csr;
-						kcur = csr.Key;
+						kcur = csr.Key ();
 					}
 				}
 			}
@@ -750,7 +748,7 @@ namespace Zumero.LSM.cs
 			for (int i = 0; i < subcursors.Count; i++) {
 				ICursor csr = subcursors [i];
 				csr.Seek (k, sop);
-				if (csr.IsValid && ( (SeekOp.SEEK_EQ == sop) || (0 == csr.KeyCompare (k)) ) ) {
+				if (csr.IsValid() && ( (SeekOp.SEEK_EQ == sop) || (0 == csr.KeyCompare (k)) ) ) {
 					cur = csr;
 					break;
 				}
@@ -793,11 +791,9 @@ namespace Zumero.LSM.cs
 			dir = Direction.BACKWARD;
 		}
 
-		byte[] ICursor.Key
+		byte[] ICursor.Key()
 		{
-			get {
-				return cur.Key;
-			}
+			return cur.Key ();
 		}
 
 		int ICursor.KeyCompare(byte[] k)
@@ -805,29 +801,25 @@ namespace Zumero.LSM.cs
 			return cur.KeyCompare (k);
 		}
 
-		Stream ICursor.Value
+		Stream ICursor.Value()
 		{
-			get {
-				return cur.Value;
-			}
+			return cur.Value ();
 		}
 
-		int ICursor.ValueLength
+		int ICursor.ValueLength()
 		{
-			get {
-				return cur.ValueLength;
-			}
+			return cur.ValueLength ();
 		}
 
 		void ICursor.Next()
 		{
-			byte[] k = cur.Key;
+			byte[] k = cur.Key ();
 
 			for (int i = 0; i < subcursors.Count; i++) {
 				if ((dir != Direction.FORWARD) && (cur != subcursors[i])) {
 					subcursors [i].Seek (k, SeekOp.SEEK_GE);
 				}
-				if (subcursors [i].IsValid) {
+				if (subcursors [i].IsValid ()) {
 					if (0 == subcursors [i].KeyCompare (k)) {
 						subcursors [i].Next ();
 					}
@@ -840,13 +832,13 @@ namespace Zumero.LSM.cs
 
 		void ICursor.Prev()
 		{
-			byte[] k = cur.Key;
+			byte[] k = cur.Key ();
 
 			for (int i = 0; i < subcursors.Count; i++) {
 				if ((dir != Direction.BACKWARD) && (cur != subcursors[i])) {
 					subcursors [i].Seek (k, SeekOp.SEEK_LE);
 				}
-				if (subcursors [i].IsValid) {
+				if (subcursors [i].IsValid ()) {
 					if (0 == subcursors [i].KeyCompare (k)) {
 						subcursors [i].Prev ();
 					}
@@ -884,23 +876,21 @@ namespace Zumero.LSM.cs
 			Dispose (false);
 		}
 
-		bool ICursor.IsValid
+		bool ICursor.IsValid()
 		{
-			get {
-				return chain.IsValid && (chain.ValueLength >= 0);
-			}
+			return chain.IsValid () && (chain.ValueLength() >= 0);
 		}
 
 		private void skipTombstonesForward()
 		{
-			while (chain.IsValid && (chain.ValueLength < 0)) {
+			while (chain.IsValid() && (chain.ValueLength () < 0)) {
 				chain.Next ();
 			}
 		}
 
 		private void skipTombstonesBackward()
 		{
-			while (chain.IsValid && (chain.ValueLength < 0)) {
+			while (chain.IsValid() && (chain.ValueLength () < 0)) {
 				chain.Prev ();
 			}
 		}
@@ -927,11 +917,9 @@ namespace Zumero.LSM.cs
 			skipTombstonesBackward ();
 		}
 
-		byte[] ICursor.Key
+		byte[] ICursor.Key()
 		{
-			get {
-				return chain.Key;
-			}
+			return chain.Key ();
 		}
 
 		int ICursor.KeyCompare(byte[] k)
@@ -939,18 +927,14 @@ namespace Zumero.LSM.cs
 			return chain.KeyCompare (k);
 		}
 
-		Stream ICursor.Value
+		Stream ICursor.Value()
 		{
-			get {
-				return chain.Value;
-			}
+			return chain.Value ();
 		}
 
-		int ICursor.ValueLength
+		int ICursor.ValueLength()
 		{
-			get {
-				return chain.ValueLength;
-			}
+			return chain.ValueLength ();
 		}
 
 		void ICursor.Next()
@@ -2090,59 +2074,51 @@ namespace Zumero.LSM.cs
 				}
 			}
 
-			bool ICursor.IsValid
+			bool ICursor.IsValid()
 			{
-				get {
-					// TODO curpagenum >= 1 ?
-					return (leafKeys != null) && (leafKeys.Length > 0) && (currentKey >= 0) && (currentKey < leafKeys.Length);
+				// TODO curpagenum >= 1 ?
+				return (leafKeys != null) && (leafKeys.Length > 0) && (currentKey >= 0) && (currentKey < leafKeys.Length);
+			}
+
+			byte[] ICursor.Key()
+			{
+				return keyInLeaf(currentKey);
+			}
+
+			Stream ICursor.Value()
+			{
+				pr.SetPosition(leafKeys [currentKey]);
+
+                skipKey();
+
+				// read the val
+
+				byte vflag = pr.GetByte();
+				int vlen = (int) pr.GetVarint();
+				if (0 != (vflag & FLAG_TOMBSTONE)) {
+					return null;
+				} else if (0 != (vflag & FLAG_OVERFLOW)) {
+					int pagenum = pr.GetInt32 ();
+					return new myOverflowReadStream (fs, pr.PageSize, pagenum, vlen);
+				} else {
+					return new MemoryStream(pr.GetArray (vlen));
 				}
 			}
 
-			byte[] ICursor.Key
+			int ICursor.ValueLength()
 			{
-				get {
-					return keyInLeaf (currentKey);
+				pr.SetPosition(leafKeys [currentKey]);
+
+                skipKey();
+
+				// read the val
+
+				byte vflag = pr.GetByte();
+				if (0 != (vflag & FLAG_TOMBSTONE)) {
+					return -1;
 				}
-			}
-
-			Stream ICursor.Value
-			{
-				get {
-					pr.SetPosition (leafKeys [currentKey]);
-
-					skipKey ();
-
-					// read the val
-
-					byte vflag = pr.GetByte ();
-					int vlen = (int)pr.GetVarint ();
-					if (0 != (vflag & FLAG_TOMBSTONE)) {
-						return null;
-					} else if (0 != (vflag & FLAG_OVERFLOW)) {
-						int pagenum = pr.GetInt32 ();
-						return new myOverflowReadStream (fs, pr.PageSize, pagenum, vlen);
-					} else {
-						return new MemoryStream (pr.GetArray (vlen));
-					}
-				}
-			}
-
-			int ICursor.ValueLength
-			{
-				get {
-					pr.SetPosition (leafKeys [currentKey]);
-
-					skipKey ();
-
-					// read the val
-
-					byte vflag = pr.GetByte ();
-					if (0 != (vflag & FLAG_TOMBSTONE)) {
-						return -1;
-					}
-					int vlen = (int)pr.GetVarint ();
-					return vlen;
-				}
+				int vlen = (int) pr.GetVarint();
+				return vlen;
 			}
 
 			int ICursor.KeyCompare(byte[] k)
@@ -2171,7 +2147,7 @@ namespace Zumero.LSM.cs
 							break; // once we get to a leaf, we're done, whether the key was found or not
 						} else {
 							ICursor me = this as ICursor;
-							if (me.IsValid) {
+							if (me.IsValid ()) {
 								break;
 							} else {
 								// if LE or GE failed on a given page, we might need

@@ -92,11 +92,11 @@ namespace lsm_tests
 
 				var csr = t1.OpenCursor();
 				csr.First();
-				Assert.True(csr.IsValid);
-				Assert.Equal("a", csr.Key.UTF8ToString());
-				Assert.Equal("bar", ReadAll(csr.Value).UTF8ToString());
+				Assert.True(csr.IsValid());
+				Assert.Equal("a", csr.Key().UTF8ToString());
+				Assert.Equal("bar", ReadAll(csr.Value()).UTF8ToString());
 				csr.Next();
-				Assert.False(csr.IsValid);
+				Assert.False(csr.IsValid());
 			};
 			foreach (combo c in combo.get_combos()) f(c);
 		}
@@ -146,8 +146,8 @@ namespace lsm_tests
 
 						csr.First();
 						int prev = -1;
-						while (csr.IsValid) {
-							int cur = int.Parse(csr.Key.UTF8ToString());
+						while (csr.IsValid()) {
+							int cur = int.Parse(csr.Key().UTF8ToString());
 							Assert.Equal(prev+1, cur);
 							prev = cur;
 							csr.Next();
@@ -242,7 +242,7 @@ namespace lsm_tests
                         var csr = c.open_btree_segment(fs, PAGE_SIZE, s5);
 
                         csr.First();
-                        while (csr.IsValid) {
+                        while (csr.IsValid()) {
                             csr.Next();
                         }
                     }
@@ -257,35 +257,35 @@ namespace lsm_tests
 			Action<ICursor> do_checks = (ICursor csr) => {
 				// --------
 				csr.First();
-				Assert.True(csr.IsValid);
-				Assert.Equal ("10", csr.Key.UTF8ToString ());
+				Assert.True(csr.IsValid());
+				Assert.Equal ("10", csr.Key ().UTF8ToString ());
 
 				csr.Next();
-				Assert.True(csr.IsValid);
-				Assert.Equal ("20", csr.Key.UTF8ToString ());
+				Assert.True(csr.IsValid());
+				Assert.Equal ("20", csr.Key ().UTF8ToString ());
 
 				csr.Next();
-				Assert.True(csr.IsValid);
-				Assert.Equal ("8", csr.Key.UTF8ToString ());
+				Assert.True(csr.IsValid());
+				Assert.Equal ("8", csr.Key ().UTF8ToString ());
 
 				csr.Next();
-				Assert.False(csr.IsValid);
+				Assert.False(csr.IsValid());
 
 				// --------
 				csr.Last();
-				Assert.True(csr.IsValid);
-				Assert.Equal ("8", csr.Key.UTF8ToString ());
+				Assert.True(csr.IsValid());
+				Assert.Equal ("8", csr.Key ().UTF8ToString ());
 
 				csr.Prev();
-				Assert.True(csr.IsValid);
-				Assert.Equal ("20", csr.Key.UTF8ToString ());
+				Assert.True(csr.IsValid());
+				Assert.Equal ("20", csr.Key ().UTF8ToString ());
 
 				csr.Prev();
-				Assert.True(csr.IsValid);
-				Assert.Equal ("10", csr.Key.UTF8ToString ());
+				Assert.True(csr.IsValid());
+				Assert.Equal ("10", csr.Key ().UTF8ToString ());
 
 				csr.Prev();
-				Assert.False(csr.IsValid);
+				Assert.False(csr.IsValid());
 			};
 
 			Action<combo> f = (combo c) => {
@@ -349,45 +349,45 @@ namespace lsm_tests
 						mc.First();
 						for (int i=0; i<100; i++) {
 							mc.Next();
-							Assert.True(mc.IsValid);
+							Assert.True(mc.IsValid());
 						}
 						for (int i=0; i<50; i++) {
 							mc.Prev();
-							Assert.True(mc.IsValid);
+							Assert.True(mc.IsValid());
 						}
 						for (int i=0; i<100; i++) {
 							mc.Next();
-							Assert.True(mc.IsValid);
+							Assert.True(mc.IsValid());
 							mc.Next();
-							Assert.True(mc.IsValid);
+							Assert.True(mc.IsValid());
 							mc.Prev();
-							Assert.True(mc.IsValid);
+							Assert.True(mc.IsValid());
 						}
 						for (int i=0; i<50; i++) {
-							mc.Seek(mc.Key, SeekOp.SEEK_EQ);
-							Assert.True(mc.IsValid);
+							mc.Seek(mc.Key(), SeekOp.SEEK_EQ);
+							Assert.True(mc.IsValid());
 							mc.Next();
-							Assert.True(mc.IsValid);
+							Assert.True(mc.IsValid());
 						}
 						for (int i=0; i<50; i++) {
-							mc.Seek(mc.Key, SeekOp.SEEK_EQ);
-							Assert.True(mc.IsValid);
+							mc.Seek(mc.Key(), SeekOp.SEEK_EQ);
+							Assert.True(mc.IsValid());
 							mc.Prev();
-							Assert.True(mc.IsValid);
+							Assert.True(mc.IsValid());
 						}
 						for (int i=0; i<50; i++) {
-							mc.Seek(mc.Key, SeekOp.SEEK_LE);
-							Assert.True(mc.IsValid);
+							mc.Seek(mc.Key(), SeekOp.SEEK_LE);
+							Assert.True(mc.IsValid());
 							mc.Prev();
-							Assert.True(mc.IsValid);
+							Assert.True(mc.IsValid());
 						}
 						for (int i=0; i<50; i++) {
-							mc.Seek(mc.Key, SeekOp.SEEK_GE);
-							Assert.True(mc.IsValid);
+							mc.Seek(mc.Key(), SeekOp.SEEK_GE);
+							Assert.True(mc.IsValid());
 							mc.Next();
-							Assert.True(mc.IsValid);
+							Assert.True(mc.IsValid());
 						}
-						string s = mc.Key.UTF8ToString();
+						string s = mc.Key().UTF8ToString();
 						// got the following value from the debugger.
 						// just want to make sure that it doesn't change
 						// and all combos give the same answer.
@@ -424,18 +424,18 @@ namespace lsm_tests
 					ICursor t1csr = t1.OpenCursor();
 					ICursor btcsr = c.open_btree_segment(fs, PAGE_SIZE, pg);
 					t1csr.First();
-					while (t1csr.IsValid) {
+					while (t1csr.IsValid()) {
 
-						var k = t1csr.Key;
+						var k = t1csr.Key();
 
 						btcsr.Seek(k, SeekOp.SEEK_EQ);
-						Assert.True(btcsr.IsValid);
+						Assert.True(btcsr.IsValid());
 
-						Assert.Equal(t1csr.ValueLength, btcsr.ValueLength);
+						Assert.Equal(t1csr.ValueLength(), btcsr.ValueLength());
 
-						var tv = ReadAll(t1csr.Value);
-						var tb1 = ReadAll(btcsr.Value);
-						var tb2 = ReadAll_SmallChunks(btcsr.Value);
+						var tv = ReadAll(t1csr.Value());
+						var tb1 = ReadAll(btcsr.Value());
+						var tb2 = ReadAll_SmallChunks(btcsr.Value());
 						Assert.Equal(0, cmp(tv,tb1));
 						Assert.Equal(0, cmp(tv,tb2));
 
@@ -459,7 +459,7 @@ namespace lsm_tests
 					var csr = t1.OpenCursor ();
 
 					csr.First ();
-					while (csr.IsValid) {
+					while (csr.IsValid ()) {
 						csr.Next ();
 					}
 				}
@@ -474,7 +474,7 @@ namespace lsm_tests
 					var csr = c.open_btree_segment (fs, PAGE_SIZE, root);
 
 					csr.First ();
-					while (csr.IsValid) {
+					while (csr.IsValid ()) {
 						csr.Next ();
 					}
 				}
@@ -534,16 +534,16 @@ namespace lsm_tests
 						var csr = c.create_multicursor(csr2, csr1);
 
 						csr.Seek ("a", SeekOp.SEEK_LE);
-						Assert.False (csr.IsValid);
+						Assert.False (csr.IsValid ());
 
 						csr.Seek ("d", SeekOp.SEEK_LE);
-						Assert.True (csr.IsValid);
+						Assert.True (csr.IsValid ());
 
 						csr.Seek ("f", SeekOp.SEEK_GE);
-						Assert.True (csr.IsValid);
+						Assert.True (csr.IsValid ());
 
 						csr.Seek ("h", SeekOp.SEEK_GE);
-						Assert.False (csr.IsValid);
+						Assert.False (csr.IsValid ());
 					}
 				}
 			};
@@ -564,16 +564,16 @@ namespace lsm_tests
 					var csr = t1.OpenCursor ();
 
 					csr.Seek ("a", SeekOp.SEEK_LE);
-					Assert.False (csr.IsValid);
+					Assert.False (csr.IsValid ());
 
 					csr.Seek ("d", SeekOp.SEEK_LE);
-					Assert.True (csr.IsValid);
+					Assert.True (csr.IsValid ());
 
 					csr.Seek ("f", SeekOp.SEEK_GE);
-					Assert.True (csr.IsValid);
+					Assert.True (csr.IsValid ());
 
 					csr.Seek ("h", SeekOp.SEEK_GE);
-					Assert.False (csr.IsValid);
+					Assert.False (csr.IsValid ());
 				}
 
 				int root;
@@ -586,16 +586,16 @@ namespace lsm_tests
 					var csr = c.open_btree_segment(fs, PAGE_SIZE, root);
 
 					csr.Seek ("a", SeekOp.SEEK_LE);
-					Assert.False (csr.IsValid);
+					Assert.False (csr.IsValid ());
 
 					csr.Seek ("d", SeekOp.SEEK_LE);
-					Assert.True (csr.IsValid);
+					Assert.True (csr.IsValid ());
 
 					csr.Seek ("f", SeekOp.SEEK_GE);
-					Assert.True (csr.IsValid);
+					Assert.True (csr.IsValid ());
 
 					csr.Seek ("h", SeekOp.SEEK_GE);
-					Assert.False (csr.IsValid);
+					Assert.False (csr.IsValid ());
 				}
 			};
 			foreach (combo c in combo.get_combos()) f(c);
@@ -628,16 +628,16 @@ namespace lsm_tests
 					var csr = c.open_btree_segment(fs, PAGE_SIZE, root);
 
 					csr.First ();
-					while (csr.IsValid) {
-						var k = csr.Key;
+					while (csr.IsValid ()) {
+						var k = csr.Key();
 						Assert.Equal (2, k.Length);
-						Assert.Equal (s.Length, csr.ValueLength);
+						Assert.Equal (s.Length, csr.ValueLength ());
 						csr.Next ();
 					}
 
 					csr.Last ();
-					while (csr.IsValid) {
-						var v = csr.Value;
+					while (csr.IsValid ()) {
+						var v = csr.Value ();
 						Assert.Equal (s, v.UTF8StreamToString());
 						csr.Prev ();
 					}
@@ -693,15 +693,15 @@ namespace lsm_tests
 						Assert.Equal (13, count_keys_backward (csr));
 
 						csr.Seek ("n", SeekOp.SEEK_EQ);
-						Assert.False (csr.IsValid);
+						Assert.False (csr.IsValid ());
 
 						csr.Seek ("n", SeekOp.SEEK_LE);
-						Assert.True (csr.IsValid);
-						Assert.Equal ("m", csr.Key.UTF8ToString ());
+						Assert.True (csr.IsValid ());
+						Assert.Equal ("m", csr.Key ().UTF8ToString ());
 
 						csr.Seek ("n", SeekOp.SEEK_GE);
-						Assert.True (csr.IsValid);
-						Assert.Equal ("o", csr.Key.UTF8ToString ());
+						Assert.True (csr.IsValid ());
+						Assert.Equal ("o", csr.Key ().UTF8ToString ());
 					}
 				}
 			};
@@ -725,18 +725,18 @@ namespace lsm_tests
 						var csr = c.open_btree_segment(fs, PAGE_SIZE, root);
 
 						csr.Seek ("8088", SeekOp.SEEK_EQ);
-						Assert.True (csr.IsValid);
+						Assert.True (csr.IsValid ());
 
 						csr.Seek ("8087", SeekOp.SEEK_EQ);
-						Assert.False (csr.IsValid);
+						Assert.False (csr.IsValid ());
 
 						csr.Seek ("8087", SeekOp.SEEK_LE);
-						Assert.True (csr.IsValid);
-						Assert.Equal ("8086", csr.Key.UTF8ToString ());
+						Assert.True (csr.IsValid ());
+						Assert.Equal ("8086", csr.Key ().UTF8ToString ());
 
 						csr.Seek ("8087", SeekOp.SEEK_GE);
-						Assert.True (csr.IsValid);
-						Assert.Equal ("8088", csr.Key.UTF8ToString ());
+						Assert.True (csr.IsValid ());
+						Assert.Equal ("8088", csr.Key ().UTF8ToString ());
 					}
 				}
 			};
@@ -780,15 +780,15 @@ namespace lsm_tests
 						var csr = c.create_multicursor(csr_7, csr_4);
 
 						csr.Seek ("0000002330", SeekOp.SEEK_EQ);
-						Assert.False (csr.IsValid);
+						Assert.False (csr.IsValid ());
 
 						csr.Seek ("0000002330", SeekOp.SEEK_LE);
-						Assert.True (csr.IsValid);
-						Assert.Equal ("0000002328", csr.Key.UTF8ToString ());
+						Assert.True (csr.IsValid ());
+						Assert.Equal ("0000002328", csr.Key ().UTF8ToString ());
 
 						csr.Seek ("0000002330", SeekOp.SEEK_GE);
-						Assert.True (csr.IsValid);
-						Assert.Equal ("0000002331", csr.Key.UTF8ToString ());
+						Assert.True (csr.IsValid ());
+						Assert.Equal ("0000002331", csr.Key ().UTF8ToString ());
 					}
 				}
 			};
@@ -845,7 +845,7 @@ namespace lsm_tests
 						var t2 = c.create_memory_segment();
 						var mc = c.create_multicursor(t2.OpenCursor(),csr);
 						mc.Seek("", SeekOp.SEEK_LE);
-						Assert.False(mc.IsValid);
+						Assert.False(mc.IsValid());
 					}
 				}
 			};
@@ -873,8 +873,8 @@ namespace lsm_tests
 						var csr = c.open_btree_segment(fs, PAGE_SIZE, root);
 
 						csr.Seek ("b", SeekOp.SEEK_EQ);
-						Assert.True (csr.IsValid);
-						Assert.Equal ("2", csr.Value.UTF8StreamToString ());
+						Assert.True (csr.IsValid ());
+						Assert.Equal ("2", csr.Value ().UTF8StreamToString ());
 					}
 				}
 			};
@@ -890,8 +890,8 @@ namespace lsm_tests
 				var csr = t1.OpenCursor ();
 
 				csr.Seek ("_", SeekOp.SEEK_EQ);
-				Assert.True (csr.IsValid);
-				Assert.Equal (0, csr.ValueLength);
+				Assert.True (csr.IsValid ());
+				Assert.Equal (0, csr.ValueLength ());
 
 				int root;
 				using (var fs = new FileStream ("empty_val", FileMode.Create, FileAccess.ReadWrite)) {
@@ -902,8 +902,8 @@ namespace lsm_tests
 				using (var fs = new FileStream ("empty_val", FileMode.Open, FileAccess.Read)) {
 					csr = c.open_btree_segment(fs, PAGE_SIZE, root);
 					csr.Seek ("_", SeekOp.SEEK_EQ);
-					Assert.True (csr.IsValid);
-					Assert.Equal (0, csr.ValueLength);
+					Assert.True (csr.IsValid ());
+					Assert.Equal (0, csr.ValueLength ());
 				}
 			};
 			foreach (combo c in combo.get_combos()) f(c);
@@ -924,8 +924,8 @@ namespace lsm_tests
 					{
 						var csr = t1.OpenCursor ();
 						csr.Seek ("b", SeekOp.SEEK_EQ);
-						Assert.True (csr.IsValid);
-						Assert.Equal ("2", csr.Value.UTF8StreamToString ());
+						Assert.True (csr.IsValid ());
+						Assert.Equal ("2", csr.Value ().UTF8StreamToString ());
 					}
 
 					using (var fs = new FileStream ("overwrite_val_mem", FileMode.Create, FileAccess.ReadWrite)) {
@@ -937,30 +937,30 @@ namespace lsm_tests
 				using (var fs = new FileStream ("overwrite_val_mem", FileMode.Open, FileAccess.Read)) {
 					var csr_b1 = c.open_btree_segment(fs, PAGE_SIZE, root);
 					csr_b1.Seek ("b", SeekOp.SEEK_EQ);
-					Assert.True (csr_b1.IsValid);
-					Assert.Equal ("2", csr_b1.Value.UTF8StreamToString());
+					Assert.True (csr_b1.IsValid ());
+					Assert.Equal ("2", csr_b1.Value ().UTF8StreamToString());
 
 					var t1 = c.create_memory_segment();
 					t1.Insert ("b", "5");
 					{
 						var csr = t1.OpenCursor ();
 						csr.Seek ("b", SeekOp.SEEK_EQ);
-						Assert.True (csr.IsValid);
-						Assert.Equal ("5", csr.Value.UTF8StreamToString ());
+						Assert.True (csr.IsValid ());
+						Assert.Equal ("5", csr.Value ().UTF8StreamToString ());
 					}
 
 					{
 						var mc = c.create_multicursor(t1.OpenCursor (), csr_b1);
 						mc.Seek ("b", SeekOp.SEEK_EQ);
-						Assert.True (mc.IsValid);
-						Assert.Equal ("5", mc.Value.UTF8StreamToString ());
+						Assert.True (mc.IsValid ());
+						Assert.Equal ("5", mc.Value ().UTF8StreamToString ());
 					}
 
 					{
 						var mc = c.create_multicursor(csr_b1, t1.OpenCursor ());
 						mc.Seek ("b", SeekOp.SEEK_EQ);
-						Assert.True (mc.IsValid);
-						Assert.Equal ("2", mc.Value.UTF8StreamToString ());
+						Assert.True (mc.IsValid ());
+						Assert.Equal ("2", mc.Value ().UTF8StreamToString ());
 					}
 				}
 			};
@@ -1013,13 +1013,13 @@ namespace lsm_tests
 							var mc = c.create_multicursor(csr2, csr1);
 
 							mc.Seek ("b", SeekOp.SEEK_EQ);
-							Assert.True (mc.IsValid);
-							Assert.Equal (-1, mc.ValueLength);
-							Assert.Null (mc.Value);
+							Assert.True (mc.IsValid ());
+							Assert.Equal (-1, mc.ValueLength ());
+							Assert.Null (mc.Value ());
 							mc.Prev ();
-							Assert.True (mc.IsValid);
-							Assert.Equal ("a", mc.Key.UTF8ToString ());
-							Assert.Equal ("1", mc.Value.UTF8StreamToString ());
+							Assert.True (mc.IsValid ());
+							Assert.Equal ("a", mc.Key ().UTF8ToString ());
+							Assert.Equal ("1", mc.Value ().UTF8StreamToString ());
 
 							Assert.Equal (4, count_keys_forward (mc));
 							Assert.Equal (4, count_keys_backward (mc));
@@ -1027,113 +1027,113 @@ namespace lsm_tests
 							// ----
 
 							mc.First ();
-							Assert.True (mc.IsValid);
-							Assert.Equal ("a", mc.Key.UTF8ToString ());
-							Assert.Equal ("1", mc.Value.UTF8StreamToString ());
+							Assert.True (mc.IsValid ());
+							Assert.Equal ("a", mc.Key ().UTF8ToString ());
+							Assert.Equal ("1", mc.Value ().UTF8StreamToString ());
 
 							mc.Next ();
-							Assert.True (mc.IsValid);
-							Assert.Equal ("b", mc.Key.UTF8ToString ());
-							Assert.Equal (null, mc.Value);
-							Assert.Equal (-1, mc.ValueLength);
+							Assert.True (mc.IsValid ());
+							Assert.Equal ("b", mc.Key ().UTF8ToString ());
+							Assert.Equal (null, mc.Value ());
+							Assert.Equal (-1, mc.ValueLength ());
 
 							mc.Next ();
-							Assert.True (mc.IsValid);
-							Assert.Equal ("c", mc.Key.UTF8ToString ());
-							Assert.Equal ("3", mc.Value.UTF8StreamToString ());
+							Assert.True (mc.IsValid ());
+							Assert.Equal ("c", mc.Key ().UTF8ToString ());
+							Assert.Equal ("3", mc.Value ().UTF8StreamToString ());
 
 							mc.Next ();
-							Assert.True (mc.IsValid);
-							Assert.Equal ("d", mc.Key.UTF8ToString ());
-							Assert.Equal ("4", mc.Value.UTF8StreamToString ());
+							Assert.True (mc.IsValid ());
+							Assert.Equal ("d", mc.Key ().UTF8ToString ());
+							Assert.Equal ("4", mc.Value ().UTF8StreamToString ());
 
 							mc.Next ();
-							Assert.False (mc.IsValid);
+							Assert.False (mc.IsValid ());
 
 							// ----
 
 							mc.First ();
-							Assert.True (mc.IsValid);
-							Assert.Equal ("a", mc.Key.UTF8ToString ());
-							Assert.Equal ("1", mc.Value.UTF8StreamToString ());
+							Assert.True (mc.IsValid ());
+							Assert.Equal ("a", mc.Key ().UTF8ToString ());
+							Assert.Equal ("1", mc.Value ().UTF8StreamToString ());
 
 							mc.Next ();
-							Assert.True (mc.IsValid);
-							Assert.Equal ("b", mc.Key.UTF8ToString ());
-							Assert.Equal (null, mc.Value);
-							Assert.Equal (-1, mc.ValueLength);
+							Assert.True (mc.IsValid ());
+							Assert.Equal ("b", mc.Key ().UTF8ToString ());
+							Assert.Equal (null, mc.Value ());
+							Assert.Equal (-1, mc.ValueLength ());
 
 							mc.Prev ();
-							Assert.True (mc.IsValid);
-							Assert.Equal ("a", mc.Key.UTF8ToString ());
-							Assert.Equal ("1", mc.Value.UTF8StreamToString ());
+							Assert.True (mc.IsValid ());
+							Assert.Equal ("a", mc.Key ().UTF8ToString ());
+							Assert.Equal ("1", mc.Value ().UTF8StreamToString ());
 
 							mc.Next ();
-							Assert.True (mc.IsValid);
-							Assert.Equal ("b", mc.Key.UTF8ToString ());
-							Assert.Equal (null, mc.Value);
-							Assert.Equal (-1, mc.ValueLength);
+							Assert.True (mc.IsValid ());
+							Assert.Equal ("b", mc.Key ().UTF8ToString ());
+							Assert.Equal (null, mc.Value ());
+							Assert.Equal (-1, mc.ValueLength ());
 
 							// ----
 
 							mc.Seek ("b", SeekOp.SEEK_LE);
-							Assert.True (mc.IsValid);
-							Assert.Equal (-1, mc.ValueLength);
-							Assert.Equal ("b", mc.Key.UTF8ToString ());
+							Assert.True (mc.IsValid ());
+							Assert.Equal (-1, mc.ValueLength ());
+							Assert.Equal ("b", mc.Key ().UTF8ToString ());
 
 							mc.Prev ();
-							Assert.True (mc.IsValid);
-							Assert.Equal ("a", mc.Key.UTF8ToString ());
+							Assert.True (mc.IsValid ());
+							Assert.Equal ("a", mc.Key ().UTF8ToString ());
 
 							mc.Next ();
-							Assert.True (mc.IsValid);
-							Assert.Equal (-1, mc.ValueLength);
-							Assert.Equal ("b", mc.Key.UTF8ToString ());
+							Assert.True (mc.IsValid ());
+							Assert.Equal (-1, mc.ValueLength ());
+							Assert.Equal ("b", mc.Key ().UTF8ToString ());
 
 							mc.Next ();
-							Assert.True (mc.IsValid);
-							Assert.Equal ("c", mc.Key.UTF8ToString ());
+							Assert.True (mc.IsValid ());
+							Assert.Equal ("c", mc.Key ().UTF8ToString ());
 
 							// ----
 
 							var lc = c.create_living_cursor(mc) as ICursor;
 
 							lc.First ();
-							Assert.True (lc.IsValid);
-							Assert.Equal ("a", lc.Key.UTF8ToString ());
-							Assert.Equal ("1", lc.Value.UTF8StreamToString ());
+							Assert.True (lc.IsValid ());
+							Assert.Equal ("a", lc.Key ().UTF8ToString ());
+							Assert.Equal ("1", lc.Value ().UTF8StreamToString ());
 
 							lc.Next ();
-							Assert.True (lc.IsValid);
-							Assert.Equal ("c", lc.Key.UTF8ToString ());
-							Assert.Equal ("3", lc.Value.UTF8StreamToString ());
+							Assert.True (lc.IsValid ());
+							Assert.Equal ("c", lc.Key ().UTF8ToString ());
+							Assert.Equal ("3", lc.Value ().UTF8StreamToString ());
 
 							lc.Next ();
-							Assert.True (lc.IsValid);
-							Assert.Equal ("d", lc.Key.UTF8ToString ());
-							Assert.Equal ("4", lc.Value.UTF8StreamToString ());
+							Assert.True (lc.IsValid ());
+							Assert.Equal ("d", lc.Key ().UTF8ToString ());
+							Assert.Equal ("4", lc.Value ().UTF8StreamToString ());
 
 							lc.Next ();
-							Assert.False (lc.IsValid);
+							Assert.False (lc.IsValid ());
 
 							Assert.Equal (3, count_keys_forward (lc));
 							Assert.Equal (3, count_keys_backward (lc));
 
 							lc.Seek ("b", SeekOp.SEEK_EQ);
-							Assert.False (lc.IsValid);
+							Assert.False (lc.IsValid ());
 
 							lc.Seek ("b", SeekOp.SEEK_LE);
-							Assert.True (lc.IsValid);
-							Assert.Equal ("a", lc.Key.UTF8ToString ());
+							Assert.True (lc.IsValid ());
+							Assert.Equal ("a", lc.Key ().UTF8ToString ());
 							lc.Next ();
-							Assert.True (lc.IsValid);
-							Assert.Equal ("c", lc.Key.UTF8ToString ());
+							Assert.True (lc.IsValid ());
+							Assert.Equal ("c", lc.Key ().UTF8ToString ());
 
 							lc.Seek ("b", SeekOp.SEEK_GE);
-							Assert.True (lc.IsValid);
-							Assert.Equal ("c", lc.Key.UTF8ToString ());
+							Assert.True (lc.IsValid ());
+							Assert.Equal ("c", lc.Key ().UTF8ToString ());
 							lc.Prev ();
-							Assert.Equal ("a", lc.Key.UTF8ToString ());
+							Assert.Equal ("a", lc.Key ().UTF8ToString ());
 						}
 					}
 				}
@@ -1145,7 +1145,7 @@ namespace lsm_tests
 		{
 			int count = 0;
 			csr.First ();
-			while (csr.IsValid) {
+			while (csr.IsValid ()) {
 				count++;
 				csr.Next ();
 			}
@@ -1156,7 +1156,7 @@ namespace lsm_tests
 		{
 			int count = 0;
 			csr.Last ();
-			while (csr.IsValid) {
+			while (csr.IsValid ()) {
 				count++;
 				csr.Prev ();
 			}

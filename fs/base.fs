@@ -37,10 +37,10 @@ type ICursor =
     abstract member Last : unit -> unit
     abstract member Next : unit -> unit
     abstract member Prev : unit -> unit
-    abstract IsValid :bool with get
-    abstract Key :byte[] with get
-    abstract Value :Stream with get
-    abstract ValueLength :int with get
+    abstract member IsValid : unit -> bool
+    abstract member Key : unit -> byte[]
+    abstract member Value : unit -> Stream
+    abstract member ValueLength : unit -> int
     abstract member KeyCompare : k:byte[] -> int
 
 type ITransaction =
@@ -62,6 +62,6 @@ type IDatabase =
     abstract member BeginTransaction : unit->ITransaction
 
 module ICursorExtensions =
-    let ToSequenceOfKeyValuePairs (csr:ICursor) = seq { csr.First(); while csr.IsValid do yield new KeyValuePair<byte[],Stream>(csr.Key, csr.Value); csr.Next(); done }
-    let ToSequenceOfTuples (csr:ICursor) = seq { csr.First(); while csr.IsValid do yield (csr.Key, csr.Value); csr.Next(); done }
+    let ToSequenceOfKeyValuePairs (csr:ICursor) = seq { csr.First(); while csr.IsValid() do yield new KeyValuePair<byte[],Stream>(csr.Key(), csr.Value()); csr.Next(); done }
+    let ToSequenceOfTuples (csr:ICursor) = seq { csr.First(); while csr.IsValid() do yield (csr.Key(), csr.Value()); csr.Next(); done }
 
