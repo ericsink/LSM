@@ -13,6 +13,18 @@ namespace newTests
 	public class MyClass
 	{
 		[Fact]
+		public void empty_cursor()
+		{
+			var f = new dbf (Guid.NewGuid().ToString().Replace("{", "").Replace("}","").Replace("-",""));
+			var db = new Zumero.LSM.fs.Database (f) as IDatabase;
+			var csr = db.BeginRead ();
+			csr.First ();
+			Assert.False (csr.IsValid ());
+			csr.Last ();
+			Assert.False (csr.IsValid ());
+		}
+
+		[Fact]
 		public void first_write()
 		{
 			var f = new dbf ("foo");
