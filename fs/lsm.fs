@@ -1802,7 +1802,8 @@ type Database(_io:IDatabaseFile) =
         let fs = io.OpenForReading()
         let hook (csr:ICursor) =
             fs.Close()
-            // TODO remove csr from cursors list
+            // TODO remove csr from cursors list.  which means we need
+            // a way to get the guid for a cursor.
         let csr = BTreeSegment.OpenCursor(fs, pageSize, rootPage, new Action<ICursor>(hook))
         lock critSectionCursors (fun () -> cursors <- (g,csr) :: cursors; )
         csr
@@ -1832,15 +1833,16 @@ type Database(_io:IDatabaseFile) =
 
     interface ITransaction with
         member this.Commit(newGuids:seq<Guid>) =
-            let newGuidsAsMap = Seq.fold (fun acc g -> Map.add g () acc) Map.empty newGuids
-            let mySegmentsInWaiting = Map.filter (fun g _ -> Map.containsKey g newGuidsAsMap) segmentsInWaiting
+            let newGuidsAsSet = Seq.fold (fun acc g -> Set.add g acc) Set.empty newGuids
+            let mySegmentsInWaiting = Map.filter (fun g _ -> Set.contains g newGuidsAsSet) segmentsInWaiting
             lock critSectionHeader (fun () -> 
                 let newState = (List.ofSeq newGuids) @ header.currentState
                 let newSegments = Map.fold (fun acc key value -> Map.add key value acc) header.segments mySegmentsInWaiting
                 let newSill = saveSegmentInfoList newSegments
-                let newHeader = {header with sill = newSill; currentState=newState;}
+                let newHeader = {currentState=newState; segments=newSegments; sill = newSill;}
                 writeHeader newHeader
-                // TODO the old location of the segment info list is now free pages
+                // TODO the pages for the old location of the segment info list
+                // could now be reused
                 header <- newHeader
             )
             // no need for lock critSectionInTransaction here because there is
@@ -1850,7 +1852,7 @@ type Database(_io:IDatabaseFile) =
             // all the segments we just committed can now be removed from
             // the segments in waiting list
             lock critSectionSegmentsInWaiting (fun () ->
-                let remainingSegmentsInWaiting = Map.filter (fun g _ -> Map.containsKey g newGuidsAsMap |> not) segmentsInWaiting
+                let remainingSegmentsInWaiting = Map.filter (fun g _ -> Set.contains g newGuidsAsSet |> not) segmentsInWaiting
                 segmentsInWaiting <- remainingSegmentsInWaiting
             )
 
@@ -1859,6 +1861,9 @@ type Database(_io:IDatabaseFile) =
             // no way for the code to be here unless the caller is holding the
             // lock.
             inTransaction <- false
+            // TODO we could have Rollback accept a seq<Guid> so we could release
+            // any segments in waiting that got written before the owner of the tx
+            // decided to rollback.
 
 
     interface IDatabase with
