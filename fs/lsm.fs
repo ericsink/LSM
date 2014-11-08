@@ -1590,7 +1590,7 @@ type private SegmentInfoListLocation =
 
 type private HeaderData =
     {
-        currentState: (Guid*int) list
+        currentState: Guid list
         sill: SegmentInfoListLocation
         segments: Map<Guid,(int*int) list>
     }
@@ -1632,9 +1632,8 @@ type Database(_io:IDatabaseFile) =
                     if more > 0 then
                         let token = pr.GetArray(16)
                         let g = new Guid(token)
-                        let page = pr.GetInt32()
                         // TODO need the list to be in the right order
-                        f (more-1) ( (g,page) :: cur)
+                        f (more-1) ( g :: cur)
                     else
                         cur
                 let count = pr.GetVarint() |> int
@@ -1652,11 +1651,13 @@ type Database(_io:IDatabaseFile) =
                 let count = prBlocks.GetVarint() |> int
                 f count []
 
-            let readSegmentInfoList pageSize sill =
-                utils.SeekPage(fsMine, pageSize, sill.firstPage)
+            let readSegmentInfoList outerPageSize sill =
+                utils.SeekPage(fsMine, outerPageSize, sill.firstPage)
                 let buf:byte[] = Array.zeroCreate sill.len
                 utils.ReadFully(fsMine, buf, 0, sill.len)
-                let csr = BTreeSegment.OpenCursor(fsMine, sill.innerPageSize, sill.len / sill.innerPageSize, null)
+                let ms = new MemoryStream(buf)
+                let innerRootPage = sill.len / sill.innerPageSize
+                let csr = BTreeSegment.OpenCursor(ms, sill.innerPageSize, innerRootPage, null)
                 csr.First()
 
                 let rec f (cur:Map<Guid,(int*int) list>) =
@@ -1725,10 +1726,11 @@ type Database(_io:IDatabaseFile) =
                 let nextAvailablePage = calcNextPage defaultPageSize (int64 HEADER_SIZE_IN_BYTES)
                 (h, defaultPageSize, nextAvailablePage)
 
-    let (firstReadOfHeader,pageSize,firstAvailablePage) = readHeader() // TODO lock critSectionHeader?
+    let (firstReadOfHeader,pageSize,firstAvailablePage) = readHeader()
 
     let mutable header = firstReadOfHeader
     let mutable nextPage = firstAvailablePage
+    let mutable segmentsInWaiting: Map<Guid,(int*int) list> = Map.empty
 
     // TODO need a free block list so the following code can reuse
     // pages.  right now it always returns more blocks at the end
@@ -1792,14 +1794,17 @@ type Database(_io:IDatabaseFile) =
 
     let critSectionCursors = [] // TODO could be any object?
     let mutable cursors = []
-    let getCursor seg =
-        let page = snd seg
+
+    let getCursor h g =
+        let seg = h.segments.Item(g)
+        let lastBlock = List.head seg
+        let rootPage = snd lastBlock
         let fs = io.OpenForReading()
         let hook (csr:ICursor) =
             fs.Close()
             // TODO remove csr from cursors list
-        let csr = BTreeSegment.OpenCursor(fs, pageSize, page, new Action<ICursor>(hook))
-        lock critSectionCursors (fun () -> cursors <- (seg,csr) :: cursors; )
+        let csr = BTreeSegment.OpenCursor(fs, pageSize, rootPage, new Action<ICursor>(hook))
+        lock critSectionCursors (fun () -> cursors <- (g,csr) :: cursors; )
         csr
 
     let critSectionInTransaction = [] // TODO could be any object?
@@ -1817,21 +1822,27 @@ type Database(_io:IDatabaseFile) =
         pb.PutInt32(hdr.sill.len)
 
         pb.PutVarint(List.length hdr.currentState |> int64)
-        List.iter (fun x -> 
-            let g:Guid = fst x
+        List.iter (fun (g:Guid) -> 
             pb.PutArray(g.ToByteArray())
-            pb.PutInt32(snd x)
             ) hdr.currentState
 
         fsMine.Seek(0L, SeekOrigin.Begin) |> ignore
         pb.Write(fsMine)
 
     interface ITransaction with
-        member this.Commit(newSegments:(Guid*int) list) =
+        member this.Commit(newGuids:seq<Guid>) =
             lock critSectionHeader (fun () -> 
-                let newHeader = {header with currentState = newSegments @ header.currentState}
+                let newGuidsAsMap = Seq.fold (fun acc g -> Map.add g () acc) Map.empty newGuids
+                let mySegmentsInWaiting = Map.filter (fun g _ -> Map.containsKey g newGuidsAsMap) segmentsInWaiting
+                let remainingSegmentsInWaiting = Map.filter (fun g _ -> Map.containsKey g newGuidsAsMap |> not) segmentsInWaiting
+                let newState = (List.ofSeq newGuids) @ header.currentState
+                let newSegments = Map.fold (fun acc key value -> Map.add key value acc) header.segments mySegmentsInWaiting
+                let newSill = saveSegmentInfoList newSegments
+                let newHeader = {header with sill = newSill; currentState=newState;}
                 writeHeader newHeader
+                // TODO the old location of the segment info list is now free pages
                 header <- newHeader
+                segmentsInWaiting <- remainingSegmentsInWaiting
             )
             // no need for lock critSectionInTransaction here because there is
             // no way for the code to be here unless the caller is holding the
@@ -1852,7 +1863,8 @@ type Database(_io:IDatabaseFile) =
 
         member this.BeginRead() =
             // TODO if the db is empty?
-            let cursors = List.map (fun x -> getCursor x) header.currentState
+            let h = header
+            let cursors = List.map (fun g -> getCursor h g) h.currentState
             MultiCursor.Create cursors
 
         member this.BeginTransaction() =
@@ -1876,11 +1888,7 @@ type Database(_io:IDatabaseFile) =
             let ps = token :?> PendingSegment
             let (g,blocks) = ps.End(lastPage)
             lock critSectionHeader (fun () -> 
-                let newSegments = header.segments.Add(g, blocks)
-                let newHeader = {header with sill = saveSegmentInfoList newSegments}
-                writeHeader newHeader
-                // TODO the old location of the segment info list is now free pages
-                header <- newHeader // lock critSectionHeader
+                segmentsInWaiting <- segmentsInWaiting.Add(g, blocks)
             )
             g
 

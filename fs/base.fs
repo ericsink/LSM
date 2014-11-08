@@ -45,7 +45,7 @@ type ICursor =
 
 type ITransaction =
     // TODO consider inherit IDisposable and rollback if commit is never called
-    abstract member Commit : (Guid*int) list -> unit
+    abstract member Commit : seq<Guid> -> unit
     abstract member Rollback : unit->unit
 
 type IDatabaseFile =
