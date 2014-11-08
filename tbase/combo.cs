@@ -81,9 +81,11 @@ namespace lsm_tests
 			Array.Sort(keys, new ByteComparer());
 		}
 
-		bool ICursor.IsValid()
+		bool ICursor.IsValid
 		{
-			return (cur >= 0) && (cur < pairs.Count);
+			get {
+				return (cur >= 0) && (cur < pairs.Count);
+			}
 		}
 
 		private int search(byte[] k, int min, int max, SeekOp sop)
@@ -142,30 +144,36 @@ namespace lsm_tests
 
 		int ICursor.KeyCompare(byte[] k)
 		{
-			return ByteComparer.cmp ((this as ICursor).Key (), k);
+			return ByteComparer.cmp ((this as ICursor).Key, k);
 		}
 
-		byte[] ICursor.Key()
+		byte[] ICursor.Key
 		{
-			return keys[cur];
-		}
-
-		Stream ICursor.Value()
-		{
-			Stream v = pairs [keys [cur]];
-			if (v != null) {
-				v.Seek (0, SeekOrigin.Begin);
+			get {
+				return keys [cur];
 			}
-			return v;
 		}
 
-		int ICursor.ValueLength()
+		Stream ICursor.Value
 		{
-			Stream v = pairs[keys[cur]];
-			if (null == v) {
-				return -1;
-			} else {
-				return (int) v.Length;
+			get {
+				Stream v = pairs [keys [cur]];
+				if (v != null) {
+					v.Seek (0, SeekOrigin.Begin);
+				}
+				return v;
+			}
+		}
+
+		int ICursor.ValueLength
+		{
+			get {
+				Stream v = pairs [keys [cur]];
+				if (null == v) {
+					return -1;
+				} else {
+					return (int)v.Length;
+				}
 			}
 		}
 	}

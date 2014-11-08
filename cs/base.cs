@@ -48,10 +48,10 @@ namespace Zumero.LSM
 		void Next();
 		void Prev();
 
-		bool IsValid(); // TODO property?
-		byte[] Key(); // TODO property?
-		Stream Value(); // TODO property?
-		int ValueLength(); // TODO property?
+		bool IsValid { get; }
+		byte[] Key { get; }
+		Stream Value { get; }
+		int ValueLength { get; }
 
 		int KeyCompare(byte[] k);
 	}
@@ -61,8 +61,8 @@ namespace Zumero.LSM
 		public static IEnumerable<Tuple<byte[],Stream>> ToSequenceOfTuples(ICursor csr)
 		{
 			csr.First ();
-			while (csr.IsValid ()) {
-				yield return new Tuple<byte[], Stream> (csr.Key (), csr.Value ());
+			while (csr.IsValid) {
+				yield return new Tuple<byte[], Stream> (csr.Key, csr.Value);
 				csr.Next ();
 			}
 		}
@@ -70,8 +70,8 @@ namespace Zumero.LSM
 		public static IEnumerable<KeyValuePair<byte[],Stream>> ToSequenceOfKeyValuePairs(ICursor csr)
 		{
 			csr.First ();
-			while (csr.IsValid ()) {
-				yield return new KeyValuePair<byte[], Stream> (csr.Key (), csr.Value ());
+			while (csr.IsValid) {
+				yield return new KeyValuePair<byte[], Stream> (csr.Key, csr.Value);
 				csr.Next ();
 			}
 		}

@@ -63,6 +63,6 @@ Global
 		{F05CCE04-5064-4948-8F55-AB29151D0B5F}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(MonoDevelopProperties) = preSolution
-		StartupItem = newTests\newTests.csproj
+		StartupItem = tests\tests.csproj
 	EndGlobalSection
 EndGlobal
