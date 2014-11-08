@@ -655,7 +655,7 @@ module bt =
     let CreateFromSortedSequenceOfKeyValuePairs(fs:Stream, pageManager:IPages, source:seq<kvp>) = 
         let pageSize = pageManager.PageSize
         let token = pageManager.Begin()
-        let pbOverflow = new PageBuilder(pageSize)
+        let pbOverflow = PageBuilder(pageSize)
 
         let writeOverflow startingNextPageNumber startingBoundaryPageNumber (ba:Stream) =
             let len = (int ba.Length)
@@ -796,7 +796,7 @@ module bt =
 
             writeOneBlock 0 startingNextPageNumber startingBoundaryPageNumber
 
-        let pb = new PageBuilder(pageSize)
+        let pb = PageBuilder(pageSize)
         let putKeyWithLength (k:byte[]) =
             pb.PutByte(0uy) // flags TODO are keys ever going to have flags?
             pb.PutVarint(int64 k.Length)
@@ -835,7 +835,7 @@ module bt =
                 pb.Write(fs)
                 pb.Reset()
                 if nextN <> (thisPageNumber+1) then utils.SeekPage(fs, pageSize, nextN)
-                {keys=[]; firstLeaf=firstLeaf; nextPage=nextN; boundaryPage=nextB; leaves=new pgitem(thisPageNumber,List.head st.keys)::st.leaves}
+                {keys=[]; firstLeaf=firstLeaf; nextPage=nextN; boundaryPage=nextB; leaves=pgitem(thisPageNumber,List.head st.keys)::st.leaves}
 
             let foldLeaf st (pair:kvp) = 
                 let k = pair.Key
@@ -998,7 +998,7 @@ module bt =
                             (thisPageNumber+1,boundaryPageNumber)
                 pb.Write(fs)
                 if nextN <> (thisPageNumber+1) then utils.SeekPage(fs, pageSize, nextN)
-                {sofar=0; items=[]; nextPage=nextN; boundaryPage=nextB; overflows=Map.empty; nextGeneration=new pgitem(thisPageNumber,k)::nextGeneration}
+                {sofar=0; items=[]; nextPage=nextN; boundaryPage=nextB; overflows=Map.empty; nextGeneration=pgitem(thisPageNumber,k)::nextGeneration}
 
             let foldParent (pair:pgitem) st =
                 let pagenum = pair.page
@@ -1204,13 +1204,13 @@ module bt =
 
         override this.CanSeek = false
         override this.CanWrite = false
-        override this.SetLength(_) = raise (new NotSupportedException())
-        override this.Flush() = raise (new NotSupportedException())
-        override this.Seek(_,_) = raise (new NotSupportedException())
-        override this.Write(_,_,_) = raise (new NotSupportedException())
+        override this.SetLength(_) = raise (NotSupportedException())
+        override this.Flush() = raise (NotSupportedException())
+        override this.Seek(_,_) = raise (NotSupportedException())
+        override this.Write(_,_,_) = raise (NotSupportedException())
         override this.Position
             with get() = int64 sofarOverall
-            and set(_) = raise (new NotSupportedException())
+            and set(_) = raise (NotSupportedException())
 
     let private readOverflow len fs pageSize (firstPage:int) =
         let ostrm = new myOverflowReadStream(fs, pageSize, firstPage, len)
@@ -1219,7 +1219,7 @@ module bt =
     type private myCursor(_fs:Stream, pageSize:int, _rootPage:int, _hook:Action<ICursor>) =
         let fs = _fs
         let rootPage = _rootPage
-        let pr = new PageReader(pageSize)
+        let pr = PageReader(pageSize)
         let hook = _hook
 
         let mutable currentPage:int = 0
@@ -1378,7 +1378,7 @@ module bt =
                 //
                 // otherwise, it's the number of pages to skip ahead.
                 // this skip might take us to whatever follows this
-                // overflow (which could be a leadf or a parent or
+                // overflow (which could be a leaf or a parent or
                 // another overflow), or it might just take us to a
                 // boundary page (in the case where the overflow didn't
                 // fit).  it doesn't matter.  we just skip ahead.
@@ -1536,7 +1536,7 @@ type BTreeSegment =
 
     // the caller of this method is promising that the sequence is sorted
     static member Create(fs:Stream, pageManager:IPages, pairs:seq<byte[]*Stream>) = 
-        let source = seq { for t in pairs do yield new kvp(fst t,snd t) done }
+        let source = seq { for t in pairs do yield kvp(fst t,snd t) done }
         bt.CreateFromSortedSequenceOfKeyValuePairs (fs, pageManager, source)
 
     static member Create(fs:Stream, pageManager:IPages, pairs:System.Collections.Generic.Dictionary<byte[],Stream>) =
@@ -1544,7 +1544,7 @@ type BTreeSegment =
         let keys:byte[][] = (Array.ofSeq pairs.Keys)
         let sortfunc x y = ByteComparer.Compare x y
         Array.sortInPlaceWith sortfunc keys
-        let source = seq { for k in keys do yield new kvp(k,pairs.[k]) done }
+        let source = seq { for k in keys do yield kvp(k,pairs.[k]) done }
         bt.CreateFromSortedSequenceOfKeyValuePairs (fs, pageManager, source)
 
     // TODO Create overload for Map
@@ -1563,7 +1563,7 @@ type trivialMemoryPageManager(_pageSize) =
 
     interface IPages with
         member this.PageSize = pageSize
-        member this.Begin() = new trivialPendingSegment() :> IPendingSegment
+        member this.Begin() = trivialPendingSegment() :> IPendingSegment
         member this.End(_,_) = Guid.Empty
         member this.GetRange(_) = (1,-1)
 
@@ -1620,7 +1620,7 @@ type Database(_io:IDatabaseFile) =
     let readHeader() =
         let read() =
             if fsMine.Length >= (HEADER_SIZE_IN_BYTES |> int64) then
-                let pr = new PageReader(HEADER_SIZE_IN_BYTES)
+                let pr = PageReader(HEADER_SIZE_IN_BYTES)
                 pr.Read(fsMine)
                 Some pr
             else
@@ -1631,7 +1631,7 @@ type Database(_io:IDatabaseFile) =
                 let rec f more cur =
                     if more > 0 then
                         let token = pr.GetArray(16)
-                        let g = new Guid(token)
+                        let g = Guid(token)
                         // TODO need the list to be in the right order
                         f (more-1) ( g :: cur)
                     else
@@ -1662,8 +1662,8 @@ type Database(_io:IDatabaseFile) =
 
                 let rec f (cur:Map<Guid,(int*int) list>) =
                     if csr.IsValid() then
-                        let g = new Guid(csr.Key())
-                        let prBlocks = new PageReader(csr.ValueLength())
+                        let g = Guid(csr.Key())
+                        let prBlocks = PageReader(csr.ValueLength())
                         prBlocks.Read(csr.Value())
                         let blocks = readBlockList(prBlocks)
                         csr.Next()
@@ -1736,7 +1736,7 @@ type Database(_io:IDatabaseFile) =
     // pages.  right now it always returns more blocks at the end
     // of the file.
 
-    let critSectionNextPage = [] // TODO could be any object?
+    let critSectionNextPage = obj()
     let getRange num =
         lock critSectionNextPage (fun () -> 
             let t = (nextPage, nextPage+num-1) 
@@ -1756,7 +1756,7 @@ type Database(_io:IDatabaseFile) =
 
     let buildBlockList (blocks:(int*int) list) =
         let space = spaceNeededForBlockList blocks
-        let pb = new PageBuilder(space)
+        let pb = PageBuilder(space)
         pb.PutVarint(List.length blocks |> int64)
         List.iter (fun t -> pb.PutVarint(fst t |> int64); pb.PutVarint(snd t |> int64);) blocks
         pb.Buffer
@@ -1767,9 +1767,9 @@ type Database(_io:IDatabaseFile) =
 
     let buildSegmentInfoList innerPageSize (sd:Map<Guid,(int*int) list>) = 
         let ms = new MemoryStream()
-        let pm = new trivialMemoryPageManager(innerPageSize)
+        let pm = trivialMemoryPageManager(innerPageSize)
         // TODO don't use a mutable collection here
-        let d = new System.Collections.Generic.Dictionary<byte[],Stream>()
+        let d = System.Collections.Generic.Dictionary<byte[],Stream>()
         Map.iter (fun (g:Guid) blocks -> d.[g.ToByteArray()] <- new MemoryStream(buildBlockList blocks)) sd
         BTreeSegment.Create(ms, pm, d) |> ignore
         ms
@@ -1792,7 +1792,7 @@ type Database(_io:IDatabaseFile) =
         fsMine.Write(ms.GetBuffer(), 0, len)
         {firstPage=(fst range);lastPage=(snd range);innerPageSize=innerPageSize;len=len}
 
-    let critSectionCursors = [] // TODO could be any object?
+    let critSectionCursors = obj()
     let mutable cursors:Map<Guid,ICursor list> = Map.empty
 
     let getCursor h g =
@@ -1807,7 +1807,7 @@ type Database(_io:IDatabaseFile) =
                 let removed = List.filter (fun x -> Object.ReferenceEquals(csr, x)) cur
                 cursors <- Map.add g removed cursors
                 )
-        let csr = BTreeSegment.OpenCursor(fs, pageSize, rootPage, new Action<ICursor>(hook))
+        let csr = BTreeSegment.OpenCursor(fs, pageSize, rootPage, Action<ICursor>(hook))
         lock critSectionCursors (fun () -> 
             let cur = match Map.tryFind g cursors with
                        | Some c -> c
@@ -1816,14 +1816,14 @@ type Database(_io:IDatabaseFile) =
             )
         csr
 
-    let critSectionInTransaction = [] // TODO could be any object?
+    let critSectionInTransaction = obj()
     let mutable inTransaction = false 
 
-    let critSectionHeader = [] // TODO could be any object?
-    let critSectionSegmentsInWaiting = [] // TODO could be any object?
+    let critSectionHeader = obj()
+    let critSectionSegmentsInWaiting = obj()
 
     let writeHeader hdr =
-        let pb = new PageBuilder(HEADER_SIZE_IN_BYTES)
+        let pb = PageBuilder(HEADER_SIZE_IN_BYTES)
         pb.PutInt32(pageSize)
 
         pb.PutInt32(hdr.sill.firstPage)
@@ -1894,7 +1894,7 @@ type Database(_io:IDatabaseFile) =
     interface IPages with
         member this.PageSize = pageSize
 
-        member this.Begin() = new PendingSegment() :> IPendingSegment
+        member this.Begin() = PendingSegment() :> IPendingSegment
 
         member this.GetRange(token) =
             let ps = token :?> PendingSegment
