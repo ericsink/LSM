@@ -37,10 +37,13 @@ type ICursor =
     abstract member Last : unit -> unit
     abstract member Next : unit -> unit
     abstract member Prev : unit -> unit
+    // the following are methods instead of properties because
+    // ICursor doesn't know how expensive they are to implement.
     abstract member IsValid : unit -> bool
     abstract member Key : unit -> byte[]
     abstract member Value : unit -> Stream
     abstract member ValueLength : unit -> int
+
     abstract member KeyCompare : k:byte[] -> int
 
 type ITransaction =

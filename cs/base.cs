@@ -42,16 +42,17 @@ namespace Zumero.LSM
 	public interface ICursor : IDisposable
 	{
 		void Seek(byte[] k, SeekOp sop);
-
 		void First();
 		void Last();
 		void Next();
 		void Prev();
 
-		bool IsValid(); // TODO property?
-		byte[] Key(); // TODO property?
-		Stream Value(); // TODO property?
-		int ValueLength(); // TODO property?
+		// the following are methods instead of properties because
+		// ICursor doesn't know how expensive they are to implement.
+		bool IsValid();
+		byte[] Key();
+		Stream Value();
+		int ValueLength();
 
 		int KeyCompare(byte[] k);
 	}
