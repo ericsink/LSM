@@ -1802,8 +1802,8 @@ type Database(_io:IDatabaseFile) =
         let fs = io.OpenForReading()
         let hook (csr:ICursor) =
             fs.Close()
-            // TODO remove csr from cursors list.  which means we need
-            // a way to get the guid for a cursor.
+            // TODO linear search here is probably a bad idea
+            lock critSectionCursors (fun () -> cursors <- List.filter (fun x -> Object.ReferenceEquals(csr, snd x)) cursors; )
         let csr = BTreeSegment.OpenCursor(fs, pageSize, rootPage, new Action<ICursor>(hook))
         lock critSectionCursors (fun () -> cursors <- (g,csr) :: cursors; )
         csr
