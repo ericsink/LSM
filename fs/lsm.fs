@@ -352,29 +352,14 @@ type private PageReader(pgsz:int) =
             let r = (a1<<<56) ||| (a2<<<48) ||| (a3<<<40) ||| (a4<<<32) ||| (a5<<<24) ||| (a6<<<16) ||| (a7<<<8) ||| a8
             int64 r
 
-#if not
-type MemorySegment() =
-    // TODO this will need to be an immutable collection so that
-    // openCursor will see a snapshot while it may continue
-    // being modified further.
-
-    // TODO without using the ByteArrayComparer class, this is broken.
-    let pairs = new System.Collections.Generic.Dictionary<byte[],Stream>()
-
-     // Here in the F# version, the cursor is implemented as an object
-     // expression instead of a private inner class, which F# does
-     // not support.  Actually, I prefer this because the object
-     // expression can access private class instance fields directly
-     // whereas the nested class in C# cannot.
-
-    let openCursor() = 
+module misc =
+    // TODO not sure this is useful.  it opens an ICursor for a dictionary,
+    // using an object expression.  this code is trusting the dictionary not
+    // to get modified.
+    let openCursor (pairs:System.Collections.Generic.Dictionary<byte[],Stream>) = 
         // The following is a ref cell because mutable variables
         // cannot be captured by a closure.
         let cur = ref -1
-        // TODO could this be a list?  but we need prev, and fs list
-        // is a linked list in only one direction.  but once we
-        // construct it, it is immutable for the life of this cursor,
-        // so array isn't ideal either.
         let keys:byte[][] = (Array.ofSeq pairs.Keys)
         let sortfunc x y = bcmp.Compare x y
         Array.sortInPlaceWith sortfunc keys
@@ -394,6 +379,9 @@ type MemorySegment() =
                 else search k min (mid-1) sop le mid
 
         { new ICursor with
+            member this.Dispose() =
+                ()
+
             member this.IsValid() =
                 (!cur >= 0) && (!cur < keys.Length)
 
@@ -416,34 +404,17 @@ type MemorySegment() =
                 bcmp.Compare (keys.[!cur]) k
 
             member this.Value() =
-                // TODO the pairs array in the IWrite may have changed
                 let v = pairs.[keys.[!cur]]
                 if v <> null then ignore (v.Seek(0L, SeekOrigin.Begin))
                 v
 
             member this.ValueLength() =
-                // TODO the pairs array in the IWrite may have changed
                 let v = pairs.[keys.[!cur]]
                 if v <> null then (int v.Length) else -1
 
             member this.Seek (k, sop) =
                 cur := search k 0 (keys.Length-1) sop -1 -1
         }
-
-    interface IWrite with
-        member this.Insert (k:byte[], s:Stream) =
-            pairs.[k] <- s
-
-        member this.Delete (k:byte[]) =
-            pairs.[k] <- null
-
-        member this.OpenCursor() =
-            // note that this opens a cursor just for this memory segment.
-            openCursor()
-
-    static member Create() :IWrite =
-        upcast (new MemorySegment())
-#endif
 
 type private Direction = FORWARD=0 | BACKWARD=1 | WANDERING=2
 
