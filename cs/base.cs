@@ -28,7 +28,7 @@ namespace Zumero.LSM
     {
 		int PageSize { get; }
 		IPendingSegment Begin();
-		Tuple<int,int> GetRange(IPendingSegment token); // TODO struct instead of tuple
+		Tuple<int,int> GetRange(IPendingSegment token); // TODO consider struct instead of tuple
 		Guid End(IPendingSegment token, int lastPage);
     }
 

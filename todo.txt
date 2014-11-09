@@ -1,20 +1,11 @@
 
-check exists in constructor.  if so, read the file header.
-read the segment info list.  construct a list of all free
-pages (ranges).
-
-read/write the file header
-
-SegmentInProgress
-
-maybe change GetRange to return a struct with firstPage,lastPage
-instead of a tuple.
-
 do we have a test that chains multicursors with other multicursors?
 
-db class should accept delegates for other implementations
+db class should accept delegates for other implementations?
 
-combo should maybe have a thing that gets a simple page mgr
+it's getting to be time to reconsider combo and the C# version.
+we don't really want to build a C# port of the Database class.
+what is worth keeping here for testing purposes?
 
 the test suite is using the old memory_segment api
 
@@ -22,16 +13,11 @@ need C# versions of the other Create overloads?
 
 #if integrity_checks
 
-combine stream and its page manager into an object?  
-called IDest?
-
 yeah, ICursor is really close to seq anyway.  next would return a bool.
 current would return the tuple pair.  first() would just be the
 initial call to movenext.  last(), prev(), seek() aren't there.
 
-comment on create that seq must be sorted.
-
-OpenCursorfor idictionary -- sort the keys and then
+OpenCursor for idictionary -- sort the keys and then
 create a memory btree?  or copy the dictionary (so the
 values don't change) and just keep them both?
 
@@ -56,12 +42,9 @@ the originator will not modify it.  not quite the same.
 
 ImmutableSortedDictionary from System.Collections.Immutable.
 This one could wrap as an ICursor without problems I think.
+Assuming the comparer is right.
 
 look at ExtCore.HashMap
-
-need a btree.create that just takes a dest stream
-and doesn't care about pagemanager?  or one that just
-writes to a memory stream?
 
 look at reducing memory allocations in writeLeaves
 
@@ -90,6 +73,8 @@ way too many for/while loops in the fs code
 
 --------
 
+need to actually design the file header
+
 checksums for data integrity
 
 still concerned about how much we are copying byte[] for keys
@@ -107,8 +92,6 @@ the cs code just becoming part of the fs version's test suite?
 
 once "on disk", a segment is immutable.  reads only.
 only the first (in-memory) segment needs to support writes.
-
-maybe the whole thing should implement IDictionary<byte[],byte[]> ?
 
 bloom filters?
 

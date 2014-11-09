@@ -1712,6 +1712,8 @@ type Database(_io:IDatabaseFile) =
 
     let (firstReadOfHeader,pageSize,firstAvailablePage) = readHeader()
 
+    // TODO need to build a list of all the available pages
+
     let mutable header = firstReadOfHeader
     let mutable nextPage = firstAvailablePage
     let mutable segmentsInWaiting: Map<Guid,(int*int) list> = Map.empty
