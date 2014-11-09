@@ -1823,6 +1823,18 @@ type Database(_io:IDatabaseFile) =
         fsMine.Seek(0L, SeekOrigin.Begin) |> ignore
         pb.Write(fsMine)
 
+    let dispose itIsSafeToAlsoFreeManagedObjects =
+        if itIsSafeToAlsoFreeManagedObjects then
+            fsMine.Close()
+
+    override this.Finalize() =
+        dispose false
+
+    // TODO consider maybe implementing ITransaction with a separate
+    // object of a private class instead of an interface implementation
+    // on the db object.  It should not be possible to open a transaction
+    // by just casting the db object.  And GC and dispose of the tx object
+    // should be a separate thing.
     interface ITransaction with
         member this.Commit(newGuids:seq<Guid>) =
             let newGuidsAsSet = Seq.fold (fun acc g -> Set.add g acc) Set.empty newGuids
@@ -1859,6 +1871,10 @@ type Database(_io:IDatabaseFile) =
 
 
     interface IDatabase with
+        member this.Dispose() =
+            dispose true
+            GC.SuppressFinalize(this)
+
         member this.WriteSegmentFromSortedSequence(pairs:seq<kvp>) =
             use fs = io.OpenForWriting()
             BTreeSegment.CreateFromSortedSequence(fs, this :> IPages, pairs)

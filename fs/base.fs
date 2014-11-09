@@ -57,8 +57,7 @@ type IDatabaseFile =
     abstract member OpenForWriting : unit -> Stream
 
 type IDatabase = 
-    // TODO probably need IDisposable here
-    // and/or a close method
+    inherit IDisposable
     abstract member WriteSegmentFromSortedSequence : seq<KeyValuePair<byte[],Stream>> -> Guid * int
     abstract member WriteSegment : System.Collections.Generic.IDictionary<byte[],Stream> -> Guid * int
     // TODO should BeginRead just be called OpenCursor?
