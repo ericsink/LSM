@@ -48,6 +48,13 @@ type ICursor =
 
 type ITransaction =
     // TODO consider inherit IDisposable and rollback if commit is never called
+    // TODO dislike the naming here.  Commit should be more explicit that it is
+    // a preprend of new segments to the current state.  another variant would
+    // replace segments in the current state, which would be used for merging
+    // segments.  maybe Commit should not automatically release the lock.  maybe
+    // rollback should not be called Rollback but should be called Release.  maybe
+    // ITransaction should be called IWriteLock.  maybe rollback should just be
+    // dispose.
     abstract member Commit : seq<Guid> -> unit
     abstract member Rollback : unit->unit
 
