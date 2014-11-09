@@ -87,7 +87,7 @@ namespace lsm_tests
 					IPages pageManager = new SimplePageManager(fs, PAGE_SIZE);
 
 					for (int i=0; i<10; i++) {
-						var t1 = c.create_memory_segment();
+						var t1 = new Dictionary<byte[],Stream>();
 						for (int q=0; q<50; q++) {
 							t1.Insert((q*10+i).ToString("0000"), (i+q).ToString());
 						}

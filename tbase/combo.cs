@@ -211,11 +211,6 @@ namespace lsm_tests
 	public abstract class combo
 	{
 
-		public Dictionary<byte[],Stream> create_memory_segment()
-		{
-			return new Dictionary<byte[], Stream> ();
-		}
-
 		public Tuple<Guid,int> create_btree_segment(Stream fs,IPages pageManager,ICursor csr)
 		{
 			return create_btree_segment (fs, pageManager, CursorUtils.ToSortedSequenceOfKeyValuePairs (csr));

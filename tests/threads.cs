@@ -54,7 +54,7 @@ namespace lsm_tests
 
 					ta[0] = new Thread(() => {
 						using (var fs = new FileStream (filename, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite)) {
-							var t1 = c.create_memory_segment();
+							var t1 = new Dictionary<byte[],Stream>();
 							for (int i=0; i<5000; i++) {
 								t1.Insert((i*2).ToString(), i.ToString());
 							}
@@ -64,7 +64,7 @@ namespace lsm_tests
 
 					ta[1] = new Thread(() => {
 						using (var fs = new FileStream (filename, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite)) {
-							var t1 = c.create_memory_segment();
+							var t1 = new Dictionary<byte[],Stream>();
 							for (int i=0; i<5000; i++) {
 								t1.Insert((i*3).ToString(), i.ToString());
 							}
@@ -74,7 +74,7 @@ namespace lsm_tests
 
 					ta[2] = new Thread(() => {
 						using (var fs = new FileStream (filename, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite)) {
-							var t1 = c.create_memory_segment();
+							var t1 = new Dictionary<byte[],Stream>();
 							for (int i=0; i<5000; i++) {
 								t1.Insert((i*5).ToString(), i.ToString());
 							}
@@ -84,7 +84,7 @@ namespace lsm_tests
 
 					ta[3] = new Thread(() => {
 						using (var fs = new FileStream (filename, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite)) {
-							var t1 = c.create_memory_segment();
+							var t1 = new Dictionary<byte[],Stream>();
 							for (int i=0; i<5000; i++) {
 								t1.Insert((i*7).ToString(), i.ToString());
 							}

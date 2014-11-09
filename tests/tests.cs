@@ -86,7 +86,7 @@ namespace lsm_tests
 		public void memory_segment_no_dups()
 		{
 			Action<combo> f = (combo c) => {
-				var t1 = c.create_memory_segment ();
+				var t1 = new Dictionary<byte[],Stream>();
 				t1.Insert ("a", "foo");
 				t1.Insert ("a", "bar");
 
@@ -114,7 +114,7 @@ namespace lsm_tests
 					IPages pageManager = new SimplePageManager(fs, PAGE_SIZE);
 
 					for (int i=0; i<10; i++) {
-						var t1 = c.create_memory_segment();
+						var t1 = new Dictionary<byte[],Stream>();
 						for (int q=0; q<50; q++) {
 							t1.Insert((q*10+i).ToString("0000"), (i+q).ToString());
 						}
@@ -169,7 +169,7 @@ namespace lsm_tests
 				using (var fs = new FileStream ("one_file", FileMode.Create, FileAccess.ReadWrite, FileShare.ReadWrite)) {
                     IPages pageManager = new SimplePageManager(fs, PAGE_SIZE);
 					{
-						var t1 = c.create_memory_segment();
+						var t1 = new Dictionary<byte[],Stream>();
 						for (int i=0; i<500; i++) {
 							t1.Insert((i*2).ToString(), i.ToString());
 						}
@@ -177,7 +177,7 @@ namespace lsm_tests
 					}
 
 					{
-						var t1 = c.create_memory_segment();
+						var t1 = new Dictionary<byte[],Stream>();
 						for (int i=0; i<500; i++) {
 							t1.Insert((i*3).ToString(), i.ToString());
 						}
@@ -185,7 +185,7 @@ namespace lsm_tests
 					}
 
 					{
-						var t1 = c.create_memory_segment();
+						var t1 = new Dictionary<byte[],Stream>();
 						for (int i=0; i<500; i++) {
 							t1.Insert((i*5).ToString(), i.ToString());
 						}
@@ -193,7 +193,7 @@ namespace lsm_tests
 					}
 
 					{
-						var t1 = c.create_memory_segment();
+						var t1 = new Dictionary<byte[],Stream>();
 						for (int i=0; i<500; i++) {
 							t1.Insert((i*7).ToString(), i.ToString());
 						}
@@ -289,7 +289,7 @@ namespace lsm_tests
 			};
 
 			Action<combo> f = (combo c) => {
-				var t1 = c.create_memory_segment();
+				var t1 = new Dictionary<byte[],Stream>();
 				t1.Insert("8", "");
 				t1.Insert("10", "");
 				t1.Insert("20", "");
@@ -316,7 +316,7 @@ namespace lsm_tests
 			Action<combo> f = (combo c) => {
                 int root1;
 				{
-					var t1 = c.create_memory_segment();
+					var t1 = new Dictionary<byte[],Stream>();
 					for (int i=0; i<100; i++) {
 						t1.Insert(i.ToString("000"), i.ToString());
 					}
@@ -328,7 +328,7 @@ namespace lsm_tests
 				}
                 int root2;
 				{
-					var t1 = c.create_memory_segment();
+					var t1 = new Dictionary<byte[],Stream>();
 					for (int i=0; i<1000; i++) {
 						t1.Insert(i.ToString("00000"), i.ToString());
 					}
@@ -404,7 +404,7 @@ namespace lsm_tests
 		{
 			Random r = new Random (501); // TODO
 			Action<combo> f = (combo c) => {
-				var t1 = c.create_memory_segment();
+				var t1 = new Dictionary<byte[],Stream>();
 				for (int i=0; i<1000; i++) {
 					byte[] k = new byte[r.Next(10000)];
 					byte[] v = new byte[r.Next(10000)];
@@ -450,7 +450,7 @@ namespace lsm_tests
 		public void simple()
 		{
 			Action<combo> f = (combo c) => {
-				var t1 = c.create_memory_segment();
+				var t1 = new Dictionary<byte[],Stream>();
 				t1.Insert ("c", "3");
 				t1.Insert ("e", "5");
 				t1.Insert ("g", "7");
@@ -486,7 +486,7 @@ namespace lsm_tests
 		public void hundredk()
 		{
 			Action<combo> f = (combo c) => {
-				var t1 = c.create_memory_segment ();
+				var t1 = new Dictionary<byte[],Stream>();
 				for (int i = 0; i < 100000; i++) {
 					t1.Insert ((i * 2).ToString (), i.ToString ());
 				}
@@ -505,7 +505,7 @@ namespace lsm_tests
 			Action<combo> f = (combo c) => {
 				int root1;
 				{
-					var t1 = c.create_memory_segment();
+					var t1 = new Dictionary<byte[],Stream>();
 					t1.Insert ("c", "3");
 					t1.Insert ("g", "7");
 
@@ -517,7 +517,7 @@ namespace lsm_tests
 
 				int root2;
 				{
-					var t1 = c.create_memory_segment();
+					var t1 = new Dictionary<byte[],Stream>();
 					t1.Insert ("e", "5");
 
 					using (var fs = new FileStream ("no_le_ge_multicursor_2", FileMode.Create)) {
@@ -555,7 +555,7 @@ namespace lsm_tests
 		public void no_le_ge()
 		{
 			Action<combo> f = (combo c) => {
-				var t1 = c.create_memory_segment();
+				var t1 = new Dictionary<byte[],Stream>();
 				t1.Insert ("c", "3");
 				t1.Insert ("e", "5");
 				t1.Insert ("g", "7");
@@ -612,7 +612,7 @@ namespace lsm_tests
 
 				int root;
 				{
-					var t1 = c.create_memory_segment();
+					var t1 = new Dictionary<byte[],Stream>();
 					t1.Insert ("k1", s);
 					t1.Insert ("k2", s);
 					t1.Insert ("k3", s);
@@ -644,7 +644,7 @@ namespace lsm_tests
 				}
 
 				{
-					var t1 = c.create_memory_segment();
+					var t1 = new Dictionary<byte[],Stream>();
 					t1.Insert (s, "k1");
 					t1.Insert (s + s, "k1");
 					t1.Insert (s + s + s, "k1");
@@ -664,7 +664,7 @@ namespace lsm_tests
 		public void seek_ge_le()
 		{
 			Action<combo> f = (combo c) => {
-				var t1 = c.create_memory_segment();
+				var t1 = new Dictionary<byte[],Stream>();
 				t1.Insert ("a", "1");
 				t1.Insert ("c", "3");
 				t1.Insert ("e", "5");
@@ -712,7 +712,7 @@ namespace lsm_tests
 		public void seek_ge_le_bigger()
 		{
 			Action<combo> f = (combo c) => {
-				var t1 = c.create_memory_segment();
+				var t1 = new Dictionary<byte[],Stream>();
 				for (int i = 0; i < 10000; i++) {
 					t1.Insert ((i * 2).ToString (), i.ToString ());
 				}
@@ -749,7 +749,7 @@ namespace lsm_tests
 			Action<combo> f = (combo c) => {
 				int root4;
 				{
-					var t1 = c.create_memory_segment();
+					var t1 = new Dictionary<byte[],Stream>();
 					for (int i = 0; i < 10000; i++) {
 						t1.Insert ((i * 4).ToString ("0000000000"), i.ToString ());
 					}
@@ -761,7 +761,7 @@ namespace lsm_tests
 				}
 				int root7;
 				{
-					var t1 = c.create_memory_segment();
+					var t1 = new Dictionary<byte[],Stream>();
 					for (int i = 0; i < 10000; i++) {
 						t1.Insert ((i * 7).ToString ("0000000000"), i.ToString ());
 					}
@@ -800,7 +800,7 @@ namespace lsm_tests
 		public void delete_not_there()
 		{
 			Action<combo> f = (combo c) => {
-				var t1 = c.create_memory_segment();
+				var t1 = new Dictionary<byte[],Stream>();
 
 				Assert.Equal (0, count_keys_forward (t1.OpenCursor ()));
 				Assert.Equal (0, count_keys_backward (t1.OpenCursor ()));
@@ -824,7 +824,7 @@ namespace lsm_tests
 		public void empty_segment()
 		{
 			Action<combo> f = (combo c) => {
-				var t1 = c.create_memory_segment();
+				var t1 = new Dictionary<byte[],Stream>();
 
 				Assert.Equal (0, count_keys_forward (t1.OpenCursor ()));
 				Assert.Equal (0, count_keys_backward (t1.OpenCursor ()));
@@ -842,7 +842,7 @@ namespace lsm_tests
 
 					{
 						var csr = c.open_btree_segment(fs, PAGE_SIZE, root);
-						var t2 = c.create_memory_segment();
+						var t2 = new Dictionary<byte[],Stream>();
 						var mc = c.create_multicursor(t2.OpenCursor(),csr);
 						mc.Seek("", SeekOp.SEEK_LE);
 						Assert.False(mc.IsValid());
@@ -857,7 +857,7 @@ namespace lsm_tests
 		public void btree_in_memory()
 		{
 			Action<combo> f = (combo c) => {
-				var t1 = c.create_memory_segment();
+				var t1 = new Dictionary<byte[],Stream>();
 				t1.Insert ("a", "1");
 				t1.Insert ("b", "2");
 				t1.Insert ("c", "3");
@@ -885,7 +885,7 @@ namespace lsm_tests
 		public void empty_val()
 		{
 			Action<combo> f = (combo c) => {
-				var t1 = c.create_memory_segment();
+				var t1 = new Dictionary<byte[],Stream>();
 				t1.Insert ("_", "");
 				var csr = t1.OpenCursor ();
 
@@ -915,7 +915,7 @@ namespace lsm_tests
 			Action<combo> f = (combo c) => {
 				int root;
 				{
-					var t1 = c.create_memory_segment();
+					var t1 = new Dictionary<byte[],Stream>();
 					t1.Insert ("a", "1");
 					t1.Insert ("b", "2");
 					t1.Insert ("c", "3");
@@ -940,7 +940,7 @@ namespace lsm_tests
 					Assert.True (csr_b1.IsValid ());
 					Assert.Equal ("2", csr_b1.Value ().UTF8StreamToString());
 
-					var t1 = c.create_memory_segment();
+					var t1 = new Dictionary<byte[],Stream>();
 					t1.Insert ("b", "5");
 					{
 						var csr = t1.OpenCursor ();
@@ -973,7 +973,7 @@ namespace lsm_tests
 			Action<combo> f = (combo c) => {
                 int root1;
 				{
-					var t1 = c.create_memory_segment();
+					var t1 = new Dictionary<byte[],Stream>();
 					t1.Insert ("a", "1");
 					t1.Insert ("b", "2");
 					t1.Insert ("c", "3");
@@ -990,7 +990,7 @@ namespace lsm_tests
 
                 int root2;
 				{
-					var t1 = c.create_memory_segment();
+					var t1 = new Dictionary<byte[],Stream>();
 					t1.Delete ("b");
 
 					Assert.Equal (1, count_keys_forward (t1.OpenCursor ()));
