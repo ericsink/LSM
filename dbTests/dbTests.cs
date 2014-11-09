@@ -12,10 +12,15 @@ namespace newTests
 {
 	public class MyClass
 	{
+		private string tid()
+		{
+			return Guid.NewGuid ().ToString ().Replace ("{", "").Replace ("}", "").Replace ("-", "");
+		}
+
 		[Fact]
 		public void empty_cursor()
 		{
-			var f = new dbf (Guid.NewGuid().ToString().Replace("{", "").Replace("}","").Replace("-",""));
+			var f = new dbf (tid());
 			var db = new Zumero.LSM.fs.Database (f) as IDatabase;
 			var csr = db.BeginRead ();
 			csr.First ();
@@ -27,10 +32,10 @@ namespace newTests
 		[Fact]
 		public void first_write()
 		{
-			var f = new dbf ("foo");
+			var f = new dbf (tid());
 			var db = new Zumero.LSM.fs.Database (f) as IDatabase;
 			// TODO consider whether we need IDatabase at all.  only
-			// if we're going to a C# version too, right?
+			// if we're going to do a C# version too, right?
 
 			// build our data to be committed in memory in a
 			// standard .NET dictionary.  note that are not
@@ -53,6 +58,14 @@ namespace newTests
 			var tx = db.BeginTransaction ();
 			var a = new List<Guid> { seg.Item1 };
 			tx.Commit (a);
+
+			var csr = db.BeginRead ();
+			csr.Seek (42.ToString(), SeekOp.SEEK_EQ);
+			Assert.True (csr.IsValid ());
+			csr.Next ();
+			Assert.True (csr.IsValid ());
+			string k = csr.Key ().UTF8ToString ();
+			Assert.Equal ("43", k);
 		}
 	}
 }
