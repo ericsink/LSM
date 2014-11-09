@@ -1,4 +1,26 @@
 
+should we allow the db file to contain more than one keyspace/collection?
+
+    // multiple db connections to the same file.  the object
+    // representing the state of the file is global to the process,
+    // a singleton, shared by all connections thread-safe.
+
+where do we store the age of the segment?
+
+        void Work()
+        {
+            // pick two adjacent segs from the seg list
+            // open cursors and each of them
+            // merge A and B to create C.  now locks needed.
+            // wait for the write lock
+            // (with the lock) read the seg list
+            // replace A+B with C
+            // write the seglist
+            // release the lock
+            // note that A and B are free to be removed after their cursors are done
+            // note that there should be no way to get a cursor on a segment no in the seglist
+        }
+
 do we have a test that chains multicursors with other multicursors?
 
 db class should accept delegates for other implementations?
