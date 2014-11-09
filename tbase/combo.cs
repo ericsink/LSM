@@ -285,7 +285,7 @@ namespace lsm_tests
 
 		public override ICursor create_living_cursor(ICursor csr)
         {
-            return new Zumero.LSM.fs.LivingCursor(csr);
+            return Zumero.LSM.fs.LivingCursor.Create(csr);
         }
 
 		public override ICursor create_multicursor(params ICursor[] a)
@@ -309,7 +309,7 @@ namespace lsm_tests
 
 		public override ICursor create_living_cursor(ICursor csr)
         {
-            return new Zumero.LSM.fs.LivingCursor(csr);
+            return Zumero.LSM.fs.LivingCursor.Create(csr);
         }
 
 		public override ICursor create_multicursor(params ICursor[] a)

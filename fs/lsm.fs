@@ -442,9 +442,8 @@ type MultiCursor private (_subcursors:seq<ICursor>) =
         find sortfunc
 
     let dispose itIsSafeToAlsoFreeManagedObjects =
-        // TODO dispose subcursors?
         if itIsSafeToAlsoFreeManagedObjects then
-            ()
+            List.iter (fun (x:ICursor) -> x.Dispose();) subcursors
 
     override this.Finalize() =
         dispose false
@@ -524,7 +523,7 @@ type MultiCursor private (_subcursors:seq<ICursor>) =
                     if cur.IsSome then dir <- Direction.BACKWARD
                 | _ -> ()
 
-type LivingCursor(ch:ICursor) =
+type LivingCursor private (ch:ICursor) =
     let chain = ch
 
     let skipTombstonesForward() =
@@ -536,10 +535,13 @@ type LivingCursor(ch:ICursor) =
             chain.Prev()
 
     let dispose itIsSafeToAlsoFreeManagedObjects =
-        // TODO dispose chain?
         if itIsSafeToAlsoFreeManagedObjects then
-            ()
+            chain.Dispose()
 
+    static member Create(_chain:ICursor) :ICursor =
+        let csr = new LivingCursor(_chain)
+        csr :> ICursor
+               
     override this.Finalize() =
         dispose false
 
@@ -1866,7 +1868,8 @@ type Database(_io:IDatabaseFile) =
         member this.BeginRead() =
             let h = header
             let cursors = List.map (fun g -> getCursor h g) h.currentState
-            MultiCursor.Create cursors
+            let mc = MultiCursor.Create cursors
+            LivingCursor.Create mc
 
         member this.BeginTransaction() =
             let gotLock = lock critSectionInTransaction (fun () -> if inTransaction then false else inTransaction <- true; true)
