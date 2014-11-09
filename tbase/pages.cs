@@ -74,18 +74,12 @@ namespace lsm_tests
 					// this segment did not use all the pages we gave it
 					blockList.Remove (lastBlock);
 					blockList.Add (new Tuple<int, int> (lastBlock.Item1, lastPage));
-
-					// TODO
-					// if cur has not changed in the meantime, 
-					// we could just adjust cur?  otherwise we need to add
-					// the unused pages to a free list.
 				}
 				return new Tuple<Guid,List<Tuple<int,int>>> (Guid.NewGuid (), blockList);
 			}
 		}
 
-		private readonly Stream fs;
-		int cur = 1; // TODO make room for header
+		int cur = 1;
 		private readonly Dictionary<Guid,List<Tuple<int,int>>> segments;
 		int pageSize;
 
@@ -97,9 +91,8 @@ namespace lsm_tests
 
 		const int WASTE_PAGES_AFTER_EACH_BLOCK = 3; // obviously, for testing purposes only
 
-		public SimplePageManager(Stream _fs, int _pageSize)
+		public SimplePageManager(int _pageSize)
 		{
-			fs = _fs;
 			pageSize = _pageSize;
 			segments = new Dictionary<Guid, List<Tuple<int, int>>> ();
 		}

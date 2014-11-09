@@ -84,7 +84,7 @@ namespace lsm_tests
 				var rootPages = new int[10];
 
 				using (var fs = new FileStream (filename, FileMode.Create, FileAccess.ReadWrite, FileShare.ReadWrite)) {
-					IPages pageManager = new SimplePageManager(fs, PAGE_SIZE);
+					IPages pageManager = new SimplePageManager(PAGE_SIZE);
 
 					for (int i=0; i<10; i++) {
 						var t1 = new Dictionary<byte[],Stream>();
