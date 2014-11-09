@@ -1830,46 +1830,6 @@ type Database(_io:IDatabaseFile) =
     override this.Finalize() =
         dispose false
 
-    // TODO consider maybe implementing ITransaction with a separate
-    // object of a private class instead of an interface implementation
-    // on the db object.  It should not be possible to open a transaction
-    // by just casting the db object.  And GC and dispose of the tx object
-    // should be a separate thing.
-    interface ITransaction with
-        member this.Commit(newGuids:seq<Guid>) =
-            let newGuidsAsSet = Seq.fold (fun acc g -> Set.add g acc) Set.empty newGuids
-            let mySegmentsInWaiting = Map.filter (fun g _ -> Set.contains g newGuidsAsSet) segmentsInWaiting
-            lock critSectionHeader (fun () -> 
-                let newState = (List.ofSeq newGuids) @ header.currentState
-                let newSegments = Map.fold (fun acc key value -> Map.add key value acc) header.segments mySegmentsInWaiting
-                let newSill = saveSegmentInfoList newSegments
-                let newHeader = {currentState=newState; segments=newSegments; sill = newSill;}
-                writeHeader newHeader
-                // TODO the pages for the old location of the segment info list
-                // could now be reused
-                header <- newHeader
-            )
-            // no need for lock critSectionInTransaction here because there is
-            // no way for the code to be here unless the caller is holding the
-            // lock.
-            inTransaction <- false
-            // all the segments we just committed can now be removed from
-            // the segments in waiting list
-            lock critSectionSegmentsInWaiting (fun () ->
-                let remainingSegmentsInWaiting = Map.filter (fun g _ -> Set.contains g newGuidsAsSet |> not) segmentsInWaiting
-                segmentsInWaiting <- remainingSegmentsInWaiting
-            )
-
-        member this.Rollback() =
-            // no need for lock critSectionInTransaction here because there is
-            // no way for the code to be here unless the caller is holding the
-            // lock.
-            inTransaction <- false
-            // TODO we could have Rollback accept a seq<Guid> so we could release
-            // any segments in waiting that got written before the owner of the tx
-            // decided to rollback.
-
-
     interface IDatabase with
         member this.Dispose() =
             dispose true
@@ -1884,6 +1844,7 @@ type Database(_io:IDatabaseFile) =
             BTreeSegment.SortAndCreate(fs, this :> IPages, pairs)
 
         member this.BeginRead() =
+            // TODO we probably need a way to open a cursor on segments in waiting
             let h = header
             let cursors = List.map (fun g -> getCursor h g) h.currentState
             let mc = MultiCursor.Create cursors
@@ -1892,7 +1853,40 @@ type Database(_io:IDatabaseFile) =
         member this.BeginTransaction() =
             let gotLock = lock critSectionInTransaction (fun () -> if inTransaction then false else inTransaction <- true; true)
             if not gotLock then failwith "already inTransaction"
-            this :> ITransaction
+            { new ITransaction with
+                member this.Commit(newGuids:seq<Guid>) =
+                    let newGuidsAsSet = Seq.fold (fun acc g -> Set.add g acc) Set.empty newGuids
+                    let mySegmentsInWaiting = Map.filter (fun g _ -> Set.contains g newGuidsAsSet) segmentsInWaiting
+                    lock critSectionHeader (fun () -> 
+                        let newState = (List.ofSeq newGuids) @ header.currentState
+                        let newSegments = Map.fold (fun acc key value -> Map.add key value acc) header.segments mySegmentsInWaiting
+                        let newSill = saveSegmentInfoList newSegments
+                        let newHeader = {currentState=newState; segments=newSegments; sill = newSill;}
+                        writeHeader newHeader
+                        // TODO the pages for the old location of the segment info list
+                        // could now be reused
+                        header <- newHeader
+                    )
+                    // no need for lock critSectionInTransaction here because there is
+                    // no way for the code to be here unless the caller is holding the
+                    // lock.
+                    inTransaction <- false
+                    // all the segments we just committed can now be removed from
+                    // the segments in waiting list
+                    lock critSectionSegmentsInWaiting (fun () ->
+                        let remainingSegmentsInWaiting = Map.filter (fun g _ -> Set.contains g newGuidsAsSet |> not) segmentsInWaiting
+                        segmentsInWaiting <- remainingSegmentsInWaiting
+                    )
+
+                member this.Rollback() =
+                    // no need for lock critSectionInTransaction here because there is
+                    // no way for the code to be here unless the caller is holding the
+                    // lock.
+                    inTransaction <- false
+                    // TODO we could have Rollback accept a seq<Guid> so we could release
+                    // any segments in waiting that got written before the owner of the tx
+                    // decided to rollback.
+            }
 
 
     interface IPages with
