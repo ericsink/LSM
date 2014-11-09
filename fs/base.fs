@@ -46,20 +46,14 @@ type ICursor =
 
     abstract member KeyCompare : k:byte[] -> int
 
-type ITransaction =
-    // TODO consider inherit IDisposable and rollback if commit is never called
-    // TODO dislike the naming here.  Commit should be more explicit that it is
-    // a preprend of new segments to the current state.  another variant would
-    // replace segments in the current state, which would be used for merging
-    // segments.  maybe Commit should not automatically release the lock.  maybe
-    // rollback should not be called Rollback but should be called Release.  maybe
-    // ITransaction should be called IWriteLock.  maybe rollback should just be
-    // dispose.
-    abstract member Commit : seq<Guid> -> unit
-    abstract member Rollback : unit->unit
+type IWriteLock =
+    inherit IDisposable
+    abstract member PrependSegments : seq<Guid> -> unit
+    // TODO we could have NeverMind(seq<Guid>) which explicitly 
+    // frees segments in waiting.  but this wouldn't necessarily
+    // need to be here in IWriteLock.
 
 type IDatabaseFile =
-    abstract member Exists : unit -> bool
     abstract member OpenForReading : unit -> Stream
     abstract member OpenForWriting : unit -> Stream
 
@@ -67,10 +61,19 @@ type IDatabase =
     inherit IDisposable
     abstract member WriteSegmentFromSortedSequence : seq<KeyValuePair<byte[],Stream>> -> Guid * int
     abstract member WriteSegment : System.Collections.Generic.IDictionary<byte[],Stream> -> Guid * int
-    // TODO should BeginRead just be called OpenCursor?
-    abstract member BeginRead : unit->ICursor
+
+    abstract member OpenCursor : unit->ICursor 
+    // TODO consider name such as OpenLivingCursorOnCurrentState()
+    // TODO consider OpenCursorOnSegmentsInWaiting(seq<Guid>)
+    // TODO consider ListSegmentsInCurrentState()
+    // TODO consider OpenCursorOnSpecificSegment(seq<Guid>)
+
+    abstract member RequestWriteLock : unit->IWriteLock
+    // TODO consider name TryGetWriteLock
     // TODO what happens if it can't get the write lock?  throw?  null?  fs option?  wait?  async?
-    abstract member BeginTransaction : unit->ITransaction
+
+    // TODO need a way to tell the db to merge segments.  should it always just choose?
+    // or can the caller get a list of segments, plus info about them, and help decide?
 
 module CursorUtils =
     let ToSortedSequenceOfKeyValuePairs (csr:ICursor) = seq { csr.First(); while csr.IsValid() do yield new KeyValuePair<byte[],Stream>(csr.Key(), csr.Value()); csr.Next(); done }

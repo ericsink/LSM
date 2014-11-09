@@ -22,7 +22,7 @@ namespace newTests
 		{
 			var f = new dbf (tid());
 			var db = new Zumero.LSM.fs.Database (f) as IDatabase;
-			var csr = db.BeginRead ();
+			var csr = db.OpenCursor ();
 			csr.First ();
 			Assert.False (csr.IsValid ());
 			csr.Last ();
@@ -55,11 +55,12 @@ namespace newTests
 				var seg = db.WriteSegment (mem);
 
 				// open a tx and add our segment to the current state
-				var tx = db.BeginTransaction ();
-				var a = new List<Guid> { seg.Item1 };
-				tx.Commit (a);
+				using (var tx = db.RequestWriteLock ()) {
+					var a = new List<Guid> { seg.Item1 };
+					tx.PrependSegments (a);
+				}
 
-				using (var csr = db.BeginRead ()) {
+				using (var csr = db.OpenCursor ()) {
 					csr.Seek (42.ToString (), SeekOp.SEEK_EQ);
 					Assert.True (csr.IsValid ());
 					csr.Next ();

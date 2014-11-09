@@ -1561,8 +1561,6 @@ type dbf(_path) =
             new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.ReadWrite) :> Stream
         member this.OpenForReading() =
             new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite) :> Stream
-        member this.Exists() =
-            File.Exists(path)
 
 type private SegmentInfoListLocation =
     {
@@ -1579,7 +1577,7 @@ type private HeaderData =
         segments: Map<Guid,(int*int) list>
     }
 
-type PendingSegment() =
+type private PendingSegment() =
     let mutable blockList = []
     interface IPendingSegment
     member this.AddRange(b) =
@@ -1843,14 +1841,14 @@ type Database(_io:IDatabaseFile) =
             use fs = io.OpenForWriting()
             BTreeSegment.SortAndCreate(fs, this :> IPages, pairs)
 
-        member this.BeginRead() =
+        member this.OpenCursor() =
             // TODO we probably need a way to open a cursor on segments in waiting
             let h = header
             let cursors = List.map (fun g -> getCursor h g) h.currentState
             let mc = MultiCursor.Create cursors
             LivingCursor.Create mc
 
-        member this.BeginTransaction() =
+        member this.RequestWriteLock() =
             let gotLock = lock critSectionInTransaction (fun () -> if inTransaction then false else inTransaction <- true; true)
             if not gotLock then failwith "already inTransaction"
             { 
@@ -1861,8 +1859,15 @@ type Database(_io:IDatabaseFile) =
                         // lock.
                         inTransaction <- false
 
-                interface ITransaction with
-                    member this.Commit(newGuids:seq<Guid>) =
+                interface IWriteLock with
+                    member this.Dispose() =
+                        // no need for lock critSectionInTransaction here because there is
+                        // no way for the code to be here unless the caller is holding the
+                        // lock.
+                        inTransaction <- false
+                        GC.SuppressFinalize(this)
+
+                    member this.PrependSegments(newGuids:seq<Guid>) =
                         let newGuidsAsSet = Seq.fold (fun acc g -> Set.add g acc) Set.empty newGuids
                         let mySegmentsInWaiting = Map.filter (fun g _ -> Set.contains g newGuidsAsSet) segmentsInWaiting
                         lock critSectionHeader (fun () -> 
@@ -1885,15 +1890,6 @@ type Database(_io:IDatabaseFile) =
                             let remainingSegmentsInWaiting = Map.filter (fun g _ -> Set.contains g newGuidsAsSet |> not) segmentsInWaiting
                             segmentsInWaiting <- remainingSegmentsInWaiting
                         )
-
-                    member this.Rollback() =
-                        // no need for lock critSectionInTransaction here because there is
-                        // no way for the code to be here unless the caller is holding the
-                        // lock.
-                        inTransaction <- false
-                        // TODO we could have Rollback accept a seq<Guid> so we could release
-                        // any segments in waiting that got written before the owner of the tx
-                        // decided to rollback.
             }
 
 
