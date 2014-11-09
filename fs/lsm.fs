@@ -1820,6 +1820,7 @@ type Database(_io:IDatabaseFile) =
 
         fsMine.Seek(0L, SeekOrigin.Begin) |> ignore
         pb.Write(fsMine)
+        fsMine.Flush()
 
     let dispose itIsSafeToAlsoFreeManagedObjects =
         if itIsSafeToAlsoFreeManagedObjects then
