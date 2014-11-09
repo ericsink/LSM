@@ -57,22 +57,22 @@ namespace Zumero.LSM
 		int KeyCompare(byte[] k);
 	}
 
-	public static class ICursorExtensions
+	public static class CursorUtils
 	{
-		public static IEnumerable<Tuple<byte[],Stream>> ToSequenceOfTuples(ICursor csr)
-		{
-			csr.First ();
-			while (csr.IsValid ()) {
-				yield return new Tuple<byte[], Stream> (csr.Key (), csr.Value ());
-				csr.Next ();
-			}
-		}
-
-		public static IEnumerable<KeyValuePair<byte[],Stream>> ToSequenceOfKeyValuePairs(ICursor csr)
+		public static IEnumerable<KeyValuePair<byte[],Stream>> ToSortedSequenceOfKeyValuePairs(ICursor csr)
 		{
 			csr.First ();
 			while (csr.IsValid ()) {
 				yield return new KeyValuePair<byte[], Stream> (csr.Key (), csr.Value ());
+				csr.Next ();
+			}
+		}
+
+		public static IEnumerable<Tuple<byte[],Stream>> ToSortedSequenceOfTuples(ICursor csr)
+		{
+			csr.First ();
+			while (csr.IsValid ()) {
+				yield return new Tuple<byte[], Stream> (csr.Key (), csr.Value ());
 				csr.Next ();
 			}
 		}

@@ -58,13 +58,15 @@ type IDatabaseFile =
 
 type IDatabase = 
     // TODO probably need IDisposable here
-    // or a close method
-    abstract member WriteSegment : seq<KeyValuePair<byte[],Stream>> -> Guid * int
+    // and/or a close method
+    abstract member WriteSegmentFromSortedSequence : seq<KeyValuePair<byte[],Stream>> -> Guid * int
+    abstract member WriteSegment : System.Collections.Generic.IDictionary<byte[],Stream> -> Guid * int
+    // TODO should BeginRead just be called OpenCursor?
     abstract member BeginRead : unit->ICursor
     // TODO what happens if it can't get the write lock?  throw?  null?  fs option?  wait?  async?
     abstract member BeginTransaction : unit->ITransaction
 
-module ICursorExtensions =
-    let ToSequenceOfKeyValuePairs (csr:ICursor) = seq { csr.First(); while csr.IsValid() do yield new KeyValuePair<byte[],Stream>(csr.Key(), csr.Value()); csr.Next(); done }
-    let ToSequenceOfTuples (csr:ICursor) = seq { csr.First(); while csr.IsValid() do yield (csr.Key(), csr.Value()); csr.Next(); done }
+module CursorUtils =
+    let ToSortedSequenceOfKeyValuePairs (csr:ICursor) = seq { csr.First(); while csr.IsValid() do yield new KeyValuePair<byte[],Stream>(csr.Key(), csr.Value()); csr.Next(); done }
+    let ToSortedSequenceOfTuples (csr:ICursor) = seq { csr.First(); while csr.IsValid() do yield (csr.Key(), csr.Value()); csr.Next(); done }
 

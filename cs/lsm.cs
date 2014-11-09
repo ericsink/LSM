@@ -1308,7 +1308,7 @@ namespace Zumero.LSM.cs
 			return new Tuple<int,int,List<pgitem>>(nextPageNumber, boundaryPageNumber, nextGeneration);
 		}
 
-		public static Tuple<Guid,int> Create(Stream fs, IPages pageManager, IEnumerable<KeyValuePair<byte[],Stream>> source)
+		public static Tuple<Guid,int> CreateFromSortedSequence(Stream fs, IPages pageManager, IEnumerable<KeyValuePair<byte[],Stream>> source)
 		{
 			// TODO if !(fs.CanSeek()) throw?
             int pageSize = pageManager.PageSize;

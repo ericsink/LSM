@@ -218,7 +218,7 @@ namespace lsm_tests
 
 		public Tuple<Guid,int> create_btree_segment(Stream fs,IPages pageManager,ICursor csr)
 		{
-			return create_btree_segment (fs, pageManager, ICursorExtensions.ToSequenceOfKeyValuePairs (csr));
+			return create_btree_segment (fs, pageManager, CursorUtils.ToSortedSequenceOfKeyValuePairs (csr));
 		}
 
 		public int create_btree_segment(Stream fs,IPages pageManager,Dictionary<string,string> d)
@@ -251,7 +251,7 @@ namespace lsm_tests
     {
 		public override Tuple<Guid,int> create_btree_segment(Stream fs,IPages pageManager,IEnumerable<KeyValuePair<byte[],Stream>> source)
         {
-			return Zumero.LSM.cs.BTreeSegment.Create(fs, pageManager, source);
+			return Zumero.LSM.cs.BTreeSegment.CreateFromSortedSequence(fs, pageManager, source);
         }
 
 		public override ICursor open_btree_segment(Stream fs,int pageSize,int rootPage,Action<ICursor> hook)
@@ -275,7 +275,7 @@ namespace lsm_tests
     {
 		public override Tuple<Guid,int> create_btree_segment(Stream fs,IPages pageManager,IEnumerable<KeyValuePair<byte[],Stream>> source)
         {
-			return Zumero.LSM.fs.BTreeSegment.Create(fs, pageManager, source);
+			return Zumero.LSM.fs.BTreeSegment.CreateFromSortedSequence(fs, pageManager, source);
         }
 
 		public override ICursor open_btree_segment(Stream fs,int pageSize,int rootPage,Action<ICursor> hook)
@@ -299,7 +299,7 @@ namespace lsm_tests
     {
 		public override Tuple<Guid,int> create_btree_segment(Stream fs,IPages pageManager,IEnumerable<KeyValuePair<byte[],Stream>> source)
         {
-			return Zumero.LSM.cs.BTreeSegment.Create(fs, pageManager, source);
+			return Zumero.LSM.cs.BTreeSegment.CreateFromSortedSequence(fs, pageManager, source);
         }
 
 		public override ICursor open_btree_segment(Stream fs,int pageSize,int rootPage,Action<ICursor> hook)
@@ -323,7 +323,7 @@ namespace lsm_tests
     {
 		public override Tuple<Guid,int> create_btree_segment(Stream fs,IPages pageManager,IEnumerable<KeyValuePair<byte[],Stream>> source)
         {
-			return Zumero.LSM.fs.BTreeSegment.Create(fs, pageManager, source);
+			return Zumero.LSM.fs.BTreeSegment.CreateFromSortedSequence(fs, pageManager, source);
         }
 
 		public override ICursor open_btree_segment(Stream fs,int pageSize,int rootPage,Action<ICursor> hook)

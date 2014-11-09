@@ -18,6 +18,7 @@ namespace Zumero.LSM.fs
 
 open System
 open System.IO
+open System.Linq // used for OrderBy
 
 open Zumero.LSM
 
@@ -55,7 +56,7 @@ module utils =
         ReadFully(strm, buf, 0, len)
         buf
 
-module ByteComparer = 
+module bcmp = 
     // this code is very non-F#-ish.  but it's much faster than the
     // idiomatic version which preceded it.
 
@@ -87,6 +88,10 @@ module ByteComparer =
             else
                 i <- i + 1
         if i>len then result else (xlen - ylen)
+
+type private ByteComparer() =
+    interface System.Collections.Generic.IComparer<byte[]> with
+        member this.Compare(x,y) = bcmp.Compare x y
 
 type private PageBuilder(pgsz:int) =
     let mutable cur = 0
@@ -226,7 +231,7 @@ type private PageReader(pgsz:int) =
     member this.SetPosition(x) = cur <- x
     member this.Read(s:Stream) = utils.ReadFully(s, buf, 0, buf.Length)
     member this.Reset() = cur <- 0
-    member this.Compare(len, other) = ByteComparer.CompareWithin buf cur len other
+    member this.Compare(len, other) = bcmp.CompareWithin buf cur len other
     member this.PageType = buf.[0]
     member this.Skip(len) = cur <- cur + len
 
@@ -371,7 +376,7 @@ type MemorySegment() =
         // construct it, it is immutable for the life of this cursor,
         // so array isn't ideal either.
         let keys:byte[][] = (Array.ofSeq pairs.Keys)
-        let sortfunc x y = ByteComparer.Compare x y
+        let sortfunc x y = bcmp.Compare x y
         Array.sortInPlaceWith sortfunc keys
 
         let rec search k min max sop le ge = 
@@ -383,7 +388,7 @@ type MemorySegment() =
             else
                 let mid = (max + min) / 2
                 let kmid = keys.[mid]
-                let cmp = ByteComparer.Compare kmid k
+                let cmp = bcmp.Compare kmid k
                 if 0 = cmp then mid
                 else if cmp<0  then search k (mid+1) max sop mid ge
                 else search k min (mid-1) sop le mid
@@ -408,7 +413,7 @@ type MemorySegment() =
                 keys.[!cur]
             
             member this.KeyCompare(k) =
-                ByteComparer.Compare (keys.[!cur]) k
+                bcmp.Compare (keys.[!cur]) k
 
             member this.Value() =
                 // TODO the pairs array in the IWrite may have changed
@@ -1311,7 +1316,7 @@ module bt =
             else
                 let pagenum = pr.GetInt32()
                 let k = readOverflow klen fs pr.PageSize pagenum
-                ByteComparer.Compare k other
+                bcmp.Compare k other
 
         let keyInLeaf n = 
             pr.SetPosition(leafKeys.[n])
@@ -1409,7 +1414,7 @@ module bt =
         let rec searchInParentPage k (ptrs:int[]) (keys:byte[][]) (i:int) :int =
             // TODO linear search?  really?
             if i < keys.Length then
-                let cmp = ByteComparer.Compare k (keys.[int i])
+                let cmp = bcmp.Compare k (keys.[int i])
                 if cmp>0 then
                     searchInParentPage k ptrs keys (i+1)
                 else
@@ -1530,25 +1535,31 @@ module bt =
 
 [<AbstractClass;Sealed>]
 type BTreeSegment =
-    // the caller of this method is promising that the sequence is sorted
-    static member Create(fs:Stream, pageManager:IPages, source:seq<kvp>) = 
+    static member CreateFromSortedSequence(fs:Stream, pageManager:IPages, source:seq<kvp>) = 
         bt.CreateFromSortedSequenceOfKeyValuePairs (fs, pageManager, source)
 
-    // the caller of this method is promising that the sequence is sorted
-    static member Create(fs:Stream, pageManager:IPages, pairs:seq<byte[]*Stream>) = 
+    static member CreateFromSortedSequence(fs:Stream, pageManager:IPages, pairs:seq<byte[]*Stream>) = 
         let source = seq { for t in pairs do yield kvp(fst t,snd t) done }
         bt.CreateFromSortedSequenceOfKeyValuePairs (fs, pageManager, source)
 
-    static member Create(fs:Stream, pageManager:IPages, pairs:System.Collections.Generic.Dictionary<byte[],Stream>) =
-        // TODO this should maybe be IDictionary instead of just Dictionary?
+    static member SortAndCreate(fs:Stream, pageManager:IPages, pairs:System.Collections.Generic.IDictionary<byte[],Stream>) =
+#if not // TODO which is faster?
         let keys:byte[][] = (Array.ofSeq pairs.Keys)
         let sortfunc x y = ByteComparer.Compare x y
         Array.sortInPlaceWith sortfunc keys
-        let source = seq { for k in keys do yield kvp(k,pairs.[k]) done }
-        bt.CreateFromSortedSequenceOfKeyValuePairs (fs, pageManager, source)
+        let sortedSeq = seq { for k in keys do yield kvp(k,pairs.[k]) done }
+#else
+        let sortedSeq = pairs.AsEnumerable().OrderBy((fun (x:kvp) -> x.Key), ByteComparer())
+#endif
+        bt.CreateFromSortedSequenceOfKeyValuePairs (fs, pageManager, sortedSeq)
 
-    // TODO Create overload for Map
-    
+    static member SortAndCreate(fs:Stream, pageManager:IPages, pairs:Map<byte[],Stream>) =
+        let keys:byte[][] = pairs |> Map.toSeq |> Seq.map fst |> Array.ofSeq
+        let sortfunc x y = bcmp.Compare x y
+        Array.sortInPlaceWith sortfunc keys
+        let sortedSeq = seq { for k in keys do yield kvp(k,pairs.[k]) done }
+        bt.CreateFromSortedSequenceOfKeyValuePairs (fs, pageManager, sortedSeq)
+
     // TODO Create overload for System.Collections.Immutable.SortedDictionary
     // which would be trusting that it was created with the right comparer?
 
@@ -1766,12 +1777,10 @@ type Database(_io:IDatabaseFile) =
     // into a memory btree which always has page size 512.
 
     let buildSegmentInfoList innerPageSize (sd:Map<Guid,(int*int) list>) = 
+        let sd2 = Map.fold (fun acc (g:Guid) blocks -> Map.add (g.ToByteArray()) ((new MemoryStream(buildBlockList blocks)) :> Stream) acc) Map.empty sd
         let ms = new MemoryStream()
         let pm = trivialMemoryPageManager(innerPageSize)
-        // TODO don't use a mutable collection here
-        let d = System.Collections.Generic.Dictionary<byte[],Stream>()
-        Map.iter (fun (g:Guid) blocks -> d.[g.ToByteArray()] <- new MemoryStream(buildBlockList blocks)) sd
-        BTreeSegment.Create(ms, pm, d) |> ignore
+        BTreeSegment.SortAndCreate(ms, pm, sd2) |> ignore
         ms
 
     // the segment info list is written to a contiguous set of pages.
@@ -1875,9 +1884,13 @@ type Database(_io:IDatabaseFile) =
 
 
     interface IDatabase with
-        member this.WriteSegment(pairs:seq<kvp>) =
+        member this.WriteSegmentFromSortedSequence(pairs:seq<kvp>) =
             use fs = io.OpenForWriting()
-            BTreeSegment.Create(fs, this :> IPages, pairs)
+            BTreeSegment.CreateFromSortedSequence(fs, this :> IPages, pairs)
+
+        member this.WriteSegment(pairs:System.Collections.Generic.IDictionary<byte[],Stream>) =
+            use fs = io.OpenForWriting()
+            BTreeSegment.SortAndCreate(fs, this :> IPages, pairs)
 
         member this.BeginRead() =
             let h = header

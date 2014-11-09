@@ -42,18 +42,12 @@ namespace newTests
 				// extension method for .Insert(string,string)
 				mem.Insert (i.ToString (), i.ToString ());
 			}
-
-			// extension method gives us an ICursor (sorts the keys)
-			var csr = mem.OpenCursor ();
-
-			// util converts any cursor to a seq<KeyValuePair>
-			var e = ICursorExtensions.ToSequenceOfKeyValuePairs (csr);
-
+				
 			// write the segment to the file.  nobody knows about it
 			// but us.  it will be written to the segment info list,
 			// but it's not in the current state, so its pages will be
 			// reclaimed later unless it gets there.
-			var seg = db.WriteSegment (e);
+			var seg = db.WriteSegment (mem);
 
 			// open a tx and add our segment to the current state
 			var tx = db.BeginTransaction ();
