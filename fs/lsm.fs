@@ -1781,7 +1781,7 @@ type Database(_io:IDatabaseFile) =
         let seg = h.segments.Item(g)
         let lastBlock = List.head seg
         let rootPage = snd lastBlock
-        let fs = io.OpenForReading()
+        let fs = io.OpenForReading() // TODO pool and reuse these?
         let hook (csr:ICursor) =
             fs.Close()
             lock critSectionCursors (fun () -> 
@@ -1835,12 +1835,15 @@ type Database(_io:IDatabaseFile) =
             GC.SuppressFinalize(this)
 
         member this.WriteSegmentFromSortedSequence(pairs:seq<kvp>) =
+            // TODO maybe we should keep some of these write streams around and reuse them?
             use fs = io.OpenForWriting()
-            BTreeSegment.CreateFromSortedSequence(fs, this :> IPages, pairs)
+            let (g,_) = BTreeSegment.CreateFromSortedSequence(fs, this :> IPages, pairs)
+            g
 
         member this.WriteSegment(pairs:System.Collections.Generic.IDictionary<byte[],Stream>) =
             use fs = io.OpenForWriting()
-            BTreeSegment.SortAndCreate(fs, this :> IPages, pairs)
+            let (g,_) = BTreeSegment.SortAndCreate(fs, this :> IPages, pairs)
+            g
 
         member this.OpenCursor() =
             // TODO we probably need a way to open a cursor on segments in waiting
