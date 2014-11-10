@@ -1581,6 +1581,9 @@ type private HeaderData =
 type private PendingSegment() =
     let mutable blockList = []
     interface IPendingSegment
+    // TODO should we consolidate blocks when possible?
+    // or is it important here to remember that the blocks
+    // were separate even if they were consecutive?
     member this.AddRange(b) =
         blockList <- b :: blockList
     member this.End(lastPage) =
@@ -1825,20 +1828,24 @@ type Database(_io:IDatabaseFile) =
         fsMine.Flush()
 
     let consolidateBlockList h =
+        // TODO filter the segments by guid, ignore anything with a cursor.
+        // if this is called at startup, there should be no cursors yet.  still.
         let allBlocks = Map.fold (fun acc _ value -> value @ acc) [] h.segments
-        let foo = List.sortBy (fun x -> fst x) allBlocks
-        let fn acc t =
+        let sortedBlocks = List.sortBy (fun x -> fst x) allBlocks
+        let fldr acc t =
             let ((first, last), pile) = acc
             if last + 1 = fst t then
                 ((first, snd t), pile)
             else
                 ((fst t, snd t), (first, last) :: pile)
-        let bar = List.fold fn (List.head foo, []) (List.tail foo)
-        let res = (fst bar) :: (snd bar)
-        printfn "%A" res
+        let folded = List.fold fldr (List.head sortedBlocks, []) (List.tail sortedBlocks)
+        let consolidated = (fst folded) :: (snd folded)
+        // TODO note that the the blocks consumed by the segmentInfoList are ignored here
+        consolidated
 
     let dispose itIsSafeToAlsoFreeManagedObjects =
-        //consolidateBlockList header
+        //let blocks = consolidateBlockList header
+        //printfn "%A" blocks
         if itIsSafeToAlsoFreeManagedObjects then
             fsMine.Close()
 
