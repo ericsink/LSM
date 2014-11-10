@@ -1587,6 +1587,7 @@ type private PendingSegment() =
         let lastBlock = List.head blockList
         let (_,lastGivenPage) = lastBlock
         if lastPage < lastGivenPage then
+            //printfn "gap: %d to %d\n" (lastPage+1) lastGivenPage
             blockList <- ((fst lastBlock), lastPage) :: (List.tail blockList)
         (Guid.NewGuid(), blockList)
 
@@ -1597,7 +1598,7 @@ type Database(_io:IDatabaseFile) =
 
     let HEADER_SIZE_IN_BYTES = 4096
 
-    let WASTE_PAGES_AFTER_EACH_BLOCK = 3 // TODO remove.  testing only.
+    let WASTE_PAGES_AFTER_EACH_BLOCK = 0 // TODO remove.  testing only.
     let PAGES_PER_BLOCK = 10 // TODO not hard-coded
 
     let readHeader() =
@@ -1779,7 +1780,7 @@ type Database(_io:IDatabaseFile) =
     let mutable cursors:Map<Guid,ICursor list> = Map.empty
 
     let getCursor h g =
-        let seg = h.segments.Item(g)
+        let seg = Map.find g h.segments
         let lastBlock = List.head seg
         let rootPage = snd lastBlock
         let fs = io.OpenForReading() // TODO pool and reuse these?
@@ -1823,7 +1824,21 @@ type Database(_io:IDatabaseFile) =
         pb.Write(fsMine)
         fsMine.Flush()
 
+    let consolidateBlockList h =
+        let allBlocks = Map.fold (fun acc _ value -> value @ acc) [] h.segments
+        let foo = List.sortBy (fun x -> fst x) allBlocks
+        let fn acc t =
+            let ((first, last), pile) = acc
+            if last + 1 = fst t then
+                ((first, snd t), pile)
+            else
+                ((fst t, snd t), (first, last) :: pile)
+        let bar = List.fold fn (List.head foo, []) (List.tail foo)
+        let res = (fst bar) :: (snd bar)
+        printfn "%A" res
+
     let dispose itIsSafeToAlsoFreeManagedObjects =
+        //consolidateBlockList header
         if itIsSafeToAlsoFreeManagedObjects then
             fsMine.Close()
 

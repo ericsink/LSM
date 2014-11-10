@@ -188,7 +188,6 @@ namespace lsm_tests
 					t.Start ();
 				}
 
-				#if not
 				foreach (Thread t in ta) {
 					t.Join ();
 				}
@@ -206,7 +205,6 @@ namespace lsm_tests
 					}
 					//Assert.Equal (20000, count);
 				}
-				#endif
 			}
 	    }
 	}
