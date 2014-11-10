@@ -1913,7 +1913,7 @@ type Database(_io:IDatabaseFile) =
             let ps = token :?> PendingSegment
             let (g,blocks) = ps.End(lastPage)
             lock critSectionSegmentsInWaiting (fun () -> 
-                segmentsInWaiting <- segmentsInWaiting.Add(g, blocks)
+                segmentsInWaiting <- Map.add g blocks segmentsInWaiting
             )
             g
 

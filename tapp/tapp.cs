@@ -89,45 +89,100 @@ namespace lsm_tests
 				var ta = new Thread[5];
 				var ts = new Guid[ta.Length];
 
+				const int AFTER = 100;
+
 				ta [0] = new Thread (() => {
+					//Console.WriteLine("0 sleeping");
+					//Console.Out.Flush();
+					//Thread.Sleep(1000);
+					//Console.WriteLine("0 awake");
+					//Console.Out.Flush();
 					var t1 = new Dictionary<byte[],Stream> ();
 					for (int i = 0; i < 5000; i++) {
 						t1.Insert ((i * 2).ToString (), i.ToString ());
 					}
-					ts [0] = db.WriteSegment (t1);
+					//Console.WriteLine("0 writing");
+					//Console.Out.Flush();
+					ts[0] = db.WriteSegment (t1);
+					//Console.WriteLine("0 done");
+					//Console.Out.Flush();
+					Thread.Sleep(AFTER);
 				});
 
 				ta [1] = new Thread (() => {
+					//Console.WriteLine("1 sleeping");
+					//Console.Out.Flush();
+					//Thread.Sleep(1000);
+					//Console.WriteLine("1 awake");
+					//Console.Out.Flush();
 					var t1 = new Dictionary<byte[],Stream> ();
 					for (int i = 0; i < 5000; i++) {
 						t1.Insert ((i * 3).ToString (), i.ToString ());
 					}
+					//Console.WriteLine("1 writing");
+					//Console.Out.Flush();
 					ts [1] = db.WriteSegment (t1);
+					//Console.WriteLine("1 done");
+					//Console.Out.Flush();
+					Thread.Sleep(AFTER);
 				});
 
 				ta [2] = new Thread (() => {
+					//Console.WriteLine("2 sleeping");
+					//Console.Out.Flush();
+					//Thread.Sleep(1000);
+					//Console.WriteLine("2 awake");
+					//Console.Out.Flush();
 					var t1 = new Dictionary<byte[],Stream> ();
 					for (int i = 0; i < 5000; i++) {
 						t1.Insert ((i * 5).ToString (), i.ToString ());
 					}
+					//Console.WriteLine("2 writing");
+					//Console.Out.Flush();
 					ts [2] = db.WriteSegment (t1);
+					//Console.WriteLine("2 done");
+					//Console.Out.Flush();
+					Thread.Sleep(AFTER);
 				});
 
 				ta [3] = new Thread (() => {
+					//Console.WriteLine("3 sleeping");
+					//Console.Out.Flush();
+					//Thread.Sleep(1000);
+					//Console.WriteLine("3 awake");
+					//Console.Out.Flush();
 					var t1 = new Dictionary<byte[],Stream> ();
 					for (int i = 0; i < 5000; i++) {
 						t1.Insert ((i * 7).ToString (), i.ToString ());
 					}
+					//Console.WriteLine("3 writing");
+					//Console.Out.Flush();
 					ts [3] = db.WriteSegment (t1);
+					//Console.WriteLine("3 done");
+					//Console.Out.Flush();
+					Thread.Sleep(AFTER);
 				});
 
 				ta [4] = new Thread (() => {
+					//Console.WriteLine("4 sleeping");
+					//Console.Out.Flush();
+					//Thread.Sleep(1000);
+					//Console.WriteLine("4 awake");
+					//Console.Out.Flush();
 					var t1 = new Dictionary<byte[],Stream> ();
 					for (int i = 0; i < 5000; i++) {
 						t1.Insert ((i * 11).ToString (), i.ToString ());
 					}
+					//Console.WriteLine("4 writing");
+					//Console.Out.Flush();
 					ts [4] = db.WriteSegment (t1);
+					//Console.WriteLine("4 done");
+					//Console.Out.Flush();
+					Thread.Sleep(AFTER);
 				});
+
+				Console.WriteLine ("starting threads");
+				Console.Out.Flush ();
 
 				foreach (Thread t in ta) {
 					t.Start ();

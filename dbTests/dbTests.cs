@@ -39,12 +39,15 @@ namespace newTests
 				var ta = new Thread[5];
 				var ts = new Guid[ta.Length];
 
+				const int SLEEP_AFTER = 100;
+
 				ta[0] = new Thread(() => {
 					var t1 = new Dictionary<byte[],Stream>();
 					for (int i=0; i<5000; i++) {
 						t1.Insert((i*2).ToString(), i.ToString());
 					}
 					ts[0] = db.WriteSegment (t1);
+					Thread.Sleep(SLEEP_AFTER);
 				});
 
 				ta[1] = new Thread(() => {
@@ -53,6 +56,7 @@ namespace newTests
 						t1.Insert((i*3).ToString(), i.ToString());
 					}
 					ts[1] = db.WriteSegment (t1);
+					Thread.Sleep(SLEEP_AFTER);
 				});
 
 				ta[2] = new Thread(() => {
@@ -61,6 +65,7 @@ namespace newTests
 						t1.Insert((i*5).ToString(), i.ToString());
 					}
 					ts[2] = db.WriteSegment (t1);
+					Thread.Sleep(SLEEP_AFTER);
 				});
 
 				ta[3] = new Thread(() => {
@@ -69,6 +74,7 @@ namespace newTests
 						t1.Insert((i*7).ToString(), i.ToString());
 					}
 					ts[3] = db.WriteSegment (t1);
+					Thread.Sleep(SLEEP_AFTER);
 				});
 
 				ta[4] = new Thread(() => {
@@ -77,6 +83,7 @@ namespace newTests
 						t1.Insert((i*11).ToString(), i.ToString());
 					}
 					ts[4] = db.WriteSegment (t1);
+					Thread.Sleep(SLEEP_AFTER);
 				});
 
 				foreach (Thread t in ta) {
