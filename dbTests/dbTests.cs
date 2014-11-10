@@ -14,7 +14,7 @@ namespace newTests
 {
 	public class MyClass
 	{
-		private string tid()
+		private static string tid()
 		{
 			return Guid.NewGuid ().ToString ().Replace ("{", "").Replace ("}", "").Replace ("-", "");
 		}
@@ -32,12 +32,12 @@ namespace newTests
 		}
 
 		[Fact]
-		public void four_threads()
+		public void several_threads()
 		{
 			var f = new dbf (tid());
 			using (var db = new Zumero.LSM.fs.Database (f) as IDatabase) {
-				var ta = new Thread[4];
-				var ts = new Guid[4];
+				var ta = new Thread[5];
+				var ts = new Guid[ta.Length];
 
 				ta[0] = new Thread(() => {
 					var t1 = new Dictionary<byte[],Stream>();
@@ -69,6 +69,14 @@ namespace newTests
 						t1.Insert((i*7).ToString(), i.ToString());
 					}
 					ts[3] = db.WriteSegment (t1);
+				});
+
+				ta[4] = new Thread(() => {
+					var t1 = new Dictionary<byte[],Stream>();
+					for (int i=0; i<5000; i++) {
+						t1.Insert((i*11).ToString(), i.ToString());
+					}
+					ts[4] = db.WriteSegment (t1);
 				});
 
 				foreach (Thread t in ta) {

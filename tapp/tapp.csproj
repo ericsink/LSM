@@ -44,5 +44,9 @@
       <Project>{06CDF0A2-9D0A-47CF-8681-8B92D136F9E9}</Project>
       <Name>base_fs_net45</Name>
     </ProjectReference>
+    <ProjectReference Include="..\fs\projects\lsm_fs_net45\lsm_fs_net45.fsproj">
+      <Project>{EC16340F-B28D-44EF-9101-FC496D16B255}</Project>
+      <Name>lsm_fs_net45</Name>
+    </ProjectReference>
   </ItemGroup>
 </Project>

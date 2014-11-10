@@ -1516,9 +1516,10 @@ type BTreeSegment =
         bt.CreateFromSortedSequenceOfKeyValuePairs (fs, pageManager, source)
 
     static member SortAndCreate(fs:Stream, pageManager:IPages, pairs:System.Collections.Generic.IDictionary<byte[],Stream>) =
-#if not // TODO which is faster?
+        // TODO which is faster?
+#if not
         let keys:byte[][] = (Array.ofSeq pairs.Keys)
-        let sortfunc x y = ByteComparer.Compare x y
+        let sortfunc x y = bcmp.Compare x y
         Array.sortInPlaceWith sortfunc keys
         let sortedSeq = seq { for k in keys do yield kvp(k,pairs.[k]) done }
 #else

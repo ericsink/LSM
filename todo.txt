@@ -1,5 +1,8 @@
 
 should we allow the db file to contain more than one keyspace/collection?
+then tryGetWriteLock would only lock one of them.  but when it writes
+the header, it would block all of them, unless we figure out a pleasant
+way to store the state for each one separately.
 
     // multiple db connections to the same file.  the object
     // representing the state of the file is global to the process,
@@ -9,8 +12,8 @@ where do we store the age of the segment?
 
         void Work()
         {
-            // pick two adjacent segs from the seg list
-            // open cursors and each of them
+            // pick two (or more) adjacent segs from the seg list
+            // open cursors on each of them
             // merge A and B to create C.  now locks needed.
             // wait for the write lock
             // (with the lock) read the seg list
@@ -18,7 +21,7 @@ where do we store the age of the segment?
             // write the seglist
             // release the lock
             // note that A and B are free to be removed after their cursors are done
-            // note that there should be no way to get a cursor on a segment no in the seglist
+            // note that there should be no way to get a cursor on a segment not in the seglist
         }
 
 do we have a test that chains multicursors with other multicursors?
