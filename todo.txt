@@ -1,14 +1,12 @@
 
-should we allow the db file to contain more than one keyspace/collection?
-then tryGetWriteLock would only lock one of them.  but when it writes
-the header, it would block all of them, unless we figure out a pleasant
-way to store the state for each one separately.
+need to actually design the file header
 
-    // multiple db connections to the same file.  the object
-    // representing the state of the file is global to the process,
-    // a singleton, shared by all connections thread-safe.
+checksums for data integrity
 
 where do we store the age of the segment?
+
+need something to make sure that only one Database object
+exists for a given file
 
         void Work()
         {
@@ -97,10 +95,6 @@ way too many if-then places in the fs code
 way too many for/while loops in the fs code
 
 --------
-
-need to actually design the file header
-
-checksums for data integrity
 
 still concerned about how much we are copying byte[] for keys
 
