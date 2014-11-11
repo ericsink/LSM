@@ -616,8 +616,7 @@ module bt =
             items:pgitem list 
             overflows:Map<byte[],int32>
             nextGeneration:pgitem list 
-            nextPage:int 
-            boundaryPage:int 
+            blk:PageBlock
         }
 
     type private LeafState =
@@ -921,7 +920,7 @@ module bt =
 
         let lastLeaf = leaves.[0].page
 
-        let writeParentNodes children startingPageNumber startingBoundaryPageNumber =
+        let writeParentNodes (startingBlk:PageBlock) children =
             // 2 for the page type and flags
             // 2 for the stored count
             // 5 for the extra ptr we will add at the end, a varint, 5 is worst case
@@ -956,28 +955,28 @@ module bt =
             let writeParentPage st (pair:pgitem) isRootNode =
                 let pagenum = pair.page
                 let k = pair.key
-                let {items=items; nextPage=nextPageNumber; boundaryPage=boundaryPageNumber; overflows=overflows; nextGeneration=nextGeneration} = st
+                let {items=items; blk=blk; overflows=overflows; nextGeneration=nextGeneration} = st
                 // assert st.sofar > 0
-                let thisPageNumber = nextPageNumber
+                let thisPageNumber = blk.firstPage
                 // TODO needing to reverse the items list here is rather unfortunate
                 buildParentPage (List.rev items) pagenum overflows
-                let (nextN,nextB) =
+                let nextBlk =
                     if isRootNode then
                         pb.SetPageFlag(FLAG_ROOT_NODE)
                         pb.SetSecondToLastInt32(firstLeaf)
                         pb.SetLastInt32(lastLeaf)
-                        (thisPageNumber+1,boundaryPageNumber)
+                        PageBlock(thisPageNumber+1,blk.lastPage)
                     else
-                        if (nextPageNumber = boundaryPageNumber) then
+                        if (blk.firstPage = blk.lastPage) then
                             pb.SetPageFlag(FLAG_BOUNDARY_NODE)
                             let newRange = pageManager.GetRange(token)
                             pb.SetLastInt32(newRange.firstPage)
-                            (newRange.firstPage, newRange.lastPage) // TODO not tuple?
+                            newRange
                         else
-                            (thisPageNumber+1,boundaryPageNumber)
+                            PageBlock(thisPageNumber+1,blk.lastPage)
                 pb.Write(fs)
-                if nextN <> (thisPageNumber+1) then utils.SeekPage(fs, pageSize, nextN)
-                {sofar=0; items=[]; nextPage=nextN; boundaryPage=nextB; overflows=Map.empty; nextGeneration=pgitem(thisPageNumber,k)::nextGeneration}
+                if nextBlk.firstPage <> (thisPageNumber+1) then utils.SeekPage(fs, pageSize, nextBlk.firstPage)
+                {sofar=0; items=[]; blk=nextBlk; overflows=Map.empty; nextGeneration=pgitem(thisPageNumber,k)::nextGeneration}
 
             let foldParent (pair:pgitem) st =
                 let pagenum = pair.page
@@ -1009,14 +1008,14 @@ module bt =
                         st
 
                 let addKeyToParent st = 
-                    let {sofar=sofar; items=items; nextPage=nextPageNumber; boundaryPage=boundaryPageNumber; overflows=overflows} = st
+                    let {sofar=sofar; items=items; blk=blk; overflows=overflows} = st
                     let stateWithK = {st with items=pair :: items}
                     if calcAvailable sofar (List.isEmpty st.nextGeneration) >= neededForInline then
                         {stateWithK with sofar=sofar + neededForInline}
                     else
-                        let keyOverflowFirstPage = nextPageNumber
-                        let kRange = writeOverflow (PageBlock(nextPageNumber, boundaryPageNumber)) (new MemoryStream(k))
-                        {stateWithK with sofar=sofar + neededForOverflow; nextPage=kRange.firstPage; boundaryPage=kRange.lastPage; overflows=overflows.Add(k,keyOverflowFirstPage)}
+                        let keyOverflowFirstPage = blk.firstPage
+                        let kRange = writeOverflow blk (new MemoryStream(k))
+                        {stateWithK with sofar=sofar + neededForOverflow; blk=kRange; overflows=overflows.Add(k,keyOverflowFirstPage)}
 
 
                 // this is the body of the foldParent function
@@ -1025,21 +1024,21 @@ module bt =
             // this is the body of writeParentNodes
             // children is in reverse order.  so List.head children is actually the very last child.
             let lastChild = List.head children
-            let initialState = {nextGeneration=[];sofar=0;items=[];nextPage=startingPageNumber;boundaryPage=startingBoundaryPageNumber;overflows=Map.empty}
+            let initialState = {nextGeneration=[];sofar=0;items=[];blk=startingBlk;overflows=Map.empty}
             let middleState = List.foldBack foldParent (List.tail children) initialState 
             let isRootNode = (List.isEmpty middleState.nextGeneration)
             let finalState = writeParentPage middleState lastChild isRootNode
-            let {nextPage=n;boundaryPage=b;nextGeneration=ng} = finalState
-            (n,b,ng)
+            let {blk=blk;nextGeneration=ng} = finalState
+            (blk,ng)
 
-        let rec writeOneLayerOfParentPages next boundary (children:pgitem list) :int32 =
+        let rec writeOneLayerOfParentPages (blk:PageBlock) (children:pgitem list) :int32 =
             if children.Length > 1 then
-                let (newNext,newBoundary,newChildren) = writeParentNodes children next boundary 
-                writeOneLayerOfParentPages newNext newBoundary newChildren
+                let (newBlk,newChildren) = writeParentNodes blk children
+                writeOneLayerOfParentPages newBlk newChildren
             else
                 children.[0].page
 
-        let rootPage = writeOneLayerOfParentPages pageAfterLeaves boundaryAfterLeaves leaves
+        let rootPage = writeOneLayerOfParentPages (PageBlock(pageAfterLeaves, boundaryAfterLeaves)) leaves
 
         let g = pageManager.End(token, rootPage)
         (g,rootPage)
