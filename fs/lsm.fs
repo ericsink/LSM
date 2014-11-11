@@ -1579,11 +1579,19 @@ type private HeaderData =
 type private PendingSegment() =
     let mutable blockList:PageBlock list = []
     interface IPendingSegment
-    // TODO should we consolidate blocks when possible?
-    // or is it important here to remember that the blocks
-    // were separate even if they were consecutive?
-    member this.AddBlock(b) =
-        blockList <- b :: blockList
+    member this.AddBlock((b:PageBlock)) =
+        if (not (List.isEmpty blockList)) && (b.firstPage = (List.head blockList).lastPage+1) then
+            // note that by consolidating blocks here, the segment info list will
+            // not have information about the fact that the two blocks were
+            // originally separate.  that's okay, since all we care about here is
+            // keeping track of which pages are used.  but the btree code itself
+            // is still treating the last page of the first block as a boundary
+            // page, even though its pointer to the next block goes to the very
+            // next page, because its page manager happened to give it a block
+            // which immediately follows the one it had.
+            blockList <- PageBlock((List.head blockList).firstPage, b.lastPage) :: blockList.Tail
+        else
+            blockList <- b :: blockList
     member this.End(lastPage) =
         let lastBlock = List.head blockList
         if lastPage < lastBlock.lastPage then

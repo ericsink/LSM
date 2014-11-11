@@ -30,6 +30,7 @@ type PageBlock =
         val firstPage: int32
         val lastPage: int32
         new (f,l) = { firstPage = f; lastPage = l; }
+        override this.ToString() = sprintf "(%d,%d)" this.firstPage this.lastPage
     end
 
 
