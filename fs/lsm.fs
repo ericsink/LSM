@@ -774,7 +774,7 @@ module bt =
 
         let pb = PageBuilder(pageSize)
         let putKeyWithLength (k:byte[]) =
-            pb.PutByte(0uy) // flags TODO are keys ever going to have flags?
+            pb.PutByte(0uy) // flags TODO are keys ever going to have flags?  prefix compression probably.
             pb.PutVarint(int64 k.Length)
             pb.PutArray(k)
 
@@ -1514,13 +1514,14 @@ type BTreeSegment =
         bt.CreateFromSortedSequenceOfKeyValuePairs (fs, pageManager, source)
 
     static member SortAndCreate(fs:Stream, pageManager:IPages, pairs:System.Collections.Generic.IDictionary<byte[],Stream>) =
-        // TODO which is faster?
 #if not
         let keys:byte[][] = (Array.ofSeq pairs.Keys)
         let sortfunc x y = bcmp.Compare x y
         Array.sortInPlaceWith sortfunc keys
         let sortedSeq = seq { for k in keys do yield kvp(k,pairs.[k]) done }
 #else
+        // TODO which is faster?  how does linq OrderBy implement sorting
+        // of a sequence?
         let sortedSeq = pairs.AsEnumerable().OrderBy((fun (x:kvp) -> x.Key), ByteComparer())
 #endif
         bt.CreateFromSortedSequenceOfKeyValuePairs (fs, pageManager, sortedSeq)
@@ -1607,7 +1608,7 @@ type Database(_io:IDatabaseFile) =
     let HEADER_SIZE_IN_BYTES = 4096
 
     let WASTE_PAGES_AFTER_EACH_BLOCK = 0 // TODO remove.  testing only.
-    let PAGES_PER_BLOCK = 10 // TODO not hard-coded
+    let PAGES_PER_BLOCK = 10 // TODO not hard-coded.  and 10 is way too low.
 
     let readHeader() =
         let read() =
@@ -1863,18 +1864,17 @@ type Database(_io:IDatabaseFile) =
             GC.SuppressFinalize(this)
 
         member this.WriteSegmentFromSortedSequence(pairs:seq<kvp>) =
-            // TODO maybe we should keep some of these write streams around and reuse them?
-            use fs = io.OpenForWriting()
+            use fs = io.OpenForWriting() // TODO pool and reuse?
             let (g,_) = BTreeSegment.CreateFromSortedSequence(fs, this :> IPages, pairs)
             g
 
         member this.WriteSegment(pairs:System.Collections.Generic.IDictionary<byte[],Stream>) =
-            use fs = io.OpenForWriting()
+            use fs = io.OpenForWriting() // TODO pool and reuse?
             let (g,_) = BTreeSegment.SortAndCreate(fs, this :> IPages, pairs)
             g
 
         member this.OpenCursor() =
-            // TODO we probably need a way to open a cursor on segments in waiting
+            // TODO we also need a way to open a cursor on segments in waiting
             let h = header
             let cursors = List.map (fun g -> getCursor h g) h.currentState
             let mc = MultiCursor.Create cursors

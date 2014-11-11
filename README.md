@@ -5,16 +5,21 @@ This is my "Learn F#" project.  It's a key-value store, implemented as
 a log structured merge tree, conceptually similar to LevelDB or the 
 storage layer of SQLite4.
 
-This is not a complete implementation.  You can't grab this and just use
-it like LevelDB.  Lots of stuff is missing.  There is no support for 
-transactions.  There is no code to manage the merge between levels.
+This is not ready for production use.  Big pieces are still missing.
+For example, there is nothing to reuse pages and nothing to decide
+when to merge segments.
 
 There are two implementations here, one in C# and one in 
-F#.  Both implement the same API.  Originally, the C# version was written 
-first.  The F# version started as mostly a straight port, and its quality 
-of code is probably dreadful by F# standards.  But hopefully it is
-improving.  And as the project moves forward, some features are implemented
-the other direction, in F# first and then ported to C#.
+F#.  Originally, the C# version was written first.  The F# version 
+started as mostly a straight port, and has been evolving to be more
+idiomatic and functional.
+
+At the time of this writing, the F# version is the focus of my 
+attention and the C# version is falling behind.  For example, the F#
+code has an implementation of a layer to manage transactions,
+while the C# code is still just raw pieces to read/write B+Tree
+segments.  I now think of the C# implementation as part of the test
+suite.
 
 # What is a log structured merge tree?
 
@@ -44,7 +49,7 @@ makes sense.  The disk segment is usually something like a B+tree,
 except it doesn't need to support insert/update/delete, so it's
 much simpler.
 
-# Design
+# Design: B+Tree segments and cursors
 
 In principle, both keys and values are byte arrays.  A key really is
 a byte[].  But a value is actually represented as a System.IO.Stream, 
@@ -54,12 +59,18 @@ The main concept here is an interface called ICursor.
 It defines the methods which can be used to search or iterate
 over one segment, whether it be in memory or on disk.
 
-MemorySegment is little more than a wrapper around a .NET Dictionary.
-It has a method called OpenCursor() which returns an ICursor.
+This code base doesn't really implement a memory segment object,
+preferring instead to let the caller use standard .NET collections
+for that.
 
-To construct a disk segment, call BTreeSegment.Create.  Its parameters
-are a Stream (into which the B+tree will be written) and an ICursor
-(from which the keys and values will be obtained).
+To construct a disk segment, call BTreeSegment.CreateFromSortedSequence.  
+It needs a sequence (aka IEnumerable) of KeyValuePair objects,
+properly sorted.
+
+To create a segment from an ICursor, use CursorUtils.ToSortedSequenceOfKeyValuePairs
+to get the sequence you need.
+
+To create a segment from a Dictionary, use BtreeSegment.SortAndCreate.
 
 BTreeSegment.OpenCursor() does what you would expect.
 
@@ -78,12 +89,6 @@ MultiCursor on them and passing it to BTreeSegment.Create.
 There is one more ICursor implementation I have not mentioned, and
 that is something I call LivingCursor.  This is a cursor that has
 one subcursor, and all it does is filter out the tombstones.
-
-As I said above, this is not a complete implementation.  There needs
-to be something that owns the memory segment and all the disk segments
-and makes smart decisions about when to flush the memory segment
-and when to merge disk segments together.  That piece of code is
-currently absent here.
 
 # The B+Tree
 
@@ -115,8 +120,8 @@ and hands them out on request.
 I have taken a lot of inspiration and ideas from SQLite4.  The varint
 concept comes directly from there.  ICursor is almost exactly the same.
 
-There's a small xUnit test suite.  It is configured to run every
-test four times:
+There's a small xUnit test suite for testing the B+Tree and cursor
+layer.  It is configured to run every test four times:
 
  * The F# implementation
 
@@ -128,57 +133,13 @@ test four times:
 
 All the tests are in C#.
 
+There is another xUnit test suite called dbTests.  This one exercises
+the Database layer.
+
 All the work so far has been done on Mono in Xamarin Studio on my
 Mac.  I assume this code will run on .NET/Windows, but I haven't tried
 it yet.
 
-Both implementations exist in a single source code file.  lsm.fs is
-predictably a lot shorter than lsm.cs, but that comparison isn't totally
-fair, since the C# version currently has more comments.
-
-The F# version is slightly slower.  I consider this to be strongly
-related to my skill differential and probably-not-at-all related
-to any broad perf differences between the two languages.
-
 The C# version is a profile 78 PCL.  So far it would seem that F#
 (under Xamarin Studio anyway) does not have tooling support for PCLs.
-
-# The F# Code
-
-It's rather object oriented.  In some ways, it probably needs to be.  I could
-find no purely functional way of dealing with the basic idea of ICursor.
-
-But even if this code needs to stay object-oriented in the large, 
-I suspect there are lots of ways this can be improved to make the code more
-idiomatic.
-
-I've learned a lot about F# just by doing the port, but I want to go
-further.  
-
- - I want the code to have far fewer uses of the word mutable.
-The mutable class members don't bother me so much, but the mutable
-variables in functions seem like glaring symptoms of a C# port.
-
- - And I used an Option type in only one place.
-
- - And I represent a tombstone with a null (this might actually stay that way).
-
- - And there are lots of if-then expressions and hardly any match expressions.
-
- - And there are while/for loops.
-
- - And I mostly used mutable collections from System.Collections.Generic.
-
-Basically, lsm.fs is a functional programming nightmare, but it's a starting point.
-
-Because of the tricks I use in the test suite, ICursor (and its friends) are
-defined in a C# assembly called LSM\_base.  Both the C# and F# implementations
-reference this assembly.
-
-It's nice that this demonstrates the use of C# to call through an F# implementation
-of an interface defined in C#.  But before I did the the test suite trick,
-the F# had its own definition of ICursor, and that was cool too.  The code is
-still there in lsm.fs, commented out.  Just for fun, I could have used the
-F# definitions for LSM\_base, but LSM\_base has to be a PCL because LSM\_cs
-is a PCL.
 
