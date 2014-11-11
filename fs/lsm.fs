@@ -692,7 +692,7 @@ module bt =
                     if firstBlk.firstPage = firstBlk.lastPage then
                         // the first page landed on a boundary
                         pbOverflow.SetPageFlag(FLAG_BOUNDARY_NODE)
-                        let blk = pageManager.GetRange(token)
+                        let blk = pageManager.GetBlock(token)
                         pbOverflow.SetLastInt32(blk.firstPage)
                         pbOverflow.Write(fs)
                         utils.SeekPage(fs, pageSize, blk.firstPage)
@@ -762,7 +762,7 @@ module bt =
                                 // overflow page in this block, since we can't set it
                                 // here on this page, because this page has no header.
                                 let sofarAfterBoundaryPage = buildBoundaryPage sofarAfterRegularPages
-                                let blk = pageManager.GetRange(token)
+                                let blk = pageManager.GetBlock(token)
                                 pbOverflow.SetLastInt32(blk.firstPage)
                                 pbOverflow.Write(fs)
                                 utils.SeekPage(fs, pageSize, blk.firstPage)
@@ -780,11 +780,11 @@ module bt =
 
         let putOverflow strm (blk:PageBlock) =
             let overflowFirstPage = blk.firstPage
-            let newRange = writeOverflow blk strm
+            let newBlk = writeOverflow blk strm
             pb.PutByte(FLAG_OVERFLOW)
             pb.PutVarint(strm.Length)
             pb.PutInt32(overflowFirstPage)
-            newRange
+            newBlk
 
         let writeLeaves (leavesBlk:PageBlock) :PageBlock*(pgitem list)*int =
             // 2 for the page type and flags
@@ -803,9 +803,9 @@ module bt =
                         PageBlock(thisPageNumber + 1, st.blk.lastPage)
                     else if thisPageNumber = st.blk.lastPage then
                         pb.SetPageFlag FLAG_BOUNDARY_NODE
-                        let newRange = pageManager.GetRange(token)
-                        pb.SetLastInt32(newRange.firstPage)
-                        newRange
+                        let newBlk = pageManager.GetBlock(token)
+                        pb.SetLastInt32(newBlk.firstPage)
+                        newBlk
                     else
                         PageBlock(thisPageNumber + 1, st.blk.lastPage)
                 pb.Write(fs)
@@ -905,7 +905,7 @@ module bt =
             (blk,leaves,firstLeaf)
 
         // this is the body of Create
-        let startingBlk = pageManager.GetRange(token)
+        let startingBlk = pageManager.GetBlock(token)
         utils.SeekPage(fs, pageSize, startingBlk.firstPage)
 
         let (blkAfterLeaves, leaves, firstLeaf) = writeLeaves startingBlk
@@ -967,9 +967,9 @@ module bt =
                     else
                         if (blk.firstPage = blk.lastPage) then
                             pb.SetPageFlag(FLAG_BOUNDARY_NODE)
-                            let newRange = pageManager.GetRange(token)
-                            pb.SetLastInt32(newRange.firstPage)
-                            newRange
+                            let newBlk = pageManager.GetBlock(token)
+                            pb.SetLastInt32(newBlk.firstPage)
+                            newBlk
                         else
                             PageBlock(thisPageNumber+1,blk.lastPage)
                 pb.Write(fs)
@@ -1012,8 +1012,8 @@ module bt =
                         {stateWithK with sofar=sofar + neededForInline}
                     else
                         let keyOverflowFirstPage = blk.firstPage
-                        let kRange = writeOverflow blk (new MemoryStream(k))
-                        {stateWithK with sofar=sofar + neededForOverflow; blk=kRange; overflows=overflows.Add(k,keyOverflowFirstPage)}
+                        let newBlk = writeOverflow blk (new MemoryStream(k))
+                        {stateWithK with sofar=sofar + neededForOverflow; blk=newBlk; overflows=overflows.Add(k,keyOverflowFirstPage)}
 
 
                 // this is the body of the foldParent function
@@ -1548,7 +1548,7 @@ type trivialMemoryPageManager(_pageSize) =
         member this.PageSize = pageSize
         member this.Begin() = trivialPendingSegment() :> IPendingSegment
         member this.End(_,_) = Guid.Empty
-        member this.GetRange(_) = PageBlock(1,-1)
+        member this.GetBlock(_) = PageBlock(1,-1)
 
 type dbf(_path) = 
     let path = _path
@@ -1582,7 +1582,7 @@ type private PendingSegment() =
     // TODO should we consolidate blocks when possible?
     // or is it important here to remember that the blocks
     // were separate even if they were consecutive?
-    member this.AddRange(b) =
+    member this.AddBlock(b) =
         blockList <- b :: blockList
     member this.End(lastPage) =
         let lastBlock = List.head blockList
@@ -1723,11 +1723,11 @@ type Database(_io:IDatabaseFile) =
     // of the file.
 
     let critSectionNextPage = obj()
-    let getRange num =
+    let getBlock num =
         lock critSectionNextPage (fun () -> 
-            let t = PageBlock(nextPage, nextPage+num-1) 
+            let blk = PageBlock(nextPage, nextPage+num-1) 
             nextPage <- nextPage + num + WASTE_PAGES_AFTER_EACH_BLOCK
-            t
+            blk
             )
 
     // a block list for a segment is a single blob of bytes.
@@ -1762,7 +1762,7 @@ type Database(_io:IDatabaseFile) =
     // those pages are special.  they are not obtained from the "page manager"
     // (this class's implementation of IPages below).  the segment info list
     // is not a segment in the segment info list.  it is a btree segment,
-    // but it is written into a set of pages obtained directly from getRange.
+    // but it is written into a set of pages obtained directly from getBlock.
     // a reference to the segment info list page range is recorded in the
     // header of the file.
 
@@ -1771,7 +1771,7 @@ type Database(_io:IDatabaseFile) =
         let ms = buildSegmentInfoList innerPageSize sd
         let len = ms.Length |> int
         let pagesNeeded = len / pageSize + if 0 <> len % pageSize then 1 else 0
-        let blk = getRange (pagesNeeded)
+        let blk = getBlock (pagesNeeded)
         utils.SeekPage(fsMine, pageSize, blk.firstPage)
         fsMine.Write(ms.GetBuffer(), 0, len)
         {firstPage=blk.firstPage;lastPage=blk.lastPage;innerPageSize=innerPageSize;len=len}
@@ -1922,11 +1922,15 @@ type Database(_io:IDatabaseFile) =
 
         member this.Begin() = PendingSegment() :> IPendingSegment
 
-        member this.GetRange(token) =
+        // note that we assume that a single pending segment is going
+        // to be written by a single thread.  the concrete PendingSegment
+        // class above is not threadsafe.
+
+        member this.GetBlock(token) =
             let ps = token :?> PendingSegment
-            let t = getRange PAGES_PER_BLOCK
-            ps.AddRange(t)
-            t
+            let blk = getBlock PAGES_PER_BLOCK
+            ps.AddBlock(blk)
+            blk
 
         member this.End(token, lastPage) =
             let ps = token :?> PendingSegment

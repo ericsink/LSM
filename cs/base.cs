@@ -35,7 +35,7 @@ namespace Zumero.LSM
     {
 		int PageSize { get; }
 		IPendingSegment Begin();
-		PageBlock GetRange(IPendingSegment token);
+		PageBlock GetBlock(IPendingSegment token);
 		Guid End(IPendingSegment token, int lastPage);
     }
 

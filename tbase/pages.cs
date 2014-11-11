@@ -48,7 +48,7 @@ namespace lsm_tests
 			return Guid.NewGuid();
 		}
 
-		PageBlock IPages.GetRange(IPendingSegment token)
+		PageBlock IPages.GetBlock(IPendingSegment token)
 		{
 			return new PageBlock(1, -1);
 		}
@@ -128,7 +128,7 @@ namespace lsm_tests
 			}
         }
 
-		PageBlock IPages.GetRange(IPendingSegment token)
+		PageBlock IPages.GetBlock(IPendingSegment token)
 		{
 			var ps = (token as PendingSegment);
             var t = GetRange(PAGES_PER_BLOCK);

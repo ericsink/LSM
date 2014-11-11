@@ -36,7 +36,7 @@ type PageBlock =
 type IPages =
     abstract member PageSize : int with get
     abstract member Begin : unit->IPendingSegment
-    abstract member GetRange : IPendingSegment->PageBlock
+    abstract member GetBlock : IPendingSegment->PageBlock
     abstract member End : IPendingSegment*int->Guid
 
 type SeekOp = SEEK_EQ=0 | SEEK_LE=1 | SEEK_GE=2

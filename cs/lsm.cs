@@ -1093,7 +1093,7 @@ namespace Zumero.LSM.cs
                 if (thisPageNumber == boundaryPageNumber) {
                     // the first page landed on a boundary
                     pb.SetPageFlag(FLAG_BOUNDARY_NODE);
-                    var newRange = pageManager.GetRange(token);
+					var newRange = pageManager.GetBlock(token);
                     nextPageNumber = newRange.firstPage;
                     boundaryPageNumber = newRange.lastPage;
                     pb.SetLastInt32(nextPageNumber);
@@ -1162,7 +1162,7 @@ namespace Zumero.LSM.cs
                             // overflow page in this block, since we can't set it
                             // here on this page, because this page has no header.
                             sofar = buildOverflowBoundaryPage(pb, ba, len, sofar);
-                            var newRange = pageManager.GetRange(token);
+							var newRange = pageManager.GetBlock(token);
 							nextPageNumber = newRange.firstPage;
 							boundaryPageNumber = newRange.lastPage;
                             pb.SetLastInt32(nextPageNumber);
@@ -1254,7 +1254,7 @@ namespace Zumero.LSM.cs
                         } else {
 							if (isBoundary) {
                                 pb.SetPageFlag(FLAG_BOUNDARY_NODE);
-                                var newRange = pageManager.GetRange(token);
+								var newRange = pageManager.GetBlock(token);
 								nextPageNumber = newRange.firstPage;
 								boundaryPageNumber = newRange.lastPage;
                                 pb.SetLastInt32(nextPageNumber);
@@ -1316,7 +1316,7 @@ namespace Zumero.LSM.cs
 			PageBuilder pbOverflow = new PageBuilder(pageSize);
 
 			var token = pageManager.Begin ();
-            var range = pageManager.GetRange(token);
+			var range = pageManager.GetBlock(token);
 			int nextPageNumber = range.firstPage;
 			int boundaryPageNumber = range.lastPage;
 
@@ -1386,7 +1386,7 @@ namespace Zumero.LSM.cs
 
 						if (thisPageNumber == boundaryPageNumber) {
                             pb.SetPageFlag(FLAG_BOUNDARY_NODE);
-                            var newRange = pageManager.GetRange(token);
+							var newRange = pageManager.GetBlock(token);
 							nextPageNumber = newRange.firstPage;
 							boundaryPageNumber = newRange.lastPage;
                             pb.SetLastInt32(nextPageNumber);
@@ -1491,7 +1491,7 @@ namespace Zumero.LSM.cs
 				} else {
 					if (thisPageNumber == boundaryPageNumber) {
                         pb.SetPageFlag(FLAG_BOUNDARY_NODE);
-                        var newRange = pageManager.GetRange(token);
+						var newRange = pageManager.GetBlock(token);
 						nextPageNumber = newRange.firstPage;
 						boundaryPageNumber = newRange.lastPage;
                         pb.SetLastInt32(nextPageNumber);
