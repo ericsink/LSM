@@ -16,7 +16,7 @@ idiomatic and functional.
 
 At the time of this writing, the F# version is the focus of my 
 attention and the C# version is falling behind.  For example, the F#
-code has an implementation of a layer to manage transactions,
+code has an initial implementation of a layer to manage transactions,
 while the C# code is still just raw pieces to read/write B+Tree
 segments.  I now think of the C# implementation as part of the test
 suite.
