@@ -48,9 +48,9 @@ namespace lsm_tests
 			return Guid.NewGuid();
 		}
 
-		Tuple<int,int> IPages.GetRange(IPendingSegment token)
+		PageBlock IPages.GetRange(IPendingSegment token)
 		{
-			return new Tuple<int,int> (1, -1);
+			return new PageBlock(1, -1);
 		}
 
 	}
@@ -59,28 +59,28 @@ namespace lsm_tests
 	{
 		private class PendingSegment : IPendingSegment
 		{
-			private List<Tuple<int,int>> blockList = new List<Tuple<int, int>>();
+			private List<PageBlock> blockList = new List<PageBlock>();
 
-			public void Add(Tuple<int,int> t)
+			public void Add(PageBlock t)
 			{
 				blockList.Add (t);
 			}
 
-			public Tuple<Guid,List<Tuple<int,int>>> End(int lastPage)
+			public Tuple<Guid,List<PageBlock>> End(int lastPage)
 			{
 				var lastBlock = blockList[blockList.Count-1];
 				// assert lastPage >= lastBlock.Item1;
-				if (lastPage < lastBlock.Item2) {
+				if (lastPage < lastBlock.lastPage) {
 					// this segment did not use all the pages we gave it
 					blockList.Remove (lastBlock);
-					blockList.Add (new Tuple<int, int> (lastBlock.Item1, lastPage));
+					blockList.Add (new PageBlock (lastBlock.firstPage, lastPage));
 				}
-				return new Tuple<Guid,List<Tuple<int,int>>> (Guid.NewGuid (), blockList);
+				return new Tuple<Guid,List<PageBlock>> (Guid.NewGuid (), blockList);
 			}
 		}
 
 		int cur = 1;
-		private readonly Dictionary<Guid,List<Tuple<int,int>>> segments;
+		private readonly Dictionary<Guid,List<PageBlock>> segments;
 		int pageSize;
 
 		// TODO could be a param
@@ -94,7 +94,7 @@ namespace lsm_tests
 		public SimplePageManager(int _pageSize)
 		{
 			pageSize = _pageSize;
-			segments = new Dictionary<Guid, List<Tuple<int, int>>> ();
+			segments = new Dictionary<Guid, List<PageBlock>> ();
 		}
 
         int IPages.PageSize
@@ -119,16 +119,16 @@ namespace lsm_tests
 			return end.Item1;
 		}
 
-		private Tuple<int,int> GetRange(int num)
+		private PageBlock GetRange(int num)
         {
 			lock (this) {
-				var t = new Tuple<int,int> (cur, cur + num - 1);
+				var t = new PageBlock (cur, cur + num - 1);
 				cur = cur + num + WASTE_PAGES_AFTER_EACH_BLOCK;
 				return t;
 			}
         }
 
-		Tuple<int,int> IPages.GetRange(IPendingSegment token)
+		PageBlock IPages.GetRange(IPendingSegment token)
 		{
 			var ps = (token as PendingSegment);
             var t = GetRange(PAGES_PER_BLOCK);

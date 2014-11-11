@@ -22,10 +22,21 @@ open System.Collections.Generic
 
 type IPendingSegment = interface end
 
+// TODO PageBlock, struct vs. record
+// struct is a little faster and more compatible with C#
+// record is more F# idiomatic
+type PageBlock = 
+    struct
+        val firstPage: int32
+        val lastPage: int32
+        new (f,l) = { firstPage = f; lastPage = l; }
+    end
+
+
 type IPages =
     abstract member PageSize : int with get
     abstract member Begin : unit->IPendingSegment
-    abstract member GetRange : IPendingSegment->int*int // TODO consider struct instead of tuple
+    abstract member GetRange : IPendingSegment->PageBlock
     abstract member End : IPendingSegment*int->Guid
 
 type SeekOp = SEEK_EQ=0 | SEEK_LE=1 | SEEK_GE=2

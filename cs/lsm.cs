@@ -1075,7 +1075,7 @@ namespace Zumero.LSM.cs
 			return pages;
 		}
 
-		private static Tuple<int,int> writeOverflow(IPages pageManager, IPendingSegment token, int startingNextPageNumber, int startingBoundaryPageNumber, PageBuilder pb, Stream fs, Stream ba)
+		private static PageBlock writeOverflow(IPages pageManager, IPendingSegment token, int startingNextPageNumber, int startingBoundaryPageNumber, PageBuilder pb, Stream fs, Stream ba)
 		{
 			int sofar = 0;
 			int len = (int) ba.Length;
@@ -1094,8 +1094,8 @@ namespace Zumero.LSM.cs
                     // the first page landed on a boundary
                     pb.SetPageFlag(FLAG_BOUNDARY_NODE);
                     var newRange = pageManager.GetRange(token);
-                    nextPageNumber = newRange.Item1;
-                    boundaryPageNumber = newRange.Item2;
+                    nextPageNumber = newRange.firstPage;
+                    boundaryPageNumber = newRange.lastPage;
                     pb.SetLastInt32(nextPageNumber);
                     pb.Write(fs);
                     utils.SeekPage(fs, pb.PageSize, nextPageNumber);
@@ -1163,8 +1163,8 @@ namespace Zumero.LSM.cs
                             // here on this page, because this page has no header.
                             sofar = buildOverflowBoundaryPage(pb, ba, len, sofar);
                             var newRange = pageManager.GetRange(token);
-                            nextPageNumber = newRange.Item1;
-                            boundaryPageNumber = newRange.Item2;
+							nextPageNumber = newRange.firstPage;
+							boundaryPageNumber = newRange.lastPage;
                             pb.SetLastInt32(nextPageNumber);
                             pb.Write(fs);
                             utils.SeekPage(fs, pb.PageSize, nextPageNumber);
@@ -1173,7 +1173,7 @@ namespace Zumero.LSM.cs
                 }
             }
 
-            return new Tuple<int,int>(nextPageNumber, boundaryPageNumber);
+		return new PageBlock(nextPageNumber, boundaryPageNumber);
 		}
 
 		private static int calcAvailable(int pageSize, int currentSize, bool couldBeRoot)
@@ -1255,8 +1255,8 @@ namespace Zumero.LSM.cs
 							if (isBoundary) {
                                 pb.SetPageFlag(FLAG_BOUNDARY_NODE);
                                 var newRange = pageManager.GetRange(token);
-                                nextPageNumber = newRange.Item1;
-                                boundaryPageNumber = newRange.Item2;
+								nextPageNumber = newRange.firstPage;
+								boundaryPageNumber = newRange.lastPage;
                                 pb.SetLastInt32(nextPageNumber);
 							} else {
 								nextPageNumber++;
@@ -1289,8 +1289,8 @@ namespace Zumero.LSM.cs
 					} else {
 						int keyOverflowFirstPage = nextPageNumber;
 						var kRange = writeOverflow (pageManager, token, nextPageNumber, boundaryPageNumber, pbOverflow, fs, new MemoryStream(k));
-                        nextPageNumber = kRange.Item1;
-                        boundaryPageNumber = kRange.Item2;
+						nextPageNumber = kRange.firstPage;
+						boundaryPageNumber = kRange.lastPage;
 						sofar += sizeof(int);
 						overflows [i] = keyOverflowFirstPage;
 					}
@@ -1317,8 +1317,8 @@ namespace Zumero.LSM.cs
 
 			var token = pageManager.Begin ();
             var range = pageManager.GetRange(token);
-			int nextPageNumber = range.Item1;
-            int boundaryPageNumber = range.Item2;
+			int nextPageNumber = range.firstPage;
+			int boundaryPageNumber = range.lastPage;
 
             // 2 for the page type and flags
             // 4 for the prev page
@@ -1387,8 +1387,8 @@ namespace Zumero.LSM.cs
 						if (thisPageNumber == boundaryPageNumber) {
                             pb.SetPageFlag(FLAG_BOUNDARY_NODE);
                             var newRange = pageManager.GetRange(token);
-                            nextPageNumber = newRange.Item1;
-                            boundaryPageNumber = newRange.Item2;
+							nextPageNumber = newRange.firstPage;
+							boundaryPageNumber = newRange.lastPage;
                             pb.SetLastInt32(nextPageNumber);
 						} else {
 							nextPageNumber++;
@@ -1458,8 +1458,8 @@ namespace Zumero.LSM.cs
 
 						int keyOverflowFirstPage = nextPageNumber;
 						var kRange = writeOverflow (pageManager, token, nextPageNumber, boundaryPageNumber, pbOverflow, fs, new MemoryStream(k));
-                        nextPageNumber = kRange.Item1;
-                        boundaryPageNumber = kRange.Item2;
+						nextPageNumber = kRange.firstPage;
+						boundaryPageNumber = kRange.lastPage;
 
 						pb.PutByte (FLAG_OVERFLOW);
 						pb.PutVarint (k.Length);
@@ -1468,8 +1468,8 @@ namespace Zumero.LSM.cs
 
                     int valueOverflowFirstPage = nextPageNumber;
                     var vRange = writeOverflow (pageManager, token, nextPageNumber, boundaryPageNumber, pbOverflow, fs, v);
-                    nextPageNumber = vRange.Item1;
-                    boundaryPageNumber = vRange.Item2;
+					nextPageNumber = vRange.firstPage;
+					boundaryPageNumber = vRange.lastPage;
 
 					pb.PutByte (FLAG_OVERFLOW);
 					pb.PutVarint (v.Length);
@@ -1492,8 +1492,8 @@ namespace Zumero.LSM.cs
 					if (thisPageNumber == boundaryPageNumber) {
                         pb.SetPageFlag(FLAG_BOUNDARY_NODE);
                         var newRange = pageManager.GetRange(token);
-                        nextPageNumber = newRange.Item1;
-                        boundaryPageNumber = newRange.Item2;
+						nextPageNumber = newRange.firstPage;
+						boundaryPageNumber = newRange.lastPage;
                         pb.SetLastInt32(nextPageNumber);
 					} else {
 						nextPageNumber++;

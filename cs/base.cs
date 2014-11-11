@@ -24,11 +24,18 @@ namespace Zumero.LSM
 	{
 	}
 
+	public struct PageBlock
+	{
+		public int firstPage;
+		public int lastPage;
+        public PageBlock(int f, int l) { firstPage = f; lastPage = l; }
+	}
+
     public interface IPages
     {
 		int PageSize { get; }
 		IPendingSegment Begin();
-		Tuple<int,int> GetRange(IPendingSegment token); // TODO consider struct instead of tuple
+		PageBlock GetRange(IPendingSegment token);
 		Guid End(IPendingSegment token, int lastPage);
     }
 
