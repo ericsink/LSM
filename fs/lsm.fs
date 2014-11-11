@@ -625,8 +625,7 @@ module bt =
             keys:(byte[] list)
             firstLeaf:int32
             leaves:pgitem list 
-            nextPage:int 
-            boundaryPage:int 
+            blk:PageBlock
         }
 
     let CreateFromSortedSequenceOfKeyValuePairs(fs:Stream, pageManager:IPages, source:seq<kvp>) = 
@@ -787,7 +786,7 @@ module bt =
             pb.PutInt32(overflowFirstPage)
             newRange
 
-        let writeLeaves leavesFirstPage leavesBoundaryPage :int*int*(pgitem list)*int =
+        let writeLeaves (leavesBlk:PageBlock) :PageBlock*(pgitem list)*int =
             // 2 for the page type and flags
             // 4 for the prev page
             // 2 for the stored count
@@ -797,22 +796,22 @@ module bt =
 
             let writeLeaf st isRootPage = 
                 pb.PutInt16At (OFFSET_COUNT_PAIRS, st.keys.Length)
-                let thisPageNumber = st.nextPage
+                let thisPageNumber = st.blk.firstPage
                 let firstLeaf = if List.isEmpty st.leaves then thisPageNumber else st.firstLeaf
-                let (nextN,nextB) = 
+                let nextBlk = 
                     if isRootPage then
-                        (thisPageNumber + 1, st.boundaryPage)
-                    else if thisPageNumber = st.boundaryPage then
+                        PageBlock(thisPageNumber + 1, st.blk.lastPage)
+                    else if thisPageNumber = st.blk.lastPage then
                         pb.SetPageFlag FLAG_BOUNDARY_NODE
                         let newRange = pageManager.GetRange(token)
                         pb.SetLastInt32(newRange.firstPage)
-                        (newRange.firstPage, newRange.lastPage)
+                        newRange
                     else
-                        (thisPageNumber + 1, st.boundaryPage)
+                        PageBlock(thisPageNumber + 1, st.blk.lastPage)
                 pb.Write(fs)
                 pb.Reset()
-                if nextN <> (thisPageNumber+1) then utils.SeekPage(fs, pageSize, nextN)
-                {keys=[]; firstLeaf=firstLeaf; nextPage=nextN; boundaryPage=nextB; leaves=pgitem(thisPageNumber,List.head st.keys)::st.leaves}
+                if nextBlk.firstPage <> (thisPageNumber+1) then utils.SeekPage(fs, pageSize, nextBlk.firstPage)
+                {keys=[]; firstLeaf=firstLeaf; blk=nextBlk; leaves=pgitem(thisPageNumber,List.head st.keys)::st.leaves}
 
             let foldLeaf st (pair:kvp) = 
                 let k = pair.Key
@@ -865,8 +864,7 @@ module bt =
                     let available = pb.Available - sizeof<int32> // for the lastInt32
                     let fitBothInline = (available >= neededForBothInline)
                     let fitKeyInlineValueOverflow = (available >= neededForKeyInlineValueOverflow)
-                    let {keys=_;nextPage=nextPageNumber;boundaryPage=boundaryPageNumber} = st
-                    let blk = PageBlock(nextPageNumber,boundaryPageNumber)
+                    let {keys=_;blk=blk} = st
                     let newBlk = 
                         if fitBothInline then
                             putKeyWithLength k
@@ -888,14 +886,14 @@ module bt =
                             else
                                 let tmpBlk = putOverflow (new MemoryStream(k)) blk
                                 putOverflow v tmpBlk
-                    {st with nextPage=newBlk.firstPage;boundaryPage=newBlk.lastPage;keys=k::st.keys}
+                    {st with blk=newBlk;keys=k::st.keys}
                         
                 // this is the body of the foldLeaf function
                 maybeWriteLeaf st |> initLeaf |> addPairToLeaf
 
             // this is the body of writeLeaves
             //let source = seq { csr.First(); while csr.IsValid() do yield (csr.Key(), csr.Value()); csr.Next(); done }
-            let initialState = {firstLeaf=0;keys=[];leaves=[];nextPage=leavesFirstPage;boundaryPage=leavesBoundaryPage}
+            let initialState = {firstLeaf=0;keys=[];leaves=[];blk=leavesBlk}
             let middleState = Seq.fold foldLeaf initialState source
             let finalState = 
                 if not (List.isEmpty middleState.keys) then
@@ -903,14 +901,14 @@ module bt =
                     writeLeaf middleState isRootNode
                 else
                     middleState
-            let {nextPage=n;boundaryPage=b;leaves=leaves;firstLeaf=firstLeaf} = finalState
-            (n,b,leaves,firstLeaf)
+            let {blk=blk;leaves=leaves;firstLeaf=firstLeaf} = finalState
+            (blk,leaves,firstLeaf)
 
         // this is the body of Create
         let startingBlk = pageManager.GetRange(token)
         utils.SeekPage(fs, pageSize, startingBlk.firstPage)
 
-        let (pageAfterLeaves, boundaryAfterLeaves, leaves, firstLeaf) = writeLeaves startingBlk.firstPage startingBlk.lastPage
+        let (blkAfterLeaves, leaves, firstLeaf) = writeLeaves startingBlk
 
         // all the leaves are written.
         // now write the parent pages.
@@ -1038,7 +1036,7 @@ module bt =
             else
                 children.[0].page
 
-        let rootPage = writeOneLayerOfParentPages (PageBlock(pageAfterLeaves, boundaryAfterLeaves)) leaves
+        let rootPage = writeOneLayerOfParentPages blkAfterLeaves leaves
 
         let g = pageManager.End(token, rootPage)
         (g,rootPage)
