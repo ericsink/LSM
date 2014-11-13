@@ -1,26 +1,35 @@
 
-need to actually design the file header
+void Work()
+{
+    // pick two (or more) adjacent segs from the seg list
+    // open cursors on each of them
+    // merge A and B to create C.  now locks needed.
+    // wait for the write lock
+    // (with the lock) read the seg list
+    // replace A+B with C
+    // write the seglist
+    // release the lock
+    // note that A and B are free to be removed after their cursors are done
+    // note that there should be no way to get a cursor on a segment not in the seglist
+}
 
+more async-ness
+
+write value stream that doesn't know its length
+
+page level encryption
+
+prefix key compression
+
+need to actually design the file header
 checksums for data integrity
 
 where do we store the age of the segment?
 
+--
+
 need something to make sure that only one Database object
 exists for a given file
-
-        void Work()
-        {
-            // pick two (or more) adjacent segs from the seg list
-            // open cursors on each of them
-            // merge A and B to create C.  now locks needed.
-            // wait for the write lock
-            // (with the lock) read the seg list
-            // replace A+B with C
-            // write the seglist
-            // release the lock
-            // note that A and B are free to be removed after their cursors are done
-            // note that there should be no way to get a cursor on a segment not in the seglist
-        }
 
 do we have a test that chains multicursors with other multicursors?
 

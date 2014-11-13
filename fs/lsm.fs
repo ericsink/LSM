@@ -1809,11 +1809,57 @@ type Database(_io:IDatabaseFile) =
             )
         csr
 
+    let critSectionSegmentsInWaiting = obj()
+
+    let pageManager = 
+        { new IPages with
+            member this.PageSize = pageSize
+
+            member this.Begin() = PendingSegment() :> IPendingSegment
+
+            // note that we assume that a single pending segment is going
+            // to be written by a single thread.  the concrete PendingSegment
+            // class above is not threadsafe.
+
+            member this.GetBlock(token) =
+                let ps = token :?> PendingSegment
+                let blk = getBlock PAGES_PER_BLOCK
+                ps.AddBlock(blk)
+                blk
+
+            member this.End(token, lastPage) =
+                let ps = token :?> PendingSegment
+                let (g,blocks) = ps.End(lastPage)
+                lock critSectionSegmentsInWaiting (fun () -> 
+                    segmentsInWaiting <- Map.add g blocks segmentsInWaiting
+                )
+                g
+        }
+
+    // TODO we only want one merge going on at a time.  or rather, we only
+    // want a given segment to be involved in one merge at a time.  no reason
+    // to waste effort.
+
+    // TODO do we basically always want merges to happen in the background?
+    // no.  sometimes a merge has to happen because the header has no more
+    // room.
+
+    // TODO we need a way to get the writelock and wait for it.  because a
+    // merge doesn't care when it gets the lock, just that it gets it.
+
+    let merge segs = 
+        let h = header
+        let cursors = List.map (fun g -> getCursor h g) segs
+        let mc = MultiCursor.Create cursors
+        let pairs = CursorUtils.ToSortedSequenceOfKeyValuePairs mc
+        use fs = io.OpenForWriting() // TODO pool and reuse?
+        let (g,_) = BTreeSegment.CreateFromSortedSequence(fs, pageManager, pairs)
+        g
+
     let critSectionInTransaction = obj()
     let mutable inTransaction = false 
 
     let critSectionHeader = obj()
-    let critSectionSegmentsInWaiting = obj()
 
     let writeHeader hdr =
         let pb = PageBuilder(HEADER_SIZE_IN_BYTES)
@@ -1855,22 +1901,75 @@ type Database(_io:IDatabaseFile) =
         if itIsSafeToAlsoFreeManagedObjects then
             fsMine.Close()
 
+    let tryGetWriteLock() =
+        let gotLock = lock critSectionInTransaction (fun () -> if inTransaction then false else inTransaction <- true; true)
+        if not gotLock then None
+        else Some { 
+            new System.Object() with
+                override this.Finalize() =
+                    // no need for lock critSectionInTransaction here because there is
+                    // no way for the code to be here unless the caller is holding the
+                    // lock.
+                    inTransaction <- false
+
+            interface IWriteLock with
+                member this.Dispose() =
+                    // no need for lock critSectionInTransaction here because there is
+                    // no way for the code to be here unless the caller is holding the
+                    // lock.
+                    inTransaction <- false
+                    GC.SuppressFinalize(this)
+
+                member this.PrependSegments(newGuids:seq<Guid>) =
+                    // TODO if there is more than one new segment, I suppose we could
+                    // immediately start a background task to merge them?  after the
+                    // commit happens.
+                    let newGuidsAsSet = Seq.fold (fun acc g -> Set.add g acc) Set.empty newGuids
+                    let mySegmentsInWaiting = Map.filter (fun g _ -> Set.contains g newGuidsAsSet) segmentsInWaiting
+                    lock critSectionHeader (fun () -> 
+                        let newState = (List.ofSeq newGuids) @ header.currentState
+                        let newSegments = Map.fold (fun acc key value -> Map.add key value acc) header.segments mySegmentsInWaiting
+                        let newSill = saveSegmentInfoList newSegments
+                        let newHeader = {currentState=newState; segments=newSegments; sill = newSill;}
+                        writeHeader newHeader
+                        // TODO the pages for the old location of the segment info list
+                        // could now be reused
+                        header <- newHeader
+                    )
+                    // no need for lock critSectionInTransaction here because there is
+                    // no way for the code to be here unless the caller is holding the
+                    // lock.
+                    inTransaction <- false
+                    // all the segments we just committed can now be removed from
+                    // the segments in waiting list
+                    lock critSectionSegmentsInWaiting (fun () ->
+                        let remainingSegmentsInWaiting = Map.filter (fun g _ -> Set.contains g newGuidsAsSet |> not) segmentsInWaiting
+                        segmentsInWaiting <- remainingSegmentsInWaiting
+                    )
+        }
+
     override this.Finalize() =
         dispose false
 
     interface IDatabase with
         member this.Dispose() =
             dispose true
+            // TODO what happens if there are open cursors?
+            // we could throw.  but why?  maybe we should just
+            // let them live until they're done.  does the db
+            // object care?  this would be more tricky if we were
+            // pooling and reusing read streams.  similar issues
+            // for background writes as well.
             GC.SuppressFinalize(this)
 
         member this.WriteSegmentFromSortedSequence(pairs:seq<kvp>) =
             use fs = io.OpenForWriting() // TODO pool and reuse?
-            let (g,_) = BTreeSegment.CreateFromSortedSequence(fs, this :> IPages, pairs)
+            let (g,_) = BTreeSegment.CreateFromSortedSequence(fs, pageManager, pairs)
             g
 
         member this.WriteSegment(pairs:System.Collections.Generic.IDictionary<byte[],Stream>) =
             use fs = io.OpenForWriting() // TODO pool and reuse?
-            let (g,_) = BTreeSegment.SortAndCreate(fs, this :> IPages, pairs)
+            let (g,_) = BTreeSegment.SortAndCreate(fs, pageManager, pairs)
             g
 
         member this.OpenCursor() =
@@ -1881,70 +1980,8 @@ type Database(_io:IDatabaseFile) =
             LivingCursor.Create mc
 
         member this.RequestWriteLock() =
-            let gotLock = lock critSectionInTransaction (fun () -> if inTransaction then false else inTransaction <- true; true)
-            if not gotLock then failwith "already inTransaction"
-            { 
-                new System.Object() with
-                    override this.Finalize() =
-                        // no need for lock critSectionInTransaction here because there is
-                        // no way for the code to be here unless the caller is holding the
-                        // lock.
-                        inTransaction <- false
+            match tryGetWriteLock() with
+                | Some x -> x
+                | None -> failwith "already inTransaction"
 
-                interface IWriteLock with
-                    member this.Dispose() =
-                        // no need for lock critSectionInTransaction here because there is
-                        // no way for the code to be here unless the caller is holding the
-                        // lock.
-                        inTransaction <- false
-                        GC.SuppressFinalize(this)
-
-                    member this.PrependSegments(newGuids:seq<Guid>) =
-                        let newGuidsAsSet = Seq.fold (fun acc g -> Set.add g acc) Set.empty newGuids
-                        let mySegmentsInWaiting = Map.filter (fun g _ -> Set.contains g newGuidsAsSet) segmentsInWaiting
-                        lock critSectionHeader (fun () -> 
-                            let newState = (List.ofSeq newGuids) @ header.currentState
-                            let newSegments = Map.fold (fun acc key value -> Map.add key value acc) header.segments mySegmentsInWaiting
-                            let newSill = saveSegmentInfoList newSegments
-                            let newHeader = {currentState=newState; segments=newSegments; sill = newSill;}
-                            writeHeader newHeader
-                            // TODO the pages for the old location of the segment info list
-                            // could now be reused
-                            header <- newHeader
-                        )
-                        // no need for lock critSectionInTransaction here because there is
-                        // no way for the code to be here unless the caller is holding the
-                        // lock.
-                        inTransaction <- false
-                        // all the segments we just committed can now be removed from
-                        // the segments in waiting list
-                        lock critSectionSegmentsInWaiting (fun () ->
-                            let remainingSegmentsInWaiting = Map.filter (fun g _ -> Set.contains g newGuidsAsSet |> not) segmentsInWaiting
-                            segmentsInWaiting <- remainingSegmentsInWaiting
-                        )
-            }
-
-
-    interface IPages with
-        member this.PageSize = pageSize
-
-        member this.Begin() = PendingSegment() :> IPendingSegment
-
-        // note that we assume that a single pending segment is going
-        // to be written by a single thread.  the concrete PendingSegment
-        // class above is not threadsafe.
-
-        member this.GetBlock(token) =
-            let ps = token :?> PendingSegment
-            let blk = getBlock PAGES_PER_BLOCK
-            ps.AddBlock(blk)
-            blk
-
-        member this.End(token, lastPage) =
-            let ps = token :?> PendingSegment
-            let (g,blocks) = ps.End(lastPage)
-            lock critSectionSegmentsInWaiting (fun () -> 
-                segmentsInWaiting <- Map.add g blocks segmentsInWaiting
-            )
-            g
 
