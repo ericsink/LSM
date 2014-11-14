@@ -1904,23 +1904,29 @@ type Database(_io:IDatabaseFile) =
     let tryGetWriteLock() =
         let gotLock = lock critSectionInTransaction (fun () -> if inTransaction then false else inTransaction <- true; true)
         if not gotLock then None
-        else Some { 
+        else 
+            let released = ref false
+            Some {
             new System.Object() with
                 override this.Finalize() =
                     // no need for lock critSectionInTransaction here because there is
                     // no way for the code to be here unless the caller is holding the
                     // lock.
-                    inTransaction <- false
+                    if !released then 
+                        inTransaction <- false
 
             interface IWriteLock with
                 member this.Dispose() =
+                    if !released then failwith "only dispose a writelock once"
                     // no need for lock critSectionInTransaction here because there is
                     // no way for the code to be here unless the caller is holding the
                     // lock.
                     inTransaction <- false
+                    released := true
                     GC.SuppressFinalize(this)
 
                 member this.PrependSegments(newGuids:seq<Guid>) =
+                    if !released then failwith "don't use a writelock after you dispose it"
                     // TODO if there is more than one new segment, I suppose we could
                     // immediately start a background task to merge them?  after the
                     // commit happens.
@@ -1936,16 +1942,13 @@ type Database(_io:IDatabaseFile) =
                         // could now be reused
                         header <- newHeader
                     )
-                    // no need for lock critSectionInTransaction here because there is
-                    // no way for the code to be here unless the caller is holding the
-                    // lock.
-                    inTransaction <- false
                     // all the segments we just committed can now be removed from
                     // the segments in waiting list
                     lock critSectionSegmentsInWaiting (fun () ->
                         let remainingSegmentsInWaiting = Map.filter (fun g _ -> Set.contains g newGuidsAsSet |> not) segmentsInWaiting
                         segmentsInWaiting <- remainingSegmentsInWaiting
                     )
+                    // note that we intentionally do not release the lock here.
         }
 
     override this.Finalize() =
