@@ -94,9 +94,7 @@ namespace newTests
 					t.Join();
 				}
 
-				using (var tx = db.RequestWriteLock ()) {
-					tx.PrependSegments (ts);
-				}
+				db.RequestWriteLock( tx => tx.PrependSegments(ts) );
 
 				using (var csr = db.OpenCursor ()) {
 					csr.First ();
@@ -138,10 +136,11 @@ namespace newTests
 
 				// open a tx and add our segment to the current state.
 				// after we do this, the segment is real.  "committed".
-				using (var tx = db.RequestWriteLock ()) {
+				db.RequestWriteLock( tx => {
 					var a = new List<Guid> { seg };
-					tx.PrependSegments (a);
-				}
+					tx.PrependSegments(a);
+					tx.Dispose();
+				});
 
 				// open a cursor on the db and see if stuff looks okay
 				using (var csr = db.OpenCursor ()) {

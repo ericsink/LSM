@@ -80,7 +80,7 @@ type IDatabase =
     // TODO consider ListSegmentsInCurrentState()
     // TODO consider OpenCursorOnSpecificSegment(seq<Guid>)
 
-    abstract member RequestWriteLock : unit->IWriteLock
+    abstract member RequestWriteLock : Action<IWriteLock>->unit
     // TODO consider name TryGetWriteLock
     // TODO what happens if it can't get the write lock?  throw?  null?  fs option?  wait?  async?
 

@@ -192,9 +192,7 @@ namespace lsm_tests
 					t.Join ();
 				}
 
-				using (var tx = db.RequestWriteLock ()) {
-					tx.PrependSegments (ts);
-				}
+				db.RequestWriteLock( tx => tx.PrependSegments(ts) );
 
 				using (var csr = db.OpenCursor ()) {
 					csr.First ();

@@ -1856,9 +1856,6 @@ type Database(_io:IDatabaseFile) =
         let (g,_) = BTreeSegment.CreateFromSortedSequence(fs, pageManager, pairs)
         g
 
-    let critSectionInTransaction = obj()
-    let mutable inTransaction = false 
-
     let critSectionHeader = obj()
 
     let writeHeader hdr =
@@ -1901,55 +1898,71 @@ type Database(_io:IDatabaseFile) =
         if itIsSafeToAlsoFreeManagedObjects then
             fsMine.Close()
 
-    let tryGetWriteLock() =
-        let gotLock = lock critSectionInTransaction (fun () -> if inTransaction then false else inTransaction <- true; true)
-        if not gotLock then None
-        else 
-            let released = ref false
-            Some {
-            new System.Object() with
-                override this.Finalize() =
-                    // no need for lock critSectionInTransaction here because there is
-                    // no way for the code to be here unless the caller is holding the
-                    // lock.
-                    if !released then 
-                        inTransaction <- false
+    let critSectionInTransaction = obj()
+    let mutable inTransaction = false 
+    let mutable waiting = []
 
-            interface IWriteLock with
-                member this.Dispose() =
-                    if !released then failwith "only dispose a writelock once"
-                    // no need for lock critSectionInTransaction here because there is
-                    // no way for the code to be here unless the caller is holding the
-                    // lock.
+    let rec createWriteLockObject() =
+        let isReleased = ref false
+        let release() =
+            isReleased := true
+            lock critSectionInTransaction (fun () ->
+                if List.isEmpty waiting then
                     inTransaction <- false
-                    released := true
-                    GC.SuppressFinalize(this)
+                else
+                    let f = List.head waiting
+                    waiting <- List.tail waiting
+                    createWriteLockObject() |> f
+            )
+        {
+        new System.Object() with
+            override this.Finalize() =
+                let already = !isReleased
+                // TODO dislike having a critical section in a finalizer
+                if not already then
+                    release()
 
-                member this.PrependSegments(newGuids:seq<Guid>) =
-                    if !released then failwith "don't use a writelock after you dispose it"
-                    // TODO if there is more than one new segment, I suppose we could
-                    // immediately start a background task to merge them?  after the
-                    // commit happens.
-                    let newGuidsAsSet = Seq.fold (fun acc g -> Set.add g acc) Set.empty newGuids
-                    let mySegmentsInWaiting = Map.filter (fun g _ -> Set.contains g newGuidsAsSet) segmentsInWaiting
-                    lock critSectionHeader (fun () -> 
-                        let newState = (List.ofSeq newGuids) @ header.currentState
-                        let newSegments = Map.fold (fun acc key value -> Map.add key value acc) header.segments mySegmentsInWaiting
-                        let newSill = saveSegmentInfoList newSegments
-                        let newHeader = {currentState=newState; segments=newSegments; sill = newSill;}
-                        writeHeader newHeader
-                        // TODO the pages for the old location of the segment info list
-                        // could now be reused
-                        header <- newHeader
-                    )
-                    // all the segments we just committed can now be removed from
-                    // the segments in waiting list
-                    lock critSectionSegmentsInWaiting (fun () ->
-                        let remainingSegmentsInWaiting = Map.filter (fun g _ -> Set.contains g newGuidsAsSet |> not) segmentsInWaiting
-                        segmentsInWaiting <- remainingSegmentsInWaiting
-                    )
-                    // note that we intentionally do not release the lock here.
+        interface IWriteLock with
+            member this.Dispose() =
+                let already = !isReleased
+                if already then failwith "only dispose a writelock once"
+                release()
+                GC.SuppressFinalize(this)
+
+            member this.PrependSegments(newGuids:seq<Guid>) =
+                let already = !isReleased
+                if already then failwith "don't use a writelock after you dispose it"
+                // TODO if there is more than one new segment, I suppose we could
+                // immediately start a background task to merge them?  after the
+                // commit happens.
+                let newGuidsAsSet = Seq.fold (fun acc g -> Set.add g acc) Set.empty newGuids
+                let mySegmentsInWaiting = Map.filter (fun g _ -> Set.contains g newGuidsAsSet) segmentsInWaiting
+                lock critSectionHeader (fun () -> 
+                    let newState = (List.ofSeq newGuids) @ header.currentState
+                    let newSegments = Map.fold (fun acc key value -> Map.add key value acc) header.segments mySegmentsInWaiting
+                    let newSill = saveSegmentInfoList newSegments
+                    let newHeader = {currentState=newState; segments=newSegments; sill = newSill;}
+                    writeHeader newHeader
+                    // TODO the pages for the old location of the segment info list
+                    // could now be reused
+                    header <- newHeader
+                )
+                // all the segments we just committed can now be removed from
+                // the segments in waiting list
+                lock critSectionSegmentsInWaiting (fun () ->
+                    let remainingSegmentsInWaiting = Map.filter (fun g _ -> Set.contains g newGuidsAsSet |> not) segmentsInWaiting
+                    segmentsInWaiting <- remainingSegmentsInWaiting
+                )
+                // note that we intentionally do not release the lock here.
         }
+
+    let tryGetWriteLock f =
+        let gotLock = lock critSectionInTransaction (fun () -> if inTransaction then waiting <- f :: waiting; false else inTransaction <- true; true)
+        // TODO dislike the callback nature of this.  
+        // lost the use/using semantics of dispose.
+        // would prefer an async.
+        if gotLock then
+            createWriteLockObject() |> f
 
     override this.Finalize() =
         dispose false
@@ -1982,9 +1995,9 @@ type Database(_io:IDatabaseFile) =
             let mc = MultiCursor.Create cursors
             LivingCursor.Create mc
 
-        member this.RequestWriteLock() =
-            match tryGetWriteLock() with
-                | Some x -> x
-                | None -> failwith "already inTransaction"
+        member this.RequestWriteLock(func : Action<IWriteLock>) =
+            let f lck =
+                func.Invoke(lck)
+            tryGetWriteLock f
 
 
