@@ -22,7 +22,7 @@ namespace newTests
 		[Fact]
 		public void empty_cursor()
 		{
-			var f = new dbf (tid());
+			var f = new dbf ("empty_cursor_" + tid());
 			var db = new Zumero.LSM.fs.Database (f) as IDatabase;
 			var csr = db.OpenCursor ();
 			csr.First ();
@@ -32,9 +32,9 @@ namespace newTests
 		}
 
 		[Fact]
-		public void several_threads()
+		public async void several_threads()
 		{
-			var f = new dbf (tid());
+			var f = new dbf ("several_threads_" + tid());
 			using (var db = new Zumero.LSM.fs.Database (f) as IDatabase) {
 				var ta = new Thread[5];
 				var ts = new Guid[ta.Length];
@@ -94,7 +94,9 @@ namespace newTests
 					t.Join();
 				}
 
-				db.RequestWriteLock( tx => tx.PrependSegments(ts) );
+				using (var tx = await db.RequestWriteLock ()) {
+					tx.PrependSegments (ts);
+				}
 
 				using (var csr = db.OpenCursor ()) {
 					csr.First ();
@@ -109,9 +111,46 @@ namespace newTests
 		}
 
 		[Fact]
-		public void first_write()
+		public void several_tasks()
 		{
-			var f = new dbf (tid());
+			Random rand = new Random ();
+			var f = new dbf ("several_tasks_" + tid());
+			using (var db = new Zumero.LSM.fs.Database (f) as IDatabase) {
+				const int NUM_TASKS = 50;
+				Task<Guid>[] ta = new Task<Guid>[NUM_TASKS];
+				for (int i = 0; i < NUM_TASKS; i++) {
+					ta[i] = Task<Guid>.Run(async () => {
+						var t1 = new Dictionary<byte[],Stream>();
+						int count = rand.Next(5000);
+						for (int q=0; q<count; q++) {
+							t1.Insert(rand.Next().ToString(), rand.Next().ToString());
+						}
+						var g = db.WriteSegment (t1);
+						using (var tx = await db.RequestWriteLock ()) {
+							tx.PrependSegments (new List<Guid> {g});
+						}
+						return g;
+					});
+				}
+
+				Task.WaitAll (ta);
+
+				using (var csr = db.OpenCursor ()) {
+					csr.First ();
+					int count = 0;
+					while (csr.IsValid ()) {
+						count++;
+						csr.Next ();
+					}
+					//Assert.Equal (20000, count);
+				}
+			}
+		}
+
+		[Fact]
+		public async void first_write()
+		{
+			var f = new dbf ("first_write_" + tid());
 			using (var db = new Zumero.LSM.fs.Database (f) as IDatabase) {
 				// TODO consider whether we need IDatabase at all.  only
 				// if we're going to do a C# version too, right?
@@ -136,11 +175,10 @@ namespace newTests
 
 				// open a tx and add our segment to the current state.
 				// after we do this, the segment is real.  "committed".
-				db.RequestWriteLock( tx => {
+				using (var tx = await db.RequestWriteLock()) {
 					var a = new List<Guid> { seg };
 					tx.PrependSegments(a);
-					tx.Dispose();
-				});
+				}
 
 				// open a cursor on the db and see if stuff looks okay
 				using (var csr = db.OpenCursor ()) {

@@ -82,118 +82,58 @@ namespace lsm_tests
 			return Guid.NewGuid ().ToString ().Replace ("{", "").Replace ("}", "").Replace ("-", "");
 		}
 
+		private static async void wait(IDatabase db, Guid[] ts)
+		{
+			using (var tx = await db.RequestWriteLock ()) {
+				tx.PrependSegments (ts);
+			}
+
+		}
+
+		private static Task<Guid> start(int i, Random rand, IDatabase db)
+		{
+			return Task<Guid>.Run(async () => {
+				var q1 = DateTime.Now;
+				var t1 = new Dictionary<byte[],Stream>();
+				int count = rand.Next(10000);
+				for (int q=0; q<count; q++) {
+					t1.Insert(rand.Next().ToString(), rand.Next().ToString());
+				}
+				var q2 = DateTime.Now;
+				Console.WriteLine("{0}: dict = {1}", i, (q2-q1).TotalMilliseconds);
+				var g = db.WriteSegment (t1);
+				var q3 = DateTime.Now;
+				Console.WriteLine("{0}: segment = {1}", i, (q3-q2).TotalMilliseconds);
+				using (var tx = await db.RequestWriteLock ()) {
+					var q4 = DateTime.Now;
+					Console.WriteLine("{0}: lock = {1}", i, (q4-q3).TotalMilliseconds);
+					tx.PrependSegments (new List<Guid> {g});
+					var q5 = DateTime.Now;
+					Console.WriteLine("{0}: commit = {1}", i, (q5-q4).TotalMilliseconds);
+				}
+				return g;
+			});
+		}
+
 	    public static void Main(string[] argv)
 	    {
-			var f = new dbf (tid());
+			Random rand = new Random ();
+			var f = new dbf ("several_tasks_" + tid());
 			using (var db = new Zumero.LSM.fs.Database (f) as IDatabase) {
-				var ta = new Thread[5];
-				var ts = new Guid[ta.Length];
-
-				const int AFTER = 100;
-
-				ta [0] = new Thread (() => {
-					//Console.WriteLine("0 sleeping");
-					//Console.Out.Flush();
-					//Thread.Sleep(1000);
-					//Console.WriteLine("0 awake");
-					//Console.Out.Flush();
-					var t1 = new Dictionary<byte[],Stream> ();
-					for (int i = 0; i < 5000; i++) {
-						t1.Insert ((i * 2).ToString (), i.ToString ());
-					}
-					//Console.WriteLine("0 writing");
-					//Console.Out.Flush();
-					ts[0] = db.WriteSegment (t1);
-					//Console.WriteLine("0 done");
-					//Console.Out.Flush();
-					Thread.Sleep(AFTER);
-				});
-
-				ta [1] = new Thread (() => {
-					//Console.WriteLine("1 sleeping");
-					//Console.Out.Flush();
-					//Thread.Sleep(1000);
-					//Console.WriteLine("1 awake");
-					//Console.Out.Flush();
-					var t1 = new Dictionary<byte[],Stream> ();
-					for (int i = 0; i < 5000; i++) {
-						t1.Insert ((i * 3).ToString (), i.ToString ());
-					}
-					//Console.WriteLine("1 writing");
-					//Console.Out.Flush();
-					ts [1] = db.WriteSegment (t1);
-					//Console.WriteLine("1 done");
-					//Console.Out.Flush();
-					Thread.Sleep(AFTER);
-				});
-
-				ta [2] = new Thread (() => {
-					//Console.WriteLine("2 sleeping");
-					//Console.Out.Flush();
-					//Thread.Sleep(1000);
-					//Console.WriteLine("2 awake");
-					//Console.Out.Flush();
-					var t1 = new Dictionary<byte[],Stream> ();
-					for (int i = 0; i < 5000; i++) {
-						t1.Insert ((i * 5).ToString (), i.ToString ());
-					}
-					//Console.WriteLine("2 writing");
-					//Console.Out.Flush();
-					ts [2] = db.WriteSegment (t1);
-					//Console.WriteLine("2 done");
-					//Console.Out.Flush();
-					Thread.Sleep(AFTER);
-				});
-
-				ta [3] = new Thread (() => {
-					//Console.WriteLine("3 sleeping");
-					//Console.Out.Flush();
-					//Thread.Sleep(1000);
-					//Console.WriteLine("3 awake");
-					//Console.Out.Flush();
-					var t1 = new Dictionary<byte[],Stream> ();
-					for (int i = 0; i < 5000; i++) {
-						t1.Insert ((i * 7).ToString (), i.ToString ());
-					}
-					//Console.WriteLine("3 writing");
-					//Console.Out.Flush();
-					ts [3] = db.WriteSegment (t1);
-					//Console.WriteLine("3 done");
-					//Console.Out.Flush();
-					Thread.Sleep(AFTER);
-				});
-
-				ta [4] = new Thread (() => {
-					//Console.WriteLine("4 sleeping");
-					//Console.Out.Flush();
-					//Thread.Sleep(1000);
-					//Console.WriteLine("4 awake");
-					//Console.Out.Flush();
-					var t1 = new Dictionary<byte[],Stream> ();
-					for (int i = 0; i < 5000; i++) {
-						t1.Insert ((i * 11).ToString (), i.ToString ());
-					}
-					//Console.WriteLine("4 writing");
-					//Console.Out.Flush();
-					ts [4] = db.WriteSegment (t1);
-					//Console.WriteLine("4 done");
-					//Console.Out.Flush();
-					Thread.Sleep(AFTER);
-				});
-
-				Console.WriteLine ("starting threads");
-				Console.Out.Flush ();
-
-				foreach (Thread t in ta) {
-					t.Start ();
+				const int NUM_TASKS = 500;
+				Task<Guid>[] ta = new Task<Guid>[NUM_TASKS];
+				for (int i = 0; i < NUM_TASKS; i++) {
+					ta [i] = start (i, rand, db);
 				}
 
-				foreach (Thread t in ta) {
-					t.Join ();
-				}
+				Console.WriteLine("WAITING");
 
-				db.RequestWriteLock( tx => tx.PrependSegments(ts) );
+				var q6 = DateTime.Now;
+				Task.WaitAll (ta);
+				var q7 = DateTime.Now;
+				Console.WriteLine("FINISH = {0}", (q7-q6).TotalMilliseconds);
 
+				#if not
 				using (var csr = db.OpenCursor ()) {
 					csr.First ();
 					int count = 0;
@@ -201,8 +141,11 @@ namespace lsm_tests
 						count++;
 						csr.Next ();
 					}
-					//Assert.Equal (20000, count);
+					Console.Out.WriteLine ("total {0} records", count);
 				}
+				var q8 = DateTime.Now;
+				Console.WriteLine("    cursor = {0}", (q8-q7).TotalMilliseconds);
+				#endif
 			}
 	    }
 	}

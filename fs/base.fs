@@ -19,6 +19,7 @@ namespace Zumero.LSM
 open System
 open System.IO
 open System.Collections.Generic
+open System.Threading.Tasks
 
 type IPendingSegment = interface end
 
@@ -80,7 +81,7 @@ type IDatabase =
     // TODO consider ListSegmentsInCurrentState()
     // TODO consider OpenCursorOnSpecificSegment(seq<Guid>)
 
-    abstract member RequestWriteLock : Action<IWriteLock>->unit
+    abstract member RequestWriteLock : unit->Task<IWriteLock>
     // TODO consider name TryGetWriteLock
     // TODO what happens if it can't get the write lock?  throw?  null?  fs option?  wait?  async?
 

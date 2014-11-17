@@ -22,6 +22,8 @@ open System.Linq // used for OrderBy
 
 open Zumero.LSM
 
+open FSharp.Control.Observable
+
 type kvp = System.Collections.Generic.KeyValuePair<byte[],Stream>
 
 type pgitem = 
@@ -1900,25 +1902,20 @@ type Database(_io:IDatabaseFile) =
 
     let critSectionInTransaction = obj()
     let mutable inTransaction = false 
-    let mutable waiting = []
+    let lockReleased = Event<_>()
 
-    let rec createWriteLockObject() =
+    let createWriteLockObject() =
         let isReleased = ref false
         let release() =
             isReleased := true
-            lock critSectionInTransaction (fun () ->
-                if List.isEmpty waiting then
-                    inTransaction <- false
-                else
-                    let f = List.head waiting
-                    waiting <- List.tail waiting
-                    createWriteLockObject() |> f
+            lock critSectionInTransaction (fun () -> 
+                inTransaction <- false
+                lockReleased.Trigger()
             )
         {
         new System.Object() with
             override this.Finalize() =
                 let already = !isReleased
-                // TODO dislike having a critical section in a finalizer
                 if not already then
                     release()
 
@@ -1954,15 +1951,24 @@ type Database(_io:IDatabaseFile) =
                     segmentsInWaiting <- remainingSegmentsInWaiting
                 )
                 // note that we intentionally do not release the lock here.
+                // you can change the segment list more than once while holding
+                // the lock.  the lock gets released when you Dispose() it.
         }
 
-    let tryGetWriteLock f =
-        let gotLock = lock critSectionInTransaction (fun () -> if inTransaction then waiting <- f :: waiting; false else inTransaction <- true; true)
-        // TODO dislike the callback nature of this.  
-        // lost the use/using semantics of dispose.
-        // would prefer an async.
-        if gotLock then
-            createWriteLockObject() |> f
+    let rec tryGetWriteLock() =
+        lock critSectionInTransaction (fun () -> 
+            if inTransaction then 
+                async {
+                    let! _ = Async.AwaitObservable lockReleased.Publish
+                    let! lck = tryGetWriteLock()
+                    return lck
+                }
+            else 
+                inTransaction <- true
+                async { 
+                    return createWriteLockObject() 
+                }
+            )
 
     override this.Finalize() =
         dispose false
@@ -1995,9 +2001,7 @@ type Database(_io:IDatabaseFile) =
             let mc = MultiCursor.Create cursors
             LivingCursor.Create mc
 
-        member this.RequestWriteLock(func : Action<IWriteLock>) =
-            let f lck =
-                func.Invoke(lck)
-            tryGetWriteLock f
+        member this.RequestWriteLock() =
+            tryGetWriteLock() |> Async.StartAsTask
 
 
