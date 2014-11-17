@@ -19,10 +19,9 @@ namespace Zumero.LSM.fs
 open System
 open System.IO
 open System.Linq // used for OrderBy
+open System.Threading.Tasks
 
 open Zumero.LSM
-
-open FSharp.Control.Observable
 
 type kvp = System.Collections.Generic.KeyValuePair<byte[],Stream>
 
@@ -1902,20 +1901,25 @@ type Database(_io:IDatabaseFile) =
 
     let critSectionInTransaction = obj()
     let mutable inTransaction = false 
-    let lockReleased = Event<_>()
+    let mutable waiting: (IWriteLock->unit) list = []
 
-    let createWriteLockObject() =
+    let rec createWriteLockObject() =
         let isReleased = ref false
         let release() =
             isReleased := true
-            lock critSectionInTransaction (fun () -> 
-                inTransaction <- false
-                lockReleased.Trigger()
+            lock critSectionInTransaction (fun () ->
+                if List.isEmpty waiting then
+                    inTransaction <- false
+                else
+                    let f = List.head waiting
+                    waiting <- List.tail waiting
+                    f(createWriteLockObject())
             )
         {
         new System.Object() with
             override this.Finalize() =
                 let already = !isReleased
+                // TODO dislike having a critical section in a finalizer
                 if not already then
                     release()
 
@@ -1955,19 +1959,18 @@ type Database(_io:IDatabaseFile) =
                 // the lock.  the lock gets released when you Dispose() it.
         }
 
-    let rec tryGetWriteLock() =
+    let tryGetWriteLock() =
         lock critSectionInTransaction (fun () -> 
             if inTransaction then 
-                async {
-                    let! _ = Async.AwaitObservable lockReleased.Publish
-                    let! lck = tryGetWriteLock()
-                    return lck
-                }
+                let t = TaskCompletionSource<IWriteLock>()
+                let cb lck = t.SetResult(lck)
+                waiting <- cb :: waiting
+                t.Task
             else 
                 inTransaction <- true
-                async { 
+                Async.StartAsTask(async { 
                     return createWriteLockObject() 
-                }
+                })
             )
 
     override this.Finalize() =
@@ -2002,6 +2005,6 @@ type Database(_io:IDatabaseFile) =
             LivingCursor.Create mc
 
         member this.RequestWriteLock() =
-            tryGetWriteLock() |> Async.StartAsTask
+            tryGetWriteLock()
 
 

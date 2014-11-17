@@ -96,22 +96,25 @@ namespace lsm_tests
 				var q1 = DateTime.Now;
 				var t1 = new Dictionary<byte[],Stream>();
 				int count = rand.Next(10000);
-				Console.WriteLine("{0}/{2}: count = {1}", i, count, System.Threading.Thread.CurrentThread.ManagedThreadId);
+				//Console.WriteLine("{0}/{2}: count = {1}", i, count, System.Threading.Thread.CurrentThread.ManagedThreadId);
 				for (int q=0; q<count; q++) {
 					t1.Insert(rand.Next().ToString(), rand.Next().ToString());
 				}
 
 				var q2 = DateTime.Now;
-				Console.WriteLine("{0}/{2}: dict = {1}", i, (q2-q1).TotalMilliseconds, System.Threading.Thread.CurrentThread.ManagedThreadId);
+				//Console.WriteLine("{0}/{2}: dict = {1}", i, (q2-q1).TotalMilliseconds, System.Threading.Thread.CurrentThread.ManagedThreadId);
 				var g = db.WriteSegment (t1);
 				var q3 = DateTime.Now;
 				Console.WriteLine("{0}/{2}: segment = {1}", i, (q3-q2).TotalMilliseconds, System.Threading.Thread.CurrentThread.ManagedThreadId);
+				Console.Out.Flush();
 				using (var tx = await db.RequestWriteLock ()) {
 					var q4 = DateTime.Now;
 					Console.WriteLine("{0}/{2}: lock_taken = {1}", i, (q4-q3).TotalMilliseconds, System.Threading.Thread.CurrentThread.ManagedThreadId);
+					Console.Out.Flush();
 					tx.PrependSegments (new List<Guid> {g});
 					var q5 = DateTime.Now;
 					Console.WriteLine("{0}/{2}: commit = {1}", i, (q5-q4).TotalMilliseconds, System.Threading.Thread.CurrentThread.ManagedThreadId);
+					Console.Out.Flush();
 				}
 				Console.WriteLine("{0}/{1}: lock_released", i, System.Threading.Thread.CurrentThread.ManagedThreadId);
 				Console.Out.Flush();
