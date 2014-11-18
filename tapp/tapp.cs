@@ -118,6 +118,13 @@ namespace lsm_tests
 				}
 				Console.WriteLine("{0}/{1}: lock_released", i, System.Threading.Thread.CurrentThread.ManagedThreadId);
 				Console.Out.Flush();
+				#if not
+				var qm1 = DateTime.Now;
+				db.MergeAll();
+				var qm2 = DateTime.Now;
+				Console.WriteLine("{0}/{2}: mergeall = {1}", i, (qm2-qm1).TotalMilliseconds, System.Threading.Thread.CurrentThread.ManagedThreadId);
+				Console.Out.Flush();
+				#endif
 				return g;
 			});
 		}
@@ -127,7 +134,7 @@ namespace lsm_tests
 			Random rand = new Random ();
 			var f = new dbf ("several_tasks_" + tid());
 			using (var db = new Zumero.LSM.fs.Database (f) as IDatabase) {
-				const int NUM_TASKS = 200;
+				const int NUM_TASKS = 50;
 				Task<Guid>[] ta = new Task<Guid>[NUM_TASKS];
 				for (int i = 0; i < NUM_TASKS; i++) {
 					ta [i] = start (i, rand, db);
@@ -140,7 +147,9 @@ namespace lsm_tests
 				var q7 = DateTime.Now;
 				Console.WriteLine("FINISH = {0}", (q7-q6).TotalMilliseconds);
 
-				#if not
+				#if true
+				{
+				var qc1 = DateTime.Now;
 				using (var csr = db.OpenCursor ()) {
 					csr.First ();
 					int count = 0;
@@ -150,9 +159,35 @@ namespace lsm_tests
 					}
 					Console.Out.WriteLine ("total {0} records", count);
 				}
-				var q8 = DateTime.Now;
-				Console.WriteLine("    cursor = {0}", (q8-q7).TotalMilliseconds);
+				var qc2 = DateTime.Now;
+				Console.WriteLine("    cursor = {0}", (qc2-qc1).TotalMilliseconds);
+				}
 				#endif
+
+				var qm1 = DateTime.Now;
+				db.MergeAll();
+				var qm2 = DateTime.Now;
+				Console.WriteLine("mergeall = {0" +
+					"}", (qm2-qm1).TotalMilliseconds);
+				Console.Out.Flush();
+
+				#if true
+				{
+					var qc1 = DateTime.Now;
+					using (var csr = db.OpenCursor ()) {
+						csr.First ();
+						int count = 0;
+						while (csr.IsValid ()) {
+							count++;
+							csr.Next ();
+						}
+						Console.Out.WriteLine ("total {0} records", count);
+					}
+					var qc2 = DateTime.Now;
+					Console.WriteLine("    cursor = {0}", (qc2-qc1).TotalMilliseconds);
+				}
+				#endif
+
 			}
 	    }
 	}

@@ -62,7 +62,6 @@ type ICursor =
 type IWriteLock =
     inherit IDisposable
     abstract member PrependSegments : seq<Guid> -> unit
-    abstract member ReplaceSegments : seq<Guid>*Guid -> unit // TODO not sure this should be "public" here
     // TODO we could have NeverMind(seq<Guid>) which explicitly 
     // frees segments in waiting.  but this wouldn't necessarily
     // need to be here in IWriteLock.
@@ -88,6 +87,8 @@ type IDatabase =
 
     // TODO need a way to tell the db to merge segments.  should it always just choose?
     // or can the caller get a list of segments, plus info about them, and help decide?
+
+    abstract member MergeAll : unit -> unit
 
 module CursorUtils =
     let ToSortedSequenceOfKeyValuePairs (csr:ICursor) = seq { csr.First(); while csr.IsValid() do yield new KeyValuePair<byte[],Stream>(csr.Key(), csr.Value()); csr.Next(); done }

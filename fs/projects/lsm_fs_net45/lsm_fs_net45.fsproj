@@ -39,9 +39,6 @@
     <Reference Include="System" />
     <Reference Include="System.Core" />
     <Reference Include="System.Numerics" />
-    <Reference Include="FSharpx.Collections">
-      <HintPath>..\..\..\packages\FSharpx.Collections.1.9.4\lib\net35\FSharpx.Collections.dll</HintPath>
-    </Reference>
   </ItemGroup>
   <ItemGroup>
     <Compile Include="..\..\lsm.fs" />
@@ -52,8 +49,5 @@
       <Project>{06CDF0A2-9D0A-47CF-8681-8B92D136F9E9}</Project>
       <Name>base_fs_net45</Name>
     </ProjectReference>
-  </ItemGroup>
-  <ItemGroup>
-    <None Include="packages.config" />
   </ItemGroup>
 </Project>
