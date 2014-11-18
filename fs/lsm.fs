@@ -21,6 +21,8 @@ open System.IO
 open System.Linq // used for OrderBy
 open System.Threading.Tasks
 
+open FSharpx.Collections
+
 open Zumero.LSM
 
 type kvp = System.Collections.Generic.KeyValuePair<byte[],Stream>
@@ -1901,18 +1903,18 @@ type Database(_io:IDatabaseFile) =
 
     let critSectionInTransaction = obj()
     let mutable inTransaction = false 
-    let mutable waiting: (IWriteLock->unit) list = []
+    let mutable waiting = Queue.empty
 
     let rec createWriteLockObject() =
         let isReleased = ref false
         let release() =
             isReleased := true
             lock critSectionInTransaction (fun () ->
-                if List.isEmpty waiting then
+                if Queue.isEmpty waiting then
                     inTransaction <- false
                 else
-                    let f = List.head waiting
-                    waiting <- List.tail waiting
+                    let f = Queue.head waiting
+                    waiting <- Queue.tail waiting
                     f(createWriteLockObject())
             )
         {
@@ -1920,6 +1922,8 @@ type Database(_io:IDatabaseFile) =
             override this.Finalize() =
                 let already = !isReleased
                 // TODO dislike having a critical section in a finalizer
+                // we should probably just do nothing.  or throw.  not
+                // disposing a writelock is a very bad thing to do.
                 if not already then
                     release()
 
@@ -1964,7 +1968,7 @@ type Database(_io:IDatabaseFile) =
             if inTransaction then 
                 let t = TaskCompletionSource<IWriteLock>()
                 let cb lck = t.SetResult(lck)
-                waiting <- cb :: waiting
+                waiting <- Queue.conj cb waiting
                 t.Task
             else 
                 inTransaction <- true
