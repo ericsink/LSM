@@ -1839,26 +1839,6 @@ type Database(_io:IDatabaseFile) =
                 g
         }
 
-    // TODO we only want one merge going on at a time.  or rather, we only
-    // want a given segment to be involved in one merge at a time.  no reason
-    // to waste effort.
-
-    // TODO do we basically always want merges to happen in the background?
-    // no.  sometimes a merge has to happen because the header has no more
-    // room.
-
-    // TODO we need a way to get the writelock and wait for it.  because a
-    // merge doesn't care when it gets the lock, just that it gets it.
-
-    let merge segs = 
-        let h = header
-        let cursors = List.map (fun g -> getCursor h g) segs
-        let mc = MultiCursor.Create cursors
-        let pairs = CursorUtils.ToSortedSequenceOfKeyValuePairs mc
-        use fs = io.OpenForWriting() // TODO pool and reuse?
-        let (g,_) = BTreeSegment.CreateFromSortedSequence(fs, pageManager, pairs)
-        g
-
     let critSectionHeader = obj()
 
     let writeHeader hdr =
@@ -1937,9 +1917,13 @@ type Database(_io:IDatabaseFile) =
             member this.PrependSegments(newGuids:seq<Guid>) =
                 let already = !isReleased
                 if already then failwith "don't use a writelock after you dispose it"
+
+                // TODO we could check to see if this guid is already in the list.
+
                 // TODO if there is more than one new segment, I suppose we could
                 // immediately start a background task to merge them?  after the
                 // commit happens.
+
                 let newGuidsAsSet = Seq.fold (fun acc g -> Set.add g acc) Set.empty newGuids
                 let mySegmentsInWaiting = Map.filter (fun g _ -> Set.contains g newGuidsAsSet) segmentsInWaiting
                 lock critSectionHeader (fun () -> 
@@ -1961,6 +1945,42 @@ type Database(_io:IDatabaseFile) =
                 // note that we intentionally do not release the lock here.
                 // you can change the segment list more than once while holding
                 // the lock.  the lock gets released when you Dispose() it.
+
+            member this.ReplaceSegments(oldGuids:seq<Guid>, newGuid:Guid) =
+                let already = !isReleased
+                if already then failwith "don't use a writelock after you dispose it"
+
+                // TODO we could check to see if this guid is already in the list.
+
+                let lstOld = List.ofSeq oldGuids
+                let countOld = List.length lstOld                                         
+                let oldGuidsAsSet = Seq.fold (fun acc g -> Set.add g acc) Set.empty oldGuids
+
+                lock critSectionHeader (fun () -> 
+                    let ndxFirstOld = List.findIndex (fun g -> g=List.head lstOld) header.currentState
+                    let subListOld = List.skip ndxFirstOld header.currentState |> List.take countOld
+                    if lstOld <> subListOld then failwith "segments not found"
+                    let before = List.take ndxFirstOld header.currentState
+                    let after = List.skip (ndxFirstOld + countOld) header.currentState
+                    let newState = before @ (newGuid :: after)
+                    let segmentsWithoutOld = Map.filter (fun g _ -> Set.contains g oldGuidsAsSet) header.segments
+                    let newSegments = Map.add newGuid (Map.find newGuid segmentsInWaiting) segmentsWithoutOld
+                    let newSill = saveSegmentInfoList newSegments
+                    let newHeader = {currentState=newState; segments=newSegments; sill = newSill;}
+                    writeHeader newHeader
+                    // TODO the pages for the old location of the segment info list
+                    // could now be reused
+                    // TODO the pages for all the replaced segments could not be reused
+                    header <- newHeader
+                )
+                // the segment we just committed can now be removed from
+                // the segments in waiting list
+                lock critSectionSegmentsInWaiting (fun () ->
+                    segmentsInWaiting <- Map.remove newGuid segmentsInWaiting
+                )
+                // note that we intentionally do not release the lock here.
+                // you can change the segment list more than once while holding
+                // the lock.  the lock gets released when you Dispose() it.
         }
 
     let tryGetWriteLock() =
@@ -1976,6 +1996,22 @@ type Database(_io:IDatabaseFile) =
                     return createWriteLockObject() 
                 })
             )
+
+    // TODO we only want one merge going on at a time.  or rather, we only
+    // want a given segment to be involved in one merge at a time.  no reason
+    // to waste effort.
+
+    let merge segs = 
+        let h = header
+        let cursors = List.map (fun g -> getCursor h g) segs
+        let mc = MultiCursor.Create cursors
+        let pairs = CursorUtils.ToSortedSequenceOfKeyValuePairs mc
+        use fs = io.OpenForWriting() // TODO pool and reuse?
+        let (g,_) = BTreeSegment.CreateFromSortedSequence(fs, pageManager, pairs)
+        async {
+            use! tx = tryGetWriteLock() |> Async.AwaitTask
+            tx.ReplaceSegments(segs, g)
+            }
 
     override this.Finalize() =
         dispose false

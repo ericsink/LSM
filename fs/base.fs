@@ -62,6 +62,7 @@ type ICursor =
 type IWriteLock =
     inherit IDisposable
     abstract member PrependSegments : seq<Guid> -> unit
+    abstract member ReplaceSegments : seq<Guid>*Guid -> unit // TODO not sure this should be "public" here
     // TODO we could have NeverMind(seq<Guid>) which explicitly 
     // frees segments in waiting.  but this wouldn't necessarily
     // need to be here in IWriteLock.
