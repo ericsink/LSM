@@ -62,6 +62,8 @@ type ICursor =
 type IWriteLock =
     inherit IDisposable
     abstract member PrependSegments : seq<Guid> -> unit
+    abstract member Tag : string with get, set // TODO just for diagnostic purposes
+    abstract member MergeAll : unit -> unit // TODO maybe just for testing
     // TODO we could have NeverMind(seq<Guid>) which explicitly 
     // frees segments in waiting.  but this wouldn't necessarily
     // need to be here in IWriteLock.
@@ -82,13 +84,11 @@ type IDatabase =
     // TODO consider OpenCursorOnSpecificSegment(seq<Guid>)
 
     abstract member RequestWriteLock : unit->Task<IWriteLock>
-    // TODO consider name TryGetWriteLock
-    // TODO what happens if it can't get the write lock?  throw?  null?  fs option?  wait?  async?
 
     // TODO need a way to tell the db to merge segments.  should it always just choose?
     // or can the caller get a list of segments, plus info about them, and help decide?
 
-    abstract member MergeAll : unit -> unit
+    abstract member MergeAll : unit -> unit // TODO return the task?
 
 module CursorUtils =
     let ToSortedSequenceOfKeyValuePairs (csr:ICursor) = seq { csr.First(); while csr.IsValid() do yield new KeyValuePair<byte[],Stream>(csr.Key(), csr.Value()); csr.Next(); done }

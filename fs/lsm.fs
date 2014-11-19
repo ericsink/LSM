@@ -2166,27 +2166,43 @@ type Database(_io:IDatabaseFile) =
         // you can change the segment list more than once while holding
         // the lock.  the lock gets released when you Dispose() it.
 
+    let merge segs = 
+        // TODO this is silly if segs has only one item in it
+        let h = header
+        let cursors = List.map (fun g -> getCursor h g) segs
+        let mc = MultiCursor.Create cursors
+        let pairs = CursorUtils.ToSortedSequenceOfKeyValuePairs mc
+        use fs = io.OpenForWriting() // TODO pool and reuse?
+        let (g,_) = BTreeSegment.CreateFromSortedSequence(fs, pageManager, pairs)
+        printfn "merged %A to get %A" segs g
+        g
+
     let critSectionInTransaction = obj()
     let mutable inTransaction = false 
     let mutable waiting = Queue.empty
 
     let rec createWriteLockObject() =
         let isReleased = ref false
+        let whence = ref "TODO" // TODO diagnostic tool.  remove later.
         let release() =
             isReleased := true
             lock critSectionInTransaction (fun () ->
                 if Queue.isEmpty waiting then
+                    printfn "nobody waiting. tx done"
                     inTransaction <- false
                 else
+                    printfn "queue has %d waiting.  next." (Queue.length waiting)
                     let f = Queue.head waiting
                     waiting <- Queue.tail waiting
+                    printfn "giving lock to next"
                     f(createWriteLockObject())
+                    printfn "done giving lock to next"
             )
         {
         new System.Object() with
             override this.Finalize() =
                 let already = !isReleased
-                if not already then failwith "a writelock must be explicitly disposed"
+                if not already then failwith (sprintf "a writelock must be explicitly disposed: %s" !whence)
 
         interface IWriteLock with
             member this.Dispose() =
@@ -2194,6 +2210,17 @@ type Database(_io:IDatabaseFile) =
                 if already then failwith "only dispose a writelock once"
                 release()
                 GC.SuppressFinalize(this)
+
+            member this.MergeAll() =
+                let already = !isReleased
+                if already then failwith "don't use a writelock after you dispose it"
+
+                let g = merge header.currentState
+                replaceSegments(header.currentState, g)
+
+            member this.Tag 
+                with get() = !whence
+                and set(value) = whence := value
 
             member this.PrependSegments(newGuids:seq<Guid>) =
                 let already = !isReleased
@@ -2206,34 +2233,37 @@ type Database(_io:IDatabaseFile) =
         }
 
     let getWriteLock() =
+        let whence = Environment.StackTrace
         lock critSectionInTransaction (fun () -> 
             if inTransaction then 
                 let t = TaskCompletionSource<IWriteLock>()
-                let cb lck = t.SetResult(lck)
+                let cb (lck:IWriteLock) = 
+                    lck.Tag <- whence
+                    t.SetResult(lck)
                 waiting <- Queue.conj cb waiting
                 t.Task
             else 
                 inTransaction <- true
                 Async.StartAsTask(async { 
-                    return createWriteLockObject() 
+                    let lck = createWriteLockObject() 
+                    lck.Tag <- whence
+                    return lck
                 })
             )
 
     // TODO we only want one merge going on at a time.  or rather, we only
     // want a given segment to be involved in one merge at a time.  no reason
     // to waste effort.
+    // If we're going to write a merge segment outside a tx we need to make
+    // sure that its replaced segments will still be in the list when we go
+    // to do replacesegments.
 
-    let merge segs = 
-        let h = header
-        let cursors = List.map (fun g -> getCursor h g) segs
-        let mc = MultiCursor.Create cursors
-        let pairs = CursorUtils.ToSortedSequenceOfKeyValuePairs mc
-        use fs = io.OpenForWriting() // TODO pool and reuse?
-        let (g,_) = BTreeSegment.CreateFromSortedSequence(fs, pageManager, pairs)
+    let commitMerge segs g =
         async {
-            let! tx = getWriteLock() |> Async.AwaitTask
+            use! tx = getWriteLock() |> Async.AwaitTask
+            printfn "merge got write lock"
             replaceSegments(segs, g)
-            tx.Dispose()
+            printfn "merge releasing"
             }
 
     override this.Finalize() =
@@ -2261,8 +2291,11 @@ type Database(_io:IDatabaseFile) =
             g
 
         member this.MergeAll() =
-            let f = merge header.currentState
-            Async.RunSynchronously f
+            let segs = header.currentState
+            // TODO this is silly if segs has only one item in it
+            let g = merge segs
+            let f = commitMerge segs g
+            Async.RunSynchronously f // TODO just return the task?
 
         member this.OpenCursor() =
             // TODO we also need a way to open a cursor on segments in waiting

@@ -115,10 +115,16 @@ namespace lsm_tests
 					var q5 = DateTime.Now;
 					Console.WriteLine("{0}/{2}: commit = {1}", i, (q5-q4).TotalMilliseconds, System.Threading.Thread.CurrentThread.ManagedThreadId);
 					Console.Out.Flush();
+
+					var qm1 = DateTime.Now;
+					tx.MergeAll();
+					var qm2 = DateTime.Now;
+					Console.WriteLine("{0}/{2}: mergeall = {1}", i, (qm2-qm1).TotalMilliseconds, System.Threading.Thread.CurrentThread.ManagedThreadId);
+					Console.Out.Flush();
 				}
 				Console.WriteLine("{0}/{1}: lock_released", i, System.Threading.Thread.CurrentThread.ManagedThreadId);
 				Console.Out.Flush();
-				#if not
+				#if false
 				var qm1 = DateTime.Now;
 				db.MergeAll();
 				var qm2 = DateTime.Now;
