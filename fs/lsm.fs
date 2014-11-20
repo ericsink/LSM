@@ -2288,7 +2288,7 @@ type Database(_io:IDatabaseFile) =
                 // the lock.  the lock gets released when you Dispose() it.
         }
 
-    let getWriteLock2() =
+    let getWriteLock() =
         let whence = Environment.StackTrace
         lock critSectionInTransaction (fun () -> 
             if inTransaction then 
@@ -2305,25 +2305,6 @@ type Database(_io:IDatabaseFile) =
                     lck.Tag <- whence
                     return lck
                 }
-            )
-
-    let getWriteLock() =
-        let whence = Environment.StackTrace
-        lock critSectionInTransaction (fun () -> 
-            if inTransaction then 
-                let t = TaskCompletionSource<IWriteLock>()
-                let cb (lck:IWriteLock) = 
-                    lck.Tag <- whence
-                    t.SetResult(lck)
-                waiting <- Queue.conj cb waiting
-                t.Task
-            else 
-                inTransaction <- true
-                Async.StartAsTask(async { 
-                    let lck = createWriteLockObject() 
-                    lck.Tag <- whence
-                    return lck
-                })
             )
 
     override this.Finalize() =
@@ -2371,9 +2352,9 @@ type Database(_io:IDatabaseFile) =
             LivingCursor.Create mc
 
         member this.RequestWriteLock() =
-            getWriteLock2() |> Async.StartAsTask
+            getWriteLock() |> Async.StartAsTask
 
         member this.RequestWriteLock2() =
-            getWriteLock2()
+            getWriteLock()
 
 
