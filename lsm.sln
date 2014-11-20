@@ -19,6 +19,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "lsm_cs_net45", "cs\projects
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "dbTests", "dbTests\dbTests.csproj", "{BD3A3B5D-7B76-4667-9822-696982A09CF7}"
 EndProject
+Project("{f2a71f9b-5d33-465a-a702-920d77279786}") = "fsTests", "fsTests\fsTests.fsproj", "{1DF29E4A-5B48-42F6-ACD1-256978AD4295}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -29,6 +31,10 @@ Global
 		{06CDF0A2-9D0A-47CF-8681-8B92D136F9E9}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{06CDF0A2-9D0A-47CF-8681-8B92D136F9E9}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{06CDF0A2-9D0A-47CF-8681-8B92D136F9E9}.Release|Any CPU.Build.0 = Release|Any CPU
+		{1DF29E4A-5B48-42F6-ACD1-256978AD4295}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{1DF29E4A-5B48-42F6-ACD1-256978AD4295}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{1DF29E4A-5B48-42F6-ACD1-256978AD4295}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{1DF29E4A-5B48-42F6-ACD1-256978AD4295}.Release|Any CPU.Build.0 = Release|Any CPU
 		{2FE3B216-F994-4BE4-BD1B-F7DBA3C0D63E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
 		{2FE3B216-F994-4BE4-BD1B-F7DBA3C0D63E}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{2FE3B216-F994-4BE4-BD1B-F7DBA3C0D63E}.Release|Any CPU.ActiveCfg = Release|Any CPU
@@ -63,6 +69,6 @@ Global
 		{F05CCE04-5064-4948-8F55-AB29151D0B5F}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(MonoDevelopProperties) = preSolution
-		StartupItem = tapp\tapp.csproj
+		StartupItem = fsTests\fsTests.fsproj
 	EndGlobalSection
 EndGlobal

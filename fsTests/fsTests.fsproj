@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
+    <ProjectGuid>{1DF29E4A-5B48-42F6-ACD1-256978AD4295}</ProjectGuid>
+    <OutputType>Library</OutputType>
+    <RootNamespace>fsTests</RootNamespace>
+    <AssemblyName>fsTests</AssemblyName>
+    <TargetFrameworkVersion>v4.5</TargetFrameworkVersion>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>full</DebugType>
+    <Optimize>false</Optimize>
+    <OutputPath>bin\Debug</OutputPath>
+    <DefineConstants>DEBUG</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <ConsolePause>false</ConsolePause>
+    <Tailcalls>false</Tailcalls>
+    <PlatformTarget>
+    </PlatformTarget>
+    <CustomCommands>
+      <CustomCommands>
+        <Command type="Execute" command="../packages/xunit.runners.1.9.2/tools/xunit.console.clr4.exe ${TargetFile}" externalConsole="True" pauseExternalConsole="True" />
+      </CustomCommands>
+    </CustomCommands>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
+    <DebugSymbols>false</DebugSymbols>
+    <DebugType>none</DebugType>
+    <Optimize>true</Optimize>
+    <OutputPath>bin\Release</OutputPath>
+    <ErrorReport>prompt</ErrorReport>
+    <PlatformTarget>
+    </PlatformTarget>
+    <ConsolePause>false</ConsolePause>
+    <Tailcalls>true</Tailcalls>
+    <CustomCommands>
+      <CustomCommands>
+        <Command type="Execute" command="../packages/xunit.runners.1.9.2/tools/xunit.console.clr4.exe ${TargetFile}" externalConsole="True" pauseExternalConsole="True" />
+      </CustomCommands>
+    </CustomCommands>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="mscorlib" />
+    <Reference Include="FSharp.Core" />
+    <Reference Include="System" />
+    <Reference Include="System.Core" />
+    <Reference Include="System.Numerics" />
+    <Reference Include="xunit">
+      <HintPath>..\packages\xunit.1.9.2\lib\net20\xunit.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="fsTests.fs" />
+  </ItemGroup>
+  <Import Project="$(MSBuildExtensionsPath32)\..\Microsoft SDKs\F#\3.1\Framework\v4.0\Microsoft.FSharp.Targets" />
+  <ItemGroup>
+    <None Include="packages.config" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\fs\projects\base_fs_net45\base_fs_net45.fsproj">
+      <Project>{06CDF0A2-9D0A-47CF-8681-8B92D136F9E9}</Project>
+      <Name>base_fs_net45</Name>
+    </ProjectReference>
+    <ProjectReference Include="..\fs\projects\lsm_fs_net45\lsm_fs_net45.fsproj">
+      <Project>{EC16340F-B28D-44EF-9101-FC496D16B255}</Project>
+      <Name>lsm_fs_net45</Name>
+    </ProjectReference>
+  </ItemGroup>
+</Project>
