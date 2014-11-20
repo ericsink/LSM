@@ -25,24 +25,82 @@ let createMemorySegment (rand:Random) count =
         d.[k] <- v
     d
 
+let timeit s f =
+    let q1 = DateTime.Now
+    let r = f()
+    let q2 = DateTime.Now
+    let elapsed = q2 - q1
+    printfn "%s: %f" s elapsed.TotalMilliseconds
+    r
+
 [<EntryPoint>]
 let main argv = 
     let f = dbf("test1_" + tid())
     use db = new Database(f) :> IDatabase
     let NUM = 50
     let rand = Random()
+
     let start i = async {
+        let commit g = async {
+            let q3 = DateTime.Now
+            use! tx = db.RequestWriteLock2()
+            let q4 = DateTime.Now
+            printfn "lock: %f" ((q4-q3).TotalMilliseconds)
+            tx.CommitSegments (g :: List.empty)
+            let q5 = DateTime.Now
+            printfn "commit: %f" ((q5-q4).TotalMilliseconds)
+            if i%4=0 then
+                match db.MergeAll2() with
+                | Some f ->
+                    let blk = async {
+                        let! g = f
+                        tx.CommitMerge g
+                    }
+                    do! blk
+                | None -> ()
+            }
+
+        let q1 = DateTime.Now
         let count = rand.Next(10000)
         let d = createMemorySegment rand count
+        let q2 = DateTime.Now
+        printfn "dict: %f" ((q2-q1).TotalMilliseconds)
         let g = db.WriteSegment(d)
-        use! tx = db.RequestWriteLock2()
-        tx.CommitSegments (g :: List.empty)
+        let q3 = DateTime.Now
+        printfn "segment: %f" ((q3-q2).TotalMilliseconds)
+        do! commit g
+        printfn "lock released"
     }
 
     let c = seq { for i in 0 .. NUM-1 do yield i; done }
     let workers = Seq.fold (fun acc i -> (start i) :: acc) List.empty c
     let go = Async.Parallel workers
     Async.RunSynchronously go |> ignore
+
+    let qm1 = DateTime.Now
+    match db.MergeAll2() with
+    | Some f ->
+        async {
+            let! g = f
+            use! tx = db.RequestWriteLock2()
+            tx.CommitMerge g
+        } |> Async.RunSynchronously
+    | None -> ()
+    let qm2 = DateTime.Now;
+    printfn "mergeall: %f" ((qm2-qm1).TotalMilliseconds)
+
+    let loop() = 
+        use csr = db.OpenCursor()
+        csr.First()
+        let mutable count = 0
+        let q1 = DateTime.Now
+        while csr.IsValid() do
+            count <- count + 1
+            csr.Next()
+        let q2 = DateTime.Now
+        printfn "cursor: %f" ((q2-q1).TotalMilliseconds)
+
+    loop()
 
     0 // return an integer exit code
 
