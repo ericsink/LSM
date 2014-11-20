@@ -2103,7 +2103,7 @@ type Database(_io:IDatabaseFile) =
             fsMine.Close()
 
     // only call this if you have the write lock
-    let prependSegments(newGuids:seq<Guid>) =
+    let commitSegments (newGuids:seq<Guid>) =
         // TODO we could check to see if this guid is already in the list.
 
         // TODO if there is more than one new segment, I suppose we could
@@ -2132,13 +2132,79 @@ type Database(_io:IDatabaseFile) =
         // you can change the segment list more than once while holding
         // the lock.  the lock gets released when you Dispose() it.
 
+
+    let critSectionMerging = obj()
+    // this keeps track of which segments are currently involved in a merge.
+    // a segment can only be in one merge at a time.  in effect, this is a list
+    // of merge locks for segments.  segments should be removed from this set
+    // after the merge has been committed.
+    let mutable merging = Set.empty
+
+    let critSectionPendingMerges = obj()
+    // this keeps track of merges which have been written but not
+    // yet committed.
+    let mutable pendingMerges:Map<Guid,Guid list> = Map.empty
+
+    let tryMerge segs =
+        let requestMerge () =
+            lock critSectionMerging (fun () ->
+                let want = Set.ofSeq segs
+                let already = Set.intersect want merging
+                if Set.isEmpty already then
+                    merging <- Set.union merging want
+                    true
+                else
+                    false
+            )
+
+        let merge () = 
+            // TODO this is silly if segs has only one item in it
+            let h = header
+            let cursors = List.map (fun g -> getCursor h g) segs
+            use mc = MultiCursor.Create cursors
+            let pairs = CursorUtils.ToSortedSequenceOfKeyValuePairs mc
+            use fs = io.OpenForWriting() // TODO pool and reuse?
+            let (g,_) = BTreeSegment.CreateFromSortedSequence(fs, pageManager, pairs)
+            printfn "merged %A to get %A" segs g
+            g
+
+        let storePendingMerge g =
+            lock critSectionPendingMerges (fun () ->
+                pendingMerges <- Map.add g segs pendingMerges
+                // TODO assert segs are in merging set?
+            )
+
+        if requestMerge () then
+            let later = async {
+                let g = merge ()
+                storePendingMerge g
+                return g
+            }
+            Some later
+        else
+            None
+
+    let removePendingMerge g =
+        let doneMerge segs =
+            lock critSectionMerging (fun () ->
+                let removing = Set.ofSeq segs
+                // TODO assert is subset?
+                merging <- Set.difference merging removing
+            )
+
+        let segs = Map.find g pendingMerges
+        doneMerge segs
+        lock critSectionPendingMerges (fun () ->
+            pendingMerges <- Map.remove g pendingMerges
+        )
+
     // only call this if you have the write lock
-    let replaceSegments(oldGuids:seq<Guid>, newGuid:Guid) =
+    let commitMerge (newGuid:Guid) =
         // TODO we could check to see if this guid is already in the list.
 
-        let lstOld = List.ofSeq oldGuids
+        let lstOld = Map.find newGuid pendingMerges
         let countOld = List.length lstOld                                         
-        let oldGuidsAsSet = Seq.fold (fun acc g -> Set.add g acc) Set.empty oldGuids
+        let oldGuidsAsSet = List.fold (fun acc g -> Set.add g acc) Set.empty lstOld
 
         lock critSectionHeader (fun () -> 
             let ndxFirstOld = List.findIndex (fun g -> g=List.head lstOld) header.currentState
@@ -2157,6 +2223,7 @@ type Database(_io:IDatabaseFile) =
             // TODO the pages for all the replaced segments could now be reused
             header <- newHeader
         )
+        removePendingMerge newGuid
         // the segment we just committed can now be removed from
         // the segments in waiting list
         lock critSectionSegmentsInWaiting (fun () ->
@@ -2165,17 +2232,6 @@ type Database(_io:IDatabaseFile) =
         // note that we intentionally do not release the lock here.
         // you can change the segment list more than once while holding
         // the lock.  the lock gets released when you Dispose() it.
-
-    let merge segs = 
-        // TODO this is silly if segs has only one item in it
-        let h = header
-        let cursors = List.map (fun g -> getCursor h g) segs
-        let mc = MultiCursor.Create cursors
-        let pairs = CursorUtils.ToSortedSequenceOfKeyValuePairs mc
-        use fs = io.OpenForWriting() // TODO pool and reuse?
-        let (g,_) = BTreeSegment.CreateFromSortedSequence(fs, pageManager, pairs)
-        printfn "merged %A to get %A" segs g
-        g
 
     let critSectionInTransaction = obj()
     let mutable inTransaction = false 
@@ -2211,26 +2267,45 @@ type Database(_io:IDatabaseFile) =
                 release()
                 GC.SuppressFinalize(this)
 
-            member this.MergeAll() =
-                let already = !isReleased
-                if already then failwith "don't use a writelock after you dispose it"
-
-                let g = merge header.currentState
-                replaceSegments(header.currentState, g)
-
             member this.Tag 
                 with get() = !whence
                 and set(value) = whence := value
 
-            member this.PrependSegments(newGuids:seq<Guid>) =
+            member this.CommitMerge(g:Guid) =
                 let already = !isReleased
                 if already then failwith "don't use a writelock after you dispose it"
+                commitMerge g
+                // note that we intentionally do not release the lock here.
+                // you can change the segment list more than once while holding
+                // the lock.  the lock gets released when you Dispose() it.
 
-                prependSegments(newGuids)        
+            member this.CommitSegments(newGuids:seq<Guid>) =
+                let already = !isReleased
+                if already then failwith "don't use a writelock after you dispose it"
+                commitSegments newGuids
                 // note that we intentionally do not release the lock here.
                 // you can change the segment list more than once while holding
                 // the lock.  the lock gets released when you Dispose() it.
         }
+
+    let getWriteLock2() =
+        let whence = Environment.StackTrace
+        lock critSectionInTransaction (fun () -> 
+            if inTransaction then 
+                Async.FromContinuations (fun (ok, _, _) ->
+                    let cb (lck:IWriteLock) = 
+                        lck.Tag <- whence
+                        ok lck
+                    waiting <- Queue.conj cb waiting
+                )
+            else 
+                inTransaction <- true
+                async { 
+                    let lck = createWriteLockObject() 
+                    lck.Tag <- whence
+                    return lck
+                }
+            )
 
     let getWriteLock() =
         let whence = Environment.StackTrace
@@ -2250,21 +2325,6 @@ type Database(_io:IDatabaseFile) =
                     return lck
                 })
             )
-
-    // TODO we only want one merge going on at a time.  or rather, we only
-    // want a given segment to be involved in one merge at a time.  no reason
-    // to waste effort.
-    // If we're going to write a merge segment outside a tx we need to make
-    // sure that its replaced segments will still be in the list when we go
-    // to do replacesegments.
-
-    let commitMerge segs g =
-        async {
-            use! tx = getWriteLock() |> Async.AwaitTask
-            printfn "merge got write lock"
-            replaceSegments(segs, g)
-            printfn "merge releasing"
-            }
 
     override this.Finalize() =
         dispose false
@@ -2293,9 +2353,15 @@ type Database(_io:IDatabaseFile) =
         member this.MergeAll() =
             let segs = header.currentState
             // TODO this is silly if segs has only one item in it
-            let g = merge segs
-            let f = commitMerge segs g
-            Async.RunSynchronously f // TODO just return the task?
+            let f = tryMerge segs
+            match f with
+            | Some fn -> Async.StartAsTask(fn)
+            | None -> null
+
+        member this.MergeAll2() =
+            let segs = header.currentState
+            // TODO this is silly if segs has only one item in it
+            tryMerge segs
 
         member this.OpenCursor() =
             // TODO we also need a way to open a cursor on segments in waiting
@@ -2305,6 +2371,9 @@ type Database(_io:IDatabaseFile) =
             LivingCursor.Create mc
 
         member this.RequestWriteLock() =
-            getWriteLock()
+            getWriteLock2() |> Async.StartAsTask
+
+        member this.RequestWriteLock2() =
+            getWriteLock2()
 
 

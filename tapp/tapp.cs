@@ -82,14 +82,6 @@ namespace lsm_tests
 			return Guid.NewGuid ().ToString ().Replace ("{", "").Replace ("}", "").Replace ("-", "");
 		}
 
-		private static async void wait(IDatabase db, Guid[] ts)
-		{
-			using (var tx = await db.RequestWriteLock ()) {
-				tx.PrependSegments (ts);
-			}
-
-		}
-
 		private static Task<Guid> start(int i, Random rand, IDatabase db)
 		{
 			return Task<Guid>.Run(async () => {
@@ -111,16 +103,29 @@ namespace lsm_tests
 					var q4 = DateTime.Now;
 					Console.WriteLine("{0}/{2}: lock_taken = {1}", i, (q4-q3).TotalMilliseconds, System.Threading.Thread.CurrentThread.ManagedThreadId);
 					Console.Out.Flush();
-					tx.PrependSegments (new List<Guid> {g});
+					tx.CommitSegments (new List<Guid> {g});
 					var q5 = DateTime.Now;
 					Console.WriteLine("{0}/{2}: commit = {1}", i, (q5-q4).TotalMilliseconds, System.Threading.Thread.CurrentThread.ManagedThreadId);
 					Console.Out.Flush();
 
+					#if not
 					var qm1 = DateTime.Now;
 					tx.MergeAll();
 					var qm2 = DateTime.Now;
 					Console.WriteLine("{0}/{2}: mergeall = {1}", i, (qm2-qm1).TotalMilliseconds, System.Threading.Thread.CurrentThread.ManagedThreadId);
 					Console.Out.Flush();
+					#endif
+
+					#if true
+					if (0 == (i%4)) {
+						Task<Guid> t = db.MergeAll();
+						if (t != null) {
+							var g2 = await t;
+							tx.CommitMerge(g2);
+							g = g2;
+						}
+					}
+					#endif
 				}
 				Console.WriteLine("{0}/{1}: lock_released", i, System.Threading.Thread.CurrentThread.ManagedThreadId);
 				Console.Out.Flush();
@@ -153,7 +158,7 @@ namespace lsm_tests
 				var q7 = DateTime.Now;
 				Console.WriteLine("FINISH = {0}", (q7-q6).TotalMilliseconds);
 
-				#if true
+				#if false
 				{
 				var qc1 = DateTime.Now;
 				using (var csr = db.OpenCursor ()) {
@@ -171,7 +176,11 @@ namespace lsm_tests
 				#endif
 
 				var qm1 = DateTime.Now;
-				db.MergeAll();
+				Task<Guid> q = db.MergeAll();
+				var g = q.Result;
+				using (var tx = db.RequestWriteLock ().Result) {
+					tx.CommitMerge(g);
+				}
 				var qm2 = DateTime.Now;
 				Console.WriteLine("mergeall = {0" +
 					"}", (qm2-qm1).TotalMilliseconds);

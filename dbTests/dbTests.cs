@@ -95,7 +95,7 @@ namespace newTests
 				}
 
 				using (var tx = await db.RequestWriteLock ()) {
-					tx.PrependSegments (ts);
+					tx.CommitSegments (ts);
 				}
 
 				using (var csr = db.OpenCursor ()) {
@@ -127,7 +127,7 @@ namespace newTests
 						}
 						var g = db.WriteSegment (t1);
 						using (var tx = await db.RequestWriteLock ()) {
-							tx.PrependSegments (new List<Guid> {g});
+							tx.CommitSegments (new List<Guid> {g});
 						}
 						return g;
 					});
@@ -177,7 +177,7 @@ namespace newTests
 				// after we do this, the segment is real.  "committed".
 				using (var tx = await db.RequestWriteLock()) {
 					var a = new List<Guid> { seg };
-					tx.PrependSegments(a);
+					tx.CommitSegments(a);
 				}
 
 				// open a cursor on the db and see if stuff looks okay
