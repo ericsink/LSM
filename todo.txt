@@ -1,17 +1,5 @@
 
-void Work()
-{
-    // pick two (or more) adjacent segs from the seg list
-    // open cursors on each of them
-    // merge A and B to create C.  now locks needed.
-    // wait for the write lock
-    // (with the lock) read the seg list
-    // replace A+B with C
-    // write the seglist
-    // release the lock
-    // note that A and B are free to be removed after their cursors are done
-    // note that there should be no way to get a cursor on a segment not in the seglist
-}
+try to improve the performance of multicursor
 
 more async-ness
 
@@ -37,7 +25,7 @@ db class should accept delegates for other implementations?
 
 it's getting to be time to reconsider combo and the C# version.
 we don't really want to build a C# port of the Database class.
-what is worth keeping here for testing purposes?
+what stuff is worth keeping here for testing purposes?
 
 the test suite is using the old memory_segment api
 

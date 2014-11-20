@@ -16,8 +16,8 @@ let tid() =
     g4
 
 [<Fact>]
-let test1() = 
-    let f = dbf("test1_" + tid())
+let empty_cursor() = 
+    let f = dbf("empty_cursor_" + tid())
     use db = new Database(f) :> IDatabase
     use csr = db.OpenCursor()
     csr.First ();
