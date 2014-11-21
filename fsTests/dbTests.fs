@@ -164,3 +164,69 @@ let lexographic() =
 
     csr.Prev()
     Assert.False(csr.IsValid())
+
+[<Fact>]
+let weird() = 
+    let f = dbf("weird" + tid())
+    use db = new Database(f) :> IDatabase
+    let t1 = dseg()
+    for i in 0 .. 100-1 do
+        let sk = i.ToString("000")
+        let sv = i.ToString()
+        insert t1 sk sv
+    let t2 = dseg()
+    for i in 0 .. 1000-1 do
+        let sk = i.ToString("00000")
+        let sv = i.ToString()
+        insert t2 sk sv
+    let g1 = db.WriteSegment t1
+    let g2 = db.WriteSegment t2
+    async {
+        use! tx = db.RequestWriteLock2()
+        tx.CommitSegments [ g1 ]
+    } |> Async.RunSynchronously
+    async {
+        use! tx = db.RequestWriteLock2()
+        tx.CommitSegments [ g2 ]
+    } |> Async.RunSynchronously
+    use csr = db.OpenCursor()
+    csr.First()
+    for i in 0 .. 100-1 do
+        csr.Next()
+        Assert.True(csr.IsValid())
+    for i in 0 .. 50-1 do
+        csr.Prev()
+        Assert.True(csr.IsValid())
+    for i in 0 .. 100-1 do
+        csr.Next()
+        Assert.True(csr.IsValid())
+        csr.Next()
+        Assert.True(csr.IsValid())
+        csr.Prev()
+        Assert.True(csr.IsValid())
+    for i in 0 .. 50-1 do
+        csr.Seek(csr.Key(), SeekOp.SEEK_EQ);
+        Assert.True(csr.IsValid())
+        csr.Next()
+        Assert.True(csr.IsValid())
+    for i in 0 .. 50-1 do
+        csr.Seek(csr.Key(), SeekOp.SEEK_EQ);
+        Assert.True(csr.IsValid())
+        csr.Prev()
+        Assert.True(csr.IsValid())
+    for i in 0 .. 50-1 do
+        csr.Seek(csr.Key(), SeekOp.SEEK_LE);
+        Assert.True(csr.IsValid())
+        csr.Prev()
+        Assert.True(csr.IsValid())
+    for i in 0 .. 50-1 do
+        csr.Seek(csr.Key(), SeekOp.SEEK_GE);
+        Assert.True(csr.IsValid())
+        csr.Next()
+        Assert.True(csr.IsValid())
+    let s = csr.Key() |> from_utf8
+    // got the following value from the debugger.
+    // just want to make sure that it doesn't change
+    // and all combos give the same answer.
+    Assert.Equal<string>("00148", s); 
+
