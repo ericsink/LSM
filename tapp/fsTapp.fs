@@ -40,14 +40,14 @@ let main argv =
     let start i = async {
         let commit g = async {
             let q3 = DateTime.Now
-            use! tx = db.RequestWriteLock2()
+            use! tx = db.RequestWriteLock()
             let q4 = DateTime.Now
             printfn "lock: %f" ((q4-q3).TotalMilliseconds)
             tx.CommitSegments (g :: List.empty)
             let q5 = DateTime.Now
             printfn "commit: %f" ((q5-q4).TotalMilliseconds)
             if i%4=0 then
-                match db.MergeAll2() with
+                match db.MergeAll() with
                 | Some f ->
                     let blk = async {
                         let! g = f
@@ -75,11 +75,11 @@ let main argv =
     Async.RunSynchronously go |> ignore
 
     let qm1 = DateTime.Now
-    match db.MergeAll2() with
+    match db.MergeAll() with
     | Some f ->
         async {
             let! g = f
-            use! tx = db.RequestWriteLock2()
+            use! tx = db.RequestWriteLock()
             tx.CommitMerge g
         } |> Async.RunSynchronously
     | None -> ()

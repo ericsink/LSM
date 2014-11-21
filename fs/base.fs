@@ -19,7 +19,6 @@ namespace Zumero.LSM
 open System
 open System.IO
 open System.Collections.Generic
-open System.Threading.Tasks
 
 type IPendingSegment = interface end
 
@@ -83,14 +82,12 @@ type IDatabase =
     // TODO consider ListSegmentsInCurrentState()
     // TODO consider OpenCursorOnSpecificSegment(seq<Guid>)
 
-    abstract member RequestWriteLock : unit->Task<IWriteLock>
-    abstract member RequestWriteLock2 : unit->Async<IWriteLock>
+    abstract member RequestWriteLock : unit->Async<IWriteLock>
 
     // TODO need a way to tell the db to merge segments.  should it always just choose?
     // or can the caller get a list of segments, plus info about them, and help decide?
 
-    abstract member MergeAll : unit -> Task<Guid>
-    abstract member MergeAll2 : unit -> Async<Guid> option
+    abstract member MergeAll : unit -> Async<Guid> option
 
 module CursorUtils =
     let ToSortedSequenceOfKeyValuePairs (csr:ICursor) = seq { csr.First(); while csr.IsValid() do yield new KeyValuePair<byte[],Stream>(csr.Key(), csr.Value()); csr.Next(); done }

@@ -49,7 +49,7 @@ let simple_write() =
         insert d s s
     let seg = db.WriteSegment d
     async {
-        use! tx = db.RequestWriteLock2()
+        use! tx = db.RequestWriteLock()
         tx.CommitSegments [ seg ]
     } |> Async.RunSynchronously
     use csr = db.OpenCursor()
@@ -76,10 +76,10 @@ let multiple() =
 
     let start i = async {
         let commit g = async {
-            use! tx = db.RequestWriteLock2()
+            use! tx = db.RequestWriteLock()
             tx.CommitSegments (g :: List.empty)
             if i%4=0 then
-                match db.MergeAll2() with
+                match db.MergeAll() with
                 | Some f ->
                     let blk = async {
                         let! g = f
@@ -100,11 +100,11 @@ let multiple() =
     let go = Async.Parallel workers
     Async.RunSynchronously go |> ignore
 
-    match db.MergeAll2() with
+    match db.MergeAll() with
     | Some f ->
         async {
             let! g = f
-            use! tx = db.RequestWriteLock2()
+            use! tx = db.RequestWriteLock()
             tx.CommitMerge g
         } |> Async.RunSynchronously
     | None -> ()
@@ -129,7 +129,7 @@ let lexographic() =
     insert d "20" ""
     let g = db.WriteSegment(d)
     async {
-        use! tx = db.RequestWriteLock2()
+        use! tx = db.RequestWriteLock()
         tx.CommitSegments [ g ]
     } |> Async.RunSynchronously
 
@@ -182,11 +182,11 @@ let weird() =
     let g1 = db.WriteSegment t1
     let g2 = db.WriteSegment t2
     async {
-        use! tx = db.RequestWriteLock2()
+        use! tx = db.RequestWriteLock()
         tx.CommitSegments [ g1 ]
     } |> Async.RunSynchronously
     async {
-        use! tx = db.RequestWriteLock2()
+        use! tx = db.RequestWriteLock()
         tx.CommitSegments [ g2 ]
     } |> Async.RunSynchronously
     use csr = db.OpenCursor()

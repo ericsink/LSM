@@ -19,7 +19,6 @@ namespace Zumero.LSM.fs
 open System
 open System.IO
 open System.Linq // used for OrderBy
-open System.Threading.Tasks
 
 open Zumero.LSM
 
@@ -2107,7 +2106,7 @@ type Database(_io:IDatabaseFile) =
         // TODO we could check to see if this guid is already in the list.
 
         // TODO if there is more than one new segment, I suppose we could
-        // immediately start a background task to merge them?  after the
+        // immediately start a background worker to merge them?  after the
         // commit happens.
 
         let newGuidsAsSet = Seq.fold (fun acc g -> Set.add g acc) Set.empty newGuids
@@ -2334,14 +2333,6 @@ type Database(_io:IDatabaseFile) =
         member this.MergeAll() =
             let segs = header.currentState
             // TODO this is silly if segs has only one item in it
-            let f = tryMerge segs
-            match f with
-            | Some fn -> Async.StartAsTask(fn)
-            | None -> null
-
-        member this.MergeAll2() =
-            let segs = header.currentState
-            // TODO this is silly if segs has only one item in it
             tryMerge segs
 
         member this.OpenCursor() =
@@ -2352,9 +2343,6 @@ type Database(_io:IDatabaseFile) =
             LivingCursor.Create mc
 
         member this.RequestWriteLock() =
-            getWriteLock() |> Async.StartAsTask
-
-        member this.RequestWriteLock2() =
             getWriteLock()
 
 
