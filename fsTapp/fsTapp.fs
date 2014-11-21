@@ -15,23 +15,12 @@ let tid() =
     let g4 = g3.Replace ("-", "")
     g4
 
-let createMemorySegment (rand:Random) count =
-    let d = Dictionary<byte[],Stream>()
-    for q in 1 .. count do
-        let sk = rand.Next().ToString()
-        let k = System.Text.Encoding.UTF8.GetBytes (sk)
-        let sv = rand.Next().ToString()
-        let v = new MemoryStream(System.Text.Encoding.UTF8.GetBytes (sv))
-        d.[k] <- v
-    d
+type dseg = Dictionary<byte[],Stream>
 
-let timeit s f =
-    let q1 = DateTime.Now
-    let r = f()
-    let q2 = DateTime.Now
-    let elapsed = q2 - q1
-    printfn "%s: %f" s elapsed.TotalMilliseconds
-    r
+let insert (ds:dseg) (sk:string) (sv:string) =
+    let k = System.Text.Encoding.UTF8.GetBytes (sk)
+    let v = new MemoryStream(System.Text.Encoding.UTF8.GetBytes (sv))
+    ds.[k] <- v
 
 [<EntryPoint>]
 let main argv = 
@@ -39,6 +28,14 @@ let main argv =
     use db = new Database(f) :> IDatabase
     let NUM = 50
     let rand = Random()
+
+    let createMemorySegment (rand:Random) count =
+        let d = Dictionary<byte[],Stream>()
+        for q in 1 .. count do
+            let sk = rand.Next().ToString()
+            let sv = rand.Next().ToString()
+            insert d sk sv
+        d
 
     let start i = async {
         let commit g = async {
