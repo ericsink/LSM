@@ -17,7 +17,7 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "lsm_cs_net45", "cs\projects
 EndProject
 Project("{f2a71f9b-5d33-465a-a702-920d77279786}") = "dbTests", "dbTests\dbTests.fsproj", "{1DF29E4A-5B48-42F6-ACD1-256978AD4295}"
 EndProject
-Project("{f2a71f9b-5d33-465a-a702-920d77279786}") = "fsTapp", "fsTapp\fsTapp.fsproj", "{8E0E8EC2-351C-4E2B-949C-0C526B963A37}"
+Project("{f2a71f9b-5d33-465a-a702-920d77279786}") = "tapp", "tapp\tapp.fsproj", "{8E0E8EC2-351C-4E2B-949C-0C526B963A37}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
