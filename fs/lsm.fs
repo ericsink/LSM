@@ -785,7 +785,7 @@ type LivingCursor private (ch:ICursor) =
         member this.Key() = chain.Key()
         member this.Value() = chain.Value()
         member this.ValueLength() = chain.ValueLength()
-        member this.IsValid() = chain.IsValid() && (chain.ValueLength() > 0)
+        member this.IsValid() = chain.IsValid() && (chain.ValueLength() >= 0)
         member this.KeyCompare k = chain.KeyCompare k
 
         member this.Next() =

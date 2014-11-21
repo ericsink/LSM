@@ -34,10 +34,10 @@ let empty_cursor() =
     let f = dbf("empty_cursor" + tid())
     use db = new Database(f) :> IDatabase
     use csr = db.OpenCursor()
-    csr.First ();
-    Assert.False (csr.IsValid ());
-    csr.Last ();
-    Assert.False (csr.IsValid ());
+    csr.First ()
+    Assert.False (csr.IsValid ())
+    csr.Last ()
+    Assert.False (csr.IsValid ())
 
 [<Fact>]
 let simple_write() = 
@@ -57,7 +57,7 @@ let simple_write() =
     Assert.True (csr.IsValid())
     csr.Next()
     let k = csr.Key() |> from_utf8
-    Assert.True ("43" = k)
+    Assert.Equal<string> ("43", k)
 
 [<Fact>]
 let multiple() = 
@@ -119,3 +119,48 @@ let multiple() =
 
     loop()
 
+[<Fact>]
+let lexographic() = 
+    let f = dbf("lexographic" + tid())
+    use db = new Database(f) :> IDatabase
+    let d = dseg()
+    insert d "8" ""
+    insert d "10" ""
+    insert d "20" ""
+    let g = db.WriteSegment(d)
+    async {
+        use! tx = db.RequestWriteLock2()
+        tx.CommitSegments [ g ]
+    } |> Async.RunSynchronously
+
+    use csr = db.OpenCursor()
+    csr.First()
+    Assert.True(csr.IsValid())
+    Assert.Equal<string> ("10", csr.Key () |> from_utf8)
+
+    csr.Next()
+    Assert.True(csr.IsValid())
+    Assert.Equal<string> ("20", csr.Key () |> from_utf8)
+
+    csr.Next()
+    Assert.True(csr.IsValid())
+    Assert.Equal<string> ("8", csr.Key () |> from_utf8)
+
+    csr.Next()
+    Assert.False(csr.IsValid())
+
+    // --------
+    csr.Last()
+    Assert.True(csr.IsValid())
+    Assert.Equal<string> ("8", csr.Key () |> from_utf8)
+
+    csr.Prev()
+    Assert.True(csr.IsValid())
+    Assert.Equal<string> ("20", csr.Key () |> from_utf8)
+
+    csr.Prev()
+    Assert.True(csr.IsValid())
+    Assert.Equal<string> ("10", csr.Key () |> from_utf8)
+
+    csr.Prev()
+    Assert.False(csr.IsValid())
