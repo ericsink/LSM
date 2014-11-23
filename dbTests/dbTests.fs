@@ -47,8 +47,8 @@ let simple_write() =
     for i in 1 .. 100 do
         let s = i.ToString()
         insert d s s
+    let seg = db.WriteSegment d
     async {
-        let! seg = db.WriteSegment d
         use! tx = db.RequestWriteLock()
         tx.CommitSegments [ seg ]
     } |> Async.RunSynchronously
@@ -91,7 +91,7 @@ let multiple() =
 
         let count = rand.Next(10000)
         let d = createMemorySegment rand count
-        let! g = db.WriteSegment(d)
+        let g = db.WriteSegment(d)
         do! commit g
     }
 
@@ -127,8 +127,8 @@ let lexographic() =
     insert d "8" ""
     insert d "10" ""
     insert d "20" ""
+    let g = db.WriteSegment(d)
     async {
-        let! g = db.WriteSegment(d)
         use! tx = db.RequestWriteLock()
         tx.CommitSegments [ g ]
     } |> Async.RunSynchronously
@@ -179,13 +179,13 @@ let weird() =
         let sk = i.ToString("00000")
         let sv = i.ToString()
         insert t2 sk sv
+    let g1 = db.WriteSegment t1
+    let g2 = db.WriteSegment t2
     async {
-        let! g1 = db.WriteSegment t1
         use! tx = db.RequestWriteLock()
         tx.CommitSegments [ g1 ]
     } |> Async.RunSynchronously
     async {
-        let! g2 = db.WriteSegment t2
         use! tx = db.RequestWriteLock()
         tx.CommitSegments [ g2 ]
     } |> Async.RunSynchronously
