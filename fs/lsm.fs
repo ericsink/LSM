@@ -321,7 +321,7 @@ type private PageBuilder(pgsz:int) =
     let buf:byte[] = Array.zeroCreate pgsz
 
     member this.Reset() = cur <- 0
-    member this.Write(s:Stream) = s.Write(buf, 0, buf.Length)
+    member this.Write(s:Stream) = s.AsyncWrite(buf, 0, buf.Length) 
     member this.PageSize = buf.Length
     member this.Buffer = buf
     member this.Position = cur
@@ -851,7 +851,7 @@ module bt =
             blk:PageBlock
         }
 
-    let CreateFromSortedSequenceOfKeyValuePairs(fs:Stream, pageManager:IPages, source:seq<kvp>) = 
+    let CreateFromSortedSequenceOfKeyValuePairs(fs:Stream, pageManager:IPages, source:seq<kvp>) = async {
         let pageSize = pageManager.PageSize
         let token = pageManager.Begin()
         let pbOverflow = PageBuilder(pageSize)
@@ -879,16 +879,17 @@ module bt =
                 sofar + num
 
             let writeRegularPages numPagesToWrite _sofar =
-                let rec fn i sofar =
+                let rec fn i sofar :Async<int> = async {
                     if i < numPagesToWrite then
                         pbOverflow.Reset()
                         // check for the partial page at the end
                         let num = Math.Min(pageSize, (len - sofar))
                         pbOverflow.PutStream(ba, num)
-                        pbOverflow.Write(fs)
-                        fn (i+1) (sofar + num)
+                        do! pbOverflow.Write(fs)
+                        return! (fn (i+1) (sofar + num))
                     else
-                        sofar
+                        return sofar
+                    }
 
                 fn 0 _sofar
 
@@ -897,7 +898,7 @@ module bt =
                 let extra = if (siz % pageSize) <> 0 then 1 else 0
                 pages + extra
 
-            let rec writeOneBlock sofarBeforeFirstPage (firstBlk:PageBlock) :PageBlock =
+            let rec writeOneBlock sofarBeforeFirstPage (firstBlk:PageBlock) :Async<PageBlock> = async {
                 // each trip through this loop will write out one
                 // block, starting with the overflow first page,
                 // followed by zero-or-more "regular" overflow pages,
@@ -907,7 +908,7 @@ module bt =
                 // the boundary page will be like a regular overflow page,
                 // headerless, but it is four bytes smaller.
                 if sofarBeforeFirstPage >= len then
-                    firstBlk
+                    return firstBlk
                 else
                     let sofarAfterFirstPage = buildFirstPage sofarBeforeFirstPage
                     // note that we haven't written this page yet.  we may have to fix
@@ -917,17 +918,17 @@ module bt =
                         pbOverflow.SetPageFlag(FLAG_BOUNDARY_NODE)
                         let blk = pageManager.GetBlock(token)
                         pbOverflow.SetLastInt32(blk.firstPage)
-                        pbOverflow.Write(fs)
+                        do! pbOverflow.Write(fs)
                         utils.SeekPage(fs, pageSize, blk.firstPage)
-                        writeOneBlock sofarAfterFirstPage blk
+                        return! writeOneBlock sofarAfterFirstPage blk
                     else 
                         let firstRegularPageNumber = firstBlk.firstPage + 1
                         // assert sofar <= len
                         if sofarAfterFirstPage = len then
                             // the first page is also the last one
                             pbOverflow.SetLastInt32(0) // number of regular pages following
-                            pbOverflow.Write(fs)
-                            PageBlock(firstRegularPageNumber,firstBlk.lastPage)
+                            do! pbOverflow.Write(fs)
+                            return PageBlock(firstRegularPageNumber,firstBlk.lastPage)
                         else
                             // assert sofar < len
 
@@ -964,7 +965,7 @@ module bt =
                                 pbOverflow.SetPageFlag(FLAG_ENDS_ON_BOUNDARY)
 
                             // now we can write the first page
-                            pbOverflow.Write(fs)
+                            do! pbOverflow.Write(fs)
 
                             // write out the regular pages.  these are full pages
                             // of data, with no header and no footer.  the last
@@ -973,7 +974,7 @@ module bt =
                             // these don't have a header, and they don't have a
                             // boundary ptr at the end.
 
-                            let sofarAfterRegularPages = writeRegularPages numRegularPages sofarAfterFirstPage
+                            let! sofarAfterRegularPages = writeRegularPages numRegularPages sofarAfterFirstPage
 
                             if needed > availableBeforeBoundary then
                                 // assert sofar < len
@@ -987,11 +988,12 @@ module bt =
                                 let sofarAfterBoundaryPage = buildBoundaryPage sofarAfterRegularPages
                                 let blk = pageManager.GetBlock(token)
                                 pbOverflow.SetLastInt32(blk.firstPage)
-                                pbOverflow.Write(fs)
+                                do! pbOverflow.Write(fs)
                                 utils.SeekPage(fs, pageSize, blk.firstPage)
-                                writeOneBlock sofarAfterBoundaryPage blk
+                                return! writeOneBlock sofarAfterBoundaryPage blk
                             else
-                                PageBlock(firstRegularPageNumber + numRegularPages, firstBlk.lastPage)
+                                return PageBlock(firstRegularPageNumber + numRegularPages, firstBlk.lastPage)
+                }
 
             writeOneBlock 0 startingBlk
 
@@ -1001,15 +1003,16 @@ module bt =
             pb.PutVarint(int64 k.Length)
             pb.PutArray(k)
 
-        let putOverflow strm (blk:PageBlock) =
+        let putOverflow strm (blk:PageBlock) = async {
             let overflowFirstPage = blk.firstPage
-            let newBlk = writeOverflow blk strm
+            let! newBlk = writeOverflow blk strm
             pb.PutByte(FLAG_OVERFLOW)
             pb.PutVarint(strm.Length)
             pb.PutInt32(overflowFirstPage)
-            newBlk
+            return newBlk
+            }
 
-        let writeLeaves (leavesBlk:PageBlock) :PageBlock*(pgitem list)*int =
+        let writeLeaves (leavesBlk:PageBlock) :Async<PageBlock*(pgitem list)*int> = async {
             // 2 for the page type and flags
             // 4 for the prev page
             // 2 for the stored count
@@ -1017,7 +1020,7 @@ module bt =
             let LEAF_PAGE_OVERHEAD = 2 + 4 + 2 + 4
             let OFFSET_COUNT_PAIRS = 6
 
-            let writeLeaf st isRootPage = 
+            let writeLeaf st isRootPage = async {
                 pb.PutInt16At (OFFSET_COUNT_PAIRS, st.keys.Length)
                 let thisPageNumber = st.blk.firstPage
                 let firstLeaf = if List.isEmpty st.leaves then thisPageNumber else st.firstLeaf
@@ -1031,12 +1034,13 @@ module bt =
                         newBlk
                     else
                         PageBlock(thisPageNumber + 1, st.blk.lastPage)
-                pb.Write(fs)
+                do! pb.Write(fs)
                 pb.Reset()
                 if nextBlk.firstPage <> (thisPageNumber+1) then utils.SeekPage(fs, pageSize, nextBlk.firstPage)
-                {keys=[]; firstLeaf=firstLeaf; blk=nextBlk; leaves=pgitem(thisPageNumber,List.head st.keys)::st.leaves}
+                return {keys=[]; firstLeaf=firstLeaf; blk=nextBlk; leaves=pgitem(thisPageNumber,List.head st.keys)::st.leaves}
+                }
 
-            let foldLeaf st (pair:kvp) = 
+            let foldLeaf (ast:Async<LeafState>) (pair:kvp) = async {
                 let k = pair.Key
                 let v = pair.Value
                 // assert k <> null
@@ -1055,7 +1059,7 @@ module bt =
                 let neededForBothInline = neededForKeyInline + neededForValueInline
                 let neededForKeyInlineValueOverflow = neededForKeyInline + neededForValueOverflow
 
-                let maybeWriteLeaf st = 
+                let maybeWriteLeaf st = async {
                     let available = pb.Available - sizeof<int32> // for the lastInt32
                     let fitBothInline = (available >= neededForBothInline)
                     let wouldFitBothInlineOnNextPage = ((pageSize - LEAF_PAGE_OVERHEAD) >= neededForBothInline)
@@ -1066,9 +1070,10 @@ module bt =
                     let writeThisPage = (not (List.isEmpty st.keys)) && (not fitBothInline) && (wouldFitBothInlineOnNextPage || ( (not fitKeyInlineValueOverflow) && (not fitBothOverflow) ) )
 
                     if writeThisPage then
-                        writeLeaf st false
+                        return! writeLeaf st false
                     else
-                        st
+                        return st
+                    }
 
                 let initLeaf (st:LeafState) =
                     if pb.Position = 0 then
@@ -1083,12 +1088,12 @@ module bt =
                     else
                         st
 
-                let addPairToLeaf (st:LeafState) =
+                let addPairToLeaf (st:LeafState) = async {
                     let available = pb.Available - sizeof<int32> // for the lastInt32
                     let fitBothInline = (available >= neededForBothInline)
                     let fitKeyInlineValueOverflow = (available >= neededForKeyInlineValueOverflow)
                     let {keys=_;blk=blk} = st
-                    let newBlk = 
+                    let! newBlk = async {
                         if fitBothInline then
                             putKeyWithLength k
                             if null = v then
@@ -1098,40 +1103,46 @@ module bt =
                                 pb.PutByte(0uy)
                                 pb.PutVarint(int64 vlen)
                                 pb.PutStream(v, int vlen)
-                            blk
+                            return blk
                         else
                             // TODO is it possible for v to be a tombstone here?
 
                             if fitKeyInlineValueOverflow then
                                 putKeyWithLength k
 
-                                putOverflow v blk
+                                return! putOverflow v blk
                             else
-                                let tmpBlk = putOverflow (new MemoryStream(k)) blk
-                                putOverflow v tmpBlk
-                    {st with blk=newBlk;keys=k::st.keys}
+                                let! tmpBlk = putOverflow (new MemoryStream(k)) blk
+                                return! putOverflow v tmpBlk
+                        }
+                    return {st with blk=newBlk;keys=k::st.keys}
+                    }
                         
                 // this is the body of the foldLeaf function
-                maybeWriteLeaf st |> initLeaf |> addPairToLeaf
+                let! st = ast
+                let! mid = maybeWriteLeaf st
+                return! mid |> initLeaf |> addPairToLeaf
+                }
 
             // this is the body of writeLeaves
             //let source = seq { csr.First(); while csr.IsValid() do yield (csr.Key(), csr.Value()); csr.Next(); done }
-            let initialState = {firstLeaf=0;keys=[];leaves=[];blk=leavesBlk}
-            let middleState = Seq.fold foldLeaf initialState source
-            let finalState = 
+            let initialState = async { return {firstLeaf=0;keys=[];leaves=[];blk=leavesBlk} }
+            let! middleState = Seq.fold foldLeaf initialState source
+            let! finalState = 
                 if not (List.isEmpty middleState.keys) then
                     let isRootNode = List.isEmpty middleState.leaves
                     writeLeaf middleState isRootNode
                 else
-                    middleState
+                    async { return middleState }
             let {blk=blk;leaves=leaves;firstLeaf=firstLeaf} = finalState
-            (blk,leaves,firstLeaf)
+            return (blk,leaves,firstLeaf)
+            }
 
         // this is the body of Create
         let startingBlk = pageManager.GetBlock(token)
         utils.SeekPage(fs, pageSize, startingBlk.firstPage)
 
-        let (blkAfterLeaves, leaves, firstLeaf) = writeLeaves startingBlk
+        let! (blkAfterLeaves, leaves, firstLeaf) = writeLeaves startingBlk
 
         // all the leaves are written.
         // now write the parent pages.
@@ -1141,7 +1152,7 @@ module bt =
 
         let lastLeaf = leaves.[0].page
 
-        let writeParentNodes (startingBlk:PageBlock) children =
+        let writeParentNodes (startingBlk:PageBlock) children = async {
             // 2 for the page type and flags
             // 2 for the stored count
             // 5 for the extra ptr we will add at the end, a varint, 5 is worst case
@@ -1173,7 +1184,7 @@ module bt =
                         putKeyWithLength k
                 List.iter fn items
 
-            let writeParentPage st (pair:pgitem) isRootNode =
+            let writeParentPage st (pair:pgitem) isRootNode = async {
                 let pagenum = pair.page
                 let k = pair.key
                 let {items=items; blk=blk; overflows=overflows; nextGeneration=nextGeneration} = st
@@ -1195,11 +1206,13 @@ module bt =
                             newBlk
                         else
                             PageBlock(thisPageNumber+1,blk.lastPage)
-                pb.Write(fs)
+                do! pb.Write(fs)
                 if nextBlk.firstPage <> (thisPageNumber+1) then utils.SeekPage(fs, pageSize, nextBlk.firstPage)
-                {sofar=0; items=[]; blk=nextBlk; overflows=Map.empty; nextGeneration=pgitem(thisPageNumber,k)::nextGeneration}
+                return {sofar=0; items=[]; blk=nextBlk; overflows=Map.empty; nextGeneration=pgitem(thisPageNumber,k)::nextGeneration}
+                }
 
-            let foldParent (pair:pgitem) st =
+            let foldParent (pair:pgitem) (ast:Async<ParentState>) = async {
+                let! st = ast
                 let pagenum = pair.page
                 let k = pair.key
 
@@ -1208,7 +1221,7 @@ module bt =
                 let neededForOverflow = neededEitherWay + sizeof<int32>
                 let couldBeRoot = (List.isEmpty st.nextGeneration)
 
-                let maybeWriteParent st = 
+                let maybeWriteParent st = async {
                     let available = calcAvailable (st.sofar) couldBeRoot
                     let fitsInline = (available >= neededForInline)
                     let wouldFitInlineOnNextPage = ((pageSize - PARENT_PAGE_OVERHEAD) >= neededForInline)
@@ -1218,9 +1231,10 @@ module bt =
 
                     if writeThisPage then
                         // assert sofar > 0
-                        writeParentPage st pair false
+                        return! writeParentPage st pair false
                     else
-                        st
+                        return st
+                    }
 
                 let initParent st = 
                     if st.sofar = 0 then
@@ -1228,41 +1242,47 @@ module bt =
                     else
                         st
 
-                let addKeyToParent st = 
+                let addKeyToParent st = async {
                     let {sofar=sofar; items=items; blk=blk; overflows=overflows} = st
                     let stateWithK = {st with items=pair :: items}
                     if calcAvailable sofar (List.isEmpty st.nextGeneration) >= neededForInline then
-                        {stateWithK with sofar=sofar + neededForInline}
+                        return {stateWithK with sofar=sofar + neededForInline}
                     else
                         let keyOverflowFirstPage = blk.firstPage
-                        let newBlk = writeOverflow blk (new MemoryStream(k))
-                        {stateWithK with sofar=sofar + neededForOverflow; blk=newBlk; overflows=overflows.Add(k,keyOverflowFirstPage)}
+                        let! newBlk = writeOverflow blk (new MemoryStream(k))
+                        return {stateWithK with sofar=sofar + neededForOverflow; blk=newBlk; overflows=overflows.Add(k,keyOverflowFirstPage)}
+                    }
 
 
                 // this is the body of the foldParent function
-                maybeWriteParent st |> initParent |> addKeyToParent
+                let! mid = maybeWriteParent st
+                return! mid |> initParent |> addKeyToParent
+                }
 
             // this is the body of writeParentNodes
             // children is in reverse order.  so List.head children is actually the very last child.
             let lastChild = List.head children
-            let initialState = {nextGeneration=[];sofar=0;items=[];blk=startingBlk;overflows=Map.empty}
-            let middleState = List.foldBack foldParent (List.tail children) initialState 
+            let initialState = async { return {nextGeneration=[];sofar=0;items=[];blk=startingBlk;overflows=Map.empty} }
+            let! middleState = List.foldBack foldParent (List.tail children) initialState 
             let isRootNode = (List.isEmpty middleState.nextGeneration)
-            let finalState = writeParentPage middleState lastChild isRootNode
+            let! finalState = writeParentPage middleState lastChild isRootNode
             let {blk=blk;nextGeneration=ng} = finalState
-            (blk,ng)
+            return (blk,ng)
+            }
 
-        let rec writeOneLayerOfParentPages (blk:PageBlock) (children:pgitem list) :int32 =
+        let rec writeOneLayerOfParentPages (blk:PageBlock) (children:pgitem list) :Async<int32> = async {
             if children.Length > 1 then
-                let (newBlk,newChildren) = writeParentNodes blk children
-                writeOneLayerOfParentPages newBlk newChildren
+                let! (newBlk,newChildren) = writeParentNodes blk children
+                return! writeOneLayerOfParentPages newBlk newChildren
             else
-                children.[0].page
+                return children.[0].page
+            }
 
-        let rootPage = writeOneLayerOfParentPages blkAfterLeaves leaves
+        let! rootPage = writeOneLayerOfParentPages blkAfterLeaves leaves
 
         let g = pageManager.End(token, rootPage)
-        (g,rootPage)
+        return (g,rootPage)
+        }
 
     type private myOverflowReadStream(_fs:Stream, pageSize:int, _firstPage:int, _len:int) =
         inherit Stream()
@@ -2061,7 +2081,7 @@ type Database(_io:IDatabaseFile) =
 
     let critSectionHeader = obj()
 
-    let writeHeader hdr =
+    let writeHeader hdr = 
         let pb = PageBuilder(HEADER_SIZE_IN_BYTES)
         pb.PutInt32(pageSize)
 
@@ -2076,7 +2096,7 @@ type Database(_io:IDatabaseFile) =
             ) hdr.currentState
 
         fsMine.Seek(0L, SeekOrigin.Begin) |> ignore
-        pb.Write(fsMine)
+        pb.Write(fsMine) |> Async.RunSynchronously
         fsMine.Flush()
 
     let consolidateBlockList h =
@@ -2156,16 +2176,17 @@ type Database(_io:IDatabaseFile) =
                     false
             )
 
-        let merge () = 
+        let merge () = async {
             // TODO this is silly if segs has only one item in it
             let h = header
             let cursors = List.map (fun g -> getCursor h g) segs
             use mc = MultiCursor.Create cursors
             let pairs = CursorUtils.ToSortedSequenceOfKeyValuePairs mc
             use fs = io.OpenForWriting() // TODO pool and reuse?
-            let (g,_) = BTreeSegment.CreateFromSortedSequence(fs, pageManager, pairs)
+            let! (g,_) = BTreeSegment.CreateFromSortedSequence(fs, pageManager, pairs)
             printfn "merged %A to get %A" segs g
-            g
+            return g
+            }
 
         let storePendingMerge g =
             lock critSectionPendingMerges (fun () ->
@@ -2175,7 +2196,7 @@ type Database(_io:IDatabaseFile) =
 
         if requestMerge () then
             let later = async {
-                let g = merge ()
+                let! g = merge ()
                 storePendingMerge g
                 return g
             }
@@ -2320,15 +2341,17 @@ type Database(_io:IDatabaseFile) =
             // for background writes as well.
             GC.SuppressFinalize(this)
 
-        member this.WriteSegmentFromSortedSequence(pairs:seq<kvp>) =
+        member this.WriteSegmentFromSortedSequence(pairs:seq<kvp>) = async {
             use fs = io.OpenForWriting() // TODO pool and reuse?
-            let (g,_) = BTreeSegment.CreateFromSortedSequence(fs, pageManager, pairs)
-            g
+            let! (g,_) = BTreeSegment.CreateFromSortedSequence(fs, pageManager, pairs)
+            return g
+            }
 
-        member this.WriteSegment(pairs:System.Collections.Generic.IDictionary<byte[],Stream>) =
+        member this.WriteSegment(pairs:System.Collections.Generic.IDictionary<byte[],Stream>) = async {
             use fs = io.OpenForWriting() // TODO pool and reuse?
-            let (g,_) = BTreeSegment.SortAndCreate(fs, pageManager, pairs)
-            g
+            let! (g,_) = BTreeSegment.SortAndCreate(fs, pageManager, pairs)
+            return g
+            }
 
         member this.MergeAll() =
             let segs = header.currentState

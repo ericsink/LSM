@@ -62,7 +62,7 @@ let main argv =
         let d = createMemorySegment rand count
         let q2 = DateTime.Now
         printfn "dict: %f" ((q2-q1).TotalMilliseconds)
-        let g = db.WriteSegment(d)
+        let! g = db.WriteSegment(d)
         let q3 = DateTime.Now
         printfn "segment: %f" ((q3-q2).TotalMilliseconds)
         do! commit g
