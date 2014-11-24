@@ -29,6 +29,22 @@ let insert (ds:dseg) (sk:string) (sv:string) =
     let v = new MemoryStream(System.Text.Encoding.UTF8.GetBytes (sv))
     ds.[k] <- v
 
+let count_keys_forward (csr:ICursor) =
+    let mutable count = 0
+    csr.First()
+    while csr.IsValid() do
+        count <- count + 1
+        csr.Next()
+    count
+
+let count_keys_backward (csr:ICursor) =
+    let mutable count = 0
+    csr.Last()
+    while csr.IsValid() do
+        count <- count + 1
+        csr.Prev()
+    count
+
 [<Fact>]
 let empty_cursor() = 
     let f = dbf("empty_cursor" + tid())
@@ -230,3 +246,147 @@ let weird() =
     // and all combos give the same answer.
     Assert.Equal<string>("00148", s); 
 
+[<Fact>]
+let blobs() = 
+    let r = Random(501)
+    let f = dbf("blobs" + tid())
+    use db = new Database(f) :> IDatabase
+    let t1 = dseg()
+    for i in 1 .. 1000 do
+        let k:byte[] = Array.zeroCreate (r.Next(10000))
+        let v:byte[] = Array.zeroCreate (r.Next(10000))
+        for q in 0 .. k.Length-1 do
+            k.[q] <- r.Next(255) |> byte
+        for q in 0 .. v.Length-1 do
+            v.[q] <- r.Next(255) |> byte
+        t1.[k] <- new MemoryStream(v)
+    let g = db.WriteSegment(t1)
+    async {
+        use! tx = db.RequestWriteLock()
+        tx.CommitSegments [ g ]
+    } |> Async.RunSynchronously
+    use csr = db.OpenCursor()
+    for k in t1.Keys do
+        let tvstrm = t1.[k]
+        tvstrm.Seek(0L, SeekOrigin.Begin) |> ignore
+        let tv = utils.ReadAll(tvstrm)
+        csr.Seek(k, SeekOp.SEEK_EQ)
+        Assert.True(csr.IsValid())
+        Assert.Equal(tv.Length, csr.ValueLength())
+        let tb1 = utils.ReadAll(csr.Value())
+        Assert.Equal(0, bcmp.Compare tv tb1)
+        // TODO ReadAll_SmallChunks
+
+[<Fact>]
+let hundredk() = 
+    let f = dbf("hundredk" + tid())
+    use db = new Database(f) :> IDatabase
+    let t1 = dseg()
+    for i in 1 .. 100000 do
+        let sk = (i*2).ToString()
+        let sv = i.ToString()
+        insert t1 sk sv
+    let g = db.WriteSegment(t1)
+    async {
+        use! tx = db.RequestWriteLock()
+        tx.CommitSegments [ g ]
+    } |> Async.RunSynchronously
+
+[<Fact>]
+let no_le_ge_multicursor() = 
+    let f = dbf("no_le_ge_multicursor" + tid())
+    use db = new Database(f) :> IDatabase
+    let t1 = dseg()
+    insert t1 "c" "3"
+    insert t1 "g" "7"
+    let g1 = db.WriteSegment(t1)
+    async {
+        use! tx = db.RequestWriteLock()
+        tx.CommitSegments [ g1 ]
+    } |> Async.RunSynchronously
+    let t2 = dseg()
+    insert t2 "e" "5"
+    let g2 = db.WriteSegment(t2)
+    async {
+        use! tx = db.RequestWriteLock()
+        tx.CommitSegments [ g2 ]
+    } |> Async.RunSynchronously
+    use csr = db.OpenCursor()
+    csr.Seek ("a" |> to_utf8, SeekOp.SEEK_LE)
+    Assert.False (csr.IsValid ())
+
+    csr.Seek ("d" |> to_utf8, SeekOp.SEEK_LE)
+    Assert.True (csr.IsValid ())
+
+    csr.Seek ("f" |> to_utf8, SeekOp.SEEK_GE)
+    Assert.True (csr.IsValid ())
+
+    csr.Seek ("h" |> to_utf8, SeekOp.SEEK_GE)
+    Assert.False (csr.IsValid ())
+
+[<Fact>]
+let seek_ge_le_bigger() = 
+    let f = dbf("seek_ge_le_bigger" + tid())
+    use db = new Database(f) :> IDatabase
+    let t1 = dseg()
+    for i in 0 .. 10000-1 do
+        let sk = (i*2).ToString()
+        let sv = i.ToString()
+        insert t1 sk sv
+    let g = db.WriteSegment(t1)
+    async {
+        use! tx = db.RequestWriteLock()
+        tx.CommitSegments [ g ]
+    } |> Async.RunSynchronously
+    use csr = db.OpenCursor()
+    csr.Seek (to_utf8 "8088", SeekOp.SEEK_EQ);
+    Assert.True (csr.IsValid ());
+
+    csr.Seek (to_utf8 "8087", SeekOp.SEEK_EQ);
+    Assert.False (csr.IsValid ());
+
+    csr.Seek (to_utf8 "8087", SeekOp.SEEK_LE);
+    Assert.True (csr.IsValid ());
+    Assert.Equal<string> ("8086", csr.Key () |> from_utf8);
+
+    csr.Seek (to_utf8 "8087", SeekOp.SEEK_GE);
+    Assert.True (csr.IsValid ());
+    Assert.Equal<string> ("8088", csr.Key () |> from_utf8);
+
+[<Fact>]
+let seek_ge_le() = 
+    let f = dbf("seek_ge_le" + tid())
+    use db = new Database(f) :> IDatabase
+    let t1 = dseg()
+    insert t1 "a" "1"
+    insert t1 "c" "3"
+    insert t1 "e" "5"
+    insert t1 "g" "7"
+    insert t1 "i" "9"
+    insert t1 "k" "11"
+    insert t1 "m" "13"
+    insert t1 "o" "15"
+    insert t1 "q" "17"
+    insert t1 "s" "19"
+    insert t1 "u" "21"
+    insert t1 "w" "23"
+    insert t1 "y" "25"
+    let g = db.WriteSegment(t1)
+    async {
+        use! tx = db.RequestWriteLock()
+        tx.CommitSegments [ g ]
+    } |> Async.RunSynchronously
+    use csr = db.OpenCursor()
+    Assert.Equal (13, count_keys_forward (csr));
+    Assert.Equal (13, count_keys_backward (csr));
+
+    csr.Seek (to_utf8 "n", SeekOp.SEEK_EQ);
+    Assert.False (csr.IsValid ());
+
+    csr.Seek (to_utf8 "n", SeekOp.SEEK_LE);
+    Assert.True (csr.IsValid ());
+    Assert.Equal<string> ("m", csr.Key () |> from_utf8);
+
+    csr.Seek (to_utf8 "n", SeekOp.SEEK_GE);
+    Assert.True (csr.IsValid ());
+    Assert.Equal<string> ("o", csr.Key () |> from_utf8);
