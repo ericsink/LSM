@@ -451,3 +451,46 @@ let tombstone() =
     lc.Prev ();
     Assert.Equal<string> ("a", lc.Key () |> from_utf8);
 
+[<Fact>]
+let overwrite() = 
+    let f = dbf("overwrite" + tid())
+    use db = new Database(f) :> IDatabase
+    let t1 = dseg()
+    insert t1 "a" "1"
+    insert t1 "b" "2"
+    insert t1 "c" "3"
+    insert t1 "d" "4"
+    let g1 = db.WriteSegment(t1)
+    async {
+        use! tx = db.RequestWriteLock()
+        tx.CommitSegments [ g1 ]
+    } |> Async.RunSynchronously
+    let getb() =
+        use csr = db.OpenCursor()
+        csr.Seek(to_utf8 "b", SeekOp.SEEK_EQ)
+        csr.Value() |> utils.ReadAll |> from_utf8
+    Assert.Equal<string>("2", getb())
+    let t2 = dseg()
+    insert t2 "b" "5"
+    let g2 = db.WriteSegment(t2)
+    async {
+        use! tx = db.RequestWriteLock()
+        tx.CommitSegments [ g2 ]
+    } |> Async.RunSynchronously
+    Assert.Equal<string>("5", getb())
+
+[<Fact>]
+let empty_val() = 
+    let f = dbf("empty_val" + tid())
+    use db = new Database(f) :> IDatabase
+    let t1 = dseg()
+    insert t1 "_" ""
+    let g1 = db.WriteSegment(t1)
+    async {
+        use! tx = db.RequestWriteLock()
+        tx.CommitSegments [ g1 ]
+    } |> Async.RunSynchronously
+    use csr = db.OpenCursor()
+    csr.Seek(to_utf8 "_", SeekOp.SEEK_EQ)
+    Assert.True (csr.IsValid ());
+    Assert.Equal (0, csr.ValueLength ());
