@@ -10,11 +10,11 @@ open Zumero.LSM
 open Zumero.LSM.fs
 
 let tid() = 
-    let g = Guid.NewGuid().ToString()
+    let g = "_" + Guid.NewGuid().ToString()
     let g2 = g.Replace ("{", "")
     let g3 = g2.Replace ("}", "")
     let g4 = g3.Replace ("-", "")
-    g4
+    g4 + "_tmptest"
 
 type dseg = Dictionary<byte[],Stream>
 
@@ -325,6 +325,32 @@ let no_le_ge_multicursor() =
     Assert.False (csr.IsValid ())
 
 [<Fact>]
+let no_le_ge() = 
+    let f = dbf("no_le_ge" + tid())
+    use db = new Database(f) :> IDatabase
+    let t1 = dseg()
+    insert t1 "c" "3"
+    insert t1 "g" "7"
+    insert t1 "e" "5"
+    let g1 = db.WriteSegment(t1)
+    async {
+        use! tx = db.RequestWriteLock()
+        tx.CommitSegments [ g1 ]
+    } |> Async.RunSynchronously
+    use csr = db.OpenCursor()
+    csr.Seek ("a" |> to_utf8, SeekOp.SEEK_LE)
+    Assert.False (csr.IsValid ())
+
+    csr.Seek ("d" |> to_utf8, SeekOp.SEEK_LE)
+    Assert.True (csr.IsValid ())
+
+    csr.Seek ("f" |> to_utf8, SeekOp.SEEK_GE)
+    Assert.True (csr.IsValid ())
+
+    csr.Seek ("h" |> to_utf8, SeekOp.SEEK_GE)
+    Assert.False (csr.IsValid ())
+
+[<Fact>]
 let seek_ge_le_bigger() = 
     let f = dbf("seek_ge_le_bigger" + tid())
     use db = new Database(f) :> IDatabase
@@ -494,3 +520,47 @@ let empty_val() =
     csr.Seek(to_utf8 "_", SeekOp.SEEK_EQ)
     Assert.True (csr.IsValid ());
     Assert.Equal (0, csr.ValueLength ());
+
+// TODO long_vals
+// TODO seek_ge_le_bigger_multicursor
+// TODO delete_not_there
+
+[<Fact>]
+let delete_not_there() = 
+    let f = dbf("delete_not_there" + tid())
+    use db = new Database(f) :> IDatabase
+    let t1 = dseg()
+    insert t1 "a" "1"
+    insert t1 "b" "2"
+    insert t1 "c" "3"
+    insert t1 "d" "4"
+    let g1 = db.WriteSegment(t1)
+    async {
+        use! tx = db.RequestWriteLock()
+        tx.CommitSegments [ g1 ]
+    } |> Async.RunSynchronously
+    let t2 = dseg()
+    t2.[to_utf8 "e"] <- null
+    let g2 = db.WriteSegment(t2)
+    async {
+        use! tx = db.RequestWriteLock()
+        tx.CommitSegments [ g2 ]
+    } |> Async.RunSynchronously
+    use csr = db.OpenCursor()
+    Assert.Equal (4, count_keys_forward (csr));
+    Assert.Equal (4, count_keys_backward (csr));
+
+[<Fact>]
+let delete_nothing_there() = 
+    let f = dbf("delete_nothing_there" + tid())
+    use db = new Database(f) :> IDatabase
+    let t2 = dseg()
+    t2.[to_utf8 "e"] <- null
+    let g2 = db.WriteSegment(t2)
+    async {
+        use! tx = db.RequestWriteLock()
+        tx.CommitSegments [ g2 ]
+    } |> Async.RunSynchronously
+    use csr = db.OpenCursor()
+    Assert.Equal (0, count_keys_forward (csr));
+    Assert.Equal (0, count_keys_backward (csr));
