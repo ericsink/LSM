@@ -390,3 +390,64 @@ let seek_ge_le() =
     csr.Seek (to_utf8 "n", SeekOp.SEEK_GE);
     Assert.True (csr.IsValid ());
     Assert.Equal<string> ("o", csr.Key () |> from_utf8);
+
+[<Fact>]
+let tombstone() = 
+    let f = dbf("tombstone" + tid())
+    use db = new Database(f) :> IDatabase
+    let t1 = dseg()
+    insert t1 "a" "1"
+    insert t1 "b" "2"
+    insert t1 "c" "3"
+    insert t1 "d" "4"
+    let g1 = db.WriteSegment(t1)
+    async {
+        use! tx = db.RequestWriteLock()
+        tx.CommitSegments [ g1 ]
+    } |> Async.RunSynchronously
+    let t2 = dseg()
+    t2.[to_utf8 "b"] <- null
+    let g2 = db.WriteSegment(t2)
+    async {
+        use! tx = db.RequestWriteLock()
+        tx.CommitSegments [ g2 ]
+    } |> Async.RunSynchronously
+    // TODO it would be nice to check the multicursor without the living wrapper
+    use lc = db.OpenCursor()
+    lc.First ();
+    Assert.True (lc.IsValid ());
+    Assert.Equal<string> ("a", lc.Key () |> from_utf8);
+    Assert.Equal<string> ("1", lc.Value () |> utils.ReadAll |> from_utf8);
+
+    lc.Next ();
+    Assert.True (lc.IsValid ());
+    Assert.Equal<string> ("c", lc.Key () |> from_utf8);
+    Assert.Equal<string> ("3", lc.Value () |> utils.ReadAll |> from_utf8);
+
+    lc.Next ();
+    Assert.True (lc.IsValid ());
+    Assert.Equal<string> ("d", lc.Key () |> from_utf8);
+    Assert.Equal<string> ("4", lc.Value () |> utils.ReadAll |> from_utf8);
+
+    lc.Next ();
+    Assert.False (lc.IsValid ());
+
+    Assert.Equal (3, count_keys_forward (lc));
+    Assert.Equal (3, count_keys_backward (lc));
+
+    lc.Seek (to_utf8 "b", SeekOp.SEEK_EQ);
+    Assert.False (lc.IsValid ());
+
+    lc.Seek (to_utf8 "b", SeekOp.SEEK_LE);
+    Assert.True (lc.IsValid ());
+    Assert.Equal<string> ("a", lc.Key () |> from_utf8);
+    lc.Next ();
+    Assert.True (lc.IsValid ());
+    Assert.Equal<string> ("c", lc.Key () |> from_utf8);
+
+    lc.Seek (to_utf8 "b", SeekOp.SEEK_GE);
+    Assert.True (lc.IsValid ());
+    Assert.Equal<string> ("c", lc.Key () |> from_utf8);
+    lc.Prev ();
+    Assert.Equal<string> ("a", lc.Key () |> from_utf8);
+
