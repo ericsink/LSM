@@ -521,10 +521,6 @@ let empty_val() =
     Assert.True (csr.IsValid ());
     Assert.Equal (0, csr.ValueLength ());
 
-// TODO long_vals
-// TODO seek_ge_le_bigger_multicursor
-// TODO delete_not_there
-
 [<Fact>]
 let delete_not_there() = 
     let f = dbf("delete_not_there" + tid())
@@ -564,3 +560,7 @@ let delete_nothing_there() =
     use csr = db.OpenCursor()
     Assert.Equal (0, count_keys_forward (csr));
     Assert.Equal (0, count_keys_backward (csr));
+
+// TODO long_vals
+// TODO seek_ge_le_bigger_multicursor
+

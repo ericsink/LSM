@@ -845,7 +845,7 @@ module bt =
     type private LeafState =
         // TODO considered making this a struct, but it doesn't make much/any perf difference
         {
-            keys:(byte[] list)
+            keys:(byte[] list) // TODO we apparently only use the count and head of this list
             firstLeaf:int32
             leaves:pgitem list 
             blk:PageBlock
@@ -1017,7 +1017,14 @@ module bt =
             let LEAF_PAGE_OVERHEAD = 2 + 4 + 2 + 4
             let OFFSET_COUNT_PAIRS = 6
 
-            let writeLeaf st isRootPage = 
+            let initLeaf prevPage =
+                pb.PutByte(LEAF_NODE)
+                pb.PutByte(0uy) // flags
+                pb.PutInt32 (prevPage) // prev page num.
+                pb.PutInt16 (0) // number of pairs in this page. zero for now. written at end.
+                // assert pb.Position is 8 (LEAF_PAGE_OVERHEAD - sizeof(lastInt32))
+
+            let writeLeaf st isRootPage more = 
                 pb.PutInt16At (OFFSET_COUNT_PAIRS, st.keys.Length)
                 let thisPageNumber = st.blk.firstPage
                 let firstLeaf = if List.isEmpty st.leaves then thisPageNumber else st.firstLeaf
@@ -1033,6 +1040,8 @@ module bt =
                         PageBlock(thisPageNumber + 1, st.blk.lastPage)
                 pb.Write(fs)
                 pb.Reset()
+                if more then
+                    initLeaf thisPageNumber
                 if nextBlk.firstPage <> (thisPageNumber+1) then utils.SeekPage(fs, pageSize, nextBlk.firstPage)
                 {keys=[]; firstLeaf=firstLeaf; blk=nextBlk; leaves=pgitem(thisPageNumber,List.head st.keys)::st.leaves}
 
@@ -1066,20 +1075,7 @@ module bt =
                     let writeThisPage = (not (List.isEmpty st.keys)) && (not fitBothInline) && (wouldFitBothInlineOnNextPage || ( (not fitKeyInlineValueOverflow) && (not fitBothOverflow) ) )
 
                     if writeThisPage then
-                        writeLeaf st false
-                    else
-                        st
-
-                let initLeaf (st:LeafState) =
-                    if pb.Position = 0 then
-                        pb.PutByte(LEAF_NODE)
-                        pb.PutByte(0uy) // flags
-
-                        let prevPage = if List.isEmpty st.leaves then 0 else (List.head st.leaves).page
-                        pb.PutInt32 (prevPage) // prev page num.
-                        pb.PutInt16 (0) // number of pairs in this page. zero for now. written at end.
-                        // assert pb.Position is 8 (LEAF_PAGE_OVERHEAD - sizeof(lastInt32))
-                        {st with keys=[];}
+                        writeLeaf st false true
                     else
                         st
 
@@ -1087,7 +1083,7 @@ module bt =
                     let available = pb.Available - sizeof<int32> // for the lastInt32
                     let fitBothInline = (available >= neededForBothInline)
                     let fitKeyInlineValueOverflow = (available >= neededForKeyInlineValueOverflow)
-                    let {keys=_;blk=blk} = st
+                    let blk = st.blk
                     let newBlk = 
                         if fitBothInline then
                             putKeyWithLength k
@@ -1112,16 +1108,17 @@ module bt =
                     {st with blk=newBlk;keys=k::st.keys}
                         
                 // this is the body of the foldLeaf function
-                maybeWriteLeaf st |> initLeaf |> addPairToLeaf
+                maybeWriteLeaf st |> addPairToLeaf
 
             // this is the body of writeLeaves
             //let source = seq { csr.First(); while csr.IsValid() do yield (csr.Key(), csr.Value()); csr.Next(); done }
+            initLeaf 0
             let initialState = {firstLeaf=0;keys=[];leaves=[];blk=leavesBlk}
             let middleState = Seq.fold foldLeaf initialState source
             let finalState = 
                 if not (List.isEmpty middleState.keys) then
                     let isRootNode = List.isEmpty middleState.leaves
-                    writeLeaf middleState isRootNode
+                    writeLeaf middleState isRootNode false
                 else
                     middleState
             let {blk=blk;leaves=leaves;firstLeaf=firstLeaf} = finalState
