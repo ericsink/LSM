@@ -1,4 +1,8 @@
 
+dislike putting Queue from Fsharpx right into lsm.fs
+
+consider nessos streams instead of seq<kvp>
+
 try to improve the performance of multicursor
 
 more async-ness
@@ -13,6 +17,8 @@ need to actually design the file header
 checksums for data integrity
 
 where do we store the age of the segment?
+
+need to reuse pages in the db file
 
 --
 
