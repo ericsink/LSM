@@ -845,10 +845,10 @@ module bt =
     type private LeafState =
         // TODO considered making this a struct, but it doesn't make much/any perf difference
         {
-            keys:(byte[] list) // TODO we apparently only use the count and head of this list
-            firstLeaf:int32
-            leaves:pgitem list 
-            blk:PageBlock
+            mutable keys:(byte[] list) // TODO we apparently only use the count and head of this list
+            mutable firstLeaf:int32
+            mutable leaves:pgitem list 
+            mutable blk:PageBlock
         }
 
     let CreateFromSortedSequenceOfKeyValuePairs(fs:Stream, pageManager:IPages, source:seq<kvp>) = 
@@ -1043,7 +1043,10 @@ module bt =
                 if more then
                     initLeaf thisPageNumber
                 if nextBlk.firstPage <> (thisPageNumber+1) then utils.SeekPage(fs, pageSize, nextBlk.firstPage)
-                {keys=[]; firstLeaf=firstLeaf; blk=nextBlk; leaves=pgitem(thisPageNumber,List.head st.keys)::st.leaves}
+                st.leaves <- pgitem(thisPageNumber,List.head st.keys)::st.leaves
+                st.keys <- []
+                st.firstLeaf <- firstLeaf
+                st.blk <- nextBlk
 
             let foldLeaf st (pair:kvp) = 
                 let k = pair.Key
@@ -1076,8 +1079,6 @@ module bt =
 
                     if writeThisPage then
                         writeLeaf st false true
-                    else
-                        st
 
                 let addPairToLeaf (st:LeafState) =
                     let available = pb.Available - sizeof<int32> // for the lastInt32
@@ -1105,24 +1106,23 @@ module bt =
                             else
                                 let tmpBlk = putOverflow (new MemoryStream(k)) blk
                                 putOverflow v tmpBlk
-                    {st with blk=newBlk;keys=k::st.keys}
+                    st.blk <- newBlk
+                    st.keys <- k::st.keys
                         
                 // this is the body of the foldLeaf function
-                maybeWriteLeaf st |> addPairToLeaf
+                maybeWriteLeaf st
+                addPairToLeaf st
 
             // this is the body of writeLeaves
             //let source = seq { csr.First(); while csr.IsValid() do yield (csr.Key(), csr.Value()); csr.Next(); done }
             initLeaf 0
-            let initialState = {firstLeaf=0;keys=[];leaves=[];blk=leavesBlk}
-            let middleState = Seq.fold foldLeaf initialState source
-            let finalState = 
-                if not (List.isEmpty middleState.keys) then
-                    let isRootNode = List.isEmpty middleState.leaves
-                    writeLeaf middleState isRootNode false
-                else
-                    middleState
-            let {blk=blk;leaves=leaves;firstLeaf=firstLeaf} = finalState
-            (blk,leaves,firstLeaf)
+            let st = {firstLeaf=0;keys=[];leaves=[];blk=leavesBlk}
+            let fn = foldLeaf st
+            Seq.iter fn source
+            if not (List.isEmpty st.keys) then
+                let isRootNode = List.isEmpty st.leaves
+                writeLeaf st isRootNode false
+            (st.blk,st.leaves,st.firstLeaf)
 
         // this is the body of Create
         let startingBlk = pageManager.GetBlock(token)
