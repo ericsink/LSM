@@ -1,6 +1,4 @@
 
-dislike putting Queue from Fsharpx right into lsm.fs
-
 consider nessos streams instead of seq<kvp>
 
 try to improve the performance of multicursor
