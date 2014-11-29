@@ -837,8 +837,11 @@ module bt =
                 let neededForKeyBase = 1 + Varint.SpaceNeededFor(int64 k.Length)
                 let neededForKeyInline = neededForKeyBase + k.Length
 
-                let neededForValueInline = 1 + if v<>null then Varint.SpaceNeededFor(int64 vlen) + int vlen else 0
-                let neededForValueOverflow = 1 + if v<>null then Varint.SpaceNeededFor(int64 vlen) + neededForOverflowPageNumber else 0
+                let neededForValueInline = 1 + if v<>null then Varint.SpaceNeededFor(int64 vlen) + int vlen else 1
+                let neededForValueOverflow = 
+                    1 + 
+                    if v<>null then Varint.SpaceNeededFor(int64 vlen) + neededForOverflowPageNumber 
+                    else 1 // TODO this doesn't make much sense actually. never overflow a tombstone.
 
                 let neededForBothInline = neededForKeyInline + neededForValueInline
                 let neededForKeyInlineValueOverflow = neededForKeyInline + neededForValueOverflow
@@ -875,7 +878,7 @@ module bt =
                                 pb.PutStream(v, int vlen)
                             blk
                         else
-                            // TODO is it possible for v to be a tombstone here?
+                            if null = v then failwith "never overflow a tombstone"
 
                             if fitKeyInlineValueOverflow then
                                 putKeyWithLength k
