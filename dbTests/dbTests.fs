@@ -63,8 +63,8 @@ let simple_write() =
     for i in 1 .. 100 do
         let s = i.ToString()
         insert d s s
+    let seg = db.WriteSegment d
     async {
-        let! seg = db.WriteSegment d
         use! tx = db.RequestWriteLock()
         tx.CommitSegments [ seg ]
     } |> Async.RunSynchronously
@@ -107,7 +107,7 @@ let multiple() =
 
         let count = rand.Next(10000)
         let d = createMemorySegment rand count
-        let! g = db.WriteSegment(d)
+        let g = db.WriteSegment(d)
         do! commit g
     }
 
@@ -143,8 +143,8 @@ let lexographic() =
     insert d "8" ""
     insert d "10" ""
     insert d "20" ""
+    let g = db.WriteSegment(d)
     async {
-        let! g = db.WriteSegment(d)
         use! tx = db.RequestWriteLock()
         tx.CommitSegments [ g ]
     } |> Async.RunSynchronously
@@ -195,17 +195,16 @@ let weird() =
         let sk = i.ToString("00000")
         let sv = i.ToString()
         insert t2 sk sv
-    let p1 = async {
-        let! g1 = db.WriteSegment t1
+    let g1 = db.WriteSegment t1
+    let g2 = db.WriteSegment t2
+    async {
         use! tx = db.RequestWriteLock()
         tx.CommitSegments [ g1 ]
-    }
-    let p2 = async {
-        let! g2 = db.WriteSegment t2
+    } |> Async.RunSynchronously
+    async {
         use! tx = db.RequestWriteLock()
         tx.CommitSegments [ g2 ]
-    }
-    Async.Parallel [p1; p2] |> Async.RunSynchronously |> ignore
+    } |> Async.RunSynchronously
     use csr = db.OpenCursor()
     csr.First()
     for i in 0 .. 100-1 do
@@ -261,8 +260,8 @@ let blobs() =
         for q in 0 .. v.Length-1 do
             v.[q] <- r.Next(255) |> byte
         t1.[k] <- new MemoryStream(v)
+    let g = db.WriteSegment(t1)
     async {
-        let! g = db.WriteSegment(t1)
         use! tx = db.RequestWriteLock()
         tx.CommitSegments [ g ]
     } |> Async.RunSynchronously
@@ -287,8 +286,8 @@ let hundredk() =
         let sk = (i*2).ToString()
         let sv = i.ToString()
         insert t1 sk sv
+    let g = db.WriteSegment(t1)
     async {
-        let! g = db.WriteSegment(t1)
         use! tx = db.RequestWriteLock()
         tx.CommitSegments [ g ]
     } |> Async.RunSynchronously
@@ -300,15 +299,15 @@ let no_le_ge_multicursor() =
     let t1 = dseg()
     insert t1 "c" "3"
     insert t1 "g" "7"
+    let g1 = db.WriteSegment(t1)
     async {
-        let! g1 = db.WriteSegment(t1)
         use! tx = db.RequestWriteLock()
         tx.CommitSegments [ g1 ]
     } |> Async.RunSynchronously
     let t2 = dseg()
     insert t2 "e" "5"
+    let g2 = db.WriteSegment(t2)
     async {
-        let! g2 = db.WriteSegment(t2)
         use! tx = db.RequestWriteLock()
         tx.CommitSegments [ g2 ]
     } |> Async.RunSynchronously
@@ -333,8 +332,8 @@ let no_le_ge() =
     insert t1 "c" "3"
     insert t1 "g" "7"
     insert t1 "e" "5"
+    let g1 = db.WriteSegment(t1)
     async {
-        let! g1 = db.WriteSegment(t1)
         use! tx = db.RequestWriteLock()
         tx.CommitSegments [ g1 ]
     } |> Async.RunSynchronously
@@ -360,8 +359,8 @@ let seek_ge_le_bigger() =
         let sk = (i*2).ToString()
         let sv = i.ToString()
         insert t1 sk sv
+    let g = db.WriteSegment(t1)
     async {
-        let! g = db.WriteSegment(t1)
         use! tx = db.RequestWriteLock()
         tx.CommitSegments [ g ]
     } |> Async.RunSynchronously
@@ -398,8 +397,8 @@ let seek_ge_le() =
     insert t1 "u" "21"
     insert t1 "w" "23"
     insert t1 "y" "25"
+    let g = db.WriteSegment(t1)
     async {
-        let! g = db.WriteSegment(t1)
         use! tx = db.RequestWriteLock()
         tx.CommitSegments [ g ]
     } |> Async.RunSynchronously
@@ -427,15 +426,15 @@ let tombstone() =
     insert t1 "b" "2"
     insert t1 "c" "3"
     insert t1 "d" "4"
+    let g1 = db.WriteSegment(t1)
     async {
-        let! g1 = db.WriteSegment(t1)
         use! tx = db.RequestWriteLock()
         tx.CommitSegments [ g1 ]
     } |> Async.RunSynchronously
     let t2 = dseg()
     t2.[to_utf8 "b"] <- null
+    let g2 = db.WriteSegment(t2)
     async {
-        let! g2 = db.WriteSegment(t2)
         use! tx = db.RequestWriteLock()
         tx.CommitSegments [ g2 ]
     } |> Async.RunSynchronously
@@ -487,8 +486,8 @@ let overwrite() =
     insert t1 "b" "2"
     insert t1 "c" "3"
     insert t1 "d" "4"
+    let g1 = db.WriteSegment(t1)
     async {
-        let! g1 = db.WriteSegment(t1)
         use! tx = db.RequestWriteLock()
         tx.CommitSegments [ g1 ]
     } |> Async.RunSynchronously
@@ -499,8 +498,8 @@ let overwrite() =
     Assert.Equal<string>("2", getb())
     let t2 = dseg()
     insert t2 "b" "5"
+    let g2 = db.WriteSegment(t2)
     async {
-        let! g2 = db.WriteSegment(t2)
         use! tx = db.RequestWriteLock()
         tx.CommitSegments [ g2 ]
     } |> Async.RunSynchronously
@@ -512,8 +511,8 @@ let empty_val() =
     use db = new Database(f) :> IDatabase
     let t1 = dseg()
     insert t1 "_" ""
+    let g1 = db.WriteSegment(t1)
     async {
-        let! g1 = db.WriteSegment(t1)
         use! tx = db.RequestWriteLock()
         tx.CommitSegments [ g1 ]
     } |> Async.RunSynchronously
@@ -531,15 +530,15 @@ let delete_not_there() =
     insert t1 "b" "2"
     insert t1 "c" "3"
     insert t1 "d" "4"
+    let g1 = db.WriteSegment(t1)
     async {
-        let! g1 = db.WriteSegment(t1)
         use! tx = db.RequestWriteLock()
         tx.CommitSegments [ g1 ]
     } |> Async.RunSynchronously
     let t2 = dseg()
     t2.[to_utf8 "e"] <- null
+    let g2 = db.WriteSegment(t2)
     async {
-        let! g2 = db.WriteSegment(t2)
         use! tx = db.RequestWriteLock()
         tx.CommitSegments [ g2 ]
     } |> Async.RunSynchronously
@@ -553,8 +552,8 @@ let delete_nothing_there() =
     use db = new Database(f) :> IDatabase
     let t2 = dseg()
     t2.[to_utf8 "e"] <- null
+    let g2 = db.WriteSegment(t2)
     async {
-        let! g2 = db.WriteSegment(t2)
         use! tx = db.RequestWriteLock()
         tx.CommitSegments [ g2 ]
     } |> Async.RunSynchronously

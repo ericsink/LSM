@@ -73,8 +73,8 @@ type IDatabaseFile =
 
 type IDatabase = 
     inherit IDisposable
-    abstract member WriteSegmentFromSortedSequence : seq<KeyValuePair<byte[],Stream>> -> Async<Guid>
-    abstract member WriteSegment : System.Collections.Generic.IDictionary<byte[],Stream> -> Async<Guid>
+    abstract member WriteSegmentFromSortedSequence : seq<KeyValuePair<byte[],Stream>> -> Guid
+    abstract member WriteSegment : System.Collections.Generic.IDictionary<byte[],Stream> -> Guid
 
     abstract member OpenCursor : unit->ICursor 
     // TODO consider name such as OpenLivingCursorOnCurrentState()
