@@ -564,3 +564,41 @@ let delete_nothing_there() =
 // TODO long_vals
 // TODO seek_ge_le_bigger_multicursor
 
+[<Fact>]
+let write_then_read() = 
+    let f = dbf("write_then_read" + tid())
+    let write() =
+        use db = new Database(f) :> IDatabase
+        let d = dseg()
+        for i in 1 .. 100 do
+            let s = i.ToString()
+            insert d s s
+        let seg = db.WriteSegment d
+        async {
+            use! tx = db.RequestWriteLock()
+            tx.CommitSegments [ seg ]
+        } |> Async.RunSynchronously
+        let d2 = dseg()
+        d2.[to_utf8 "73"] <- null
+        let g2 = db.WriteSegment(d2)
+        async {
+            use! tx = db.RequestWriteLock()
+            tx.CommitSegments [ g2 ]
+        } |> Async.RunSynchronously
+    write()
+    use db = new Database(f) :> IDatabase
+    use csr = db.OpenCursor()
+    csr.Seek ((42).ToString() |> to_utf8, SeekOp.SEEK_EQ)
+    Assert.True (csr.IsValid())
+    csr.Next()
+    let k = csr.Key() |> from_utf8
+    Assert.Equal<string> ("43", k)
+    csr.Seek ((73).ToString() |> to_utf8, SeekOp.SEEK_EQ)
+    Assert.False (csr.IsValid())
+    csr.Seek ((73).ToString() |> to_utf8, SeekOp.SEEK_LE)
+    Assert.True (csr.IsValid())
+    Assert.Equal<string> ("72", (csr.Key() |> from_utf8))
+    csr.Next()
+    Assert.True (csr.IsValid())
+    Assert.Equal<string> ("74", (csr.Key() |> from_utf8))
+

@@ -1623,16 +1623,11 @@ type Database(_io:IDatabaseFile) =
 
         let parse (pr:PageReader) =
             let readSegmentList () =
-                let rec f more cur =
-                    if more > 0 then
-                        let token = pr.GetArray(16)
-                        let g = Guid(token)
-                        // TODO need the list to be in the right order
-                        f (more-1) ( g :: cur)
-                    else
-                        cur
                 let count = pr.GetVarint() |> int
-                f count []
+                let a:Guid[] = Array.zeroCreate count
+                for i in 0 .. count-1 do
+                    a.[i] <- Guid(pr.GetArray(16))
+                List.ofArray a
 
             let readBlockList (prBlocks:PageReader) =
                 let rec f more cur =
