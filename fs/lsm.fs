@@ -1572,11 +1572,17 @@ type private SegmentInfoListLocation =
         len: int
     }
 
+type private SegmentInfo =
+    {
+        age: int
+        blocks: PageBlock list
+    }
+
 type private HeaderData =
     {
         currentState: Guid list
         sill: SegmentInfoListLocation
-        segments: Map<Guid,PageBlock list>
+        segments: Map<Guid,SegmentInfo>
     }
 
 type private PendingSegment() =
@@ -1650,14 +1656,15 @@ type Database(_io:IDatabaseFile) =
                 let csr = BTreeSegment.OpenCursor(ms, sill.innerPageSize, innerRootPage, null)
                 csr.First()
 
-                let rec f (cur:Map<Guid,PageBlock list>) =
+                let rec f (cur:Map<Guid,SegmentInfo>) =
                     if csr.IsValid() then
                         let g = Guid(csr.Key())
                         let prBlocks = PageReader(csr.ValueLength())
                         prBlocks.Read(csr.Value())
+                        let age = prBlocks.GetVarint() |> int
                         let blocks = readBlockList(prBlocks)
                         csr.Next()
-                        f (cur.Add(g, blocks))
+                        f (cur.Add(g, {age=age;blocks=blocks}))
                     else
                         cur
 
@@ -1736,29 +1743,32 @@ type Database(_io:IDatabaseFile) =
             blk
             )
 
-    // a block list for a segment is a single blob of bytes.
+    // a stored segmentinfo for a segment is a single blob of bytes.
+    // age
     // number of pairs
     // each pair is startBlock,lastBlock
     // all in varints
 
-    let spaceNeededForBlockList (blocks:PageBlock list) =
-        let a = List.sumBy (fun (t:PageBlock) -> Varint.SpaceNeededFor(t.firstPage |> int64) + Varint.SpaceNeededFor(t.lastPage |> int64)) blocks
-        let b = Varint.SpaceNeededFor(List.length blocks |> int64)
-        a + b
+    let spaceNeededForSegmentInfo (info:SegmentInfo) =
+        let a = List.sumBy (fun (t:PageBlock) -> Varint.SpaceNeededFor(t.firstPage |> int64) + Varint.SpaceNeededFor(t.lastPage |> int64)) info.blocks
+        let b = Varint.SpaceNeededFor(info.age |> int64)
+        let c = Varint.SpaceNeededFor(List.length info.blocks |> int64)
+        a + b + c
 
-    let buildBlockList (blocks:PageBlock list) =
-        let space = spaceNeededForBlockList blocks
+    let buildSegmentInfo (info:SegmentInfo) =
+        let space = spaceNeededForSegmentInfo info
         let pb = PageBuilder(space)
-        pb.PutVarint(List.length blocks |> int64)
-        List.iter (fun (t:PageBlock) -> pb.PutVarint(t.firstPage |> int64); pb.PutVarint(t.lastPage |> int64);) blocks
+        pb.PutVarint(info.age |> int64)
+        pb.PutVarint(List.length info.blocks |> int64)
+        List.iter (fun (t:PageBlock) -> pb.PutVarint(t.firstPage |> int64); pb.PutVarint(t.lastPage |> int64);) info.blocks
         pb.Buffer
 
     // the segment info list is a list of segments (by guid), and for
-    // each one, a block list (a blob described above).  it is written
+    // each one, a segmentinfo (a blob described above).  it is written
     // into a memory btree which always has page size 512.
 
-    let buildSegmentInfoList innerPageSize (sd:Map<Guid,PageBlock list>) = 
-        let sd2 = Map.fold (fun acc (g:Guid) blocks -> Map.add (g.ToByteArray()) ((new MemoryStream(buildBlockList blocks)) :> Stream) acc) Map.empty sd
+    let buildSegmentInfoList innerPageSize (sd:Map<Guid,SegmentInfo>) = 
+        let sd2 = Map.fold (fun acc (g:Guid) info -> Map.add (g.ToByteArray()) ((new MemoryStream(buildSegmentInfo info)) :> Stream) acc) Map.empty sd
         let ms = new MemoryStream()
         let pm = trivialMemoryPageManager(innerPageSize)
         BTreeSegment.SortAndCreate(ms, pm, sd2) |> ignore
@@ -1772,7 +1782,7 @@ type Database(_io:IDatabaseFile) =
     // a reference to the segment info list page range is recorded in the
     // header of the file.
 
-    let saveSegmentInfoList (sd:Map<Guid,PageBlock list>) = 
+    let saveSegmentInfoList (sd:Map<Guid,SegmentInfo>) = 
         let innerPageSize = 512
         let ms = buildSegmentInfoList innerPageSize sd
         let len = ms.Length |> int
@@ -1787,7 +1797,7 @@ type Database(_io:IDatabaseFile) =
 
     let getCursor h g =
         let seg = Map.find g h.segments
-        let lastBlock = List.head seg
+        let lastBlock = List.head seg.blocks
         let rootPage = lastBlock.lastPage
         let fs = io.OpenForReading() // TODO pool and reuse these?
         let hook (csr:ICursor) =
@@ -1856,7 +1866,7 @@ type Database(_io:IDatabaseFile) =
     let consolidateBlockList h =
         // TODO filter the segments by guid, ignore anything with a cursor.
         // if this is called at startup, there should be no cursors yet.  still.
-        let allBlocks = Map.fold (fun acc _ value -> value @ acc) [] h.segments
+        let allBlocks = Map.fold (fun acc _ value -> value.blocks @ acc) [] h.segments
         let sortedBlocks = List.sortBy (fun (x:PageBlock) -> x.firstPage) allBlocks
         let fldr acc (t:PageBlock) =
             let (blk:PageBlock, pile) = acc
@@ -1887,7 +1897,7 @@ type Database(_io:IDatabaseFile) =
         let mySegmentsInWaiting = Map.filter (fun g _ -> Set.contains g newGuidsAsSet) segmentsInWaiting
         lock critSectionHeader (fun () -> 
             let newState = (List.ofSeq newGuids) @ header.currentState
-            let newSegments = Map.fold (fun acc key value -> Map.add key value acc) header.segments mySegmentsInWaiting
+            let newSegments = Map.fold (fun acc g blocks -> Map.add g {age=0;blocks=blocks} acc) header.segments mySegmentsInWaiting
             let newSill = saveSegmentInfoList newSegments
             let newHeader = {currentState=newState; segments=newSegments; sill = newSill;}
             writeHeader newHeader
@@ -1978,6 +1988,8 @@ type Database(_io:IDatabaseFile) =
         let lstOld = Map.find newGuid pendingMerges
         let countOld = List.length lstOld                                         
         let oldGuidsAsSet = List.fold (fun acc g -> Set.add g acc) Set.empty lstOld
+        let lstAges = List.map (fun g -> (Map.find g header.segments).age) lstOld
+        let age = 1 + List.max lstAges
 
         lock critSectionHeader (fun () -> 
             let ndxFirstOld = List.findIndex (fun g -> g=List.head lstOld) header.currentState
@@ -1987,7 +1999,7 @@ type Database(_io:IDatabaseFile) =
             let after = List.skip (ndxFirstOld + countOld) header.currentState
             let newState = before @ (newGuid :: after)
             let segmentsWithoutOld = Map.filter (fun g _ -> Set.contains g oldGuidsAsSet) header.segments
-            let newSegments = Map.add newGuid (Map.find newGuid segmentsInWaiting) segmentsWithoutOld
+            let newSegments = Map.add newGuid {age=age;blocks=(Map.find newGuid segmentsInWaiting)} segmentsWithoutOld
             let newSill = saveSegmentInfoList newSegments
             let newHeader = {currentState=newState; segments=newSegments; sill = newSill;}
             writeHeader newHeader

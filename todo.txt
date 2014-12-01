@@ -12,8 +12,6 @@ prefix key compression
 need to actually design the file header
 checksums for data integrity
 
-where do we store the age of the segment?
-
 need to reuse pages in the db file
 
 --
