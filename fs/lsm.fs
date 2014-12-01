@@ -1614,6 +1614,7 @@ type Database(_io:IDatabaseFile) =
     let fsMine = io.OpenForWriting()
 
     let HEADER_SIZE_IN_BYTES = 4096
+    let MAX_SEGMENTS = 200
 
     let WASTE_PAGES_AFTER_EACH_BLOCK = 0 // TODO remove.  testing only.
     let PAGES_PER_BLOCK = 10 // TODO not hard-coded.  and 10 is way too low.
@@ -1885,37 +1886,6 @@ type Database(_io:IDatabaseFile) =
         if itIsSafeToAlsoFreeManagedObjects then
             fsMine.Close()
 
-    // only call this if you have the write lock
-    let commitSegments (newGuids:seq<Guid>) =
-        // TODO we could check to see if this guid is already in the list.
-
-        // TODO if there is more than one new segment, I suppose we could
-        // immediately start a background worker to merge them?  after the
-        // commit happens.
-
-        let newGuidsAsSet = Seq.fold (fun acc g -> Set.add g acc) Set.empty newGuids
-        let mySegmentsInWaiting = Map.filter (fun g _ -> Set.contains g newGuidsAsSet) segmentsInWaiting
-        lock critSectionHeader (fun () -> 
-            let newState = (List.ofSeq newGuids) @ header.currentState
-            let newSegments = Map.fold (fun acc g blocks -> Map.add g {age=0;blocks=blocks} acc) header.segments mySegmentsInWaiting
-            let newSill = saveSegmentInfoList newSegments
-            let newHeader = {currentState=newState; segments=newSegments; sill = newSill;}
-            writeHeader newHeader
-            // TODO the pages for the old location of the segment info list
-            // could now be reused
-            header <- newHeader
-        )
-        // all the segments we just committed can now be removed from
-        // the segments in waiting list
-        lock critSectionSegmentsInWaiting (fun () ->
-            let remainingSegmentsInWaiting = Map.filter (fun g _ -> Set.contains g newGuidsAsSet |> not) segmentsInWaiting
-            segmentsInWaiting <- remainingSegmentsInWaiting
-        )
-        // note that we intentionally do not release the lock here.
-        // you can change the segment list more than once while holding
-        // the lock.  the lock gets released when you Dispose() it.
-
-
     let critSectionMerging = obj()
     // this keeps track of which segments are currently involved in a merge.
     // a segment can only be in one merge at a time.  in effect, this is a list
@@ -1998,7 +1968,7 @@ type Database(_io:IDatabaseFile) =
             let before = List.take ndxFirstOld header.currentState
             let after = List.skip (ndxFirstOld + countOld) header.currentState
             let newState = before @ (newGuid :: after)
-            let segmentsWithoutOld = Map.filter (fun g _ -> Set.contains g oldGuidsAsSet) header.segments
+            let segmentsWithoutOld = Map.filter (fun g _ -> not (Set.contains g oldGuidsAsSet)) header.segments
             let newSegments = Map.add newGuid {age=age;blocks=(Map.find newGuid segmentsInWaiting)} segmentsWithoutOld
             let newSill = saveSegmentInfoList newSegments
             let newHeader = {currentState=newState; segments=newSegments; sill = newSill;}
@@ -2017,6 +1987,48 @@ type Database(_io:IDatabaseFile) =
         // note that we intentionally do not release the lock here.
         // you can change the segment list more than once while holding
         // the lock.  the lock gets released when you Dispose() it.
+
+    // only call this if you have the write lock
+    let commitSegments (newGuids:seq<Guid>) =
+        // TODO we could check to see if this guid is already in the list.
+
+        let newGuidsAsSet = Seq.fold (fun acc g -> Set.add g acc) Set.empty newGuids
+        let countNewGuids = Set.count newGuidsAsSet
+
+        if List.length header.currentState + countNewGuids > MAX_SEGMENTS then
+            // the header is going to become overfull.  we need to merge something
+            // right now to make space.
+            let segs = List.take 10 header.currentState // TODO temp hack
+            match tryMerge segs with
+            | Some f ->
+                let blk = async {
+                    let! g = f
+                    commitMerge g
+                }
+                blk |> Async.RunSynchronously
+            | None -> () // TODO we need to try something else
+
+        let mySegmentsInWaiting = Map.filter (fun g _ -> Set.contains g newGuidsAsSet) segmentsInWaiting
+        lock critSectionHeader (fun () -> 
+            let newState = (List.ofSeq newGuids) @ header.currentState
+            let newSegments = Map.fold (fun acc g blocks -> Map.add g {age=0;blocks=blocks} acc) header.segments mySegmentsInWaiting
+            let newSill = saveSegmentInfoList newSegments
+            let newHeader = {currentState=newState; segments=newSegments; sill = newSill;}
+            writeHeader newHeader
+            // TODO the pages for the old location of the segment info list
+            // could now be reused
+            header <- newHeader
+        )
+        // all the segments we just committed can now be removed from
+        // the segments in waiting list
+        lock critSectionSegmentsInWaiting (fun () ->
+            let remainingSegmentsInWaiting = Map.filter (fun g _ -> Set.contains g newGuidsAsSet |> not) segmentsInWaiting
+            segmentsInWaiting <- remainingSegmentsInWaiting
+        )
+        // note that we intentionally do not release the lock here.
+        // you can change the segment list more than once while holding
+        // the lock.  the lock gets released when you Dispose() it.
+
 
     let critSectionInTransaction = obj()
     let mutable inTransaction = false 

@@ -29,6 +29,14 @@ let insert (ds:dseg) (sk:string) (sv:string) =
     let v = new MemoryStream(System.Text.Encoding.UTF8.GetBytes (sv))
     ds.[k] <- v
 
+let createMemorySegment (rand:Random) count =
+    let d = Dictionary<byte[],Stream>()
+    for q in 1 .. count do
+        let sk = rand.Next().ToString()
+        let sv = rand.Next().ToString()
+        insert d sk sv
+    d
+
 let count_keys_forward (csr:ICursor) =
     let mutable count = 0
     csr.First()
@@ -81,14 +89,6 @@ let multiple() =
     use db = new Database(f) :> IDatabase
     let NUM = 10
     let rand = Random()
-
-    let createMemorySegment (rand:Random) count =
-        let d = Dictionary<byte[],Stream>()
-        for q in 1 .. count do
-            let sk = rand.Next().ToString()
-            let sv = rand.Next().ToString()
-            insert d sk sv
-        d
 
     let start i = async {
         let commit g = async {
@@ -601,4 +601,20 @@ let write_then_read() =
     csr.Next()
     Assert.True (csr.IsValid())
     Assert.Equal<string> ("74", (csr.Key() |> from_utf8))
+
+[<Fact>]
+let many_segments() = 
+    let f = dbf("many_segments" + tid())
+    use db = new Database(f) :> IDatabase
+    let NUM = 300
+    let rand = Random()
+
+    for i in 0 .. NUM-1 do
+        let count = 1+rand.Next(100)
+        let d = createMemorySegment rand count
+        let g = db.WriteSegment(d)
+        async {
+            use! tx = db.RequestWriteLock()
+            tx.CommitSegments [ g ]
+        } |> Async.RunSynchronously
 

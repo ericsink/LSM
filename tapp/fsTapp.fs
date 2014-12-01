@@ -22,8 +22,17 @@ let insert (ds:dseg) (sk:string) (sv:string) =
     let v = new MemoryStream(System.Text.Encoding.UTF8.GetBytes (sv))
     ds.[k] <- v
 
+let createMemorySegment (rand:Random) count =
+    let d = Dictionary<byte[],Stream>()
+    for q in 1 .. count do
+        let sk = rand.Next().ToString()
+        let sv = rand.Next().ToString()
+        insert d sk sv
+    d
+
 [<EntryPoint>]
 let main argv = 
+    #if not
     let f = dbf("test1_" + tid())
     use db = new Database(f) :> IDatabase
     let NUM = 50
@@ -98,6 +107,22 @@ let main argv =
         printfn "cursor: %f" ((q2-q1).TotalMilliseconds)
 
     loop()
+    #endif
+
+    let f = dbf("many_segments" + tid())
+    use db = new Database(f) :> IDatabase
+    let NUM = 300
+    let rand = Random()
+
+    for i in 0 .. NUM-1 do
+        let count = 1+rand.Next(100)
+        let d = createMemorySegment rand count
+        let g = db.WriteSegment(d)
+        async {
+            use! tx = db.RequestWriteLock()
+            tx.CommitSegments [ g ]
+        } |> Async.RunSynchronously
+
 
     0 // return an integer exit code
 
