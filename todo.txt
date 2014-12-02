@@ -1,5 +1,11 @@
 
-consider nessos streams instead of seq<kvp>
+net45 in project names is wrong now
+
+need an f# test that uses something like simplepagemanager
+to put multiple segments in separate files.  tests that
+work below the level of IDatabase.
+
+need to reuse pages in the db file
 
 try to improve the performance of multicursor
 
@@ -12,9 +18,11 @@ prefix key compression
 need to actually design the file header
 checksums for data integrity
 
-need to reuse pages in the db file
+bloom filters?
 
 --
+
+consider nessos streams instead of seq<kvp>
 
 need something to make sure that only one Database object
 exists for a given file
@@ -109,15 +117,6 @@ the cs code just becoming part of the fs version's test suite?
 once "on disk", a segment is immutable.  reads only.
 only the first (in-memory) segment needs to support writes.
 
-bloom filters?
-
---------
-
-is there any chance we should be using things like Stream.ReadAsync?
-async-ness would propagate all the way up...  or should the decision
-to use async/threads be up to the caller, like the threads test I've
-got?
-
 --------
 
 can we write an overflow without knowing its length in
@@ -134,11 +133,5 @@ we know its length.
 
 --------
 
-
-shorter keys in the parent nodes?
-
-prefix key compression?
-
-how to plug in page-level encryption?
-
+create shorter synthetic keys in the parent nodes?
 
