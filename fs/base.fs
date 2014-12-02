@@ -60,12 +60,8 @@ type ICursor =
 
 type IWriteLock =
     inherit IDisposable
-    abstract member Tag : string with get, set // TODO just for diagnostic purposes
     abstract member CommitSegments : seq<Guid> -> unit
     abstract member CommitMerge : Guid -> unit
-    // TODO we could have NeverMind(seq<Guid>) which explicitly 
-    // frees segments in waiting.  but this wouldn't necessarily
-    // need to be here in IWriteLock.
 
 type IDatabaseFile =
     abstract member OpenForReading : unit -> Stream
@@ -81,6 +77,9 @@ type IDatabase =
     // TODO consider OpenCursorOnSegmentsInWaiting(seq<Guid>)
     // TODO consider ListSegmentsInCurrentState()
     // TODO consider OpenCursorOnSpecificSegment(seq<Guid>)
+
+    // TODO consider NeverMind(seq<Guid>) which explicitly 
+    // frees segments in waiting.
 
     abstract member RequestWriteLock : unit->Async<IWriteLock>
 

@@ -1512,6 +1512,7 @@ type BTreeSegment =
         bt.CreateFromSortedSequenceOfKeyValuePairs (fs, pageManager, source)
 
     static member CreateFromSortedSequence(fs:Stream, pageManager:IPages, pairs:seq<byte[]*Stream>) = 
+        // TODO do we need this one?
         let source = seq { for t in pairs do yield kvp(fst t,snd t) done }
         bt.CreateFromSortedSequenceOfKeyValuePairs (fs, pageManager, source)
 
@@ -1866,7 +1867,7 @@ type Database(_io:IDatabaseFile) =
 
     let consolidateBlockList h =
         // TODO filter the segments by guid, ignore anything with a cursor.
-        // if this is called at startup, there should be no cursors yet.  still.
+        // if this is called at startup, so there should be no cursors yet.  still.
         let allBlocks = Map.fold (fun acc _ value -> value.blocks @ acc) [] h.segments
         let sortedBlocks = List.sortBy (fun (x:PageBlock) -> x.firstPage) allBlocks
         let fldr acc (t:PageBlock) =
@@ -2029,59 +2030,59 @@ type Database(_io:IDatabaseFile) =
     let mutable inTransaction = false 
     let mutable waiting = Queue.empty
 
-    let createWriteLockObject fnCommitSegmentsHook = // TODO this func could move inside getWriteLock
-        let isReleased = ref false
-        let whence = ref "TODO" // TODO diagnostic tool.  remove later.
-        let release() =
-            isReleased := true
-            lock critSectionInTransaction (fun () ->
-                if Queue.isEmpty waiting then
-                    printfn "nobody waiting. tx done"
-                    inTransaction <- false
-                else
-                    printfn "queue has %d waiting.  next." (Queue.length waiting)
-                    let f = Queue.head waiting
-                    waiting <- Queue.tail waiting
-                    printfn "giving lock to next"
+    let getWriteLock fnCommitSegmentsHook =
+        let whence = Environment.StackTrace // TODO remove this.  it was just for debugging.
+        let createWriteLockObject () =
+            let isReleased = ref false
+            let release() =
+                isReleased := true
+                let next = lock critSectionInTransaction (fun () ->
+                    if Queue.isEmpty waiting then
+                        printfn "nobody waiting. tx done"
+                        inTransaction <- false
+                        None
+                    else
+                        printfn "queue has %d waiting.  next." (Queue.length waiting)
+                        let f = Queue.head waiting
+                        waiting <- Queue.tail waiting
+                        printfn "giving lock to next"
+                        Some f
+                )
+                match next with
+                | Some f ->
                     f()
                     printfn "done giving lock to next"
-            )
-        {
-        new System.Object() with
-            override this.Finalize() =
-                let already = !isReleased
-                if not already then failwith (sprintf "a writelock must be explicitly disposed: %s" !whence)
+                | None -> ()
+            {
+            new System.Object() with
+                override this.Finalize() =
+                    let already = !isReleased
+                    if not already then failwith (sprintf "a writelock must be explicitly disposed: %s" whence)
 
-        interface IWriteLock with
-            member this.Dispose() =
-                let already = !isReleased
-                if already then failwith "only dispose a writelock once"
-                release()
-                GC.SuppressFinalize(this)
+            interface IWriteLock with
+                member this.Dispose() =
+                    let already = !isReleased
+                    if already then failwith "only dispose a writelock once"
+                    release()
+                    GC.SuppressFinalize(this)
 
-            member this.Tag 
-                with get() = !whence
-                and set(value) = whence := value
+                member this.CommitMerge(g:Guid) =
+                    let already = !isReleased
+                    if already then failwith "don't use a writelock after you dispose it"
+                    commitMerge g
+                    // note that we intentionally do not release the lock here.
+                    // you can change the segment list more than once while holding
+                    // the lock.  the lock gets released when you Dispose() it.
 
-            member this.CommitMerge(g:Guid) =
-                let already = !isReleased
-                if already then failwith "don't use a writelock after you dispose it"
-                commitMerge g
-                // note that we intentionally do not release the lock here.
-                // you can change the segment list more than once while holding
-                // the lock.  the lock gets released when you Dispose() it.
+                member this.CommitSegments(newGuids:seq<Guid>) =
+                    let already = !isReleased
+                    if already then failwith "don't use a writelock after you dispose it"
+                    commitSegments newGuids fnCommitSegmentsHook
+                    // note that we intentionally do not release the lock here.
+                    // you can change the segment list more than once while holding
+                    // the lock.  the lock gets released when you Dispose() it.
+            }
 
-            member this.CommitSegments(newGuids:seq<Guid>) =
-                let already = !isReleased
-                if already then failwith "don't use a writelock after you dispose it"
-                commitSegments newGuids fnCommitSegmentsHook
-                // note that we intentionally do not release the lock here.
-                // you can change the segment list more than once while holding
-                // the lock.  the lock gets released when you Dispose() it.
-        }
-
-    let getWriteLock fnCommitSegmentsHook =
-        let whence = Environment.StackTrace
         lock critSectionInTransaction (fun () -> 
             if inTransaction then 
                 let ev = new System.Threading.ManualResetEventSlim()
@@ -2093,16 +2094,14 @@ type Database(_io:IDatabaseFile) =
                     let! b = Async.AwaitWaitHandle ev.WaitHandle
                     ev.Dispose()
                     // TODO if b?
-                    let lck = createWriteLockObject fnCommitSegmentsHook 
-                    lck.Tag <- whence
+                    let lck = createWriteLockObject () 
                     return lck
                 }
             else 
                 //printfn "No waiting: %O" whence
                 inTransaction <- true
                 async { 
-                    let lck = createWriteLockObject fnCommitSegmentsHook 
-                    lck.Tag <- whence
+                    let lck = createWriteLockObject () 
                     return lck
                 }
             )
@@ -2117,7 +2116,7 @@ type Database(_io:IDatabaseFile) =
             // (List.skip) we always merge the stuff at the end of the level so things
             // don't get split up when more segments get prepended to the
             // beginning.
-            // TODO if we only do a little bit here, we might want to schedule a job to do more.
+            // TODO if we only do partial here, we might want to schedule a job to do more.
             let grp = if all then segmentsOfAge else List.skip (count - min) segmentsOfAge
             match grp |> tryMerge with
             | Some f ->
@@ -2151,18 +2150,6 @@ type Database(_io:IDatabaseFile) =
     let critSectionBackgroundMergeJobs = obj()
     let mutable backgroundMergeJobs = List.empty
 
-    let dispose itIsSafeToAlsoFreeManagedObjects =
-        //let blocks = consolidateBlockList header
-        //printfn "%A" blocks
-        if itIsSafeToAlsoFreeManagedObjects then
-            // we don't want to close fsMine until all background jobs
-            // are completed.
-            let bg = backgroundMergeJobs
-            if not (List.isEmpty bg) then
-                bg |> Async.Parallel |> Async.RunSynchronously |> ignore
-
-            fsMine.Close()
-
     let startBackgroundMergeJob f =
         async {
             let! completor = Async.StartChild f
@@ -2181,6 +2168,18 @@ type Database(_io:IDatabaseFile) =
         match checkForMerge 0 4 false true with
         | Some f -> startBackgroundMergeJob f
         | None -> ()
+
+    let dispose itIsSafeToAlsoFreeManagedObjects =
+        //let blocks = consolidateBlockList header
+        //printfn "%A" blocks
+        if itIsSafeToAlsoFreeManagedObjects then
+            // we don't want to close fsMine until all background jobs
+            // are completed.
+            let bg = backgroundMergeJobs
+            if not (List.isEmpty bg) then
+                bg |> Async.Parallel |> Async.RunSynchronously |> ignore
+
+            fsMine.Close()
 
     override this.Finalize() =
         dispose false
