@@ -87,7 +87,8 @@ type IDatabase =
     // TODO need a way to tell the db to merge segments.  should it always just choose?
     // or can the caller get a list of segments, plus info about them, and help decide?
 
-    abstract member MergeAll : unit -> Async<Guid> option
+    abstract member MergeAll : unit -> Async<Guid> option // TODO remove
+    abstract member Merge : int*int*bool -> Async<unit> option // TODO Async<Guid list>
 
 module CursorUtils =
     let ToSortedSequenceOfKeyValuePairs (csr:ICursor) = seq { csr.First(); while csr.IsValid() do yield new KeyValuePair<byte[],Stream>(csr.Key(), csr.Value()); csr.Next(); done }

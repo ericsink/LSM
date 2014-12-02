@@ -1880,12 +1880,6 @@ type Database(_io:IDatabaseFile) =
         // TODO note that the the blocks consumed by the segmentInfoList are ignored here
         consolidated
 
-    let dispose itIsSafeToAlsoFreeManagedObjects =
-        //let blocks = consolidateBlockList header
-        //printfn "%A" blocks
-        if itIsSafeToAlsoFreeManagedObjects then
-            fsMine.Close()
-
     let critSectionMerging = obj()
     // this keeps track of which segments are currently involved in a merge.
     // a segment can only be in one merge at a time.  in effect, this is a list
@@ -1964,7 +1958,9 @@ type Database(_io:IDatabaseFile) =
         lock critSectionHeader (fun () -> 
             let ndxFirstOld = List.findIndex (fun g -> g=List.head lstOld) header.currentState
             let subListOld = List.skip ndxFirstOld header.currentState |> List.take countOld
-            if lstOld <> subListOld then failwith "segments not found"
+            // if the next line fails, it probably means that somebody tried to merge a set
+            // of segments that are not contiguous in currentState.
+            if lstOld <> subListOld then failwith (sprintf "segments not found: lstOld = %A  currentState = %A" lstOld header.currentState)
             let before = List.take ndxFirstOld header.currentState
             let after = List.skip (ndxFirstOld + countOld) header.currentState
             let newState = before @ (newGuid :: after)
@@ -1989,24 +1985,20 @@ type Database(_io:IDatabaseFile) =
         // the lock.  the lock gets released when you Dispose() it.
 
     // only call this if you have the write lock
-    let commitSegments (newGuids:seq<Guid>) =
+    let commitSegments (newGuids:seq<Guid>) fnHook =
         // TODO we could check to see if this guid is already in the list.
 
         let newGuidsAsSet = Seq.fold (fun acc g -> Set.add g acc) Set.empty newGuids
-        let countNewGuids = Set.count newGuidsAsSet
 
+        #if not // TODO
+        let countNewGuids = Set.count newGuidsAsSet
         if List.length header.currentState + countNewGuids > MAX_SEGMENTS then
             // the header is going to become overfull.  we need to merge something
             // right now to make space.
-            let segs = List.take 10 header.currentState // TODO temp hack
-            match tryMerge segs with
-            | Some f ->
-                let blk = async {
-                    let! g = f
-                    commitMerge g
-                }
-                blk |> Async.RunSynchronously
+            match checkForMerge 0 2 false with
+            | Some f -> f |> Async.RunSynchronously
             | None -> () // TODO we need to try something else
+        #endif
 
         let mySegmentsInWaiting = Map.filter (fun g _ -> Set.contains g newGuidsAsSet) segmentsInWaiting
         lock critSectionHeader (fun () -> 
@@ -2029,12 +2021,15 @@ type Database(_io:IDatabaseFile) =
         // you can change the segment list more than once while holding
         // the lock.  the lock gets released when you Dispose() it.
 
+        match fnHook with
+        | Some f -> f()
+        | None -> ()
 
     let critSectionInTransaction = obj()
     let mutable inTransaction = false 
     let mutable waiting = Queue.empty
 
-    let rec createWriteLockObject() =
+    let createWriteLockObject fnCommitSegmentsHook = // TODO this func could move inside getWriteLock
         let isReleased = ref false
         let whence = ref "TODO" // TODO diagnostic tool.  remove later.
         let release() =
@@ -2048,7 +2043,7 @@ type Database(_io:IDatabaseFile) =
                     let f = Queue.head waiting
                     waiting <- Queue.tail waiting
                     printfn "giving lock to next"
-                    f(createWriteLockObject())
+                    f()
                     printfn "done giving lock to next"
             )
         {
@@ -2079,30 +2074,109 @@ type Database(_io:IDatabaseFile) =
             member this.CommitSegments(newGuids:seq<Guid>) =
                 let already = !isReleased
                 if already then failwith "don't use a writelock after you dispose it"
-                commitSegments newGuids
+                commitSegments newGuids fnCommitSegmentsHook
                 // note that we intentionally do not release the lock here.
                 // you can change the segment list more than once while holding
                 // the lock.  the lock gets released when you Dispose() it.
         }
 
-    let getWriteLock() =
+    let getWriteLock fnCommitSegmentsHook =
         let whence = Environment.StackTrace
         lock critSectionInTransaction (fun () -> 
             if inTransaction then 
-                Async.FromContinuations (fun (ok, _, _) ->
-                    let cb (lck:IWriteLock) = 
-                        lck.Tag <- whence
-                        ok lck
-                    waiting <- Queue.conj cb waiting
-                )
+                let ev = new System.Threading.ManualResetEventSlim()
+                let cb () = ev.Set()
+                waiting <- Queue.conj cb waiting
+                //printfn "Add to wait list: %O" whence
+                async {
+                    // TODO allow specifying the timeout here?
+                    let! b = Async.AwaitWaitHandle ev.WaitHandle
+                    ev.Dispose()
+                    // TODO if b?
+                    let lck = createWriteLockObject fnCommitSegmentsHook 
+                    lck.Tag <- whence
+                    return lck
+                }
             else 
+                //printfn "No waiting: %O" whence
                 inTransaction <- true
                 async { 
-                    let lck = createWriteLockObject() 
+                    let lck = createWriteLockObject fnCommitSegmentsHook 
                     lck.Tag <- whence
                     return lck
                 }
             )
+
+    let rec checkForMerge age howMany cascade =
+        let segmentsOfAge = List.filter (fun g -> (Map.find g header.segments).age=age) header.currentState
+        // TODO we are trusting segmentsOfAge to be contiguous.  need test cases to
+        // verify that currentState always ends up with monotonically increasing age.
+        let count = List.length segmentsOfAge
+        if count > howMany then 
+            printfn "NEED MERGE %d -- %d" age count
+            // (List.skip) we always merge the stuff at the end of the level so things
+            // don't get split up when more segments get prepended to the
+            // beginning.
+            let grp = List.skip (count - howMany) segmentsOfAge
+            match grp |> tryMerge with
+            | Some f ->
+                printfn "    and it's gonna happen"
+                let blk = async {
+                    let! g = f
+                    use! tx = getWriteLock None
+                    tx.CommitMerge g
+                }
+                if cascade then
+                    let blk2 = async {
+                        do! blk
+                        printfn "now check the next level"
+                        match checkForMerge (age + 1) howMany cascade with
+                        | Some f2 -> do! f2
+                        | None -> ()
+                    }
+                    Some blk2
+                else
+                    Some blk
+            | None -> 
+                printfn "    but can't"
+                None
+        else
+            printfn "no merge needed %d -- %d" age count
+            None
+
+    let critSectionBackground = obj()
+    let mutable background = List.empty
+
+    let dispose itIsSafeToAlsoFreeManagedObjects =
+        //let blocks = consolidateBlockList header
+        //printfn "%A" blocks
+        if itIsSafeToAlsoFreeManagedObjects then
+            // we don't want to close fsMine until all background jobs
+            // are completed.
+            let bg = background
+            if not (List.isEmpty bg) then
+                bg |> Async.Parallel |> Async.RunSynchronously |> ignore
+
+            fsMine.Close()
+
+    let startBackgroundJob f =
+        async {
+            let! completor = Async.StartChild f
+            lock critSectionBackground (fun () -> 
+                background <- completor :: background 
+                )
+            let! result = completor
+            ignore result
+            lock critSectionBackground (fun () -> 
+                background <- List.filter (fun x -> not (Object.ReferenceEquals(x,completor))) background
+                )
+        } |> Async.Start
+
+    let work() = // TODO call this automerge
+        // TODO allow caller to specify settings to control or disable this
+        match checkForMerge 0 4 true with
+        | Some f -> startBackgroundJob f
+        | None -> ()
 
     override this.Finalize() =
         dispose false
@@ -2133,6 +2207,9 @@ type Database(_io:IDatabaseFile) =
             // TODO this is silly if segs has only one item in it
             tryMerge segs
 
+        member this.Merge(level:int, howMany:int, cascade:bool) =
+            checkForMerge level howMany cascade
+
         member this.OpenCursor() =
             // TODO we also need a way to open a cursor on segments in waiting
             let h = header
@@ -2141,6 +2218,6 @@ type Database(_io:IDatabaseFile) =
             LivingCursor.Create mc
 
         member this.RequestWriteLock() =
-            getWriteLock()
+            getWriteLock (Some work)
 
 
