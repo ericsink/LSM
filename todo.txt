@@ -1,10 +1,6 @@
 
 net45 in project names is wrong now
 
-need an f# test that uses something like simplepagemanager
-to put multiple segments in separate files.  tests that
-work below the level of IDatabase.
-
 need to reuse pages in the db file
 
 try to improve the performance of multicursor

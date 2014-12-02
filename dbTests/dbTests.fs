@@ -560,9 +560,6 @@ let delete_nothing_there() =
     Assert.Equal (0, count_keys_forward (csr));
     Assert.Equal (0, count_keys_backward (csr));
 
-// TODO long_vals
-// TODO seek_ge_le_bigger_multicursor
-
 [<Fact>]
 let write_then_read() = 
     let f = dbf("write_then_read" + tid())
@@ -616,4 +613,38 @@ let many_segments() =
             use! tx = db.RequestWriteLock()
             tx.CommitSegments [ g ]
         } |> Async.RunSynchronously
+
+[<Fact>]
+let seek_ge_le_bigger_multicursor() =
+    let fname = "seek_ge_le_bigger_multicursor" + tid()
+    let PAGE_SIZE = 1024
+    let f n =
+        let t1 = dseg()
+        for i in 0 .. 10000-1 do
+            insert t1 ((i * n).ToString ("0000000000")) (i.ToString())
+        use fs = new FileStream(n.ToString() + fname, FileMode.Create, FileAccess.ReadWrite, FileShare.ReadWrite)
+        let pm = SimplePageManager(PAGE_SIZE)
+        let (g,root) = BTreeSegment.SortAndCreate(fs, pm, t1)
+        root
+
+    let root4 = f 4
+    let root7 = f 7
+
+    use fs_4 = new FileStream((4).ToString() + fname, FileMode.Open, FileAccess.Read)
+    let csr_4 = BTreeSegment.OpenCursor(fs_4, PAGE_SIZE, root4, null)
+    use fs_7 = new FileStream((7).ToString() + fname, FileMode.Open, FileAccess.Read)
+    let csr_7 = BTreeSegment.OpenCursor(fs_7, PAGE_SIZE, root7, null)
+    let csr = MultiCursor.Create(csr_7, csr_4)
+    csr.Seek (to_utf8 "0000002330", SeekOp.SEEK_EQ)
+    Assert.False (csr.IsValid ())
+
+    csr.Seek (to_utf8 "0000002330", SeekOp.SEEK_LE)
+    Assert.True (csr.IsValid ())
+    Assert.Equal<string> ("0000002328", csr.Key () |> from_utf8)
+
+    csr.Seek (to_utf8 "0000002330", SeekOp.SEEK_GE)
+    Assert.True (csr.IsValid ())
+    Assert.Equal<string> ("0000002331", csr.Key () |> from_utf8)
+
+// TODO long_vals
 

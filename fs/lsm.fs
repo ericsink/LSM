@@ -1610,6 +1610,42 @@ type private PendingSegment() =
         (Guid.NewGuid(), blockList)
 
 
+type SimplePageManager(_pageSize) =
+    let pageSize = _pageSize
+
+    let WASTE_PAGES_AFTER_EACH_BLOCK = 3 // TODO remove.  testing only.
+    let PAGES_PER_BLOCK = 10 // TODO not hard-coded.  and 10 is way too low.
+
+    let critSectionNextPage = obj()
+    let mutable nextPage = 1
+
+    let getBlock num =
+        lock critSectionNextPage (fun () -> 
+            let blk = PageBlock(nextPage, nextPage+num-1) 
+            nextPage <- nextPage + num + WASTE_PAGES_AFTER_EACH_BLOCK
+            blk
+            )
+
+    interface IPages with
+        member this.PageSize = pageSize
+
+        member this.Begin() = PendingSegment() :> IPendingSegment
+
+        // note that we assume that a single pending segment is going
+        // to be written by a single thread.  the concrete PendingSegment
+        // class above is not threadsafe.
+
+        member this.GetBlock(token) =
+            let ps = token :?> PendingSegment
+            let blk = getBlock PAGES_PER_BLOCK
+            ps.AddBlock(blk)
+            blk
+
+        member this.End(token, lastPage) =
+            let ps = token :?> PendingSegment
+            let (g,_) = ps.End(lastPage)
+            g
+
 type Database(_io:IDatabaseFile) =
     let io = _io
     let fsMine = io.OpenForWriting()
