@@ -9,11 +9,11 @@ open Zumero.LSM
 open Zumero.LSM.fs
 
 let tid() = 
-    let g = Guid.NewGuid().ToString()
+    let g = "_" + Guid.NewGuid().ToString()
     let g2 = g.Replace ("{", "")
     let g3 = g2.Replace ("}", "")
     let g4 = g3.Replace ("-", "")
-    g4
+    g4 + "_tmptest"
 
 type dseg = Dictionary<byte[],Stream>
 
@@ -32,19 +32,10 @@ let createMemorySegment (rand:Random) count =
 
 [<EntryPoint>]
 let main argv = 
-    #if not
-    let f = dbf("test1_" + tid())
+    let f = dbf("test1" + tid())
     use db = new Database(f) :> IDatabase
     let NUM = 50
     let rand = Random()
-
-    let createMemorySegment (rand:Random) count =
-        let d = Dictionary<byte[],Stream>()
-        for q in 1 .. count do
-            let sk = rand.Next().ToString()
-            let sv = rand.Next().ToString()
-            insert d sk sv
-        d
 
     let start i = async {
         let commit g = async {
@@ -55,15 +46,6 @@ let main argv =
             tx.CommitSegments (g :: List.empty)
             let q5 = DateTime.Now
             printfn "commit: %f" ((q5-q4).TotalMilliseconds)
-            if i%4=0 then
-                match db.MergeAll() with
-                | Some f ->
-                    let blk = async {
-                        let! g = f
-                        tx.CommitMerge g
-                    }
-                    do! blk
-                | None -> ()
             }
 
         let q1 = DateTime.Now
@@ -83,17 +65,21 @@ let main argv =
     let go = Async.Parallel workers
     Async.RunSynchronously go |> ignore
 
+    printfn "waiting for background jobs"
+    let jobs = db.BackgroundMergeJobs()
+    jobs |> Async.Parallel |> Async.RunSynchronously |> printfn "%A"
+    printfn "waiting for the same jobs list again"
+    jobs |> Async.Parallel |> Async.RunSynchronously |> printfn "%A"
+    printfn "waiting for a new jobs list, which should be empty"
+    db.BackgroundMergeJobs() |> Async.Parallel |> Async.RunSynchronously |> printfn "%A"
+
+    printfn "merging"
     let qm1 = DateTime.Now
-    match db.MergeAll() with
-    | Some f ->
-        async {
-            let! g = f
-            use! tx = db.RequestWriteLock()
-            tx.CommitMerge g
-        } |> Async.RunSynchronously
+    match db.Merge(0, 4, true, true) with
+    | Some f -> f |> Async.RunSynchronously |> ignore
     | None -> ()
     let qm2 = DateTime.Now;
-    printfn "mergeall: %f" ((qm2-qm1).TotalMilliseconds)
+    printfn "merge: %f" ((qm2-qm1).TotalMilliseconds)
 
     let loop() = 
         use csr = db.OpenCursor()
@@ -106,9 +92,10 @@ let main argv =
         let q2 = DateTime.Now
         printfn "cursor: %f" ((q2-q1).TotalMilliseconds)
 
+    printfn "iterating over all items"
     loop()
-    #endif
 
+    #if not
     let f = dbf("many_segments" + tid())
     use db = new Database(f) :> IDatabase
     let NUM = 300
@@ -122,7 +109,7 @@ let main argv =
             use! tx = db.RequestWriteLock()
             tx.CommitSegments [ g ]
         } |> Async.RunSynchronously
-
+    #endif
 
     0 // return an integer exit code
 

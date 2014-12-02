@@ -94,16 +94,7 @@ let multiple() =
         let commit g = async {
             use! tx = db.RequestWriteLock()
             tx.CommitSegments (g :: List.empty)
-            if i%4=0 then
-                match db.MergeAll() with
-                | Some f ->
-                    let blk = async {
-                        let! g = f
-                        tx.CommitMerge g
-                    }
-                    do! blk
-                | None -> ()
-            }
+        }
 
         let count = rand.Next(10000)
         let d = createMemorySegment rand count
@@ -116,14 +107,7 @@ let multiple() =
     let go = Async.Parallel workers
     Async.RunSynchronously go |> ignore
 
-    match db.MergeAll() with
-    | Some f ->
-        async {
-            let! g = f
-            use! tx = db.RequestWriteLock()
-            tx.CommitMerge g
-        } |> Async.RunSynchronously
-    | None -> ()
+    // TODO could do some merges here?
 
     let loop() = 
         use csr = db.OpenCursor()

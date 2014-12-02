@@ -2107,17 +2107,18 @@ type Database(_io:IDatabaseFile) =
                 }
             )
 
-    let rec checkForMerge age howMany cascade =
-        let segmentsOfAge = List.filter (fun g -> (Map.find g header.segments).age=age) header.currentState
+    let rec checkForMerge level min all cascade =
+        let segmentsOfAge = List.filter (fun g -> (Map.find g header.segments).age=level) header.currentState
         // TODO we are trusting segmentsOfAge to be contiguous.  need test cases to
         // verify that currentState always ends up with monotonically increasing age.
         let count = List.length segmentsOfAge
-        if count > howMany then 
-            printfn "NEED MERGE %d -- %d" age count
+        if count > min then 
+            printfn "NEED MERGE %d -- %d" level count
             // (List.skip) we always merge the stuff at the end of the level so things
             // don't get split up when more segments get prepended to the
             // beginning.
-            let grp = List.skip (count - howMany) segmentsOfAge
+            // TODO if we only do a little bit here, we might want to schedule a job to do more.
+            let grp = if all then segmentsOfAge else List.skip (count - min) segmentsOfAge
             match grp |> tryMerge with
             | Some f ->
                 printfn "    and it's gonna happen"
@@ -2125,14 +2126,17 @@ type Database(_io:IDatabaseFile) =
                     let! g = f
                     use! tx = getWriteLock None
                     tx.CommitMerge g
+                    return [ g ]
                 }
                 if cascade then
                     let blk2 = async {
-                        do! blk
+                        let! a = blk
                         printfn "now check the next level"
-                        match checkForMerge (age + 1) howMany cascade with
-                        | Some f2 -> do! f2
-                        | None -> ()
+                        match checkForMerge (level + 1) min all cascade with
+                        | Some f2 -> 
+                            let! b = f2
+                            return b @ a
+                        | None -> return a
                     }
                     Some blk2
                 else
@@ -2141,11 +2145,11 @@ type Database(_io:IDatabaseFile) =
                 printfn "    but can't"
                 None
         else
-            printfn "no merge needed %d -- %d" age count
+            printfn "no merge needed %d -- %d" level count
             None
 
-    let critSectionBackground = obj()
-    let mutable background = List.empty
+    let critSectionBackgroundMergeJobs = obj()
+    let mutable backgroundMergeJobs = List.empty
 
     let dispose itIsSafeToAlsoFreeManagedObjects =
         //let blocks = consolidateBlockList header
@@ -2153,29 +2157,29 @@ type Database(_io:IDatabaseFile) =
         if itIsSafeToAlsoFreeManagedObjects then
             // we don't want to close fsMine until all background jobs
             // are completed.
-            let bg = background
+            let bg = backgroundMergeJobs
             if not (List.isEmpty bg) then
                 bg |> Async.Parallel |> Async.RunSynchronously |> ignore
 
             fsMine.Close()
 
-    let startBackgroundJob f =
+    let startBackgroundMergeJob f =
         async {
             let! completor = Async.StartChild f
-            lock critSectionBackground (fun () -> 
-                background <- completor :: background 
+            lock critSectionBackgroundMergeJobs (fun () -> 
+                backgroundMergeJobs <- completor :: backgroundMergeJobs 
                 )
             let! result = completor
             ignore result
-            lock critSectionBackground (fun () -> 
-                background <- List.filter (fun x -> not (Object.ReferenceEquals(x,completor))) background
+            lock critSectionBackgroundMergeJobs (fun () -> 
+                backgroundMergeJobs <- List.filter (fun x -> not (Object.ReferenceEquals(x,completor))) backgroundMergeJobs
                 )
         } |> Async.Start
 
-    let work() = // TODO call this automerge
+    let autoMerge() = 
         // TODO allow caller to specify settings to control or disable this
-        match checkForMerge 0 4 true with
-        | Some f -> startBackgroundJob f
+        match checkForMerge 0 4 false true with
+        | Some f -> startBackgroundMergeJob f
         | None -> ()
 
     override this.Finalize() =
@@ -2202,13 +2206,11 @@ type Database(_io:IDatabaseFile) =
             let (g,_) = BTreeSegment.SortAndCreate(fs, pageManager, pairs)
             g
 
-        member this.MergeAll() =
-            let segs = header.currentState
-            // TODO this is silly if segs has only one item in it
-            tryMerge segs
+        member this.Merge(level:int, howMany:int, all:bool, cascade:bool) =
+            checkForMerge level howMany all cascade
 
-        member this.Merge(level:int, howMany:int, cascade:bool) =
-            checkForMerge level howMany cascade
+        member this.BackgroundMergeJobs() = 
+            backgroundMergeJobs
 
         member this.OpenCursor() =
             // TODO we also need a way to open a cursor on segments in waiting
@@ -2218,6 +2220,6 @@ type Database(_io:IDatabaseFile) =
             LivingCursor.Create mc
 
         member this.RequestWriteLock() =
-            getWriteLock (Some work)
+            getWriteLock (Some autoMerge)
 
 
