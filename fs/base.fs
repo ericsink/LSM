@@ -73,6 +73,7 @@ type IDatabase =
     abstract member WriteSegment : System.Collections.Generic.IDictionary<byte[],Stream> -> Guid
 
     abstract member OpenCursor : unit->ICursor 
+    abstract member OpenSegment : Guid->ICursor // TODO not sure this should stay
     // TODO consider name such as OpenLivingCursorOnCurrentState()
     // TODO consider OpenCursorOnSegmentsInWaiting(seq<Guid>)
     // TODO consider ListSegmentsInCurrentState()

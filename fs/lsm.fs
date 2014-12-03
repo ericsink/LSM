@@ -1212,17 +1212,24 @@ module bt =
             currentKey <- -1
 
         let setCurrentPage (pagenum:int) = 
+            // TODO consider passing a block list for the segment into this
+            // cursor so that the code here can detect if it tries to stray
+            // out of bounds.
             currentPage <- pagenum
             resetLeaf()
-            if 0 = currentPage then false
-            else                
-                if pagenum <= rootPage then
+            if 0 = currentPage then 
+                false
+            else
+                // refuse to go to a page beyond the end of the stream
+                // TODO is this the right place for this check?    
+                let pos = ((int64 currentPage) - 1L) * int64 pr.PageSize
+                if pos + int64 pr.PageSize <= fs.Length then
                     utils.SeekPage(fs, pr.PageSize, currentPage)
                     pr.Read(fs)
                     true
                 else
                     false
-                    
+
         let getFirstAndLastLeaf() = 
             if not (setCurrentPage rootPage) then failwith "failed to read root page"
             if pr.PageType = LEAF_NODE then
@@ -1406,6 +1413,7 @@ module bt =
                             if SeekOp.SEEK_GE = sop then
                                 let nextPage =
                                     if pr.CheckPageFlag(FLAG_BOUNDARY_NODE) then pr.GetLastInt32()
+                                    else if currentPage = rootPage then 0
                                     else currentPage + 1
                                 if (setCurrentPage (nextPage) && searchForwardForLeaf ()) then
                                     readLeaf()
@@ -1490,7 +1498,10 @@ module bt =
                 if not (nextInLeaf()) then
                     let nextPage =
                         if pr.CheckPageFlag(FLAG_BOUNDARY_NODE) then pr.GetLastInt32()
-                        else currentPage + 1
+                        else if pr.PageType = LEAF_NODE then
+                            if currentPage = rootPage then 0
+                            else currentPage + 1
+                        else 0
                     if setCurrentPage (nextPage) && searchForwardForLeaf() then
                         readLeaf()
                         currentKey <- 0
@@ -1511,10 +1522,12 @@ type BTreeSegment =
     static member CreateFromSortedSequence(fs:Stream, pageManager:IPages, source:seq<kvp>) = 
         bt.CreateFromSortedSequenceOfKeyValuePairs (fs, pageManager, source)
 
-    static member CreateFromSortedSequence(fs:Stream, pageManager:IPages, pairs:seq<byte[]*Stream>) = 
+    #if not
+    static member CreateFromSortedSequence(fs:Stream, pageManager:IPages, pairs:seq<byte[]*Stream>, mess:string) = 
         // TODO do we need this one?
         let source = seq { for t in pairs do yield kvp(fst t,snd t) done }
         bt.CreateFromSortedSequenceOfKeyValuePairs (fs, pageManager, source)
+    #endif
 
     static member SortAndCreate(fs:Stream, pageManager:IPages, pairs:System.Collections.Generic.IDictionary<byte[],Stream>) =
 #if not
@@ -1529,18 +1542,21 @@ type BTreeSegment =
 #endif
         bt.CreateFromSortedSequenceOfKeyValuePairs (fs, pageManager, sortedSeq)
 
+    #if not
     static member SortAndCreate(fs:Stream, pageManager:IPages, pairs:Map<byte[],Stream>) =
         let keys:byte[][] = pairs |> Map.toSeq |> Seq.map fst |> Array.ofSeq
         let sortfunc x y = bcmp.Compare x y
         Array.sortInPlaceWith sortfunc keys
         let sortedSeq = seq { for k in keys do yield kvp(k,pairs.[k]) done }
         bt.CreateFromSortedSequenceOfKeyValuePairs (fs, pageManager, sortedSeq)
+    #endif
 
     // TODO Create overload for System.Collections.Immutable.SortedDictionary
     // which would be trusting that it was created with the right comparer?
 
     static member OpenCursor(fs, pageSize:int, rootPage:int, hook:Action<ICursor>) :ICursor =
         bt.OpenCursor(fs,pageSize,rootPage,hook)
+
 
 type trivialPendingSegment() =
     interface IPendingSegment
@@ -1577,10 +1593,12 @@ type private SegmentInfo =
     {
         age: int
         blocks: PageBlock list
-    }
+    } // with override this.ToString() = sprintf "(%d,%A)" this.age this.blocks
+
 
 type private HeaderData =
     {
+        // TODO currentState is an ordered copy of segments.Keys.  eliminate duplication?
         currentState: Guid list
         sill: SegmentInfoListLocation
         segments: Map<Guid,SegmentInfo>
@@ -1604,10 +1622,13 @@ type private PendingSegment() =
             blockList <- b :: blockList
     member this.End(lastPage) =
         let lastBlock = List.head blockList
-        if lastPage < lastBlock.lastPage then
-            //printfn "gap: %d to %d\n" (lastPage+1) lastGivenPage
-            blockList <- PageBlock(lastBlock.firstPage, lastPage) :: (List.tail blockList)
-        (Guid.NewGuid(), blockList)
+        let unused = 
+            if lastPage < lastBlock.lastPage then
+                blockList <- PageBlock(lastBlock.firstPage, lastPage) :: (List.tail blockList)
+                Some (PageBlock(lastPage+1, lastBlock.lastPage))
+            else
+                None
+        (Guid.NewGuid(), blockList, unused)
 
 
 type SimplePageManager(_pageSize) =
@@ -1643,7 +1664,7 @@ type SimplePageManager(_pageSize) =
 
         member this.End(token, lastPage) =
             let ps = token :?> PendingSegment
-            let (g,_) = ps.End(lastPage)
+            let (g,_,_) = ps.End(lastPage)
             g
 
 type Database(_io:IDatabaseFile) =
@@ -1769,17 +1790,44 @@ type Database(_io:IDatabaseFile) =
     let mutable nextPage = firstAvailablePage
     let mutable segmentsInWaiting: Map<Guid,PageBlock list> = Map.empty
 
-    // TODO need a free block list so the following code can reuse
-    // pages.  right now it always returns more blocks at the end
-    // of the file.
+    let mutable freeBlocks = List.empty
 
     let critSectionNextPage = obj()
-    let getBlock num =
+    let getBlock min =
+        let size = if min > 0 then min else PAGES_PER_BLOCK
         lock critSectionNextPage (fun () -> 
-            let blk = PageBlock(nextPage, nextPage+num-1) 
-            nextPage <- nextPage + num + WASTE_PAGES_AFTER_EACH_BLOCK
-            blk
+            // TODO make this smarter
+            if min > 0 || List.isEmpty freeBlocks then
+                let blk = PageBlock(nextPage, nextPage+size-1) 
+                nextPage <- nextPage + size + WASTE_PAGES_AFTER_EACH_BLOCK
+                //printfn "new blk: %A" blk
+                blk
+            else
+                let blk = List.head freeBlocks
+                freeBlocks <- List.tail freeBlocks
+                //printfn "reusing blk: %A, freeBlocks now: %A" blk freeBlocks
+                blk
             )
+
+    let addFreeBlocks blocks =
+        lock critSectionNextPage (fun () ->
+            // all additions to the freeBlocks list should happen here
+            // by calling this function.
+            
+            // TODO policy questions here.  should freeBlocks be sorted?
+            // how?  large blocks first, and always take the first one?
+
+            // TODO it is important that freeBlocks contains no overlaps
+
+            // TODO should we coalesce adjacent blocks?  this would require an
+            // extra sort.  once to sort everything in order, then coalesce,
+            // then sort by size descending.
+
+            let newList = freeBlocks @ blocks
+            let sorted = List.sortBy (fun (x:PageBlock) -> -(x.lastPage - x.firstPage + 1)) newList
+            freeBlocks <- sorted
+        )
+        //printfn "freeBlocks: %A" freeBlocks
 
     // a stored segmentinfo for a segment is a single blob of bytes.
     // age
@@ -1833,8 +1881,8 @@ type Database(_io:IDatabaseFile) =
     let critSectionCursors = obj()
     let mutable cursors:Map<Guid,ICursor list> = Map.empty
 
-    let getCursor h g =
-        let seg = Map.find g h.segments
+    let getCursor segs g fnFree =
+        let seg = Map.find g segs
         let lastBlock = List.head seg.blocks
         let rootPage = lastBlock.lastPage
         let fs = io.OpenForReading() // TODO pool and reuse these?
@@ -1842,17 +1890,37 @@ type Database(_io:IDatabaseFile) =
             fs.Close()
             lock critSectionCursors (fun () -> 
                 let cur = Map.find g cursors
-                let removed = List.filter (fun x -> Object.ReferenceEquals(csr, x)) cur
-                cursors <- Map.add g removed cursors
-                )
+                let removed = List.filter (fun x -> not (Object.ReferenceEquals(csr, x))) cur
+                // if we are removing the last cursor for a segment, we do need to
+                // remove that segment guid from the cursors map, not just leave
+                // it there with an empty list.
+                if List.isEmpty removed then
+                    cursors <- Map.remove g cursors
+                else
+                    cursors <- Map.add g removed cursors
+            )
+            //printfn "done with cursor %O, list now: %A" g cursors
+            match fnFree with
+            | Some f -> f g seg
+            | None -> ()
         let csr = BTreeSegment.OpenCursor(fs, pageSize, rootPage, Action<ICursor>(hook))
         lock critSectionCursors (fun () -> 
             let cur = match Map.tryFind g cursors with
                        | Some c -> c
                        | None -> []
             cursors <- Map.add g (csr :: cur) cursors
+            //printfn "added cursor %O, list now: %A" g cursors
             )
         csr
+
+    let checkForCursorOnGoneSegment g seg = // TODO dislike function name
+        // TODO worry about whether there is a race here.  is it possible
+        // for something to be in the process of opening a cursor on this
+        // segment?
+        if not (Map.containsKey g header.segments)  && not (Map.containsKey g cursors) then
+            // this segment no longer exists
+            //printfn "cursor done, segment %O is gone: %A" g seg
+            addFreeBlocks seg.blocks
 
     let critSectionSegmentsInWaiting = obj()
 
@@ -1868,16 +1936,20 @@ type Database(_io:IDatabaseFile) =
 
             member this.GetBlock(token) =
                 let ps = token :?> PendingSegment
-                let blk = getBlock PAGES_PER_BLOCK
+                let blk = getBlock 0 // min=0 means we don't care how big of a block we get
                 ps.AddBlock(blk)
                 blk
 
             member this.End(token, lastPage) =
                 let ps = token :?> PendingSegment
-                let (g,blocks) = ps.End(lastPage)
+                let (g,blocks,unused) = ps.End(lastPage)
                 lock critSectionSegmentsInWaiting (fun () -> 
                     segmentsInWaiting <- Map.add g blocks segmentsInWaiting
                 )
+                //printfn "wrote %A: %A" g blocks
+                match unused with
+                | Some b -> addFreeBlocks [ b ]
+                | None -> ()
                 g
         }
 
@@ -1944,12 +2016,12 @@ type Database(_io:IDatabaseFile) =
         let merge () = 
             // TODO this is silly if segs has only one item in it
             let h = header
-            let cursors = List.map (fun g -> getCursor h g) segs
-            use mc = MultiCursor.Create cursors
+            let clist = List.map (fun g -> getCursor h.segments g (Some checkForCursorOnGoneSegment)) segs
+            use mc = MultiCursor.Create clist
             let pairs = CursorUtils.ToSortedSequenceOfKeyValuePairs mc
             use fs = io.OpenForWriting() // TODO pool and reuse?
             let (g,_) = BTreeSegment.CreateFromSortedSequence(fs, pageManager, pairs)
-            printfn "merged %A to get %A" segs g
+            //printfn "merged %A to get %A" segs g
             g
 
         let storePendingMerge g =
@@ -1992,6 +2064,8 @@ type Database(_io:IDatabaseFile) =
         let lstAges = List.map (fun g -> (Map.find g header.segments).age) lstOld
         let age = 1 + List.max lstAges
 
+        let segmentsBeingReplaced = Set.fold (fun acc g -> Map.add g (Map.find g header.segments) acc ) Map.empty oldGuidsAsSet
+
         lock critSectionHeader (fun () -> 
             let ndxFirstOld = List.findIndex (fun g -> g=List.head lstOld) header.currentState
             let subListOld = List.skip ndxFirstOld header.currentState |> List.take countOld
@@ -2006,9 +2080,7 @@ type Database(_io:IDatabaseFile) =
             let newSill = saveSegmentInfoList newSegments
             let newHeader = {currentState=newState; segments=newSegments; sill = newSill;}
             writeHeader newHeader
-            // TODO the pages for the old location of the segment info list
-            // could now be reused
-            // TODO the pages for all the replaced segments could now be reused
+            // TODO add oldSill to freeBlocks
             header <- newHeader
         )
         removePendingMerge newGuid
@@ -2017,6 +2089,12 @@ type Database(_io:IDatabaseFile) =
         lock critSectionSegmentsInWaiting (fun () ->
             segmentsInWaiting <- Map.remove newGuid segmentsInWaiting
         )
+        //printfn "segmentsBeingReplaced: %A" segmentsBeingReplaced
+        // don't free blocks from any segment which still has a cursor
+        let segmentsToBeFreed = Map.filter (fun g _ -> not (Map.containsKey g cursors)) segmentsBeingReplaced
+        //printfn "segmentsToBeFreed: %A" segmentsToBeFreed
+        let blocksToBeFreed = Seq.fold (fun acc info -> info.blocks @ acc) List.empty (Map.values segmentsToBeFreed)
+        addFreeBlocks blocksToBeFreed
         // note that we intentionally do not release the lock here.
         // you can change the segment list more than once while holding
         // the lock.  the lock gets released when you Dispose() it.
@@ -2038,16 +2116,18 @@ type Database(_io:IDatabaseFile) =
         #endif
 
         let mySegmentsInWaiting = Map.filter (fun g _ -> Set.contains g newGuidsAsSet) segmentsInWaiting
+        //printfn "committing: %A" mySegmentsInWaiting
         lock critSectionHeader (fun () -> 
             let newState = (List.ofSeq newGuids) @ header.currentState
             let newSegments = Map.fold (fun acc g blocks -> Map.add g {age=0;blocks=blocks} acc) header.segments mySegmentsInWaiting
             let newSill = saveSegmentInfoList newSegments
             let newHeader = {currentState=newState; segments=newSegments; sill = newSill;}
             writeHeader newHeader
-            // TODO the pages for the old location of the segment info list
-            // could now be reused
+            // TODO add oldSill to freeBlocks
             header <- newHeader
         )
+        //printfn "after commit, currentState: %A" header.currentState
+        //printfn "after commit, segments: %A" header.segments
         // all the segments we just committed can now be removed from
         // the segments in waiting list
         lock critSectionSegmentsInWaiting (fun () ->
@@ -2148,7 +2228,7 @@ type Database(_io:IDatabaseFile) =
         // verify that currentState always ends up with monotonically increasing age.
         let count = List.length segmentsOfAge
         if count > min then 
-            printfn "NEED MERGE %d -- %d" level count
+            //printfn "NEED MERGE %d -- %d" level count
             // (List.skip) we always merge the stuff at the end of the level so things
             // don't get split up when more segments get prepended to the
             // beginning.
@@ -2156,7 +2236,7 @@ type Database(_io:IDatabaseFile) =
             let grp = if all then segmentsOfAge else List.skip (count - min) segmentsOfAge
             match grp |> tryMerge with
             | Some f ->
-                printfn "    and it's gonna happen"
+                //printfn "    and it's gonna happen"
                 let blk = async {
                     let! g = f
                     use! tx = getWriteLock None
@@ -2166,7 +2246,7 @@ type Database(_io:IDatabaseFile) =
                 if cascade then
                     let blk2 = async {
                         let! a = blk
-                        printfn "now check the next level"
+                        //printfn "now check the next level"
                         match checkForMerge (level + 1) min all cascade with
                         | Some f2 -> 
                             let! b = f2
@@ -2177,10 +2257,10 @@ type Database(_io:IDatabaseFile) =
                 else
                     Some blk
             | None -> 
-                printfn "    but can't"
+                //printfn "    but can't"
                 None
         else
-            printfn "no merge needed %d -- %d" level count
+            //printfn "no merge needed %d -- %d" level count
             None
 
     let critSectionBackgroundMergeJobs = obj()
@@ -2247,11 +2327,14 @@ type Database(_io:IDatabaseFile) =
         member this.BackgroundMergeJobs() = 
             backgroundMergeJobs
 
+        member this.OpenSegment(g:Guid) =
+            getCursor header.segments g (Some checkForCursorOnGoneSegment)
+
         member this.OpenCursor() =
             // TODO we also need a way to open a cursor on segments in waiting
             let h = header
-            let cursors = List.map (fun g -> getCursor h g) h.currentState
-            let mc = MultiCursor.Create cursors
+            let clist = List.map (fun g -> getCursor h.segments g (Some checkForCursorOnGoneSegment)) h.currentState
+            let mc = MultiCursor.Create clist
             LivingCursor.Create mc
 
         member this.RequestWriteLock() =

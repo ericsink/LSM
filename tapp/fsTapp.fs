@@ -47,6 +47,7 @@ let createMemorySegment (rand:Random) count =
 
 [<EntryPoint>]
 let main argv = 
+    #if not
     let f = dbf("test1" + tid())
     use db = new Database(f) :> IDatabase
     let NUM = 50
@@ -105,26 +106,39 @@ let main argv =
             count <- count + 1
             csr.Next()
         let q2 = DateTime.Now
+        printfn "count items: %d" count
         printfn "cursor: %f" ((q2-q1).TotalMilliseconds)
 
     printfn "iterating over all items"
     loop()
+    #endif
 
-    #if not
     let f = dbf("many_segments" + tid())
     use db = new Database(f) :> IDatabase
     let NUM = 300
     let rand = Random()
 
-    for i in 0 .. NUM-1 do
-        let count = 1+rand.Next(100)
+    let one count = 
         let d = createMemorySegment rand count
         let g = db.WriteSegment(d)
         async {
             use! tx = db.RequestWriteLock()
             tx.CommitSegments [ g ]
         } |> Async.RunSynchronously
-    #endif
+        use csr = db.OpenSegment(g)
+        let mutable c2 = 0
+        csr.First()
+        while csr.IsValid() do
+            c2 <- c2 + 1
+            csr.Next()
+        printfn "count items: %d" c2
+
+    //one 72
+    //one 6
+
+    for i in 0 .. NUM-1 do
+        let count = 1+rand.Next(100)
+        one count
 
     0 // return an integer exit code
 
