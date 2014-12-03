@@ -31,6 +31,7 @@ type PageBlock =
         val lastPage: int32
         new (f,l) = { firstPage = f; lastPage = l; }
         override this.ToString() = sprintf "(%d,%d)" this.firstPage this.lastPage
+        member this.CountPages with get() = this.lastPage - this.firstPage + 1
     end
 
 

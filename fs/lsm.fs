@@ -1819,12 +1819,16 @@ type Database(_io:IDatabaseFile) =
 
             // TODO it is important that freeBlocks contains no overlaps
 
+            // TODO is there such a thing as a block that is so small we
+            // don't want to bother with it?  what about a single-page block?
+
             // TODO should we coalesce adjacent blocks?  this would require an
             // extra sort.  once to sort everything in order, then coalesce,
             // then sort by size descending.
 
             let newList = freeBlocks @ blocks
-            let sorted = List.sortBy (fun (x:PageBlock) -> -(x.lastPage - x.firstPage + 1)) newList
+            // TODO here, inside a critical section, is an unhappy place to do a sort
+            let sorted = List.sortBy (fun (x:PageBlock) -> -(x.CountPages)) newList
             freeBlocks <- sorted
         )
         //printfn "freeBlocks: %A" freeBlocks
