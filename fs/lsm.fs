@@ -2070,7 +2070,7 @@ type Database(_io:IDatabaseFile) =
 
         let segmentsBeingReplaced = Set.fold (fun acc g -> Map.add g (Map.find g header.segments) acc ) Map.empty oldGuidsAsSet
 
-        lock critSectionHeader (fun () -> 
+        let oldSill = lock critSectionHeader (fun () -> 
             let ndxFirstOld = List.findIndex (fun g -> g=List.head lstOld) header.currentState
             let subListOld = List.skip ndxFirstOld header.currentState |> List.take countOld
             // if the next line fails, it probably means that somebody tried to merge a set
@@ -2084,8 +2084,9 @@ type Database(_io:IDatabaseFile) =
             let newSill = saveSegmentInfoList newSegments
             let newHeader = {currentState=newState; segments=newSegments; sill = newSill;}
             writeHeader newHeader
-            // TODO add oldSill to freeBlocks
+            let oldSill = header.sill
             header <- newHeader
+            oldSill
         )
         removePendingMerge newGuid
         // the segment we just committed can now be removed from
@@ -2098,7 +2099,11 @@ type Database(_io:IDatabaseFile) =
         let segmentsToBeFreed = Map.filter (fun g _ -> not (Map.containsKey g cursors)) segmentsBeingReplaced
         //printfn "segmentsToBeFreed: %A" segmentsToBeFreed
         let blocksToBeFreed = Seq.fold (fun acc info -> info.blocks @ acc) List.empty (Map.values segmentsToBeFreed)
-        addFreeBlocks blocksToBeFreed
+        if oldSill.firstPage > 0 && oldSill.lastPage >= oldSill.firstPage then
+            let blocksToBeFreed' = PageBlock(oldSill.firstPage, oldSill.lastPage) :: blocksToBeFreed
+            addFreeBlocks blocksToBeFreed'
+        else
+            addFreeBlocks blocksToBeFreed
         // note that we intentionally do not release the lock here.
         // you can change the segment list more than once while holding
         // the lock.  the lock gets released when you Dispose() it.
@@ -2121,14 +2126,15 @@ type Database(_io:IDatabaseFile) =
 
         let mySegmentsInWaiting = Map.filter (fun g _ -> Set.contains g newGuidsAsSet) segmentsInWaiting
         //printfn "committing: %A" mySegmentsInWaiting
-        lock critSectionHeader (fun () -> 
+        let oldSill = lock critSectionHeader (fun () -> 
             let newState = (List.ofSeq newGuids) @ header.currentState
             let newSegments = Map.fold (fun acc g blocks -> Map.add g {age=0;blocks=blocks} acc) header.segments mySegmentsInWaiting
             let newSill = saveSegmentInfoList newSegments
             let newHeader = {currentState=newState; segments=newSegments; sill = newSill;}
             writeHeader newHeader
-            // TODO add oldSill to freeBlocks
+            let oldSill = header.sill
             header <- newHeader
+            oldSill
         )
         //printfn "after commit, currentState: %A" header.currentState
         //printfn "after commit, segments: %A" header.segments
@@ -2138,6 +2144,8 @@ type Database(_io:IDatabaseFile) =
             let remainingSegmentsInWaiting = Map.filter (fun g _ -> Set.contains g newGuidsAsSet |> not) segmentsInWaiting
             segmentsInWaiting <- remainingSegmentsInWaiting
         )
+        if oldSill.firstPage > 0 && oldSill.lastPage >= oldSill.firstPage then
+            addFreeBlocks [ PageBlock(oldSill.firstPage, oldSill.lastPage) ]
         // note that we intentionally do not release the lock here.
         // you can change the segment list more than once while holding
         // the lock.  the lock gets released when you Dispose() it.
