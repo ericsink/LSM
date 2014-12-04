@@ -35,8 +35,6 @@ type pgitem =
 
 
 module utils =
-    // TODO why aren't the functions here in utils using curried params?
-
     let SeekPage(strm:Stream, pageSize, pageNumber) =
         if 0 = pageNumber then failwith "invalid page number"
         let pos = ((int64 pageNumber) - 1L) * int64 pageSize
@@ -624,7 +622,7 @@ module bt =
     type private LeafState =
         // TODO considered making this a struct, but it doesn't make much/any perf difference
         {
-            keys:(byte[] list) // TODO we apparently only use the count and head of this list
+            keys:(byte[] list) // TODO we apparently only use the count and head of this list.  but we might need the whole list later.
             firstLeaf:int32
             leaves:pgitem list 
             blk:PageBlock
@@ -992,7 +990,6 @@ module bt =
                     let fitsInline = (available >= neededForInline)
                     let wouldFitInlineOnNextPage = ((pageSize - PARENT_PAGE_OVERHEAD) >= neededForInline)
                     let fitsOverflow = (available >= neededForOverflow)
-                    // TODO this logic used to be guarded by if sofar > 0.  should it still be?
                     let writeThisPage = (not fitsInline) && (wouldFitInlineOnNextPage || (not fitsOverflow))
 
                     if writeThisPage then
@@ -1524,7 +1521,6 @@ type BTreeSegment =
 
     #if not
     static member CreateFromSortedSequence(fs:Stream, pageManager:IPages, pairs:seq<byte[]*Stream>, mess:string) = 
-        // TODO do we need this one?
         let source = seq { for t in pairs do yield kvp(fst t,snd t) done }
         bt.CreateFromSortedSequenceOfKeyValuePairs (fs, pageManager, source)
     #endif
@@ -1550,9 +1546,6 @@ type BTreeSegment =
         let sortedSeq = seq { for k in keys do yield kvp(k,pairs.[k]) done }
         bt.CreateFromSortedSequenceOfKeyValuePairs (fs, pageManager, sortedSeq)
     #endif
-
-    // TODO Create overload for System.Collections.Immutable.SortedDictionary
-    // which would be trusting that it was created with the right comparer?
 
     static member OpenCursor(fs, pageSize:int, rootPage:int, hook:Action<ICursor>) :ICursor =
         bt.OpenCursor(fs,pageSize,rootPage,hook)
@@ -1599,6 +1592,7 @@ type private SegmentInfo =
 type private HeaderData =
     {
         // TODO currentState is an ordered copy of segments.Keys.  eliminate duplication?
+        // or add assertions and tests to make sure they never get out of sync?
         currentState: Guid list
         sill: SegmentInfoListLocation
         segments: Map<Guid,SegmentInfo>
@@ -1810,8 +1804,6 @@ type Database(_io:IDatabaseFile) =
         // blocks between the last used page and the end of the file
         snd folded
 
-    // TODO need to build a list of all the available pages
-
     let listAllBlocks h =
         let headerBlock = PageBlock(1, HEADER_SIZE_IN_BYTES / pageSize)
         let currentBlocks = Map.fold (fun acc _ info -> info.blocks @ acc) [] h.segments
@@ -1865,13 +1857,14 @@ type Database(_io:IDatabaseFile) =
             // TODO policy questions here.  should freeBlocks be sorted?
             // how?  large blocks first, and always take the first one?
 
-            // TODO it is important that freeBlocks contains no overlaps
+            // TODO it is important that freeBlocks contains no overlaps.
+            // add debug-only checks to verify?
 
             // TODO is there such a thing as a block that is so small we
             // don't want to bother with it?  what about a single-page block?
             // should this be a configurable setting?
 
-            // TODO should we coalesce adjacent blocks?  this would require an
+            // TODO should we coalesce adjacent blocks?  this requires an
             // extra sort.  once to sort everything in order, then coalesce,
             // then sort by size descending.
 
@@ -1951,7 +1944,7 @@ type Database(_io:IDatabaseFile) =
         let seg = Map.find g segs
         let lastBlock = List.head seg.blocks
         let rootPage = lastBlock.lastPage
-        let fs = io.OpenForReading() // TODO pool and reuse these?
+        let fs = io.OpenForReading()
         let hook (csr:ICursor) =
             fs.Close()
             lock critSectionCursors (fun () -> 
@@ -1979,7 +1972,7 @@ type Database(_io:IDatabaseFile) =
             )
         csr
 
-    let checkForCursorOnGoneSegment g seg = // TODO dislike function name
+    let checkForGoneSegment g seg = // TODO dislike function name
         // TODO worry about whether there is a race here.  is it possible
         // for something to be in the process of opening a cursor on this
         // segment?
@@ -2066,10 +2059,10 @@ type Database(_io:IDatabaseFile) =
         let merge () = 
             // TODO this is silly if segs has only one item in it
             let h = header
-            let clist = List.map (fun g -> getCursor h.segments g (Some checkForCursorOnGoneSegment)) segs
+            let clist = List.map (fun g -> getCursor h.segments g (Some checkForGoneSegment)) segs
             use mc = MultiCursor.Create clist
             let pairs = CursorUtils.ToSortedSequenceOfKeyValuePairs mc
-            use fs = io.OpenForWriting() // TODO pool and reuse?
+            use fs = io.OpenForWriting()
             let (g,_) = BTreeSegment.CreateFromSortedSequence(fs, pageManager, pairs)
             //printfn "merged %A to get %A" segs g
             g
@@ -2104,7 +2097,7 @@ type Database(_io:IDatabaseFile) =
             pendingMerges <- Map.remove g pendingMerges
         )
 
-    // only call this if you have the write lock
+    // only call this if you have the writeLock
     let commitMerge (newGuid:Guid) =
         // TODO we could check to see if this guid is already in the list.
 
@@ -2150,11 +2143,11 @@ type Database(_io:IDatabaseFile) =
             addFreeBlocks blocksToBeFreed'
         else
             addFreeBlocks blocksToBeFreed
-        // note that we intentionally do not release the lock here.
+        // note that we intentionally do not release the writeLock here.
         // you can change the segment list more than once while holding
-        // the lock.  the lock gets released when you Dispose() it.
+        // the writeLock.  the writeLock gets released when you Dispose() it.
 
-    // only call this if you have the write lock
+    // only call this if you have the writeLock
     let commitSegments (newGuids:seq<Guid>) fnHook =
         // TODO we could check to see if this guid is already in the list.
 
@@ -2192,9 +2185,9 @@ type Database(_io:IDatabaseFile) =
         )
         if oldSill.firstPage > 0 && oldSill.lastPage >= oldSill.firstPage then
             addFreeBlocks [ PageBlock(oldSill.firstPage, oldSill.lastPage) ]
-        // note that we intentionally do not release the lock here.
+        // note that we intentionally do not release the writeLock here.
         // you can change the segment list more than once while holding
-        // the lock.  the lock gets released when you Dispose() it.
+        // the writeLock.  the writeLock gets released when you Dispose() it.
 
         match fnHook with
         | Some f -> f()
@@ -2219,13 +2212,13 @@ type Database(_io:IDatabaseFile) =
                         //printfn "queue has %d waiting.  next." (Queue.length waiting)
                         let f = Queue.head waiting
                         waiting <- Queue.tail waiting
-                        //printfn "giving lock to next"
+                        //printfn "giving writeLock to next"
                         Some f
                 )
                 match next with
                 | Some f ->
                     f()
-                    //printfn "done giving lock to next"
+                    //printfn "done giving writeLock to next"
                 | None -> ()
             {
             new System.Object() with
@@ -2244,17 +2237,17 @@ type Database(_io:IDatabaseFile) =
                     let already = !isReleased
                     if already then failwith "don't use a writelock after you dispose it"
                     commitMerge g
-                    // note that we intentionally do not release the lock here.
+                    // note that we intentionally do not release the writeLock here.
                     // you can change the segment list more than once while holding
-                    // the lock.  the lock gets released when you Dispose() it.
+                    // the writeLock.  the writeLock gets released when you Dispose() it.
 
                 member this.CommitSegments(newGuids:seq<Guid>) =
                     let already = !isReleased
                     if already then failwith "don't use a writelock after you dispose it"
                     commitSegments newGuids fnCommitSegmentsHook
-                    // note that we intentionally do not release the lock here.
+                    // note that we intentionally do not release the writeLock here.
                     // you can change the segment list more than once while holding
-                    // the lock.  the lock gets released when you Dispose() it.
+                    // the writeLock.  the writeLock gets released when you Dispose() it.
             }
 
         lock critSectionInTransaction (fun () -> 
@@ -2265,6 +2258,7 @@ type Database(_io:IDatabaseFile) =
                 //printfn "Add to wait list: %O" whence
                 async {
                     // TODO allow specifying the timeout here?
+                    // would require returning an option
                     let! b = Async.AwaitWaitHandle ev.WaitHandle
                     ev.Dispose()
                     // TODO if b?
@@ -2370,12 +2364,12 @@ type Database(_io:IDatabaseFile) =
             GC.SuppressFinalize(this)
 
         member this.WriteSegmentFromSortedSequence(pairs:seq<kvp>) =
-            use fs = io.OpenForWriting() // TODO pool and reuse?
+            use fs = io.OpenForWriting()
             let (g,_) = BTreeSegment.CreateFromSortedSequence(fs, pageManager, pairs)
             g
 
         member this.WriteSegment(pairs:System.Collections.Generic.IDictionary<byte[],Stream>) =
-            use fs = io.OpenForWriting() // TODO pool and reuse?
+            use fs = io.OpenForWriting()
             let (g,_) = BTreeSegment.SortAndCreate(fs, pageManager, pairs)
             g
 
@@ -2386,12 +2380,12 @@ type Database(_io:IDatabaseFile) =
             backgroundMergeJobs
 
         member this.OpenSegment(g:Guid) =
-            getCursor header.segments g (Some checkForCursorOnGoneSegment)
+            getCursor header.segments g (Some checkForGoneSegment)
 
         member this.OpenCursor() =
             // TODO we also need a way to open a cursor on segments in waiting
             let h = header
-            let clist = List.map (fun g -> getCursor h.segments g (Some checkForCursorOnGoneSegment)) h.currentState
+            let clist = List.map (fun g -> getCursor h.segments g (Some checkForGoneSegment)) h.currentState
             let mc = MultiCursor.Create clist
             LivingCursor.Create mc
 
