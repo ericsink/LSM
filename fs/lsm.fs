@@ -1784,13 +1784,48 @@ type Database(_io:IDatabaseFile) =
 
     let (firstReadOfHeader,pageSize,firstAvailablePage) = readHeader()
 
-    // TODO need to build a list of all the available pages
-
     let mutable header = firstReadOfHeader
     let mutable nextPage = firstAvailablePage
     let mutable segmentsInWaiting: Map<Guid,PageBlock list> = Map.empty
 
-    let mutable freeBlocks:PageBlock list = List.empty
+    let consolidateBlockList blocks =
+        let sortedBlocks = List.sortBy (fun (x:PageBlock) -> x.firstPage) blocks
+        let fldr acc (t:PageBlock) =
+            let (blk:PageBlock, pile) = acc
+            if blk.lastPage + 1 = t.firstPage then
+                (PageBlock(blk.firstPage, t.lastPage), pile)
+            else
+                (PageBlock(t.firstPage, t.lastPage), blk :: pile)
+        let folded = List.fold fldr (List.head sortedBlocks, []) (List.tail sortedBlocks)
+        let consolidated = (fst folded) :: (snd folded)
+        consolidated
+
+    let invertBlockList blocks =
+        let sortedBlocks = List.sortBy (fun (x:PageBlock) -> x.firstPage) blocks
+        let fldr acc (t:PageBlock) =
+            let (prev:PageBlock, result) = acc
+            (t, PageBlock(prev.lastPage+1, t.firstPage-1) :: result)
+        let folded = List.fold fldr (List.head sortedBlocks, []) (List.tail sortedBlocks)
+        // if is being used to calculate free blocks, it won't find any free
+        // blocks between the last used page and the end of the file
+        snd folded
+
+    // TODO need to build a list of all the available pages
+
+    let listAllBlocks h =
+        let headerBlock = PageBlock(1, HEADER_SIZE_IN_BYTES / pageSize)
+        let currentBlocks = Map.fold (fun acc _ info -> info.blocks @ acc) [] h.segments
+        let inWaitingBlocks = Map.fold (fun acc _ blocks -> blocks @ acc) [] segmentsInWaiting
+        let segmentBlocks = headerBlock :: currentBlocks @ inWaitingBlocks
+        if h.sill.firstPage > 0 then
+            PageBlock(h.sill.firstPage, h.sill.lastPage) :: segmentBlocks
+        else
+            segmentBlocks
+
+    let initialFreeBlocks = header |> listAllBlocks |> consolidateBlockList |> invertBlockList |> List.sortBy (fun (x:PageBlock) -> -(x.CountPages)) 
+    //do printfn "initialFreeBlocks: %A" initialFreeBlocks
+
+    let mutable freeBlocks:PageBlock list = initialFreeBlocks
 
     let critSectionNextPage = obj()
     let getBlock specificSize =
@@ -1840,12 +1875,25 @@ type Database(_io:IDatabaseFile) =
             // extra sort.  once to sort everything in order, then coalesce,
             // then sort by size descending.
 
-            let newList = freeBlocks @ blocks
+            // TODO if the last block of the file is free, consider just
+            // moving nextPage back.
+
+            let newList = freeBlocks @ blocks |> consolidateBlockList
             // TODO here, inside a critical section, is an unhappy place to do a sort
             let sorted = List.sortBy (fun (x:PageBlock) -> -(x.CountPages)) newList
             freeBlocks <- sorted
         )
-        //printfn "freeBlocks: %A" freeBlocks
+        #if not
+        printfn "lastPage: %d" (nextPage-1)
+        printfn "freeBlocks: %A" freeBlocks
+        let c1 = header |> listAllBlocks |> consolidateBlockList
+        printfn "usedBlocks: %A" c1
+        let c2 = c1 |> invertBlockList
+        printfn "inverted: %A" c2
+        let c3 = List.sortBy (fun (x:PageBlock) -> -(x.CountPages)) c2
+        printfn "calc: %A" c3
+        printfn ""
+        #endif
 
     // a stored segmentinfo for a segment is a single blob of bytes.
     // age
@@ -1990,22 +2038,6 @@ type Database(_io:IDatabaseFile) =
         fsMine.Seek(0L, SeekOrigin.Begin) |> ignore
         pb.Write(fsMine)
         fsMine.Flush()
-
-    let consolidateBlockList h =
-        // TODO filter the segments by guid, ignore anything with a cursor.
-        // if this is called at startup, so there should be no cursors yet.  still.
-        let allBlocks = Map.fold (fun acc _ value -> value.blocks @ acc) [] h.segments
-        let sortedBlocks = List.sortBy (fun (x:PageBlock) -> x.firstPage) allBlocks
-        let fldr acc (t:PageBlock) =
-            let (blk:PageBlock, pile) = acc
-            if blk.lastPage + 1 = t.firstPage then
-                (PageBlock(blk.firstPage, t.lastPage), pile)
-            else
-                (PageBlock(t.firstPage, t.lastPage), blk :: pile)
-        let folded = List.fold fldr (List.head sortedBlocks, []) (List.tail sortedBlocks)
-        let consolidated = (fst folded) :: (snd folded)
-        // TODO note that the the blocks consumed by the segmentInfoList are ignored here
-        consolidated
 
     let critSectionMerging = obj()
     // this keeps track of which segments are currently involved in a merge.
@@ -2180,20 +2212,20 @@ type Database(_io:IDatabaseFile) =
                 isReleased := true
                 let next = lock critSectionInTransaction (fun () ->
                     if Queue.isEmpty waiting then
-                        printfn "nobody waiting. tx done"
+                        //printfn "nobody waiting. tx done"
                         inTransaction <- false
                         None
                     else
-                        printfn "queue has %d waiting.  next." (Queue.length waiting)
+                        //printfn "queue has %d waiting.  next." (Queue.length waiting)
                         let f = Queue.head waiting
                         waiting <- Queue.tail waiting
-                        printfn "giving lock to next"
+                        //printfn "giving lock to next"
                         Some f
                 )
                 match next with
                 | Some f ->
                     f()
-                    printfn "done giving lock to next"
+                    //printfn "done giving lock to next"
                 | None -> ()
             {
             new System.Object() with
