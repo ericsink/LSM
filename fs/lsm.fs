@@ -1790,23 +1790,36 @@ type Database(_io:IDatabaseFile) =
     let mutable nextPage = firstAvailablePage
     let mutable segmentsInWaiting: Map<Guid,PageBlock list> = Map.empty
 
-    let mutable freeBlocks = List.empty
+    let mutable freeBlocks:PageBlock list = List.empty
 
     let critSectionNextPage = obj()
-    let getBlock min =
-        let size = if min > 0 then min else PAGES_PER_BLOCK
+    let getBlock specificSize =
         lock critSectionNextPage (fun () -> 
-            // TODO make this smarter
-            if min > 0 || List.isEmpty freeBlocks then
-                let blk = PageBlock(nextPage, nextPage+size-1) 
-                nextPage <- nextPage + size + WASTE_PAGES_AFTER_EACH_BLOCK
-                //printfn "new blk: %A" blk
-                blk
+            if specificSize > 0 then
+                if List.isEmpty freeBlocks || specificSize > (List.head freeBlocks).CountPages then
+                    let newBlk = PageBlock(nextPage, nextPage+specificSize-1) 
+                    nextPage <- nextPage + specificSize + WASTE_PAGES_AFTER_EACH_BLOCK
+                    //printfn "newBlk: %A" newBlk
+                    newBlk
+                else
+                    let headBlk = List.head freeBlocks
+                    if headBlk.CountPages > specificSize then
+                        // trim the block to size
+                        let blk2 = PageBlock(headBlk.firstPage, headBlk.firstPage+specificSize-1) 
+                        let remainder = PageBlock(headBlk.firstPage+specificSize, headBlk.lastPage)
+                        freeBlocks <- remainder :: List.tail freeBlocks
+                        blk2
+                    else
+                        freeBlocks <- List.tail freeBlocks
+                        //printfn "reusing blk: %A, specificSize:%d, freeBlocks now: %A" headBlk specificSize freeBlocks
+                        //printfn "blk.CountPages: %d" (headBlk.CountPages)
+                        headBlk
             else
-                let blk = List.head freeBlocks
-                freeBlocks <- List.tail freeBlocks
-                //printfn "reusing blk: %A, freeBlocks now: %A" blk freeBlocks
-                blk
+                let size = PAGES_PER_BLOCK
+                let newBlk = PageBlock(nextPage, nextPage+size-1) 
+                nextPage <- nextPage + size + WASTE_PAGES_AFTER_EACH_BLOCK
+                //printfn "newBlk: %A" newBlk
+                newBlk
             )
 
     let addFreeBlocks blocks =
@@ -1821,6 +1834,7 @@ type Database(_io:IDatabaseFile) =
 
             // TODO is there such a thing as a block that is so small we
             // don't want to bother with it?  what about a single-page block?
+            // should this be a configurable setting?
 
             // TODO should we coalesce adjacent blocks?  this would require an
             // extra sort.  once to sort everything in order, then coalesce,
@@ -1940,7 +1954,7 @@ type Database(_io:IDatabaseFile) =
 
             member this.GetBlock(token) =
                 let ps = token :?> PendingSegment
-                let blk = getBlock 0 // min=0 means we don't care how big of a block we get
+                let blk = getBlock 0 // specificSize=0 means we don't care how big of a block we get
                 ps.AddBlock(blk)
                 blk
 
