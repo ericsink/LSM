@@ -1611,6 +1611,10 @@ type private PendingSegment() =
             // page, even though its pointer to the next block goes to the very
             // next page, because its page manager happened to give it a block
             // which immediately follows the one it had.
+
+            // TODO bug:  if we consolidate blocks here, we can no longer assume that
+            // the last page of the last block is the root page.  And that's the
+            // assumption being used in getCursor.
             blockList <- PageBlock((List.head blockList).firstPage, b.lastPage) :: blockList.Tail
         else
             blockList <- b :: blockList
