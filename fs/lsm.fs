@@ -2059,6 +2059,7 @@ type Database(_io:IDatabaseFile) =
         let merge () = 
             // TODO this is silly if segs has only one item in it
             let h = header
+            // TODO worry about race here.
             let clist = List.map (fun g -> getCursor h.segments g (Some checkForGoneSegment)) segs
             use mc = MultiCursor.Create clist
             let pairs = CursorUtils.ToSortedSequenceOfKeyValuePairs mc
@@ -2135,6 +2136,8 @@ type Database(_io:IDatabaseFile) =
         )
         //printfn "segmentsBeingReplaced: %A" segmentsBeingReplaced
         // don't free blocks from any segment which still has a cursor
+        // TODO worry about race here.  could somebody be in the process of getting a cursor
+        // on one of these statements?
         let segmentsToBeFreed = Map.filter (fun g _ -> not (Map.containsKey g cursors)) segmentsBeingReplaced
         //printfn "segmentsToBeFreed: %A" segmentsToBeFreed
         let blocksToBeFreed = Seq.fold (fun acc info -> info.blocks @ acc) List.empty (Map.values segmentsToBeFreed)
@@ -2380,11 +2383,13 @@ type Database(_io:IDatabaseFile) =
             backgroundMergeJobs
 
         member this.OpenSegment(g:Guid) =
+            // TODO worry about race here.
             getCursor header.segments g (Some checkForGoneSegment)
 
         member this.OpenCursor() =
             // TODO we also need a way to open a cursor on segments in waiting
             let h = header
+            // TODO worry about race here.
             let clist = List.map (fun g -> getCursor h.segments g (Some checkForGoneSegment)) h.currentState
             let mc = MultiCursor.Create clist
             LivingCursor.Create mc
