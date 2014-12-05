@@ -2413,10 +2413,6 @@ type Database(_io:IDatabaseFile) =
         member this.BackgroundMergeJobs() = 
             backgroundMergeJobs
 
-        member this.OpenSegment(g:Guid) =
-            // TODO worry about race here.
-            getCursor header.segments g (Some checkForGoneSegment)
-
         member this.OpenCursor() =
             // TODO we also need a way to open a cursor on segments in waiting
             let clist = lock critSectionCursors (fun () ->

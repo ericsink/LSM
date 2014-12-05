@@ -74,7 +74,6 @@ type IDatabase =
     abstract member WriteSegment : System.Collections.Generic.IDictionary<byte[],Stream> -> Guid
 
     abstract member OpenCursor : unit->ICursor 
-    abstract member OpenSegment : Guid->ICursor // TODO not sure this should stay
     // TODO consider name such as OpenLivingCursorOnCurrentState()
     // TODO consider OpenCursorOnSegmentsInWaiting(seq<Guid>)
     // TODO consider ListSegmentsInCurrentState()
@@ -87,6 +86,8 @@ type IDatabase =
 
     abstract member Merge : int*int*bool*bool -> Async<Guid list> option
     abstract member BackgroundMergeJobs : unit->Async<Guid list> list
+
+    // TODO maybe allow settings only when the object is constructed.
     abstract member AutoMerge : bool with get, set
 
 module CursorUtils =
