@@ -1535,6 +1535,7 @@ type BTreeSegment =
 #else
         // TODO which is faster?  how does linq OrderBy implement sorting
         // of a sequence?
+        // http://code.logos.com/blog/2010/04/a_truly_lazy_orderby_in_linq.html
         let sortedSeq = pairs.AsEnumerable().OrderBy((fun (x:kvp) -> x.Key), ByteComparer())
 #endif
         bt.CreateFromSortedSequenceOfKeyValuePairs (fs, pageManager, sortedSeq)
