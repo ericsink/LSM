@@ -48,6 +48,49 @@ let createMemorySegment (rand:Random) count =
 [<EntryPoint>]
 let main argv = 
     #if not
+    printfn "empty_cursor"
+    fsTests.empty_cursor() 
+    printfn "simple_write"
+    fsTests.simple_write() 
+    printfn "multiple"
+    fsTests.multiple() 
+    printfn "lexographic"
+    fsTests.lexographic() 
+    printfn "weird"
+    fsTests.weird() 
+    printfn "blobs"
+    fsTests.blobs() 
+    printfn "hundredk"
+    fsTests.hundredk() 
+    printfn "no_le_ge_multicursor"
+    fsTests.no_le_ge_multicursor() 
+    printfn "no_le_ge"
+    fsTests.no_le_ge() 
+    printfn "seek_ge_le_bigger"
+    fsTests.seek_ge_le_bigger() 
+    printfn "seek_ge_le"
+    fsTests.seek_ge_le() 
+    printfn "tombstone"
+    fsTests.tombstone() 
+    printfn "overwrite"
+    fsTests.overwrite() 
+    printfn "empty_val"
+    fsTests.empty_val() 
+    printfn "delete_not_there"
+    fsTests.delete_not_there() 
+    printfn "delete_nothing_there"
+    fsTests.delete_nothing_there() 
+    printfn "write_then_read"
+    fsTests.write_then_read() 
+    printfn "seek_ge_le_bigger_multicursor"
+    fsTests.seek_ge_le_bigger_multicursor()
+    printfn "race"
+    fsTests.race()
+    #endif
+    printfn "many_segments"
+    fsTests.many_segments() 
+
+    #if not
     let f = dbf("test1" + tid())
     use db = new Database(f) :> IDatabase
     let NUM = 50
@@ -113,9 +156,10 @@ let main argv =
     loop()
     #endif
 
+    #if not
     let f = dbf("many_segments" + tid())
     use db = new Database(f) :> IDatabase
-    let NUM = 100
+    let NUM = 300
     let rand = Random()
 
     let one count = 
@@ -138,11 +182,14 @@ let main argv =
     //one 72
     //one 6
 
-    db.AutoMerge <- false
+    //db.AutoMerge <- false
     for i in 0 .. NUM-1 do
         let count = 1+rand.Next(100)
         one count
 
+    #endif
+
+    #if not
     let mrg = db.Merge(0, 4, false, false)
     let p1 = async {
         let! res = mrg.Value
@@ -157,6 +204,7 @@ let main argv =
     }
 
     Async.Parallel [p1;p2] |> Async.RunSynchronously |> ignore
+    #endif
 
     0 // return an integer exit code
 

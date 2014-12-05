@@ -53,6 +53,10 @@
       <Project>{EC16340F-B28D-44EF-9101-FC496D16B255}</Project>
       <Name>lsm_fs_net45</Name>
     </ProjectReference>
+    <ProjectReference Include="..\dbTests\dbTests.fsproj">
+      <Project>{1DF29E4A-5B48-42F6-ACD1-256978AD4295}</Project>
+      <Name>dbTests</Name>
+    </ProjectReference>
   </ItemGroup>
   <ItemGroup>
     <None Include="packages.config" />

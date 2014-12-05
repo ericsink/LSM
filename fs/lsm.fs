@@ -1431,11 +1431,9 @@ module bt =
 
         let dispose itIsSafeToAlsoFreeManagedObjects this =
             if itIsSafeToAlsoFreeManagedObjects then
-                ()
-            // TODO the following should be probably be inside the previous if
-            if hook <> null then 
-                let fsHook = FuncConvert.ToFSharpFunc hook
-                fsHook(this)
+                if hook <> null then 
+                    let fsHook = FuncConvert.ToFSharpFunc hook
+                    fsHook(this)
 
         override this.Finalize() =
             dispose false this
@@ -1856,16 +1854,20 @@ type Database(_io:IDatabaseFile) =
             )
 
     let addFreeBlocks blocks =
-        // TODO
-        // this code should not be in a release build.  it helps
+        // this code should not be called in a release build.  it helps
         // finds problems by zeroing out pages in blocks that
         // have been freed.
-        let bad:byte[] = Array.zeroCreate pageSize
-        List.iter (fun (b:PageBlock) ->
-            for x in b.firstPage .. b.lastPage do
-                utils.SeekPage(fsMine, pageSize, x)
-                fsMine.Write(bad,0,pageSize)
-            ) blocks
+        let stomp() =
+            let bad:byte[] = Array.zeroCreate pageSize
+            use fs = io.OpenForWriting()
+            List.iter (fun (b:PageBlock) ->
+                //printfn "stomping on block: %A" b
+                for x in b.firstPage .. b.lastPage do
+                    utils.SeekPage(fs, pageSize, x)
+                    fs.Write(bad,0,pageSize)
+                ) blocks
+
+        //stomp() // TODO remove
 
         lock critSectionNextPage (fun () ->
             // all additions to the freeBlocks list should happen here
@@ -1975,28 +1977,30 @@ type Database(_io:IDatabaseFile) =
                 else
                     cursors <- Map.add g removed cursors
             )
-            //printfn "done with cursor %O, list now: %A" g cursors
+            //printfn "done with cursor %O" g 
             match fnFree with
             | Some f -> f g seg
             | None -> ()
         let csr = BTreeSegment.OpenCursor(fs, pageSize, rootPage, Action<ICursor>(hook))
-        lock critSectionCursors (fun () -> 
-            let cur = match Map.tryFind g cursors with
-                       | Some c -> c
-                       | None -> []
-            cursors <- Map.add g (csr :: cur) cursors
-            //printfn "added cursor %O" g
-            )
+        // note that getCursor is (and must be) only called from within
+        // lock critSectionCursors
+        let cur = match Map.tryFind g cursors with
+                   | Some c -> c
+                   | None -> []
+        cursors <- Map.add g (csr :: cur) cursors
+        //printfn "added cursor %O: %A" g seg
         csr
 
     let checkForGoneSegment g seg = // TODO dislike function name
         // TODO worry about whether there is a race here.  is it possible
         // for something to be in the process of opening a cursor on this
         // segment?
-        if not (Map.containsKey g header.segments)  && not (Map.containsKey g cursors) then
-            // this segment no longer exists
-            //printfn "cursor done, segment %O is gone: %A" g seg
-            addFreeBlocks seg.blocks
+        lock critSectionCursors (fun () -> 
+            if not (Map.containsKey g header.segments)  && not (Map.containsKey g cursors) then
+                // this segment no longer exists
+                //printfn "cursor done, segment %O is gone: %A" g seg
+                addFreeBlocks seg.blocks
+        )
 
     let critSectionSegmentsInWaiting = obj()
 
@@ -2075,9 +2079,12 @@ type Database(_io:IDatabaseFile) =
 
         let merge () = 
             // TODO this is silly if segs has only one item in it
-            let h = header
-            // TODO worry about race here.
-            let clist = List.map (fun g -> getCursor h.segments g (Some checkForGoneSegment)) segs
+            //printfn "merge getting cursors: %A" segs
+            let clist = lock critSectionCursors (fun () ->
+                let h = header
+                // TODO worry about race here.
+                List.map (fun g -> getCursor h.segments g (Some checkForGoneSegment)) segs
+            )
             use mc = MultiCursor.Create clist
             let pairs = CursorUtils.ToSortedSequenceOfKeyValuePairs mc
             use fs = io.OpenForWriting()
@@ -2155,14 +2162,16 @@ type Database(_io:IDatabaseFile) =
         // don't free blocks from any segment which still has a cursor
         // TODO worry about race here.  could somebody be in the process of getting a cursor
         // on one of these statements?
-        let segmentsToBeFreed = Map.filter (fun g _ -> not (Map.containsKey g cursors)) segmentsBeingReplaced
-        //printfn "segmentsToBeFreed: %A" segmentsToBeFreed
-        let blocksToBeFreed = Seq.fold (fun acc info -> info.blocks @ acc) List.empty (Map.values segmentsToBeFreed)
-        if oldSill.firstPage > 0 && oldSill.lastPage >= oldSill.firstPage then
-            let blocksToBeFreed' = PageBlock(oldSill.firstPage, oldSill.lastPage) :: blocksToBeFreed
-            addFreeBlocks blocksToBeFreed'
-        else
-            addFreeBlocks blocksToBeFreed
+        lock critSectionCursors (fun () -> 
+            let segmentsToBeFreed = Map.filter (fun g _ -> not (Map.containsKey g cursors)) segmentsBeingReplaced
+            //printfn "oldGuidsAsSet: %A" oldGuidsAsSet
+            let blocksToBeFreed = Seq.fold (fun acc info -> info.blocks @ acc) List.empty (Map.values segmentsToBeFreed)
+            if oldSill.firstPage > 0 && oldSill.lastPage >= oldSill.firstPage then
+                let blocksToBeFreed' = PageBlock(oldSill.firstPage, oldSill.lastPage) :: blocksToBeFreed
+                addFreeBlocks blocksToBeFreed'
+            else
+                addFreeBlocks blocksToBeFreed
+        )
         // note that we intentionally do not release the writeLock here.
         // you can change the segment list more than once while holding
         // the writeLock.  the writeLock gets released when you Dispose() it.
@@ -2295,7 +2304,8 @@ type Database(_io:IDatabaseFile) =
             )
 
     let rec checkForMerge level min all cascade =
-        let segmentsOfAge = List.filter (fun g -> (Map.find g header.segments).age=level) header.currentState
+        let h = header
+        let segmentsOfAge = List.filter (fun g -> (Map.find g h.segments).age=level) h.currentState
         // TODO we are trusting segmentsOfAge to be contiguous.  need test cases to
         // verify that currentState always ends up with monotonically increasing age.
         let count = List.length segmentsOfAge
@@ -2408,10 +2418,12 @@ type Database(_io:IDatabaseFile) =
 
         member this.OpenCursor() =
             // TODO we also need a way to open a cursor on segments in waiting
-            let h = header
-            // TODO worry about race here.
-            System.Threading.Thread.Sleep(500) // TODO remove this
-            let clist = List.map (fun g -> getCursor h.segments g (Some checkForGoneSegment)) h.currentState
+            let clist = lock critSectionCursors (fun () ->
+                let h = header
+                // TODO worry about race here.
+                //System.Threading.Thread.Sleep(500) // TODO remove this
+                List.map (fun g -> getCursor h.segments g (Some checkForGoneSegment)) h.currentState
+            )
             let mc = MultiCursor.Create clist
             LivingCursor.Create mc
 
