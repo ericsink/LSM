@@ -1839,6 +1839,7 @@ type Database(_io:IDatabaseFile) =
                         let blk2 = PageBlock(headBlk.firstPage, headBlk.firstPage+specificSize-1) 
                         let remainder = PageBlock(headBlk.firstPage+specificSize, headBlk.lastPage)
                         freeBlocks <- remainder :: List.tail freeBlocks
+                        // TODO problem: the list is probably no longer sorted
                         blk2
                     else
                         freeBlocks <- List.tail freeBlocks
