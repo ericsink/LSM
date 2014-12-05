@@ -1975,13 +1975,13 @@ type Database(_io:IDatabaseFile) =
                 // it there with an empty list.
                 if List.isEmpty removed then
                     cursors <- Map.remove g cursors
+                    match fnFree with
+                    | Some f -> f g seg
+                    | None -> ()
                 else
                     cursors <- Map.add g removed cursors
             )
             //printfn "done with cursor %O" g 
-            match fnFree with
-            | Some f -> f g seg
-            | None -> ()
         let csr = BTreeSegment.OpenCursor(fs, pageSize, rootPage, Action<ICursor>(hook))
         // note that getCursor is (and must be) only called from within
         // lock critSectionCursors
@@ -1996,12 +1996,10 @@ type Database(_io:IDatabaseFile) =
         // TODO worry about whether there is a race here.  is it possible
         // for something to be in the process of opening a cursor on this
         // segment?
-        lock critSectionCursors (fun () -> 
-            if not (Map.containsKey g header.segments)  && not (Map.containsKey g cursors) then
-                // this segment no longer exists
-                //printfn "cursor done, segment %O is gone: %A" g seg
-                addFreeBlocks seg.blocks
-        )
+        if not (Map.containsKey g header.segments) then
+            // this segment no longer exists
+            //printfn "cursor done, segment %O is gone: %A" g seg
+            addFreeBlocks seg.blocks
 
     let critSectionSegmentsInWaiting = obj()
 
