@@ -87,6 +87,7 @@ type IDatabase =
 
     abstract member Merge : int*int*bool*bool -> Async<Guid list> option
     abstract member BackgroundMergeJobs : unit->Async<Guid list> list
+    abstract member AutoMerge : bool with get, set
 
 module CursorUtils =
     let ToSortedSequenceOfKeyValuePairs (csr:ICursor) = 

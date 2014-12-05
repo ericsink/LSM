@@ -1432,6 +1432,7 @@ module bt =
         let dispose itIsSafeToAlsoFreeManagedObjects this =
             if itIsSafeToAlsoFreeManagedObjects then
                 ()
+            // TODO the following should be probably be inside the previous if
             if hook <> null then 
                 let fsHook = FuncConvert.ToFSharpFunc hook
                 fsHook(this)
@@ -1854,6 +1855,17 @@ type Database(_io:IDatabaseFile) =
             )
 
     let addFreeBlocks blocks =
+        // TODO
+        // this code should not be in a release build.  it helps
+        // finds problems by zeroing out pages in blocks that
+        // have been freed.
+        let bad:byte[] = Array.zeroCreate pageSize
+        List.iter (fun (b:PageBlock) ->
+            for x in b.firstPage .. b.lastPage do
+                utils.SeekPage(fsMine, pageSize, x)
+                fsMine.Write(bad,0,pageSize)
+            ) blocks
+
         lock critSectionNextPage (fun () ->
             // all additions to the freeBlocks list should happen here
             // by calling this function.
@@ -1880,9 +1892,9 @@ type Database(_io:IDatabaseFile) =
             let sorted = List.sortBy (fun (x:PageBlock) -> -(x.CountPages)) newList
             freeBlocks <- sorted
         )
+        //printfn "freeBlocks: %A" freeBlocks
         #if not
         printfn "lastPage: %d" (nextPage-1)
-        printfn "freeBlocks: %A" freeBlocks
         let c1 = header |> listAllBlocks |> consolidateBlockList
         printfn "usedBlocks: %A" c1
         let c2 = c1 |> invertBlockList
@@ -1972,7 +1984,7 @@ type Database(_io:IDatabaseFile) =
                        | Some c -> c
                        | None -> []
             cursors <- Map.add g (csr :: cur) cursors
-            //printfn "added cursor %O, list now: %A" g cursors
+            //printfn "added cursor %O" g
             )
         csr
 
@@ -2338,11 +2350,14 @@ type Database(_io:IDatabaseFile) =
                 )
         } |> Async.Start
 
-    let autoMerge() = 
+    let mutable autoMerge = true
+
+    let doAutoMerge() = 
         // TODO allow caller to specify settings to control or disable this
-        match checkForMerge 0 4 false true with
-        | Some f -> startBackgroundMergeJob f
-        | None -> ()
+        if autoMerge then
+            match checkForMerge 0 4 false true with
+            | Some f -> startBackgroundMergeJob f
+            | None -> ()
 
     let dispose itIsSafeToAlsoFreeManagedObjects =
         //let blocks = consolidateBlockList header
@@ -2394,11 +2409,16 @@ type Database(_io:IDatabaseFile) =
             // TODO we also need a way to open a cursor on segments in waiting
             let h = header
             // TODO worry about race here.
+            System.Threading.Thread.Sleep(500) // TODO remove this
             let clist = List.map (fun g -> getCursor h.segments g (Some checkForGoneSegment)) h.currentState
             let mc = MultiCursor.Create clist
             LivingCursor.Create mc
 
         member this.RequestWriteLock() =
-            getWriteLock (Some autoMerge)
+            getWriteLock (Some doAutoMerge)
+
+        member this.AutoMerge 
+            with get() = autoMerge 
+            and set(b) = autoMerge <- b
 
 

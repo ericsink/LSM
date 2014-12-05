@@ -646,5 +646,41 @@ let seek_ge_le_bigger_multicursor() =
     Assert.True (csr.IsValid ())
     Assert.Equal<string> ("0000002331", csr.Key () |> from_utf8)
 
+[<Fact>]
+let race() =
+    let f = dbf("race" + tid())
+    use db = new Database(f) :> IDatabase
+    let NUM = 100
+    let rand = Random()
+
+    let one count = 
+        let d = createMemorySegment rand count
+        let g = db.WriteSegment(d)
+        async {
+            use! tx = db.RequestWriteLock()
+            tx.CommitSegments [ g ]
+        } |> Async.RunSynchronously
+
+    db.AutoMerge <- false
+    for i in 0 .. NUM-1 do
+        let count = 1+rand.Next(100)
+        one count
+
+    let mrg = db.Merge(0, 4, false, false)
+    let p1 = async {
+        let! res = mrg.Value
+        ignore res
+    }
+    let p2 = async {
+        let csr = db.OpenCursor()
+        csr.First()
+        while csr.IsValid() do
+            let k = csr.Key()
+            csr.Next()
+    }
+
+    Async.Parallel [p1;p2] |> Async.RunSynchronously |> ignore
+
+
 // TODO long_vals
 
