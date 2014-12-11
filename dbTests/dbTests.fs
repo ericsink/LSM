@@ -111,7 +111,7 @@ let multiple() =
             tx.CommitSegments (g :: List.empty)
         }
 
-        let count = rand.Next(10000)
+        let count = 1+rand.Next(10000)
         let d = createMemorySegment rand count
         let g = db.WriteSegment(d)
         do! commit g
