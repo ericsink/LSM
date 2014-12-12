@@ -1,19 +1,5 @@
 
-invalid page type.  happens on race.  merge is trying to get cursors,
-but the segments have been added to free blocks.  should be impossible.
-
-don't know which test case causes the above
-
-sleep call in merge-get-cursors causes the merge to starve and we
-end up overflowing the header with too many segments.
-
-stomp causes access to fsMine after it has been closed
-
-----
-
 net45 in project names is wrong now
-
-need to reuse pages in the db file
 
 try to improve the performance of multicursor
 

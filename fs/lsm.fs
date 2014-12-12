@@ -1914,10 +1914,7 @@ type Database(_io:IDatabaseFile) =
         //printfn "added cursor %O: %A" g seg
         csr
 
-    let checkForGoneSegment g seg = // TODO dislike function name
-        // TODO worry about whether there is a race here.  is it possible
-        // for something to be in the process of opening a cursor on this
-        // segment?
+    let checkForGoneSegment g seg =
         if not (Map.containsKey g header.segments) then
             // this segment no longer exists
             //printfn "cursor done, segment %O is gone: %A" g seg
@@ -1944,8 +1941,6 @@ type Database(_io:IDatabaseFile) =
             member this.End(token, lastPage) =
                 let ps = token :?> PendingSegment
                 let (g,blocks,unused) = ps.End(lastPage)
-                // TODO we could do a consolidate here, but it's being
-                // done in PendingSegment, and that's probably sufficient?
                 let info = {age=(-1);blocks=blocks;root=lastPage}
                 lock critSectionSegmentsInWaiting (fun () -> 
                     segmentsInWaiting <- Map.add g info segmentsInWaiting
@@ -2052,7 +2047,6 @@ type Database(_io:IDatabaseFile) =
             //printfn "merge getting cursors: %A" segs
             let clist = lock critSectionCursors (fun () ->
                 let h = header
-                // TODO worry about race here.
                 List.map (fun g -> getCursor h.segments g (Some checkForGoneSegment)) segs
             )
             use mc = MultiCursor.Create clist
@@ -2133,8 +2127,6 @@ type Database(_io:IDatabaseFile) =
         )
         //printfn "segmentsBeingReplaced: %A" segmentsBeingReplaced
         // don't free blocks from any segment which still has a cursor
-        // TODO worry about race here.  could somebody be in the process of getting a cursor
-        // on one of these statements?
         lock critSectionCursors (fun () -> 
             let segmentsToBeFreed = Map.filter (fun g _ -> not (Map.containsKey g cursors)) segmentsBeingReplaced
             //printfn "oldGuidsAsSet: %A" oldGuidsAsSet
@@ -2274,7 +2266,7 @@ type Database(_io:IDatabaseFile) =
         // verify that currentState always ends up with monotonically increasing age.
         let count = List.length segmentsOfAge
         if count > min then 
-            printfn "NEED MERGE %d -- %d" level count
+            //printfn "NEED MERGE %d -- %d" level count
             // (List.skip) we always merge the stuff at the end of the level so things
             // don't get split up when more segments get prepended to the
             // beginning.
@@ -2282,7 +2274,7 @@ type Database(_io:IDatabaseFile) =
             let grp = if all then segmentsOfAge else List.skip (count - min) segmentsOfAge
             match grp |> tryMerge with
             | Some f ->
-                printfn "    and it's gonna happen"
+                //printfn "    and it's gonna happen"
                 let blk = async {
                     //printfn "inside"
                     let! g = f
@@ -2305,10 +2297,10 @@ type Database(_io:IDatabaseFile) =
                 else
                     Some blk
             | None -> 
-                printfn "    but can't"
+                //printfn "    but can't"
                 None
         else
-            printfn "no merge needed %d -- %d" level count
+            //printfn "no merge needed %d -- %d" level count
             None
 
     let critSectionBackgroundMergeJobs = obj()
@@ -2387,8 +2379,6 @@ type Database(_io:IDatabaseFile) =
             // TODO we also need a way to open a cursor on segments in waiting
             let clist = lock critSectionCursors (fun () ->
                 let h = header
-                // TODO worry about race here.
-                //System.Threading.Thread.Sleep(500) // TODO remove this
                 List.map (fun g -> getCursor h.segments g (Some checkForGoneSegment)) h.currentState
             )
             let mc = MultiCursor.Create clist
