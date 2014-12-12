@@ -2004,7 +2004,7 @@ type Database(_io:IDatabaseFile) =
                 let fits = pb.Available - 4 - 4
                 let extra = buf.Length - fits
                 let extraPages = extra / pageSize + if (extra % pageSize) <> 0 then 1 else 0
-                printfn "extra pages: %d" extraPages
+                //printfn "extra pages: %d" extraPages
                 let blk = getBlock (extraPages)
                 utils.SeekPage(fsMine, pageSize, blk.firstPage)
                 fsMine.Write(buf, fits, extra)
@@ -2274,6 +2274,10 @@ type Database(_io:IDatabaseFile) =
             let grp = if all then segmentsOfAge else List.skip (count - min) segmentsOfAge
             match grp |> tryMerge with
             | Some f ->
+                // TODO if the segment list is getting really long, here is a place
+                // we could decide to do something different.  instead of returning an
+                // async that waits for the write lock, if/since this func is being called
+                // while the writelock is held, we could just do the merge and commit it.
                 //printfn "    and it's gonna happen"
                 let blk = async {
                     //printfn "inside"
@@ -2310,7 +2314,7 @@ type Database(_io:IDatabaseFile) =
         //printfn "starting background job"
         // TODO this is starving.
         async {
-            printfn "inside start background job"
+            //printfn "inside start background job"
             let! completor = Async.StartChild f
             lock critSectionBackgroundMergeJobs (fun () -> 
                 backgroundMergeJobs <- completor :: backgroundMergeJobs 
@@ -2324,7 +2328,7 @@ type Database(_io:IDatabaseFile) =
                 )
         } |> Async.Start
 
-    let mutable autoMerge = true
+    let mutable autoMerge = true // TODO yuck.  allow settings only at the beginning?
 
     let doAutoMerge() = 
         // TODO allow caller to specify settings to control or disable this
