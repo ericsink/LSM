@@ -117,6 +117,10 @@ type private PageBuilder(pgsz:int) =
         System.Array.Copy (ba, 0, buf, cur, ba.Length)
         cur <- cur + ba.Length
 
+    member this.PutArray(ba:byte[], off, len) =
+        System.Array.Copy (ba, off, buf, cur, len)
+        cur <- cur + len
+
     member this.PutInt32(ov:int) =
         // assert ov >= 0
         let v:uint32 = uint32 ov
@@ -230,6 +234,7 @@ type private PageReader(pgsz:int) =
     member this.PageSize = buf.Length
     member this.SetPosition(x) = cur <- x
     member this.Read(s:Stream) = utils.ReadFully(s, buf, 0, buf.Length)
+    member this.Read(s:Stream, off, len) = utils.ReadFully(s, buf, off, len)
     member this.Reset() = cur <- 0
     member this.Compare(len, other) = bcmp.CompareWithin buf cur len other
     member this.PageType = buf.[0]
@@ -1551,18 +1556,6 @@ type BTreeSegment =
         bt.OpenCursor(fs,pageSize,rootPage,hook)
 
 
-type trivialPendingSegment() =
-    interface IPendingSegment
-
-type trivialMemoryPageManager(_pageSize) =
-    let pageSize = _pageSize
-
-    interface IPages with
-        member this.PageSize = pageSize
-        member this.Begin() = trivialPendingSegment() :> IPendingSegment
-        member this.End(_,_) = Guid.Empty
-        member this.GetBlock(_) = PageBlock(1,-1)
-
 type dbf(_path) = 
     let path = _path
 
@@ -1574,16 +1567,9 @@ type dbf(_path) =
         member this.OpenForReading() =
             new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite) :> Stream
 
-type private SegmentInfoListLocation =
-    {
-        firstPage: int
-        lastPage: int
-        innerPageSize: int
-        len: int
-    }
-
 type private SegmentInfo =
     {
+        root: int
         age: int
         blocks: PageBlock list
     } // with override this.ToString() = sprintf "(%d,%A)" this.age this.blocks
@@ -1594,8 +1580,8 @@ type private HeaderData =
         // TODO currentState is an ordered copy of segments.Keys.  eliminate duplication?
         // or add assertions and tests to make sure they never get out of sync?
         currentState: Guid list
-        sill: SegmentInfoListLocation
         segments: Map<Guid,SegmentInfo>
+        headerOverflow: PageBlock option
     }
 
 type private PendingSegment() =
@@ -1611,10 +1597,6 @@ type private PendingSegment() =
             // page, even though its pointer to the next block goes to the very
             // next page, because its page manager happened to give it a block
             // which immediately follows the one it had.
-
-            // TODO bug:  if we consolidate blocks here, we can no longer assume that
-            // the last page of the last block is the root page.  And that's the
-            // assumption being used in getCursor.
             blockList <- PageBlock((List.head blockList).firstPage, b.lastPage) :: blockList.Tail
         else
             blockList <- b :: blockList
@@ -1670,7 +1652,6 @@ type Database(_io:IDatabaseFile) =
     let fsMine = io.OpenForWriting()
 
     let HEADER_SIZE_IN_BYTES = 4096
-    let MAX_SEGMENTS = 200
 
     let WASTE_PAGES_AFTER_EACH_BLOCK = 0 // TODO remove.  testing only.
     let PAGES_PER_BLOCK = 10 // TODO not hard-coded.  and 10 is way too low.
@@ -1685,73 +1666,62 @@ type Database(_io:IDatabaseFile) =
                 None
 
         let parse (pr:PageReader) =
-            let readSegmentList () =
+            let readSegmentList (pr:PageReader) =
+                let readBlockList (prBlocks:PageReader) =
+                    let rec f more cur =
+                        if more > 0 then
+                            let firstPage = prBlocks.GetVarint() |> int
+                            let lastPage = prBlocks.GetVarint() |> int
+                            f (more-1) (PageBlock(firstPage,lastPage) :: cur)
+                        else
+                            cur
+
+                    let count = prBlocks.GetVarint() |> int
+                    f count []
+
                 let count = pr.GetVarint() |> int
                 let a:Guid[] = Array.zeroCreate count
+                let mutable b:Map<Guid,SegmentInfo> = Map.empty
                 for i in 0 .. count-1 do
-                    a.[i] <- Guid(pr.GetArray(16))
-                List.ofArray a
-
-            let readBlockList (prBlocks:PageReader) =
-                let rec f more cur =
-                    if more > 0 then
-                        let firstPage = prBlocks.GetVarint() |> int
-                        let lastPage = prBlocks.GetVarint() |> int
-                        f (more-1) (PageBlock(firstPage,lastPage) :: cur)
-                    else
-                        cur
-
-                let count = prBlocks.GetVarint() |> int
-                f count []
-
-            let readSegmentInfoList outerPageSize sill =
-                utils.SeekPage(fsMine, outerPageSize, sill.firstPage)
-                let buf:byte[] = Array.zeroCreate sill.len
-                utils.ReadFully(fsMine, buf, 0, sill.len)
-                let ms = new MemoryStream(buf)
-                let innerRootPage = sill.len / sill.innerPageSize
-                let csr = BTreeSegment.OpenCursor(ms, sill.innerPageSize, innerRootPage, null)
-                csr.First()
-
-                let rec f (cur:Map<Guid,SegmentInfo>) =
-                    if csr.IsValid() then
-                        let g = Guid(csr.Key())
-                        let prBlocks = PageReader(csr.ValueLength())
-                        prBlocks.Read(csr.Value())
-                        let age = prBlocks.GetVarint() |> int
-                        let blocks = readBlockList(prBlocks)
-                        csr.Next()
-                        f (cur.Add(g, {age=age;blocks=blocks}))
-                    else
-                        cur
-
-                f Map.empty
+                    let g = Guid(pr.GetArray(16))
+                    a.[i] <- g
+                    let root = pr.GetVarint() |> int
+                    let age = pr.GetVarint() |> int
+                    let blocks = readBlockList(pr)
+                    let info = {root=root;age=age;blocks=blocks}
+                    b <- Map.add g info b // TODO mutable ick
+                (List.ofArray a,b)
 
             // --------
 
             let pageSize = pr.GetInt32()
+            let lenSegmentList = pr.GetVarint() |> int
 
-            let segmentInfoListFirstPage = pr.GetInt32()
-            let segmentInfoListLastPage = pr.GetInt32()
-            let segmentInfoListInnerPageSize = pr.GetInt32()
-            let segmentInfoListLength = pr.GetInt32()
-            let sill = 
-                {
-                    firstPage=segmentInfoListFirstPage 
-                    lastPage=segmentInfoListLastPage
-                    innerPageSize=segmentInfoListInnerPageSize
-                    len = segmentInfoListLength
-                }
+            let overflowed = pr.GetByte()
+            let (prSegmentList, blk) = 
+                if overflowed <> 0uy then
+                    let lenChunk1 = pr.GetInt32()
+                    let lenChunk2 = lenSegmentList - lenChunk1
+                    let firstPageChunk2 = pr.GetInt32()
+                    let extraPages = lenChunk2 / pageSize + if (lenChunk2 % pageSize) <> 0 then 1 else 0
+                    let lastPageChunk2 = firstPageChunk2 + extraPages - 1
+                    let pr2 = PageReader(lenSegmentList)
+                    // copy from chunk1 into pr2
+                    pr2.Read(fsMine, 0, lenChunk1)
+                    // now get chunk2 and copy it in as well
+                    utils.SeekPage(fsMine, pageSize, firstPageChunk2)
+                    pr2.Read(fsMine, lenChunk1, lenChunk2)
+                    (pr2, Some (PageBlock(firstPageChunk2, lastPageChunk2)))
+                else
+                    (pr, None)
 
-            let state = readSegmentList()
-
-            let segments = readSegmentInfoList pageSize sill
+            let (state,segments) = readSegmentList(prSegmentList)
 
             let hd = 
                 {
                     currentState=state 
-                    segments=segments 
-                    sill = sill
+                    segments=segments
+                    headerOverflow=blk
                 }
 
             (hd, pageSize)
@@ -1775,7 +1745,7 @@ type Database(_io:IDatabaseFile) =
                     {
                         segments = Map.empty
                         currentState = []
-                        sill = {firstPage=0;lastPage=0;innerPageSize=0;len=0;}
+                        headerOverflow = None
                     }
                 let nextAvailablePage = calcNextPage defaultPageSize (int64 HEADER_SIZE_IN_BYTES)
                 (h, defaultPageSize, nextAvailablePage)
@@ -1784,7 +1754,7 @@ type Database(_io:IDatabaseFile) =
 
     let mutable header = firstReadOfHeader
     let mutable nextPage = firstAvailablePage
-    let mutable segmentsInWaiting: Map<Guid,PageBlock list> = Map.empty
+    let mutable segmentsInWaiting: Map<Guid,SegmentInfo> = Map.empty
 
     let consolidateBlockList blocks =
         let sortedBlocks = List.sortBy (fun (x:PageBlock) -> x.firstPage) blocks
@@ -1811,12 +1781,13 @@ type Database(_io:IDatabaseFile) =
     let listAllBlocks h =
         let headerBlock = PageBlock(1, HEADER_SIZE_IN_BYTES / pageSize)
         let currentBlocks = Map.fold (fun acc _ info -> info.blocks @ acc) [] h.segments
-        let inWaitingBlocks = Map.fold (fun acc _ blocks -> blocks @ acc) [] segmentsInWaiting
+        let inWaitingBlocks = Map.fold (fun acc _ info -> info.blocks @ acc) [] segmentsInWaiting
         let segmentBlocks = headerBlock :: currentBlocks @ inWaitingBlocks
-        if h.sill.firstPage > 0 then
-            PageBlock(h.sill.firstPage, h.sill.lastPage) :: segmentBlocks
-        else
-            segmentBlocks
+        match h.headerOverflow with
+            | Some blk ->
+                blk :: segmentBlocks
+            | None ->
+                segmentBlocks
 
     let initialFreeBlocks = header |> listAllBlocks |> consolidateBlockList |> invertBlockList |> List.sortBy (fun (x:PageBlock) -> -(x.CountPages)) 
     //do printfn "initialFreeBlocks: %A" initialFreeBlocks
@@ -1840,6 +1811,7 @@ type Database(_io:IDatabaseFile) =
                         let remainder = PageBlock(headBlk.firstPage+specificSize, headBlk.lastPage)
                         freeBlocks <- remainder :: List.tail freeBlocks
                         // TODO problem: the list is probably no longer sorted
+                        //printfn "reusing blk prune: %A, specificSize:%d, freeBlocks now: %A" headBlk specificSize freeBlocks
                         blk2
                     else
                         freeBlocks <- List.tail freeBlocks
@@ -1908,62 +1880,12 @@ type Database(_io:IDatabaseFile) =
         printfn ""
         #endif
 
-    // a stored segmentinfo for a segment is a single blob of bytes.
-    // age
-    // number of pairs
-    // each pair is startBlock,lastBlock
-    // all in varints
-
-    let spaceNeededForSegmentInfo (info:SegmentInfo) =
-        let a = List.sumBy (fun (t:PageBlock) -> Varint.SpaceNeededFor(t.firstPage |> int64) + Varint.SpaceNeededFor(t.lastPage |> int64)) info.blocks
-        let b = Varint.SpaceNeededFor(info.age |> int64)
-        let c = Varint.SpaceNeededFor(List.length info.blocks |> int64)
-        a + b + c
-
-    let buildSegmentInfo (info:SegmentInfo) =
-        let space = spaceNeededForSegmentInfo info
-        let pb = PageBuilder(space)
-        pb.PutVarint(info.age |> int64)
-        pb.PutVarint(List.length info.blocks |> int64)
-        List.iter (fun (t:PageBlock) -> pb.PutVarint(t.firstPage |> int64); pb.PutVarint(t.lastPage |> int64);) info.blocks
-        pb.Buffer
-
-    // the segment info list is a list of segments (by guid), and for
-    // each one, a segmentinfo (a blob described above).  it is written
-    // into a memory btree which always has page size 512.
-
-    let buildSegmentInfoList innerPageSize (sd:Map<Guid,SegmentInfo>) = 
-        let sd2 = Map.fold (fun acc (g:Guid) info -> Map.add (g.ToByteArray()) ((new MemoryStream(buildSegmentInfo info)) :> Stream) acc) Map.empty sd
-        let ms = new MemoryStream()
-        let pm = trivialMemoryPageManager(innerPageSize)
-        BTreeSegment.SortAndCreate(ms, pm, sd2) |> ignore
-        ms
-
-    // the segment info list is written to a contiguous set of pages.
-    // those pages are special.  they are not obtained from the "page manager"
-    // (this class's implementation of IPages below).  the segment info list
-    // is not a segment in the segment info list.  it is a btree segment,
-    // but it is written into a set of pages obtained directly from getBlock.
-    // a reference to the segment info list page range is recorded in the
-    // header of the file.
-
-    let saveSegmentInfoList (sd:Map<Guid,SegmentInfo>) = 
-        let innerPageSize = 512
-        let ms = buildSegmentInfoList innerPageSize sd
-        let len = ms.Length |> int
-        let pagesNeeded = len / pageSize + if 0 <> len % pageSize then 1 else 0
-        let blk = getBlock (pagesNeeded)
-        utils.SeekPage(fsMine, pageSize, blk.firstPage)
-        fsMine.Write(ms.GetBuffer(), 0, len)
-        {firstPage=blk.firstPage;lastPage=blk.lastPage;innerPageSize=innerPageSize;len=len}
-
     let critSectionCursors = obj()
     let mutable cursors:Map<Guid,ICursor list> = Map.empty
 
     let getCursor segs g fnFree =
         let seg = Map.find g segs
-        let lastBlock = List.head seg.blocks
-        let rootPage = lastBlock.lastPage
+        let rootPage = seg.root
         let fs = io.OpenForReading()
         let hook (csr:ICursor) =
             fs.Close()
@@ -2022,8 +1944,11 @@ type Database(_io:IDatabaseFile) =
             member this.End(token, lastPage) =
                 let ps = token :?> PendingSegment
                 let (g,blocks,unused) = ps.End(lastPage)
+                // TODO we could do a consolidate here, but it's being
+                // done in PendingSegment, and that's probably sufficient?
+                let info = {age=(-1);blocks=blocks;root=lastPage}
                 lock critSectionSegmentsInWaiting (fun () -> 
-                    segmentsInWaiting <- Map.add g blocks segmentsInWaiting
+                    segmentsInWaiting <- Map.add g info segmentsInWaiting
                 )
                 //printfn "wrote %A: %A" g blocks
                 match unused with
@@ -2034,23 +1959,69 @@ type Database(_io:IDatabaseFile) =
 
     let critSectionHeader = obj()
 
+    // a stored segmentinfo for a segment is a single blob of bytes.
+    // root page
+    // age
+    // number of pairs
+    // each pair is startBlock,lastBlock
+    // all in varints
+
     let writeHeader hdr =
+        let spaceNeededForSegmentInfo (info:SegmentInfo) =
+            let a = List.sumBy (fun (t:PageBlock) -> Varint.SpaceNeededFor(t.firstPage |> int64) + Varint.SpaceNeededFor(t.lastPage |> int64)) info.blocks
+            let b = Varint.SpaceNeededFor(info.root |> int64)
+            let c = Varint.SpaceNeededFor(info.age |> int64)
+            let d = Varint.SpaceNeededFor(List.length info.blocks |> int64)
+            a + b + c + d
+
+        let spaceForHeader h =
+            Varint.SpaceNeededFor(List.length h.currentState |> int64) 
+                + List.sumBy (fun g -> (Map.find g h.segments |> spaceNeededForSegmentInfo) + 16) h.currentState
+
+        let buildSegmentList h =
+            let space = spaceForHeader h
+            let pb = PageBuilder(space)
+            pb.PutVarint(List.length h.currentState |> int64)
+            List.iter (fun (g:Guid) -> 
+                pb.PutArray(g.ToByteArray())
+                let info = Map.find g h.segments
+                pb.PutVarint(info.root |> int64)
+                pb.PutVarint(info.age |> int64)
+                pb.PutVarint(List.length info.blocks |> int64)
+                List.iter (fun (t:PageBlock) -> pb.PutVarint(t.firstPage |> int64); pb.PutVarint(t.lastPage |> int64);) info.blocks
+                ) h.currentState
+            // TODO is pb exactly full?
+            pb.Buffer
+
         let pb = PageBuilder(HEADER_SIZE_IN_BYTES)
         pb.PutInt32(pageSize)
 
-        pb.PutInt32(hdr.sill.firstPage)
-        pb.PutInt32(hdr.sill.lastPage)
-        pb.PutInt32(hdr.sill.innerPageSize)
-        pb.PutInt32(hdr.sill.len)
+        let buf = buildSegmentList hdr
+        pb.PutVarint(buf.Length |> int64)
 
-        pb.PutVarint(List.length hdr.currentState |> int64)
-        List.iter (fun (g:Guid) -> 
-            pb.PutArray(g.ToByteArray())
-            ) hdr.currentState
+        let headerOverflow =
+            if (pb.Available >= (buf.Length + 1)) then
+                pb.PutByte(0uy)
+                pb.PutArray(buf)
+                None
+            else
+                pb.PutByte(1uy)
+                let fits = pb.Available - 4 - 4
+                let extra = buf.Length - fits
+                let extraPages = extra / pageSize + if (extra % pageSize) <> 0 then 1 else 0
+                printfn "extra pages: %d" extraPages
+                let blk = getBlock (extraPages)
+                utils.SeekPage(fsMine, pageSize, blk.firstPage)
+                fsMine.Write(buf, fits, extra)
+                pb.PutInt32(fits)
+                pb.PutInt32(blk.firstPage)
+                pb.PutArray(buf, 0, fits)
+                Some blk
 
         fsMine.Seek(0L, SeekOrigin.Begin) |> ignore
         pb.Write(fsMine)
         fsMine.Flush()
+        {hdr with headerOverflow=headerOverflow}
 
     let critSectionMerging = obj()
     // this keeps track of which segments are currently involved in a merge.
@@ -2098,13 +2069,16 @@ type Database(_io:IDatabaseFile) =
             )
 
         if requestMerge () then
+            //printfn "requestMerge Some"
             let later = async {
+                //printfn "inside later"
                 let g = merge ()
                 storePendingMerge g
                 return g
             }
             Some later
         else
+            //printfn "requestMerge None"
             None
 
     let removePendingMerge g =
@@ -2133,7 +2107,7 @@ type Database(_io:IDatabaseFile) =
 
         let segmentsBeingReplaced = Set.fold (fun acc g -> Map.add g (Map.find g header.segments) acc ) Map.empty oldGuidsAsSet
 
-        let oldSill = lock critSectionHeader (fun () -> 
+        let oldHeaderOverflow = lock critSectionHeader (fun () -> 
             let ndxFirstOld = List.findIndex (fun g -> g=List.head lstOld) header.currentState
             let subListOld = List.skip ndxFirstOld header.currentState |> List.take countOld
             // if the next line fails, it probably means that somebody tried to merge a set
@@ -2143,13 +2117,13 @@ type Database(_io:IDatabaseFile) =
             let after = List.skip (ndxFirstOld + countOld) header.currentState
             let newState = before @ (newGuid :: after)
             let segmentsWithoutOld = Map.filter (fun g _ -> not (Set.contains g oldGuidsAsSet)) header.segments
-            let newSegments = Map.add newGuid {age=age;blocks=(Map.find newGuid segmentsInWaiting)} segmentsWithoutOld
-            let newSill = saveSegmentInfoList newSegments
-            let newHeader = {currentState=newState; segments=newSegments; sill = newSill;}
-            writeHeader newHeader
-            let oldSill = header.sill
+            let newSegmentInfo = Map.find newGuid segmentsInWaiting
+            let newSegments = Map.add newGuid {newSegmentInfo with age=age} segmentsWithoutOld
+            let newHeaderBeforeWriting = {currentState=newState; segments=newSegments; headerOverflow=None;}
+            let newHeader = writeHeader newHeaderBeforeWriting
+            let oldHeaderOverflow = header.headerOverflow
             header <- newHeader
-            oldSill
+            oldHeaderOverflow
         )
         removePendingMerge newGuid
         // the segment we just committed can now be removed from
@@ -2165,10 +2139,11 @@ type Database(_io:IDatabaseFile) =
             let segmentsToBeFreed = Map.filter (fun g _ -> not (Map.containsKey g cursors)) segmentsBeingReplaced
             //printfn "oldGuidsAsSet: %A" oldGuidsAsSet
             let blocksToBeFreed = Seq.fold (fun acc info -> info.blocks @ acc) List.empty (Map.values segmentsToBeFreed)
-            if oldSill.firstPage > 0 && oldSill.lastPage >= oldSill.firstPage then
-                let blocksToBeFreed' = PageBlock(oldSill.firstPage, oldSill.lastPage) :: blocksToBeFreed
+            match oldHeaderOverflow with
+            | Some blk ->
+                let blocksToBeFreed' = PageBlock(blk.firstPage, blk.lastPage) :: blocksToBeFreed
                 addFreeBlocks blocksToBeFreed'
-            else
+            | None ->
                 addFreeBlocks blocksToBeFreed
         )
         // note that we intentionally do not release the writeLock here.
@@ -2181,27 +2156,16 @@ type Database(_io:IDatabaseFile) =
 
         let newGuidsAsSet = Seq.fold (fun acc g -> Set.add g acc) Set.empty newGuids
 
-        #if not // TODO
-        let countNewGuids = Set.count newGuidsAsSet
-        if List.length header.currentState + countNewGuids > MAX_SEGMENTS then
-            // the header is going to become overfull.  we need to merge something
-            // right now to make space.
-            match checkForMerge 0 2 false with
-            | Some f -> f |> Async.RunSynchronously
-            | None -> () // TODO we need to try something else
-        #endif
-
         let mySegmentsInWaiting = Map.filter (fun g _ -> Set.contains g newGuidsAsSet) segmentsInWaiting
         //printfn "committing: %A" mySegmentsInWaiting
-        let oldSill = lock critSectionHeader (fun () -> 
+        let oldHeaderOverflow = lock critSectionHeader (fun () -> 
             let newState = (List.ofSeq newGuids) @ header.currentState
-            let newSegments = Map.fold (fun acc g blocks -> Map.add g {age=0;blocks=blocks} acc) header.segments mySegmentsInWaiting
-            let newSill = saveSegmentInfoList newSegments
-            let newHeader = {currentState=newState; segments=newSegments; sill = newSill;}
-            writeHeader newHeader
-            let oldSill = header.sill
+            let newSegments = Map.fold (fun acc g info -> Map.add g {info with age=0} acc) header.segments mySegmentsInWaiting
+            let newHeaderBeforeWriting = {currentState=newState; segments=newSegments; headerOverflow=None;}
+            let newHeader = writeHeader newHeaderBeforeWriting
+            let oldHeaderOverflow = header.headerOverflow
             header <- newHeader
-            oldSill
+            oldHeaderOverflow
         )
         //printfn "after commit, currentState: %A" header.currentState
         //printfn "after commit, segments: %A" header.segments
@@ -2211,8 +2175,9 @@ type Database(_io:IDatabaseFile) =
             let remainingSegmentsInWaiting = Map.filter (fun g _ -> Set.contains g newGuidsAsSet |> not) segmentsInWaiting
             segmentsInWaiting <- remainingSegmentsInWaiting
         )
-        if oldSill.firstPage > 0 && oldSill.lastPage >= oldSill.firstPage then
-            addFreeBlocks [ PageBlock(oldSill.firstPage, oldSill.lastPage) ]
+        match oldHeaderOverflow with
+        | Some blk -> addFreeBlocks [ PageBlock(blk.firstPage, blk.lastPage) ]
+        | None -> ()
         // note that we intentionally do not release the writeLock here.
         // you can change the segment list more than once while holding
         // the writeLock.  the writeLock gets released when you Dispose() it.
@@ -2309,7 +2274,7 @@ type Database(_io:IDatabaseFile) =
         // verify that currentState always ends up with monotonically increasing age.
         let count = List.length segmentsOfAge
         if count > min then 
-            //printfn "NEED MERGE %d -- %d" level count
+            printfn "NEED MERGE %d -- %d" level count
             // (List.skip) we always merge the stuff at the end of the level so things
             // don't get split up when more segments get prepended to the
             // beginning.
@@ -2317,9 +2282,11 @@ type Database(_io:IDatabaseFile) =
             let grp = if all then segmentsOfAge else List.skip (count - min) segmentsOfAge
             match grp |> tryMerge with
             | Some f ->
-                //printfn "    and it's gonna happen"
+                printfn "    and it's gonna happen"
                 let blk = async {
+                    //printfn "inside"
                     let! g = f
+                    //printfn "now waiting for writeLock"
                     use! tx = getWriteLock None
                     tx.CommitMerge g
                     return [ g ]
@@ -2327,7 +2294,7 @@ type Database(_io:IDatabaseFile) =
                 if cascade then
                     let blk2 = async {
                         let! a = blk
-                        //printfn "now check the next level"
+                        printfn "now check the next level"
                         match checkForMerge (level + 1) min all cascade with
                         | Some f2 -> 
                             let! b = f2
@@ -2338,22 +2305,27 @@ type Database(_io:IDatabaseFile) =
                 else
                     Some blk
             | None -> 
-                //printfn "    but can't"
+                printfn "    but can't"
                 None
         else
-            //printfn "no merge needed %d -- %d" level count
+            printfn "no merge needed %d -- %d" level count
             None
 
     let critSectionBackgroundMergeJobs = obj()
     let mutable backgroundMergeJobs = List.empty
 
     let startBackgroundMergeJob f =
+        //printfn "starting background job"
+        // TODO this is starving.
         async {
+            printfn "inside start background job"
             let! completor = Async.StartChild f
             lock critSectionBackgroundMergeJobs (fun () -> 
                 backgroundMergeJobs <- completor :: backgroundMergeJobs 
                 )
+            //printfn "inside start background job step 2"
             let! result = completor
+            //printfn "inside start background job step 3"
             ignore result
             lock critSectionBackgroundMergeJobs (fun () -> 
                 backgroundMergeJobs <- List.filter (fun x -> not (Object.ReferenceEquals(x,completor))) backgroundMergeJobs

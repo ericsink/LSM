@@ -86,9 +86,9 @@ let main argv =
     fsTests.seek_ge_le_bigger_multicursor()
     printfn "race"
     fsTests.race()
-    #endif
     printfn "many_segments"
     fsTests.many_segments() 
+    #endif
 
     #if not
     let f = dbf("test1" + tid())
@@ -156,10 +156,8 @@ let main argv =
     loop()
     #endif
 
-    #if not
     let f = dbf("many_segments" + tid())
     use db = new Database(f) :> IDatabase
-    let NUM = 300
     let rand = Random()
 
     let one count = 
@@ -168,26 +166,16 @@ let main argv =
         async {
             use! tx = db.RequestWriteLock()
             tx.CommitSegments [ g ]
-        } |> Async.RunSynchronously
-        #if not
-        use csr = db.OpenSegment(g)
-        let mutable c2 = 0
-        csr.First()
-        while csr.IsValid() do
-            c2 <- c2 + 1
-            csr.Next()
-        printfn "count items: %d" c2
-        #endif
+        }
 
-    //one 72
-    //one 6
+    let bunch n = async {
+        for i in 0 .. n-1 do
+            let count = 1+rand.Next(1000)
+            do! one count
+        }
 
-    //db.AutoMerge <- false
-    for i in 0 .. NUM-1 do
-        let count = 1+rand.Next(100)
-        one count
-
-    #endif
+    let pile = Seq.map (fun _ -> bunch 200) [1..10]
+    Async.Parallel pile |> Async.RunSynchronously |> ignore
 
     #if not
     let mrg = db.Merge(0, 4, false, false)
