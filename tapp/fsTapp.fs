@@ -166,7 +166,7 @@ let main argv =
         async {
             use! tx = db.RequestWriteLock()
             tx.CommitSegments [ g ]
-            //printfn "%A" g
+            printfn "%A" g
         }
 
     let bunch n = async {

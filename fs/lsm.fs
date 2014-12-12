@@ -2281,6 +2281,7 @@ type Database(_io:IDatabaseFile) =
         //printfn "inside"
         let! g = f
         //printfn "now waiting for writeLock"
+        // TODO consider allowing merges to go to the front of the queue
         use! tx = getWriteLock None
         tx.CommitMerge g
         return [ g ]
@@ -2343,6 +2344,14 @@ type Database(_io:IDatabaseFile) =
     let doAutoMerge() = 
         // TODO allow caller to specify settings to control or disable this
         if autoMerge then
+            #if not
+            match getPossibleMerge 0 4 false with
+            | Some f -> 
+                let g = Async.RunSynchronously f
+                commitMerge g
+            | None -> printfn "no"
+            #endif
+
             match cascadeMerge 0 4 false with
             | Some f -> startBackgroundMergeJob f
             | None -> ()
