@@ -2259,7 +2259,7 @@ type Database(_io:IDatabaseFile) =
                 }
             )
 
-    let rec checkForMerge level min all cascade =
+    let getPossibleMerge level min all =
         let h = header
         let segmentsOfAge = List.filter (fun g -> (Map.find g h.segments).age=level) h.currentState
         // TODO we are trusting segmentsOfAge to be contiguous.  need test cases to
@@ -2272,39 +2272,49 @@ type Database(_io:IDatabaseFile) =
             // beginning.
             // TODO if we only do partial here, we might want to schedule a job to do more.
             let grp = if all then segmentsOfAge else List.skip (count - min) segmentsOfAge
-            match grp |> tryMerge with
-            | Some f ->
-                // TODO if the segment list is getting really long, here is a place
-                // we could decide to do something different.  instead of returning an
-                // async that waits for the write lock, if/since this func is being called
-                // while the writelock is held, we could just do the merge and commit it.
-                //printfn "    and it's gonna happen"
-                let blk = async {
-                    //printfn "inside"
-                    let! g = f
-                    //printfn "now waiting for writeLock"
-                    use! tx = getWriteLock None
-                    tx.CommitMerge g
-                    return [ g ]
-                }
-                if cascade then
-                    let blk2 = async {
-                        let! a = blk
-                        printfn "now check the next level"
-                        match checkForMerge (level + 1) min all cascade with
-                        | Some f2 -> 
-                            let! b = f2
-                            return b @ a
-                        | None -> return a
-                    }
-                    Some blk2
-                else
-                    Some blk
-            | None -> 
-                //printfn "    but can't"
-                None
+            tryMerge grp
         else
             //printfn "no merge needed %d -- %d" level count
+            None
+
+    let wrapMergeForLater f = async {
+        //printfn "inside"
+        let! g = f
+        //printfn "now waiting for writeLock"
+        use! tx = getWriteLock None
+        tx.CommitMerge g
+        return [ g ]
+    }
+
+    let plainMerge level min all =
+        let maybe = getPossibleMerge level min all
+        match maybe with
+        | Some f ->
+            //printfn "    and it's gonna happen"
+            let blk = wrapMergeForLater f
+            Some blk
+        | None -> 
+            //printfn "    but can't"
+            None
+
+    let rec cascadeMerge level min all =
+        let maybe = getPossibleMerge level min all
+        match maybe with
+        | Some f ->
+            //printfn "    and it's gonna happen"
+            let blk = wrapMergeForLater f
+            let blk2 = async {
+                let! a = blk
+                //printfn "now check the next level"
+                match cascadeMerge (level + 1) min all with
+                | Some f2 -> 
+                    let! b = f2
+                    return b @ a
+                | None -> return a
+            }
+            Some blk2
+        | None -> 
+            //printfn "    but can't"
             None
 
     let critSectionBackgroundMergeJobs = obj()
@@ -2333,7 +2343,7 @@ type Database(_io:IDatabaseFile) =
     let doAutoMerge() = 
         // TODO allow caller to specify settings to control or disable this
         if autoMerge then
-            match checkForMerge 0 4 false true with
+            match cascadeMerge 0 4 false with
             | Some f -> startBackgroundMergeJob f
             | None -> ()
 
@@ -2374,7 +2384,10 @@ type Database(_io:IDatabaseFile) =
             g
 
         member this.Merge(level:int, howMany:int, all:bool, cascade:bool) =
-            checkForMerge level howMany all cascade
+            if cascade then
+                cascadeMerge level howMany all
+            else 
+                plainMerge level howMany all
 
         member this.BackgroundMergeJobs() = 
             backgroundMergeJobs
