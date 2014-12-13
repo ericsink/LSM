@@ -5,21 +5,7 @@ This is my "Learn F#" project.  It's a key-value store, implemented as
 a log structured merge tree, conceptually similar to LevelDB or the 
 storage layer of SQLite4.
 
-This is not ready for production use.  Big pieces are still missing.
-For example, there is nothing to reuse pages and nothing to decide
-when to merge segments.
-
-There are two implementations here, one in C# and one in 
-F#.  Originally, the C# version was written first.  The F# version 
-started as mostly a straight port, and has been evolving to be more
-idiomatic and functional.
-
-At the time of this writing, the F# version is the focus of my 
-attention and the C# version is falling behind.  For example, the F#
-code has an initial implementation of a layer to manage transactions,
-while the C# code is still just raw pieces to read/write B+Tree
-segments.  I now think of the C# implementation as part of the test
-suite.
+This is not ready for production use.
 
 # What is a log structured merge tree?
 
@@ -120,26 +106,10 @@ and hands them out on request.
 I have taken a lot of inspiration and ideas from SQLite4.  The varint
 concept comes directly from there.  ICursor is almost exactly the same.
 
-There's a small xUnit test suite for testing the B+Tree and cursor
-layer.  It is configured to run every test four times:
-
- * The F# implementation
-
- * The C# implementation
-
- * B+trees written by F# and read by C#
-
- * B+trees written by C# and read by F#
-
-All the tests are in C#.
-
-There is another xUnit test suite called dbTests.  This one exercises
-the Database layer.
+There's a small xUnit test suite.
 
 All the work so far has been done on Mono in Xamarin Studio on my
-Mac.  I assume this code will run on .NET/Windows, but I haven't tried
-it yet.
+Mac.  I have run the code with tests passing on .NET/Windows, but 
+with new sln/fsproj files, not the ones here.
 
-The C# version is a profile 78 PCL.  So far it would seem that F#
-(under Xamarin Studio anyway) does not have tooling support for PCLs.
 
