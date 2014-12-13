@@ -1983,6 +1983,8 @@ type Database(_io:IDatabaseFile) =
                 pb.PutVarint(info.root |> int64)
                 pb.PutVarint(info.age |> int64)
                 pb.PutVarint(List.length info.blocks |> int64)
+                // TODO consider storing PageBlock as first/count instead of first/last, since the
+                // count will always compress better as a varint.
                 List.iter (fun (t:PageBlock) -> pb.PutVarint(t.firstPage |> int64); pb.PutVarint(t.lastPage |> int64);) info.blocks
                 ) h.currentState
             // TODO is pb exactly full?
