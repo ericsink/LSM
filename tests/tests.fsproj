@@ -61,9 +61,9 @@
     <None Include="packages.config" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="..\fs\projects\lsm_fs_net45\lsm_fs_net45.fsproj">
+    <ProjectReference Include="..\fs\projects\net40\lsm.fsproj">
       <Project>{EC16340F-B28D-44EF-9101-FC496D16B255}</Project>
-      <Name>lsm_fs_net45</Name>
+      <Name>lsm</Name>
     </ProjectReference>
   </ItemGroup>
 </Project>
