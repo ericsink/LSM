@@ -21,7 +21,6 @@ open System.Collections.Generic
 open System.IO
 
 open Zumero.LSM
-open Zumero.LSM.fs
 
 let tid() = 
     let g = "_" + Guid.NewGuid().ToString()

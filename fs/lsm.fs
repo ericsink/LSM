@@ -14,7 +14,7 @@
     limitations under the License.
 *)
 
-namespace Zumero.LSM.fs
+namespace Zumero.LSM
 
 open System
 open System.IO

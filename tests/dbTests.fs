@@ -22,7 +22,6 @@ open System.IO
 open Xunit
 
 open Zumero.LSM
-open Zumero.LSM.fs
 
 let tid() = 
     let g = "_" + Guid.NewGuid().ToString()

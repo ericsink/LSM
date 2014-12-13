@@ -1,6 +1,4 @@
 
-net45 in project names is wrong now
-
 try to improve the performance of multicursor
 
 write value stream that doesn't know its length
@@ -16,22 +14,12 @@ bloom filters?
 
 --
 
-consider nessos streams instead of seq<kvp>
+consider nessos streams instead of seq<kvp> ?
 
 need something to make sure that only one Database object
 exists for a given file
 
 do we have a test that chains multicursors with other multicursors?
-
-db class should accept delegates for other implementations?
-
-it's getting to be time to reconsider combo and the C# version.
-we don't really want to build a C# port of the Database class.
-what stuff is worth keeping here for testing purposes?
-
-the test suite is using the old memory_segment api
-
-need C# versions of the other Create overloads?
 
 #if integrity_checks
 
@@ -85,16 +73,6 @@ test multicursor with two identical subs?
 
 --------
 
-fsharp stuff:
-
-way too many mutables in the fs code
-
-way too many if-then places in the fs code
-
-way too many for/while loops in the fs code
-
---------
-
 still concerned about how much we are copying byte[] for keys
 
 what are the embedded pointers in the runs in SQLite4 LSM?
@@ -128,4 +106,5 @@ we know its length.
 --------
 
 create shorter synthetic keys in the parent nodes?
+
 
