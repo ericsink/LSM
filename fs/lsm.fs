@@ -1656,6 +1656,8 @@ type private HeaderData =
         currentState: Guid list
         segments: Map<Guid,SegmentInfo>
         headerOverflow: PageBlock option
+        changeCounter: int64
+        mergeCounter: int64
     }
 
 type private PendingSegment() =
@@ -1769,6 +1771,8 @@ type Database(_io:IDatabaseFile) =
             // --------
 
             let pageSize = pr.GetInt32()
+            let changeCounter = pr.GetVarint()
+            let mergeCounter = pr.GetVarint()
             let lenSegmentList = pr.GetVarint() |> int
 
             let overflowed = pr.GetByte()
@@ -1796,6 +1800,8 @@ type Database(_io:IDatabaseFile) =
                     currentState=state 
                     segments=segments
                     headerOverflow=blk
+                    changeCounter=changeCounter
+                    mergeCounter=mergeCounter
                 }
 
             (hd, pageSize)
@@ -1820,6 +1826,8 @@ type Database(_io:IDatabaseFile) =
                         segments = Map.empty
                         currentState = []
                         headerOverflow = None
+                        changeCounter = 0L
+                        mergeCounter = 0L
                     }
                 let nextAvailablePage = calcNextPage defaultPageSize (int64 HEADER_SIZE_IN_BYTES)
                 (h, defaultPageSize, nextAvailablePage)
@@ -2067,6 +2075,9 @@ type Database(_io:IDatabaseFile) =
         let pb = PageBuilder(HEADER_SIZE_IN_BYTES)
         pb.PutInt32(pageSize)
 
+        pb.PutVarint(hdr.changeCounter)
+        pb.PutVarint(hdr.mergeCounter)
+
         let buf = buildSegmentList hdr
         pb.PutVarint(buf.Length |> int64)
 
@@ -2189,7 +2200,13 @@ type Database(_io:IDatabaseFile) =
             let segmentsWithoutOld = Map.filter (fun g _ -> not (Set.contains g oldGuidsAsSet)) header.segments
             let newSegmentInfo = Map.find newGuid segmentsInWaiting
             let newSegments = Map.add newGuid {newSegmentInfo with age=age} segmentsWithoutOld
-            let newHeaderBeforeWriting = {currentState=newState; segments=newSegments; headerOverflow=None;}
+            let newHeaderBeforeWriting = {
+                changeCounter=header.changeCounter
+                mergeCounter=header.mergeCounter + 1L
+                currentState=newState 
+                segments=newSegments
+                headerOverflow=None
+                }
             let newHeader = writeHeader newHeaderBeforeWriting
             let oldHeaderOverflow = header.headerOverflow
             header <- newHeader
@@ -2229,7 +2246,13 @@ type Database(_io:IDatabaseFile) =
         let oldHeaderOverflow = lock critSectionHeader (fun () -> 
             let newState = (List.ofSeq newGuids) @ header.currentState
             let newSegments = Map.fold (fun acc g info -> Map.add g {info with age=0} acc) header.segments mySegmentsInWaiting
-            let newHeaderBeforeWriting = {currentState=newState; segments=newSegments; headerOverflow=None;}
+            let newHeaderBeforeWriting = {
+                changeCounter=header.changeCounter + 1L
+                mergeCounter=header.mergeCounter
+                currentState=newState
+                segments=newSegments
+                headerOverflow=None
+                }
             let newHeader = writeHeader newHeaderBeforeWriting
             let oldHeaderOverflow = header.headerOverflow
             header <- newHeader
@@ -2478,6 +2501,12 @@ type Database(_io:IDatabaseFile) =
             backgroundMergeJobs
 
         member this.OpenCursor() =
+            // TODO this cursor needs to expose the changeCounter and segment list
+            // on which it is based. for optimistic writes. caller can grab a cursor,
+            // do their writes, then grab the writelock, and grab another cursor, then
+            // compare the two cursors to see if anything important changed.  if not,
+            // commit their writes.  if so, nevermind the written segments and start over.
+
             // TODO we also need a way to open a cursor on segments in waiting
             let clist = lock critSectionCursors (fun () ->
                 let h = header
