@@ -72,6 +72,11 @@ type IDatabaseFile =
     abstract member OpenForReading : unit -> Stream
     abstract member OpenForWriting : unit -> Stream
 
+type DbSettings =
+    {
+        AutoMerge : bool
+    }
+
 type IDatabase = 
     inherit IDisposable
     abstract member WriteSegmentFromSortedSequence : seq<kvp> -> Guid
@@ -88,9 +93,6 @@ type IDatabase =
 
     abstract member Merge : int*int*bool*bool -> Async<Guid list> option
     abstract member BackgroundMergeJobs : unit->Async<Guid list> list
-
-    // TODO maybe allow settings only when the object is constructed.
-    abstract member AutoMerge : bool with get, set
 
 module CursorUtils =
     let ToSortedSequenceOfKeyValuePairs (csr:ICursor) = 
@@ -1721,8 +1723,9 @@ type SimplePageManager(_pageSize) =
             let (g,_,_) = ps.End(lastPage)
             g
 
-type Database(_io:IDatabaseFile) =
+type Database(_io:IDatabaseFile, _settings:DbSettings) =
     let io = _io
+    let settings = _settings
     let fsMine = io.OpenForWriting()
 
     let HEADER_SIZE_IN_BYTES = 4096
@@ -2436,11 +2439,9 @@ type Database(_io:IDatabaseFile) =
                 )
         } |> Async.Start
 
-    let mutable autoMerge = true // TODO yuck.  allow settings only at the beginning?
-
     let doAutoMerge() = 
         // TODO allow caller to specify settings to control or disable this
-        if autoMerge then
+        if settings.AutoMerge then
             #if not
             match getPossibleMerge 0 4 false with
             | Some f -> 
@@ -2464,6 +2465,13 @@ type Database(_io:IDatabaseFile) =
                 bg |> Async.Parallel |> Async.RunSynchronously |> ignore
 
             fsMine.Close()
+
+    new(_io:IDatabaseFile) =
+        let defaultSettings = 
+            {
+                AutoMerge = true
+            }
+        Database(_io, defaultSettings)
 
     override this.Finalize() =
         dispose false
@@ -2529,8 +2537,4 @@ type Database(_io:IDatabaseFile) =
 
         member this.RequestWriteLock() =
             getWriteLock (Some doAutoMerge)
-
-        member this.AutoMerge 
-            with get() = autoMerge 
-            and set(b) = autoMerge <- b
 
