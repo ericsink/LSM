@@ -76,15 +76,13 @@ type IDatabase =
     inherit IDisposable
     abstract member WriteSegmentFromSortedSequence : seq<kvp> -> Guid
     abstract member WriteSegment : System.Collections.Generic.IDictionary<byte[],Stream> -> Guid
+    abstract member ForgetWaitingSegments : seq<Guid> -> unit
 
     abstract member OpenCursor : unit->ICursor 
     // TODO consider name such as OpenLivingCursorOnCurrentState()
     // TODO consider OpenCursorOnSegmentsInWaiting(seq<Guid>)
     // TODO consider ListSegmentsInCurrentState()
     // TODO consider OpenCursorOnSpecificSegment(seq<Guid>)
-
-    // TODO consider NeverMind(seq<Guid>) which explicitly 
-    // frees segments in waiting.
 
     abstract member RequestWriteLock : unit->Async<IWriteLock>
 
@@ -2500,6 +2498,20 @@ type Database(_io:IDatabaseFile) =
         member this.BackgroundMergeJobs() = 
             backgroundMergeJobs
 
+        member this.ForgetWaitingSegments(guids:seq<Guid>) =
+            // TODO need a test case for this
+            let guidsAsSet = Seq.fold (fun acc g -> Set.add g acc) Set.empty guids
+            let mySegmentsInWaiting = Map.filter (fun g _ -> Set.contains g guidsAsSet) segmentsInWaiting
+            lock critSectionSegmentsInWaiting (fun () ->
+                let remainingSegmentsInWaiting = Map.filter (fun g _ -> Set.contains g guidsAsSet |> not) segmentsInWaiting
+                segmentsInWaiting <- remainingSegmentsInWaiting
+            )
+            lock critSectionCursors (fun () -> 
+                let segmentsToBeFreed = Map.filter (fun g _ -> not (Map.containsKey g cursors)) mySegmentsInWaiting
+                let blocksToBeFreed = Seq.fold (fun acc info -> info.blocks @ acc) List.empty (Map.values segmentsToBeFreed)
+                addFreeBlocks blocksToBeFreed
+            )
+
         member this.OpenCursor() =
             // TODO this cursor needs to expose the changeCounter and segment list
             // on which it is based. for optimistic writes. caller can grab a cursor,
@@ -2521,5 +2533,4 @@ type Database(_io:IDatabaseFile) =
         member this.AutoMerge 
             with get() = autoMerge 
             and set(b) = autoMerge <- b
-
 
