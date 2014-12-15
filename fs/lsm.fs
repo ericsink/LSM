@@ -1757,15 +1757,15 @@ type Database(_io:IDatabaseFile) =
 
                 let count = pr.GetVarint() |> int
                 let a:Guid[] = Array.zeroCreate count
-                let mutable b:Map<Guid,SegmentInfo> = Map.empty
-                for i in 0 .. count-1 do
+                let fldr acc i = 
                     let g = Guid(pr.GetArray(16))
                     a.[i] <- g
                     let root = pr.GetVarint() |> int
                     let age = pr.GetVarint() |> int
                     let blocks = readBlockList(pr)
                     let info = {root=root;age=age;blocks=blocks}
-                    b <- Map.add g info b // TODO mutable ick
+                    Map.add g info acc
+                let b = List.fold fldr Map.empty [0 .. count-1]
                 (List.ofArray a,b)
 
             // --------
