@@ -74,8 +74,10 @@ type IDatabaseFile =
 
 type DbSettings =
     {
-        AutoMerge : bool
+        AutoMergeEnabled : bool
+        AutoMergeMinimumPages : int
         DefaultPageSize : int
+        PagesPerBlock : int
     }
 
 type IDatabase = 
@@ -1732,7 +1734,6 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
     let HEADER_SIZE_IN_BYTES = 4096
 
     let WASTE_PAGES_AFTER_EACH_BLOCK = 0 // TODO remove.  testing only.
-    let PAGES_PER_BLOCK = 10 // TODO not hard-coded.  and 10 is way too low.
 
     let readHeader() =
         let read() =
@@ -1906,7 +1907,7 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
                         //printfn "blk.CountPages: %d" (headBlk.CountPages)
                         headBlk
             else
-                let size = PAGES_PER_BLOCK
+                let size = settings.PagesPerBlock
                 let newBlk = PageBlock(nextPage, nextPage+size-1) 
                 nextPage <- nextPage + size + WASTE_PAGES_AFTER_EACH_BLOCK
                 //printfn "newBlk: %A" newBlk
@@ -2445,7 +2446,7 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
 
     let doAutoMerge() = 
         // TODO allow caller to specify settings to control or disable this
-        if settings.AutoMerge then
+        if settings.AutoMergeEnabled then
             #if not
             match getPossibleMerge 0 4 false with
             | Some f -> 
@@ -2454,7 +2455,7 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
             | None -> printfn "no"
             #endif
 
-            match cascadeMerge 0 4 false with
+            match cascadeMerge 0 settings.AutoMergeMinimumPages false with
             | Some f -> startBackgroundMergeJob f
             | None -> ()
 
@@ -2472,12 +2473,14 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
 
     static member DefaultSettings = 
         {
-            AutoMerge = true
+            AutoMergeEnabled = true
+            AutoMergeMinimumPages = 4
             DefaultPageSize = 256
+            PagesPerBlock = 10
         }
 
     new(_io:IDatabaseFile) =
-        Database(_io, Database.DefaultSettings)
+        new Database(_io, Database.DefaultSettings)
 
     override this.Finalize() =
         dispose false

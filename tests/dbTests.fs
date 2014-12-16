@@ -649,7 +649,7 @@ let seek_ge_le_bigger_multicursor() =
 let race() =
     let settings = {
         Database.DefaultSettings with
-            AutoMerge = false
+            AutoMergeEnabled = false
         }
     let f = dbf("race" + tid())
     use db = new Database(f, settings) :> IDatabase
