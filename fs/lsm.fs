@@ -2061,6 +2061,7 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
         let buildSegmentList h =
             let space = spaceForHeader h
             let pb = PageBuilder(space)
+            // TODO format version number
             pb.PutVarint(List.length h.currentState |> int64)
             List.iter (fun (g:Guid) -> 
                 pb.PutArray(g.ToByteArray())
@@ -2072,7 +2073,7 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
                 // count will always compress better as a varint.
                 List.iter (fun (t:PageBlock) -> pb.PutVarint(t.firstPage |> int64); pb.PutVarint(t.CountPages |> int64);) info.blocks
                 ) h.currentState
-            // TODO is pb exactly full?  assert?
+            //if 0 <> pb.Available then failwith "not exactly full"
             pb.Buffer
 
         let pb = PageBuilder(HEADER_SIZE_IN_BYTES)
