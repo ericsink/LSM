@@ -75,6 +75,7 @@ type IDatabaseFile =
 type DbSettings =
     {
         AutoMerge : bool
+        DefaultPageSize : int
     }
 
 type IDatabase = 
@@ -1748,8 +1749,11 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
                     let rec f more cur =
                         if more > 0 then
                             let firstPage = prBlocks.GetVarint() |> int
-                            let lastPage = prBlocks.GetVarint() |> int
-                            f (more-1) (PageBlock(firstPage,lastPage) :: cur)
+                            let countPages = prBlocks.GetVarint() |> int
+                            // blocks are stored as firstPage/count rather than as
+                            // firstPage/lastPage, because the count will always be
+                            // smaller as a varint
+                            f (more-1) (PageBlock(firstPage,firstPage + countPages - 1) :: cur)
                         else
                             cur
 
@@ -1821,7 +1825,7 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
                 let nextAvailablePage = calcNextPage pageSize fsMine.Length
                 (h, pageSize, nextAvailablePage)
             | None ->
-                let defaultPageSize = 256 // TODO very low default, only for testing
+                let defaultPageSize = settings.DefaultPageSize
                 let h = 
                     {
                         segments = Map.empty
@@ -2046,7 +2050,7 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
 
     let writeHeader hdr =
         let spaceNeededForSegmentInfo (info:SegmentInfo) =
-            let a = List.sumBy (fun (t:PageBlock) -> Varint.SpaceNeededFor(t.firstPage |> int64) + Varint.SpaceNeededFor(t.lastPage |> int64)) info.blocks
+            let a = List.sumBy (fun (t:PageBlock) -> Varint.SpaceNeededFor(t.firstPage |> int64) + Varint.SpaceNeededFor(t.CountPages |> int64)) info.blocks
             let b = Varint.SpaceNeededFor(info.root |> int64)
             let c = Varint.SpaceNeededFor(info.age |> int64)
             let d = Varint.SpaceNeededFor(List.length info.blocks |> int64)
@@ -2066,9 +2070,9 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
                 pb.PutVarint(info.root |> int64)
                 pb.PutVarint(info.age |> int64)
                 pb.PutVarint(List.length info.blocks |> int64)
-                // TODO consider storing PageBlock as first/count instead of first/last, since the
+                // we store PageBlock as first/count instead of first/last, since the
                 // count will always compress better as a varint.
-                List.iter (fun (t:PageBlock) -> pb.PutVarint(t.firstPage |> int64); pb.PutVarint(t.lastPage |> int64);) info.blocks
+                List.iter (fun (t:PageBlock) -> pb.PutVarint(t.firstPage |> int64); pb.PutVarint(t.CountPages |> int64);) info.blocks
                 ) h.currentState
             // TODO is pb exactly full?
             pb.Buffer
@@ -2466,12 +2470,14 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
 
             fsMine.Close()
 
+    static member DefaultSettings = 
+        {
+            AutoMerge = true
+            DefaultPageSize = 256
+        }
+
     new(_io:IDatabaseFile) =
-        let defaultSettings = 
-            {
-                AutoMerge = true
-            }
-        Database(_io, defaultSettings)
+        Database(_io, Database.DefaultSettings)
 
     override this.Finalize() =
         dispose false
