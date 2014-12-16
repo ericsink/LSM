@@ -92,6 +92,7 @@ type IDatabase =
     // TODO consider ListSegmentsInCurrentState()
     // TODO consider OpenCursorOnSpecificSegment(seq<Guid>)
 
+    abstract member RequestWriteLock : int->Async<IWriteLock>
     abstract member RequestWriteLock : unit->Async<IWriteLock>
 
     abstract member Merge : int*int*bool*bool -> Async<Guid list> option
@@ -2286,7 +2287,7 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
     let mutable inTransaction = false 
     let mutable waiting = Queue.empty
 
-    let getWriteLock fnCommitSegmentsHook =
+    let getWriteLock timeout fnCommitSegmentsHook =
         let whence = Environment.StackTrace // TODO remove this.  it was just for debugging.
         let createWriteLockObject () =
             let isReleased = ref false
@@ -2346,13 +2347,13 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
                 waiting <- Queue.conj cb waiting
                 //printfn "Add to wait list: %O" whence
                 async {
-                    // TODO allow specifying the timeout here?
-                    // would require returning an option
-                    let! b = Async.AwaitWaitHandle ev.WaitHandle
+                    let! b = Async.AwaitWaitHandle(ev.WaitHandle, timeout)
                     ev.Dispose()
-                    // TODO if b?
-                    let lck = createWriteLockObject () 
-                    return lck
+                    if b then
+                        let lck = createWriteLockObject () 
+                        return lck
+                    else
+                        return failwith "timeout waiting for write lock"
                 }
             else 
                 //printfn "No waiting: %O" whence
@@ -2386,7 +2387,7 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
         let! g = f
         //printfn "now waiting for writeLock"
         // TODO consider allowing merges to go to the front of the queue
-        use! tx = getWriteLock None
+        use! tx = getWriteLock (-1) None
         tx.CommitMerge g
         return [ g ]
     }
@@ -2543,6 +2544,9 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
             let mc = MultiCursor.Create clist
             LivingCursor.Create mc
 
+        member this.RequestWriteLock(timeout:int) =
+            getWriteLock timeout (Some doAutoMerge)
+
         member this.RequestWriteLock() =
-            getWriteLock (Some doAutoMerge)
+            getWriteLock (-1) (Some doAutoMerge)
 
