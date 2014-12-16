@@ -2155,12 +2155,11 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
 
         if requestMerge () then
             //printfn "requestMerge Some"
-            let later = async {
+            let later() = 
                 //printfn "inside later"
                 let g = merge ()
                 storePendingMerge g
-                return g
-            }
+                g
             Some later
         else
             //printfn "requestMerge None"
@@ -2384,8 +2383,7 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
             None
 
     let wrapMergeForLater f = async {
-        //printfn "inside"
-        let! g = f
+        let g = f()
         //printfn "now waiting for writeLock"
         // merges go to the front of the queue
         use! tx = getWriteLock true (-1) None
@@ -2418,12 +2416,14 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
         // TODO allow caller to specify settings to control or disable this
         if settings.AutoMergeEnabled then
             // TODO figure out how to decide desperate
-            let desperate = List.length header.currentState > 100
+            let desperate = true // List.length header.currentState > 100
             for level in 0 .. 7 do // TODO max merge level
                 match getPossibleMerge level settings.AutoMergeMinimumPages false with
                 | Some f -> 
                     if desperate then
-                        let g = Async.RunSynchronously f
+                        printfn "desperate: begin"
+                        let g = f()
+                        printfn "finished with merge, now commit"
                         commitMerge g
                     else
                         f |> wrapMergeForLater |> startBackgroundMergeJob
