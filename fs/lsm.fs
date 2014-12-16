@@ -2367,6 +2367,8 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
     let getPossibleMerge level min all =
         let h = header
         let segmentsOfAge = List.filter (fun g -> (Map.find g h.segments).age=level) h.currentState
+        // TODO it would be nice to be able to have more than one merge happening in a level
+
         // TODO we are trusting segmentsOfAge to be contiguous.  need test cases to
         // verify that currentState always ends up with monotonically increasing age.
         let count = List.length segmentsOfAge
@@ -2413,21 +2415,20 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
         } |> Async.Start
 
     let doAutoMerge() = 
-        // TODO allow caller to specify settings to control or disable this
         if settings.AutoMergeEnabled then
-            // TODO figure out how to decide desperate
-            let desperate = true // List.length header.currentState > 100
-            for level in 0 .. 7 do // TODO max merge level
+            for level in 0 .. 3 do // TODO max merge level immediate
                 match getPossibleMerge level settings.AutoMergeMinimumPages false with
                 | Some f -> 
-                    if desperate then
-                        printfn "desperate: begin"
-                        let g = f()
-                        printfn "finished with merge, now commit"
-                        commitMerge g
-                    else
-                        f |> wrapMergeForLater |> startBackgroundMergeJob
-                | None -> () // printfn "cannot merge level %d" level
+                    let g = f()
+                    commitMerge g
+                | None -> 
+                    () // printfn "cannot merge level %d" level
+            for level in 4 .. 7 do // TODO max merge level
+                match getPossibleMerge level settings.AutoMergeMinimumPages false with
+                | Some f -> 
+                    f |> wrapMergeForLater |> startBackgroundMergeJob
+                | None -> 
+                    () // printfn "cannot merge level %d" level
 
     let dispose itIsSafeToAlsoFreeManagedObjects =
         //let blocks = consolidateBlockList header
