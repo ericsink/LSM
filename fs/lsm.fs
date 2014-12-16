@@ -1690,11 +1690,12 @@ type private PendingSegment() =
         (Guid.NewGuid(), blockList, unused)
 
 
+// used for testing purposes
 type SimplePageManager(_pageSize) =
     let pageSize = _pageSize
 
-    let WASTE_PAGES_AFTER_EACH_BLOCK = 3 // TODO remove.  testing only.
-    let PAGES_PER_BLOCK = 10 // TODO not hard-coded.  and 10 is way too low.
+    let WASTE_PAGES_AFTER_EACH_BLOCK = 3
+    let PAGES_PER_BLOCK = 10
 
     let critSectionNextPage = obj()
     let mutable nextPage = 1
@@ -1732,8 +1733,6 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
     let fsMine = io.OpenForWriting()
 
     let HEADER_SIZE_IN_BYTES = 4096
-
-    let WASTE_PAGES_AFTER_EACH_BLOCK = 0 // TODO remove.  testing only.
 
     let readHeader() =
         let read() =
@@ -1888,7 +1887,7 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
             if specificSize > 0 then
                 if List.isEmpty freeBlocks || specificSize > (List.head freeBlocks).CountPages then
                     let newBlk = PageBlock(nextPage, nextPage+specificSize-1) 
-                    nextPage <- nextPage + specificSize + WASTE_PAGES_AFTER_EACH_BLOCK
+                    nextPage <- nextPage + specificSize
                     //printfn "newBlk: %A" newBlk
                     newBlk
                 else
@@ -1909,7 +1908,7 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
             else
                 let size = settings.PagesPerBlock
                 let newBlk = PageBlock(nextPage, nextPage+size-1) 
-                nextPage <- nextPage + size + WASTE_PAGES_AFTER_EACH_BLOCK
+                nextPage <- nextPage + size
                 //printfn "newBlk: %A" newBlk
                 newBlk
             )
@@ -2046,7 +2045,7 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
     // root page
     // age
     // number of pairs
-    // each pair is startBlock,lastBlock
+    // each pair is startBlock,countBlocks
     // all in varints
 
     let writeHeader hdr =
