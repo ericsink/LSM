@@ -27,6 +27,6 @@ Global
 		{EC16340F-B28D-44EF-9101-FC496D16B255}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(MonoDevelopProperties) = preSolution
-		StartupItem = tests\tests.fsproj
+		StartupItem = tapp\tapp.fsproj
 	EndGlobalSection
 EndGlobal

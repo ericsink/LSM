@@ -668,7 +668,7 @@ let race() =
         let count = 1+rand.Next(100)
         one count
 
-    let mrg = db.Merge(0, 4, false, false)
+    let mrg = db.Merge(0, 4, false)
     let p1 = async {
         let! res = mrg.Value
         ignore res

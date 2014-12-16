@@ -95,8 +95,8 @@ type IDatabase =
     abstract member RequestWriteLock : int->Async<IWriteLock>
     abstract member RequestWriteLock : unit->Async<IWriteLock>
 
-    abstract member Merge : int*int*bool*bool -> Async<Guid list> option
-    abstract member BackgroundMergeJobs : unit->Async<Guid list> list
+    abstract member Merge : int*int*bool -> Async<Guid list> option
+    abstract member BackgroundMergeJobs : unit->Async<Guid list> list // TODO have Auto in the name of this?
 
 module CursorUtils =
     let ToSortedSequenceOfKeyValuePairs (csr:ICursor) = 
@@ -2393,37 +2393,6 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
         return [ g ]
     }
 
-    let plainMerge level min all =
-        let maybe = getPossibleMerge level min all
-        match maybe with
-        | Some f ->
-            //printfn "    and it's gonna happen"
-            let blk = wrapMergeForLater f
-            Some blk
-        | None -> 
-            //printfn "    but can't"
-            None
-
-    let rec cascadeMerge level min all =
-        let maybe = getPossibleMerge level min all
-        match maybe with
-        | Some f ->
-            //printfn "    and it's gonna happen"
-            let blk = wrapMergeForLater f
-            let blk2 = async {
-                let! a = blk
-                //printfn "now check the next level"
-                match cascadeMerge (level + 1) min all with
-                | Some f2 -> 
-                    let! b = f2
-                    return b @ a
-                | None -> return a
-            }
-            Some blk2
-        | None -> 
-            //printfn "    but can't"
-            None
-
     let critSectionBackgroundMergeJobs = obj()
     let mutable backgroundMergeJobs = List.empty
 
@@ -2447,21 +2416,18 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
 
     let doAutoMerge() = 
         // TODO allow caller to specify settings to control or disable this
-        //
-        // TODO consider situations where the need for a merge is so desperate
-        // that we might decide to just run it synchronously here.
         if settings.AutoMergeEnabled then
-            #if not
-            match getPossibleMerge 0 settings.AutoMergeMinimumPages false with
-            | Some f -> 
-                let g = Async.RunSynchronously f
-                commitMerge g
-            | None -> printfn "no"
-            #endif
-
-            match cascadeMerge 0 settings.AutoMergeMinimumPages false with
-            | Some f -> startBackgroundMergeJob f
-            | None -> ()
+            // TODO figure out how to decide desperate
+            let desperate = List.length header.currentState > 100
+            for level in 0 .. 7 do // TODO max merge level
+                match getPossibleMerge level settings.AutoMergeMinimumPages false with
+                | Some f -> 
+                    if desperate then
+                        let g = Async.RunSynchronously f
+                        commitMerge g
+                    else
+                        f |> wrapMergeForLater |> startBackgroundMergeJob
+                | None -> () // printfn "cannot merge level %d" level
 
     let dispose itIsSafeToAlsoFreeManagedObjects =
         //let blocks = consolidateBlockList header
@@ -2510,11 +2476,14 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
             let (g,_) = BTreeSegment.SortAndCreate(fs, pageManager, pairs)
             g
 
-        member this.Merge(level:int, howMany:int, all:bool, cascade:bool) =
-            if cascade then
-                cascadeMerge level howMany all
-            else 
-                plainMerge level howMany all
+        member this.Merge(level:int, howMany:int, all:bool) =
+            let maybe = getPossibleMerge level howMany all
+            match maybe with
+            | Some f ->
+                let blk = wrapMergeForLater f
+                Some blk
+            | None -> 
+                None
 
         member this.BackgroundMergeJobs() = 
             backgroundMergeJobs
