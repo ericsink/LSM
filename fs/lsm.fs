@@ -2283,23 +2283,23 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
 
     let critSectionInTransaction = obj()
     let mutable inTransaction = false 
-    let mutable waiting = Queue.empty
+    let mutable waiting = Deque.empty
 
-    let getWriteLock timeout fnCommitSegmentsHook =
+    let getWriteLock front timeout fnCommitSegmentsHook =
         let whence = Environment.StackTrace // TODO remove this.  it was just for debugging.
         let createWriteLockObject () =
             let isReleased = ref false
             let release() =
                 isReleased := true
                 let next = lock critSectionInTransaction (fun () ->
-                    if Queue.isEmpty waiting then
+                    if Deque.isEmpty waiting then
                         //printfn "nobody waiting. tx done"
                         inTransaction <- false
                         None
                     else
                         //printfn "queue has %d waiting.  next." (Queue.length waiting)
-                        let f = Queue.head waiting
-                        waiting <- Queue.tail waiting
+                        let f = Deque.head waiting
+                        waiting <- Deque.tail waiting
                         //printfn "giving writeLock to next"
                         Some f
                 )
@@ -2342,7 +2342,10 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
             if inTransaction then 
                 let ev = new System.Threading.ManualResetEventSlim()
                 let cb () = ev.Set()
-                waiting <- Queue.conj cb waiting
+                if front then
+                    waiting <- Deque.cons cb waiting
+                else
+                    waiting <- Deque.conj cb waiting
                 //printfn "Add to wait list: %O" whence
                 async {
                     let! b = Async.AwaitWaitHandle(ev.WaitHandle, timeout)
@@ -2384,8 +2387,8 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
         //printfn "inside"
         let! g = f
         //printfn "now waiting for writeLock"
-        // TODO consider allowing merges to go to the front of the queue
-        use! tx = getWriteLock (-1) None
+        // merges go to the front of the queue
+        use! tx = getWriteLock true (-1) None
         tx.CommitMerge g
         return [ g ]
     }
@@ -2547,8 +2550,8 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
 
         member this.RequestWriteLock(timeout:int) =
             // TODO need a test case for this
-            getWriteLock timeout (Some doAutoMerge)
+            getWriteLock false timeout (Some doAutoMerge)
 
         member this.RequestWriteLock() =
-            getWriteLock (-1) (Some doAutoMerge)
+            getWriteLock false (-1) (Some doAutoMerge)
 

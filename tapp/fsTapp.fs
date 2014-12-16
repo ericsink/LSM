@@ -174,7 +174,7 @@ let main argv =
             do! one count
         }
 
-    let pile = Seq.map (fun _ -> bunch 200) [1..10]
+    let pile = Seq.map (fun _ -> bunch 500) [1..50]
     Async.Parallel pile |> Async.RunSynchronously |> ignore
 
     #if not
