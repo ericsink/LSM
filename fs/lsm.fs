@@ -26,7 +26,7 @@ type kvp = System.Collections.Generic.KeyValuePair<byte[],Stream>
 
 type IPendingSegment = interface end
 
-// TODO PageBlock, struct vs. record
+// PageBlock, struct vs. record
 // struct is a little faster and more compatible with C#
 // record is more F# idiomatic
 type PageBlock = 
@@ -1898,7 +1898,7 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
                         let blk2 = PageBlock(headBlk.firstPage, headBlk.firstPage+specificSize-1) 
                         let remainder = PageBlock(headBlk.firstPage+specificSize, headBlk.lastPage)
                         freeBlocks <- remainder :: List.tail freeBlocks
-                        // TODO problem: the list is probably no longer sorted
+                        // TODO problem: the list is probably no longer sorted.  is this okay?
                         //printfn "reusing blk prune: %A, specificSize:%d, freeBlocks now: %A" headBlk specificSize freeBlocks
                         blk2
                     else
@@ -1928,15 +1928,17 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
                     fs.Write(bad,0,pageSize)
                 ) blocks
 
-        //stomp() // TODO remove
+        //stomp() // TODO remove.  or maybe a setting?  probably not.
 
         lock critSectionNextPage (fun () ->
             // all additions to the freeBlocks list should happen here
             // by calling this function.
+            //
+            // the list is kept consolidated and sorted by size descending.
+            // unfortunately this requires two sorts, and they happen here
+            // inside a critical section.  but the benefit is considered
+            // worth the trouble.
             
-            // TODO policy questions here.  should freeBlocks be sorted?
-            // how?  large blocks first, and always take the first one?
-
             // TODO it is important that freeBlocks contains no overlaps.
             // add debug-only checks to verify?
 
@@ -1944,15 +1946,10 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
             // don't want to bother with it?  what about a single-page block?
             // should this be a configurable setting?
 
-            // TODO should we coalesce adjacent blocks?  this requires an
-            // extra sort.  once to sort everything in order, then coalesce,
-            // then sort by size descending.
-
             // TODO if the last block of the file is free, consider just
             // moving nextPage back.
 
             let newList = freeBlocks @ blocks |> consolidateBlockList
-            // TODO here, inside a critical section, is an unhappy place to do a sort
             let sorted = List.sortBy (fun (x:PageBlock) -> -(x.CountPages)) newList
             freeBlocks <- sorted
         )
@@ -2075,7 +2072,7 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
                 // count will always compress better as a varint.
                 List.iter (fun (t:PageBlock) -> pb.PutVarint(t.firstPage |> int64); pb.PutVarint(t.CountPages |> int64);) info.blocks
                 ) h.currentState
-            // TODO is pb exactly full?
+            // TODO is pb exactly full?  assert?
             pb.Buffer
 
         let pb = PageBuilder(HEADER_SIZE_IN_BYTES)
@@ -2446,9 +2443,12 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
 
     let doAutoMerge() = 
         // TODO allow caller to specify settings to control or disable this
+        //
+        // TODO consider situations where the need for a merge is so desperate
+        // that we might decide to just run it synchronously here.
         if settings.AutoMergeEnabled then
             #if not
-            match getPossibleMerge 0 4 false with
+            match getPossibleMerge 0 settings.AutoMergeMinimumPages false with
             | Some f -> 
                 let g = Async.RunSynchronously f
                 commitMerge g
@@ -2545,6 +2545,7 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
             LivingCursor.Create mc
 
         member this.RequestWriteLock(timeout:int) =
+            // TODO need a test case for this
             getWriteLock timeout (Some doAutoMerge)
 
         member this.RequestWriteLock() =
