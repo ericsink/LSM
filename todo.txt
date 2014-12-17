@@ -1,4 +1,10 @@
 
+still lots of automerge issues
+
+opencursor issues, info for optimistic merge
+
+more test cases
+
 try to improve the performance of multicursor
 
 write a value stream that doesn't know its length
@@ -13,7 +19,7 @@ checksums for data integrity
 bloom filters?
 
 do we need IDatabase if there is only one implementation
-of it?
+of it?  same for IWriteLock.
 
 --
 
