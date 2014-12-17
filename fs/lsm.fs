@@ -167,6 +167,14 @@ module bcmp =
                 i <- i + 1
         if i>len then result else (xlen - ylen)
 
+    let PrefixMatch (x:byte[]) (y:byte[]) max =
+        let len = if x.Length<y.Length then x.Length else y.Length
+        let lim = if len<max then len else max
+        let mutable i = 0
+        while i<lim && x.[i]=y.[i] do
+            i <- i + 1
+        i
+
 type private ByteComparer() =
     interface System.Collections.Generic.IComparer<byte[]> with
         member this.Compare(x,y) = bcmp.Compare x y
@@ -710,6 +718,16 @@ module bt =
             leaves:pgitem list 
             blk:PageBlock
         }
+
+    let findPrefix keys =
+        let fldr acc b = 
+            let (first,cur) = acc
+            let n = bcmp.PrefixMatch first b cur
+            (first,n)
+        let k = List.head keys
+        let b = List.fold fldr (k, k.Length) (List.tail keys)
+        let len = snd b
+        len
 
     let CreateFromSortedSequenceOfKeyValuePairs(fs:Stream, pageManager:IPages, source:seq<kvp>) = 
         let pageSize = pageManager.PageSize
