@@ -710,10 +710,24 @@ module bt =
             blk:PageBlock
         }
 
+    type private Location =
+        | Inline
+        | Overflow of len:int*page:int
+
+    type private LeafPair =
+        {
+            pair:kvp
+            keyLoc:Location
+            valueLoc:Location
+        }
+
     type private LeafState =
         // TODO considered making this a struct, but it doesn't make much/any perf difference
         {
-            keys:(byte[] list) // TODO we apparently only use the count and head of this list.  but we might need the whole list later.
+            sofarLeaf:int
+            keys:(LeafPair list)
+            prevLeaf:int
+            prefix:int
             firstLeaf:int32
             leaves:pgitem list 
             blk:PageBlock
@@ -874,18 +888,6 @@ module bt =
             writeOneBlock 0 startingBlk
 
         let pb = PageBuilder(pageSize)
-        let putKeyWithLength (k:byte[]) =
-            pb.PutByte(0uy) // flags TODO are keys ever going to have flags?  prefix compression probably.
-            pb.PutVarint(int64 k.Length)
-            pb.PutArray(k)
-
-        let putOverflow strm (blk:PageBlock) =
-            let overflowFirstPage = blk.firstPage
-            let newBlk = writeOverflow blk strm
-            pb.PutByte(FLAG_OVERFLOW)
-            pb.PutVarint(strm.Length)
-            pb.PutInt32(overflowFirstPage)
-            newBlk
 
         let writeLeaves (leavesBlk:PageBlock) :PageBlock*(pgitem list)*int =
             // 2 for the page type and flags
@@ -893,17 +895,43 @@ module bt =
             // 2 for the stored count
             // 4 for lastInt32 (which isn't in pb.Available)
             let LEAF_PAGE_OVERHEAD = 2 + 4 + 2 + 4
-            let OFFSET_COUNT_PAIRS = 6
 
-            let initLeaf prevPage =
+            let buildLeaf st =
+                pb.Reset()
                 pb.PutByte(LEAF_NODE)
                 pb.PutByte(0uy) // flags
-                pb.PutInt32 (prevPage) // prev page num.
-                pb.PutInt16 (0) // number of pairs in this page. zero for now. written at end.
-                // assert pb.Position is 8 (LEAF_PAGE_OVERHEAD - sizeof(lastInt32))
+                pb.PutInt32 (st.prevLeaf) // prev page num.
+                pb.PutInt16 (st.keys.Length)
+                List.iter (fun lp ->
+                    let k = lp.pair.Key
+                    let v = lp.pair.Value
+                    match lp.keyLoc with
+                    | Inline ->
+                        pb.PutByte(0uy) // flags
+                        pb.PutVarint(int64 k.Length)
+                        pb.PutArray(k)
+                    | Overflow (klen,kpage) ->
+                        pb.PutByte(FLAG_OVERFLOW)
+                        pb.PutVarint(int64 klen)
+                        pb.PutInt32(kpage)
+                    match lp.valueLoc with
+                    | Inline ->
+                        if null = v then
+                            pb.PutByte(FLAG_TOMBSTONE)
+                            pb.PutVarint(0L)
+                        else
+                            pb.PutByte(0uy)
+                            let vlen = v.Length
+                            pb.PutVarint(int64 vlen)
+                            pb.PutStream(v, int vlen)
+                    | Overflow (vlen,vpage) ->
+                        pb.PutByte(FLAG_OVERFLOW)
+                        pb.PutVarint(int64 vlen)
+                        pb.PutInt32(vpage)
+                   ) (List.rev st.keys) // TODO rev is unfortunate
 
-            let writeLeaf st isRootPage more = 
-                pb.PutInt16At (OFFSET_COUNT_PAIRS, st.keys.Length)
+            let writeLeaf st isRootPage = 
+                buildLeaf st
                 let thisPageNumber = st.blk.firstPage
                 let firstLeaf = if List.isEmpty st.leaves then thisPageNumber else st.firstLeaf
                 let nextBlk = 
@@ -917,11 +945,8 @@ module bt =
                     else
                         PageBlock(thisPageNumber + 1, st.blk.lastPage)
                 pb.Write(fs)
-                pb.Reset()
-                if more then
-                    initLeaf thisPageNumber
                 if nextBlk.firstPage <> (thisPageNumber+1) then utils.SeekPage(fs, pageSize, nextBlk.firstPage)
-                {keys=[]; firstLeaf=firstLeaf; blk=nextBlk; leaves=pgitem(thisPageNumber,List.head st.keys)::st.leaves}
+                {sofarLeaf=0; keys=[]; prevLeaf=thisPageNumber; prefix=(-1); firstLeaf=firstLeaf; blk=nextBlk; leaves=pgitem(thisPageNumber,(List.head st.keys).pair.Key)::st.leaves}
 
             let foldLeaf st (pair:kvp) = 
                 let k = pair.Key
@@ -945,8 +970,37 @@ module bt =
                 let neededForBothInline = neededForKeyInline + neededForValueInline
                 let neededForKeyInlineValueOverflow = neededForKeyInline + neededForValueOverflow
 
+                let leafPairSize lp =
+                    let k = lp.pair.Key
+                    let v = lp.pair.Value
+                    match lp.keyLoc with
+                    | Inline ->
+                        1 + Varint.SpaceNeededFor(int64 k.Length) + k.Length
+                    | Overflow (klen,kpage) ->
+                        1 + Varint.SpaceNeededFor(int64 klen) + 4
+                    +
+                    match lp.valueLoc with
+                    | Inline ->
+                        if null = v then
+                            1 + Varint.SpaceNeededFor(0L)
+                        else
+                            let vlen = v.Length
+                            1 + Varint.SpaceNeededFor(int64 vlen) + int vlen
+                    | Overflow (vlen,vpage) ->
+                        1 + Varint.SpaceNeededFor(int64 vlen) + 4
+
+                let calcAvailable st =
+                    //let sofar = 12 + List.sumBy (fun lp -> leafPairSize lp) st.keys
+                    let sofar = 12 + st.sofarLeaf
+                    pageSize - sofar
+
                 let maybeWriteLeaf st = 
-                    let available = pb.Available - sizeof<int32> // for the lastInt32
+                    let newPrefix = 
+                        if List.isEmpty st.keys then
+                            k.Length
+                        else
+                            bcmp.PrefixMatch ((List.head st.keys).pair.Key) k st.prefix
+                    let available = calcAvailable st
                     let fitBothInline = (available >= neededForBothInline)
                     let wouldFitBothInlineOnNextPage = ((pageSize - LEAF_PAGE_OVERHEAD) >= neededForBothInline)
                     let fitKeyInlineValueOverflow = (available >= neededForKeyInlineValueOverflow)
@@ -956,50 +1010,57 @@ module bt =
                     let writeThisPage = (not (List.isEmpty st.keys)) && (not fitBothInline) && (wouldFitBothInlineOnNextPage || ( (not fitKeyInlineValueOverflow) && (not fitBothOverflow) ) )
 
                     if writeThisPage then
-                        writeLeaf st false true
+                        writeLeaf st false
                     else
                         st
 
                 let addPairToLeaf (st:LeafState) =
-                    let available = pb.Available - sizeof<int32> // for the lastInt32
+                    let newPrefix = 
+                        if List.isEmpty st.keys then
+                            k.Length
+                        else
+                            bcmp.PrefixMatch ((List.head st.keys).pair.Key) k st.prefix
+                    let available = calcAvailable st
                     let fitBothInline = (available >= neededForBothInline)
                     let fitKeyInlineValueOverflow = (available >= neededForKeyInlineValueOverflow)
                     let blk = st.blk
-                    let newBlk = 
+                    let newBlk,keyLoc,valueLoc = 
                         if fitBothInline then
-                            putKeyWithLength k
-                            if null = v then
-                                pb.PutByte(FLAG_TOMBSTONE)
-                                pb.PutVarint(0L)
-                            else
-                                pb.PutByte(0uy)
-                                pb.PutVarint(int64 vlen)
-                                pb.PutStream(v, int vlen)
-                            blk
+                            blk,Inline,Inline
                         else
                             if null = v then failwith "never overflow a tombstone"
 
                             if fitKeyInlineValueOverflow then
-                                putKeyWithLength k
-
-                                putOverflow v blk
+                                let valueLoc = Overflow (v.Length |> int,blk.firstPage)
+                                writeOverflow blk v,Inline,valueLoc
                             else
-                                let tmpBlk = putOverflow (new MemoryStream(k)) blk
-                                putOverflow v tmpBlk
-                    {st with blk=newBlk;keys=k::st.keys}
+                                let keyLoc = Overflow (k.Length, blk.firstPage)
+                                let tmpBlk = writeOverflow blk (new MemoryStream(k)) 
+                                let valueLoc = Overflow (v.Length |> int, tmpBlk.firstPage)
+                                writeOverflow tmpBlk v,keyLoc,valueLoc
+                    let lp = {
+                                pair=pair
+                                keyLoc=keyLoc
+                                valueLoc=valueLoc
+                                }
+                    {st with 
+                        sofarLeaf=st.sofarLeaf + leafPairSize lp
+                        blk=newBlk
+                        keys=lp::st.keys
+                        prefix=newPrefix
+                        }
                         
                 // this is the body of the foldLeaf function
                 maybeWriteLeaf st |> addPairToLeaf
 
             // this is the body of writeLeaves
             //let source = seq { csr.First(); while csr.IsValid() do yield (csr.Key(), csr.Value()); csr.Next(); done }
-            initLeaf 0
-            let initialState = {firstLeaf=0;keys=[];leaves=[];blk=leavesBlk}
+            let initialState = {sofarLeaf=0;firstLeaf=0;prevLeaf=0;keys=[];prefix=(-1);leaves=[];blk=leavesBlk}
             let middleState = Seq.fold foldLeaf initialState source
             let finalState = 
                 if not (List.isEmpty middleState.keys) then
                     let isRootNode = List.isEmpty middleState.leaves
-                    writeLeaf middleState isRootNode false
+                    writeLeaf middleState isRootNode
                 else
                     middleState
             let {blk=blk;leaves=leaves;firstLeaf=firstLeaf} = finalState
@@ -1048,7 +1109,9 @@ module bt =
                         pb.PutVarint(int64 k.Length)
                         pb.PutInt32(pg)
                     | None ->
-                        putKeyWithLength k
+                        pb.PutByte(0uy)
+                        pb.PutVarint(int64 k.Length)
+                        pb.PutArray(k)
                 List.iter fn items
 
             let writeParentPage st (pair:pgitem) isRootNode =

@@ -91,6 +91,8 @@ let simple_write() =
         tx.CommitSegments [ seg ]
     } |> Async.RunSynchronously
     use csr = db.OpenCursor()
+    csr.First()
+    Assert.True (csr.IsValid())
     csr.Seek ((42).ToString() |> to_utf8, SeekOp.SEEK_EQ)
     Assert.True (csr.IsValid())
     csr.Next()

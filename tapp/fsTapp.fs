@@ -46,6 +46,8 @@ let createMemorySegment (rand:Random) count =
 
 [<EntryPoint>]
 let main argv = 
+    printfn "simple_write"
+    fsTests.simple_write() 
     #if not
     printfn "empty_cursor"
     fsTests.empty_cursor() 
@@ -155,6 +157,7 @@ let main argv =
     loop()
     #endif
 
+    #if not
     let f = dbf("many_segments" + tid())
     use db = new Database(f) :> IDatabase
     let rand = Random()
@@ -176,6 +179,7 @@ let main argv =
 
     let pile = Seq.map (fun _ -> bunch 500) [1..50]
     Async.Parallel pile |> Async.RunSynchronously |> ignore
+    #endif
 
     #if not
     let mrg = db.Merge(0, 4, false, false)
