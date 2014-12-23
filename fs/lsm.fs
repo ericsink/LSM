@@ -167,6 +167,22 @@ module bcmp =
                 i <- i + 1
         if i>len then result else (xlen - ylen)
 
+    let CompareWithinWithPrefix (prefix:byte[]) (x:byte[]) off xlen (y:byte[]) =
+        let ylen = y.Length
+        let len = if xlen<ylen then xlen else ylen
+        let mutable i = 0
+        let mutable result = 0
+        let plen = prefix.Length
+        while i<len do
+            let xval = if i<plen then int (prefix.[i]) else int (x.[i + off - plen])
+            let c = xval - int (y.[i])
+            if c <> 0 then
+                i <- len+1 // breaks out of the loop, and signals that result is valid
+                result <- c
+            else
+                i <- i + 1
+        if i>len then result else (xlen - ylen)
+
     let PrefixMatch (x:byte[]) (y:byte[]) max =
         let len = if x.Length<y.Length then x.Length else y.Length
         let lim = if len<max then len else max
@@ -323,6 +339,7 @@ type private PageReader(pgsz:int) =
     member this.Read(s:Stream, off, len) = utils.ReadFully(s, buf, off, len)
     member this.Reset() = cur <- 0
     member this.Compare(len, other) = bcmp.CompareWithin buf cur len other
+    member this.CompareWithPrefix(prefix, len, other) = bcmp.CompareWithinWithPrefix prefix buf cur len other
     member this.PageType = buf.[0]
     member this.Skip(len) = cur <- cur + len
 
@@ -353,6 +370,10 @@ type private PageReader(pgsz:int) =
     member this.CheckPageFlag(f) = 0uy <> (buf.[1] &&& f)
     member this.GetSecondToLastInt32() = this.GetInt32At(buf.Length - 2*sizeof<int32>)
     member this.GetLastInt32() = this.GetInt32At(buf.Length - sizeof<int32>)
+
+    member this.GetIntoArray(ba:byte[], off, len) =
+        System.Array.Copy(buf, cur, ba, off, len)
+        cur <- cur + len
 
     member this.GetArray(len) =
         let ba:byte[] = Array.zeroCreate len
@@ -727,7 +748,7 @@ module bt =
             sofarLeaf:int
             keys:(LeafPair list)
             prevLeaf:int
-            prefix:int
+            prefixLen:int
             firstLeaf:int32
             leaves:pgitem list 
             blk:PageBlock
@@ -901,6 +922,11 @@ module bt =
                 pb.PutByte(LEAF_NODE)
                 pb.PutByte(0uy) // flags
                 pb.PutInt32 (st.prevLeaf) // prev page num.
+                // TODO prefixLen is one byte.  should it be two?
+                pb.PutByte(byte st.prefixLen)
+                if st.prefixLen > 0 then
+                    let k = (List.head st.keys).pair.Key
+                    pb.PutArray(k, 0, st.prefixLen)
                 pb.PutInt16 (st.keys.Length)
                 List.iter (fun lp ->
                     let k = lp.pair.Key
@@ -909,7 +935,7 @@ module bt =
                     | Inline ->
                         pb.PutByte(0uy) // flags
                         pb.PutVarint(int64 k.Length)
-                        pb.PutArray(k)
+                        pb.PutArray(k, st.prefixLen, k.Length - st.prefixLen)
                     | Overflow (klen,kpage) ->
                         pb.PutByte(FLAG_OVERFLOW)
                         pb.PutVarint(int64 klen)
@@ -918,7 +944,7 @@ module bt =
                     | Inline ->
                         if null = v then
                             pb.PutByte(FLAG_TOMBSTONE)
-                            pb.PutVarint(0L)
+                            pb.PutVarint(0L) // TODO remove this
                         else
                             pb.PutByte(0uy)
                             let vlen = v.Length
@@ -946,7 +972,15 @@ module bt =
                         PageBlock(thisPageNumber + 1, st.blk.lastPage)
                 pb.Write(fs)
                 if nextBlk.firstPage <> (thisPageNumber+1) then utils.SeekPage(fs, pageSize, nextBlk.firstPage)
-                {sofarLeaf=0; keys=[]; prevLeaf=thisPageNumber; prefix=(-1); firstLeaf=firstLeaf; blk=nextBlk; leaves=pgitem(thisPageNumber,(List.head st.keys).pair.Key)::st.leaves}
+                {
+                    sofarLeaf=0
+                    keys=[]
+                    prevLeaf=thisPageNumber
+                    prefixLen=(-1)
+                    firstLeaf=firstLeaf
+                    blk=nextBlk
+                    leaves=pgitem(thisPageNumber,(List.head st.keys).pair.Key)::st.leaves
+                    }
 
             let foldLeaf st (pair:kvp) = 
                 let k = pair.Key
@@ -959,7 +993,6 @@ module bt =
                 let neededForOverflowPageNumber = sizeof<int32>
 
                 let neededForKeyBase = 1 + Varint.SpaceNeededFor(int64 k.Length)
-                let neededForKeyInline = neededForKeyBase + k.Length
 
                 let neededForValueInline = 1 + if v<>null then Varint.SpaceNeededFor(int64 vlen) + int vlen else 1
                 let neededForValueOverflow = 
@@ -967,16 +1000,14 @@ module bt =
                     if v<>null then Varint.SpaceNeededFor(int64 vlen) + neededForOverflowPageNumber 
                     else 1 // TODO this doesn't make much sense actually. never overflow a tombstone.
 
-                let neededForBothInline = neededForKeyInline + neededForValueInline
-                let neededForKeyInlineValueOverflow = neededForKeyInline + neededForValueOverflow
-
-                let leafPairSize lp =
+                let leafPairSize prefixLen lp =
                     let k = lp.pair.Key
                     let v = lp.pair.Value
+                    // TODO the code below duplicates stuff like neededForKeyBase
                     match lp.keyLoc with
                     | Inline ->
-                        1 + Varint.SpaceNeededFor(int64 k.Length) + k.Length
-                    | Overflow (klen,kpage) ->
+                        1 + Varint.SpaceNeededFor(int64 k.Length) + k.Length - prefixLen
+                    | Overflow (klen,_) ->
                         1 + Varint.SpaceNeededFor(int64 klen) + 4
                     +
                     match lp.valueLoc with
@@ -986,21 +1017,29 @@ module bt =
                         else
                             let vlen = v.Length
                             1 + Varint.SpaceNeededFor(int64 vlen) + int vlen
-                    | Overflow (vlen,vpage) ->
+                    | Overflow (vlen,_) ->
                         1 + Varint.SpaceNeededFor(int64 vlen) + 4
 
-                let calcAvailable st =
-                    //let sofar = 12 + List.sumBy (fun lp -> leafPairSize lp) st.keys
-                    let sofar = 12 + st.sofarLeaf
-                    pageSize - sofar
+                let defaultPrefixLen (k:byte[]) =
+                    // TODO max prefix.  relative to page size?  must fit in byte.
+                    if k.Length > 255 then 255 else k.Length
 
                 let maybeWriteLeaf st = 
                     let newPrefix = 
                         if List.isEmpty st.keys then
-                            k.Length
+                            defaultPrefixLen k
                         else
-                            bcmp.PrefixMatch ((List.head st.keys).pair.Key) k st.prefix
-                    let available = calcAvailable st
+                            bcmp.PrefixMatch ((List.head st.keys).pair.Key) k st.prefixLen
+                    let sofar = 
+                        if newPrefix < st.prefixLen then
+                            // TODO is it a problem that we're doing this without List.rev ?
+                            List.sumBy (fun lp -> leafPairSize newPrefix lp) st.keys
+                        else
+                            st.sofarLeaf
+                    let available = pageSize - (sofar + LEAF_PAGE_OVERHEAD + 1 + newPrefix)
+                    let neededForKeyInline = neededForKeyBase + k.Length - newPrefix
+                    let neededForBothInline = neededForKeyInline + neededForValueInline
+                    let neededForKeyInlineValueOverflow = neededForKeyInline + neededForValueOverflow
                     let fitBothInline = (available >= neededForBothInline)
                     let wouldFitBothInlineOnNextPage = ((pageSize - LEAF_PAGE_OVERHEAD) >= neededForBothInline)
                     let fitKeyInlineValueOverflow = (available >= neededForKeyInlineValueOverflow)
@@ -1017,10 +1056,19 @@ module bt =
                 let addPairToLeaf (st:LeafState) =
                     let newPrefix = 
                         if List.isEmpty st.keys then
-                            k.Length
+                            defaultPrefixLen k
                         else
-                            bcmp.PrefixMatch ((List.head st.keys).pair.Key) k st.prefix
-                    let available = calcAvailable st
+                            bcmp.PrefixMatch ((List.head st.keys).pair.Key) k st.prefixLen
+                    let sofar = 
+                        if newPrefix < st.prefixLen then
+                            // TODO is it a problem that we're doing this without List.rev ?
+                            List.sumBy (fun lp -> leafPairSize newPrefix lp) st.keys
+                        else
+                            st.sofarLeaf
+                    let available = pageSize - (sofar + LEAF_PAGE_OVERHEAD + 1 + newPrefix)
+                    let neededForKeyInline = neededForKeyBase + k.Length - newPrefix
+                    let neededForBothInline = neededForKeyInline + neededForValueInline
+                    let neededForKeyInlineValueOverflow = neededForKeyInline + neededForValueOverflow
                     let fitBothInline = (available >= neededForBothInline)
                     let fitKeyInlineValueOverflow = (available >= neededForKeyInlineValueOverflow)
                     let blk = st.blk
@@ -1044,10 +1092,10 @@ module bt =
                                 valueLoc=valueLoc
                                 }
                     {st with 
-                        sofarLeaf=st.sofarLeaf + leafPairSize lp
+                        sofarLeaf=sofar + leafPairSize newPrefix lp
                         blk=newBlk
                         keys=lp::st.keys
-                        prefix=newPrefix
+                        prefixLen=newPrefix
                         }
                         
                 // this is the body of the foldLeaf function
@@ -1055,7 +1103,15 @@ module bt =
 
             // this is the body of writeLeaves
             //let source = seq { csr.First(); while csr.IsValid() do yield (csr.Key(), csr.Value()); csr.Next(); done }
-            let initialState = {sofarLeaf=0;firstLeaf=0;prevLeaf=0;keys=[];prefix=(-1);leaves=[];blk=leavesBlk}
+            let initialState = {
+                sofarLeaf=0
+                firstLeaf=0
+                prevLeaf=0
+                keys=[]
+                prefixLen=(-1)
+                leaves=[]
+                blk=leavesBlk
+                }
             let middleState = Seq.fold foldLeaf initialState source
             let finalState = 
                 if not (List.isEmpty middleState.keys) then
@@ -1063,8 +1119,7 @@ module bt =
                     writeLeaf middleState isRootNode
                 else
                     middleState
-            let {blk=blk;leaves=leaves;firstLeaf=firstLeaf} = finalState
-            (blk,leaves,firstLeaf)
+            (finalState.blk,finalState.leaves,finalState.firstLeaf)
 
         // this is the body of Create
         let startingBlk = pageManager.GetBlock(token)
@@ -1366,11 +1421,13 @@ module bt =
         let mutable countLeafKeys = 0 // only realloc leafKeys when it's too small
         let mutable previousLeaf:int = 0
         let mutable currentKey = -1
+        let mutable prefix:byte[] = null
 
         let resetLeaf() =
             countLeafKeys <- 0
             previousLeaf <- 0
             currentKey <- -1
+            prefix <- null
 
         let setCurrentPage (pagenum:int) = 
             // TODO consider passing a block list for the segment into this
@@ -1422,7 +1479,7 @@ module bt =
             let kflag = pr.GetByte()
             let klen = pr.GetVarint()
             if 0uy = (kflag &&& FLAG_OVERFLOW) then
-                pr.Skip(int klen)
+                pr.Skip(int klen - if null=prefix then 0 else prefix.Length)
             else
                 pr.Skip(sizeof<int32>)
 
@@ -1439,6 +1496,11 @@ module bt =
             if pr.GetByte() <> LEAF_NODE then failwith "leaf has invalid page type"
             pr.GetByte() |> ignore
             previousLeaf <- pr.GetInt32()
+            let prefixLen = pr.GetByte() |> int
+            if prefixLen > 0 then
+                prefix <- pr.GetArray(prefixLen)
+            else
+                prefix <- null
             countLeafKeys <- pr.GetInt16() |> int
             // only realloc leafKeys if it's too small
             if leafKeys=null || leafKeys.Length<countLeafKeys then
@@ -1448,28 +1510,40 @@ module bt =
                 skipKey()
                 skipValue()
 
-        let compareKeyInLeaf n other = 
-            pr.SetPosition(leafKeys.[n])
-            let kflag = pr.GetByte()
-            let klen = pr.GetVarint() |> int
-            if 0uy = (kflag &&& FLAG_OVERFLOW) then
-                pr.Compare(klen, other)
-            else
-                let pagenum = pr.GetInt32()
-                let k = readOverflow klen fs pr.PageSize pagenum
-                bcmp.Compare k other
-
         let keyInLeaf n = 
             pr.SetPosition(leafKeys.[n])
             let kflag = pr.GetByte()
             let klen = pr.GetVarint() |> int
             if 0uy = (kflag &&& FLAG_OVERFLOW) then
-                pr.GetArray(klen)
+                if prefix <> null then
+                    let prefixLen = prefix.Length
+                    let res:byte[] = Array.zeroCreate klen
+                    System.Array.Copy(prefix, 0, res, 0, prefixLen)
+                    pr.GetIntoArray(res, prefixLen, klen - prefixLen)
+                    res
+                else
+                    pr.GetArray(klen) // TODO consider alloc here and use GetIntoArray
             else
                 let pagenum = pr.GetInt32()
                 let k = readOverflow klen fs pr.PageSize pagenum
                 k
 
+        let compareKeyInLeaf n other = 
+            pr.SetPosition(leafKeys.[n])
+            let kflag = pr.GetByte()
+            let klen = pr.GetVarint() |> int
+            if 0uy = (kflag &&& FLAG_OVERFLOW) then
+                if prefix <> null then
+                    pr.CompareWithPrefix(prefix, klen, other)
+                else
+                    pr.Compare(klen, other)
+            else
+                // TODO this could be more efficient
+                // TODO overflowed keys are not prefixed.  should they be?
+                let pagenum = pr.GetInt32()
+                let k = readOverflow klen fs pr.PageSize pagenum
+                bcmp.Compare k other
+           
         let rec searchLeaf k min max sop le ge = 
             if max < min then
                 match sop with

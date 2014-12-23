@@ -100,6 +100,23 @@ let simple_write() =
     Assert.Equal<string> ("43", k)
 
 [<Fact>]
+let prefix_compression() = 
+    let f = dbf("prefix_compression" + tid())
+    use db = new Database(f) :> IDatabase
+    let d = dseg()
+    for i in 1 .. 10000 do
+        let s = i.ToString()
+        insert d ("prefix_compression"+s) s
+    let seg = db.WriteSegment d
+    async {
+        use! tx = db.RequestWriteLock()
+        tx.CommitSegments [ seg ]
+    } |> Async.RunSynchronously
+    use csr = db.OpenCursor()
+    csr.First()
+    Assert.True (csr.IsValid())
+
+[<Fact>]
 let multiple() = 
     let f = dbf("multiple" + tid())
     use db = new Database(f) :> IDatabase

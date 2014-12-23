@@ -11,8 +11,6 @@ write a value stream that doesn't know its length
 
 page level encryption
 
-prefix key compression
-
 need to actually design the file header
 checksums for data integrity
 
