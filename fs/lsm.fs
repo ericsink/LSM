@@ -128,6 +128,17 @@ module utils =
                 fn (sofar + got)
         fn 0
 
+    let ReadFully2(strm:Stream, buf, off, len) =
+        // TODO consider memory alloc issue on this closure
+        let rec fn sofar =
+            if sofar < len then
+                let got = strm.Read(buf, off + sofar, len - sofar)
+                if 0 = got then sofar
+                else fn (sofar + got)
+            else
+                sofar
+        fn 0
+
     let ReadAll(strm:Stream) =
         let len = int (strm.Length - strm.Position)
         let buf:byte[] = Array.zeroCreate len
@@ -1138,7 +1149,7 @@ module bt =
         let writeParentNodes (startingBlk:PageBlock) children =
             // 2 for the page type and flags
             // 2 for the stored count
-            // 5 for the extra ptr we will add at the end, a varint, 5 is worst case
+            // 5 for the extra ptr we will add at the end, a varint, 5 is worst case TODO is it?
             // 4 for lastInt32
             let PARENT_PAGE_OVERHEAD = 2 + 2 + 5 + 4
 
