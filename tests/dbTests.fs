@@ -121,7 +121,6 @@ let multiple() =
     let f = dbf("multiple" + tid())
     use db = new Database(f) :> IDatabase
     let NUM = 10
-    let rand = Random()
 
     let start i = async {
         let commit g = async {
@@ -129,6 +128,7 @@ let multiple() =
             tx.CommitSegments (g :: List.empty)
         }
 
+        let rand = Random(i)
         let count = 1+rand.Next(10000)
         let d = createMemorySegment rand count
         let g = db.WriteSegment(d)
@@ -621,7 +621,7 @@ let many_segments() =
     let f = dbf("many_segments" + tid())
     use db = new Database(f) :> IDatabase
     let NUM = 300
-    let rand = Random()
+    let rand = Random(501)
 
     for i in 0 .. NUM-1 do
         let count = 1+rand.Next(100)
@@ -673,16 +673,17 @@ let race() =
     let f = dbf("race" + tid())
     use db = new Database(f, settings) :> IDatabase
     let NUM = 100
-    let rand = Random()
 
     let one count = 
-        let d = createMemorySegment rand count
+        let r = Random(count)
+        let d = createMemorySegment r count
         let g = db.WriteSegment(d)
         async {
             use! tx = db.RequestWriteLock()
             tx.CommitSegments [ g ]
         } |> Async.RunSynchronously
 
+    let rand = Random(501)
     for i in 0 .. NUM-1 do
         let count = 1+rand.Next(100)
         one count
