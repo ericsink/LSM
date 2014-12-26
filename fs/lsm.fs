@@ -742,15 +742,23 @@ module bt =
             blk:PageBlock
         }
 
-    type private Location =
+    // TODO gratuitously different names of the items in these
+    // two unions
+
+    type private KeyLocation =
         | Inline
-        | Overflow of len:int*page:int
+        | Overflow of page:int
+
+    type private ValueLocation =
+        | Tombstone
+        | Buffer of vbuf:byte[]
+        | Overflowed of len:int*page:int
 
     type private LeafPair =
         {
-            pair:kvp
-            keyLoc:Location
-            valueLoc:Location
+            key:byte[]
+            kLoc:KeyLocation
+            vLoc:ValueLocation
         }
 
     type private LeafState =
@@ -775,13 +783,45 @@ module bt =
         let len = snd b
         len
 
+    type private myConcatStream(_a:byte[], _alen:int, _s:Stream) =
+        inherit Stream()
+        let a = _a
+        let alen = _alen
+        let s = _s
+        let mutable sofar = 0L
+
+        override this.Length = s.Length // TODO remove
+        override this.CanRead = sofar < s.Length // TODO just return true?
+
+        override this.Read(ba,offset,wanted) =
+            if (int sofar) < alen then
+                let available = alen - int sofar
+                let num = Math.Min (available, wanted)
+                System.Array.Copy (a, int sofar, ba, offset, num)
+                sofar <- sofar + int64 num
+                num
+            else  
+                let num = s.Read(ba,offset,wanted)
+                sofar <- sofar + int64 num
+                num
+
+        override this.CanSeek = false
+        override this.CanWrite = false
+        override this.SetLength(_) = raise (NotSupportedException())
+        override this.Flush() = raise (NotSupportedException())
+        override this.Seek(_,_) = raise (NotSupportedException())
+        override this.Write(_,_,_) = raise (NotSupportedException())
+        override this.Position
+            with get() = int64 sofar
+            and set(_) = raise (NotSupportedException())
+
     let CreateFromSortedSequenceOfKeyValuePairs(fs:Stream, pageManager:IPages, source:seq<kvp>) = 
         let pageSize = pageManager.PageSize
         let token = pageManager.Begin()
         let pbOverflow = PageBuilder(pageSize)
 
         let writeOverflow (startingBlk:PageBlock) (ba:Stream) =
-            let len = (int ba.Length)
+            let len = (int ba.Length) // TODO no
             let pageSize = pbOverflow.PageSize
 
             let buildBoundaryPage sofar =
@@ -917,7 +957,8 @@ module bt =
                             else
                                 PageBlock(firstRegularPageNumber + numRegularPages, firstBlk.lastPage)
 
-            writeOneBlock 0 startingBlk
+            let newBlk = writeOneBlock 0 startingBlk
+            len, newBlk
 
         let pb = PageBuilder(pageSize)
 
@@ -936,32 +977,29 @@ module bt =
                 // TODO prefixLen is one byte.  should it be two?
                 pb.PutByte(byte st.prefixLen)
                 if st.prefixLen > 0 then
-                    let k = (List.head st.keys).pair.Key
+                    let k = (List.head st.keys).key
                     pb.PutArray(k, 0, st.prefixLen)
                 pb.PutInt16 (st.keys.Length)
                 List.iter (fun lp ->
-                    let k = lp.pair.Key
-                    let v = lp.pair.Value
-                    match lp.keyLoc with
+                    let k = lp.key
+                    match lp.kLoc with
                     | Inline ->
                         pb.PutByte(0uy) // flags
                         pb.PutVarint(int64 k.Length)
                         pb.PutArray(k, st.prefixLen, k.Length - st.prefixLen)
-                    | Overflow (klen,kpage) ->
+                    | Overflow kpage ->
                         pb.PutByte(FLAG_OVERFLOW)
-                        pb.PutVarint(int64 klen)
+                        pb.PutVarint(int64 k.Length)
                         pb.PutInt32(kpage)
-                    match lp.valueLoc with
-                    | Inline ->
-                        if null = v then
-                            pb.PutByte(FLAG_TOMBSTONE)
-                            pb.PutVarint(0L) // TODO remove this
-                        else
-                            pb.PutByte(0uy)
-                            let vlen = v.Length
-                            pb.PutVarint(int64 vlen)
-                            pb.PutStream(v, int vlen)
-                    | Overflow (vlen,vpage) ->
+                    match lp.vLoc with
+                    | Tombstone ->
+                        pb.PutByte(FLAG_TOMBSTONE)
+                        pb.PutVarint(0L) // TODO remove this
+                    | Buffer (vbuf) ->
+                        pb.PutByte(0uy)
+                        pb.PutVarint(int64 vbuf.Length)
+                        pb.PutArray(vbuf)
+                    | Overflowed (vlen,vpage) ->
                         pb.PutByte(FLAG_OVERFLOW)
                         pb.PutVarint(int64 vlen)
                         pb.PutInt32(vpage)
@@ -990,74 +1028,149 @@ module bt =
                     prefixLen=(-1)
                     firstLeaf=firstLeaf
                     blk=nextBlk
-                    leaves=pgitem(thisPageNumber,(List.head st.keys).pair.Key)::st.leaves
+                    leaves=pgitem(thisPageNumber,(List.head st.keys).key)::st.leaves
                     }
+
+            let vbuf:byte[] = Array.zeroCreate pageSize
 
             let foldLeaf st (pair:kvp) = 
                 let k = pair.Key
-                let v = pair.Value
                 // assert k <> null
-                // but v might be null (a tombstone)
+                // but pair.Value might be null (a tombstone)
 
-                let vlen = if v<>null then v.Length else int64 0
+                // TODO is it possible for this to conclude that the key must be overflowed
+                // when it would actually fit because of prefixing?
 
                 let neededForOverflowPageNumber = sizeof<int32>
 
-                let neededForKeyBase = 1 + Varint.SpaceNeededFor(int64 k.Length)
+                // TODO can the overflow page number become a varint?
 
-                let neededForValueInline = 1 + if v<>null then Varint.SpaceNeededFor(int64 vlen) + int vlen else 1
-                let neededForValueOverflow = 
-                    1 + 
-                    if v<>null then Varint.SpaceNeededFor(int64 vlen) + neededForOverflowPageNumber 
-                    else 1 // TODO this doesn't make much sense actually. never overflow a tombstone.
+                // the max limit of an inline key is when that key is the only
+                // one in the leaf, and its value is overflowed.
+
+                let maxKeyInline = 
+                    pageSize 
+                    - LEAF_PAGE_OVERHEAD 
+                    - 1 // prefixLen
+                    - 1 // key flags
+                    - Varint.SpaceNeededFor(int64 pageSize) // approx worst case inline key len
+                    - 1 // value flags
+                    - 9 // worst case varint value len
+                    - neededForOverflowPageNumber // overflowed value page
+
+                let blkAfterKey,kloc = 
+                    if k.Length <= maxKeyInline then
+                        st.blk, Inline
+                    else
+                        let vPage = st.blk.firstPage
+                        let _,newBlk = writeOverflow st.blk (new MemoryStream(k))
+                        newBlk, (Overflow (vPage))
+
+                // the max limit of an inline value is when the key is inline
+                // on a new page.
+
+                let availableOnNewPageAfterKey = 
+                    pageSize 
+                    - LEAF_PAGE_OVERHEAD 
+                    - 1 // prefixLen
+                    - 1 // key flags
+                    - Varint.SpaceNeededFor(int64 k.Length)
+                    - k.Length 
+                    - 1 // value flags
+
+                // availableOnNewPageAfterKey needs to accomodate the value and its length as a varint.
+                // it might already be <=0 because of the key length
+
+                let maxValueInline = 
+                    if availableOnNewPageAfterKey > 0 then                    
+                        let neededForVarintLen = Varint.SpaceNeededFor(int64 availableOnNewPageAfterKey)
+                        let avail2 = availableOnNewPageAfterKey - neededForVarintLen
+                        if avail2 > 0 then avail2 else 0
+                    else 0
+
+                let blkAfterValue, vloc = 
+                    if pair.Value = null then
+                        blkAfterKey, Tombstone
+                    else match kloc with
+                         | Inline ->
+                            if maxValueInline = 0 then
+                                let valuePage = blkAfterKey.firstPage
+                                let len,newBlk = writeOverflow blkAfterKey pair.Value
+                                newBlk, (Overflowed (len,valuePage))
+                            else
+                                let vread = utils.ReadFully2(pair.Value, vbuf, 0, maxValueInline+1)
+                                if vread < maxValueInline then
+                                    // TODO this alloc+copy is unfortunate
+                                    let va:byte[] = Array.zeroCreate vread
+                                    System.Array.Copy (vbuf, 0, va, 0, vread)
+                                    blkAfterKey, Buffer va
+                                else
+                                    let valuePage = blkAfterKey.firstPage
+                                    let len,newBlk = writeOverflow blkAfterKey (new myConcatStream(vbuf, vread, pair.Value))
+                                    newBlk, (Overflowed (len,valuePage))
+                         | Overflow _ ->
+                            let valuePage = blkAfterKey.firstPage
+                            let len,newBlk = writeOverflow blkAfterKey pair.Value
+                            newBlk, (Overflowed (len,valuePage))
+
+
+                let lp = {
+                            key=k
+                            kLoc=kloc
+                            vLoc=vloc
+                            }
+
+                // whether/not the key/value are to be overflowed is now already decided.
+                // now all we have to do is decide if this key/value are going into this leaf
+                // or not.  note that it is possible to overflow these and then have them not
+                // fit into the current leaf and end up landing in the next leaf.
+
+                let kLocNeed (k:byte[]) kloc prefixLen =
+                    let klen = k.Length
+                    match kloc with
+                    | Inline ->
+                        1 + Varint.SpaceNeededFor(int64 klen) + klen - prefixLen
+                    | Overflow _ ->
+                        1 + Varint.SpaceNeededFor(int64 klen) + neededForOverflowPageNumber
+
+                let vLocNeed vloc =
+                    match vloc with
+                    | Tombstone -> 
+                        1 + Varint.SpaceNeededFor(0L)
+                    | Buffer vbuf ->
+                        let vlen = vbuf.Length
+                        1 + Varint.SpaceNeededFor(int64 vlen) + vlen
+                    | Overflowed (vlen,_) ->
+                        1 + Varint.SpaceNeededFor(int64 vlen) + neededForOverflowPageNumber
 
                 let leafPairSize prefixLen lp =
-                    let k = lp.pair.Key
-                    let v = lp.pair.Value
-                    // TODO the code below duplicates stuff like neededForKeyBase
-                    match lp.keyLoc with
-                    | Inline ->
-                        1 + Varint.SpaceNeededFor(int64 k.Length) + k.Length - prefixLen
-                    | Overflow (klen,_) ->
-                        1 + Varint.SpaceNeededFor(int64 klen) + 4
+                    kLocNeed lp.key lp.kLoc prefixLen
                     +
-                    match lp.valueLoc with
-                    | Inline ->
-                        if null = v then
-                            1 + Varint.SpaceNeededFor(0L)
-                        else
-                            let vlen = v.Length
-                            1 + Varint.SpaceNeededFor(int64 vlen) + int vlen
-                    | Overflow (vlen,_) ->
-                        1 + Varint.SpaceNeededFor(int64 vlen) + 4
+                    vLocNeed lp.vLoc
 
                 let defaultPrefixLen (k:byte[]) =
                     // TODO max prefix.  relative to page size?  must fit in byte.
                     if k.Length > 255 then 255 else k.Length
 
                 let maybeWriteLeaf st = 
-                    let newPrefix = 
+                    // TODO ignore prefixLen for overflowed keys?
+                    let newPrefixLen = 
                         if List.isEmpty st.keys then
                             defaultPrefixLen k
                         else
-                            bcmp.PrefixMatch ((List.head st.keys).pair.Key) k st.prefixLen
+                            bcmp.PrefixMatch ((List.head st.keys).key) k st.prefixLen
                     let sofar = 
-                        if newPrefix < st.prefixLen then
+                        if newPrefixLen < st.prefixLen then
+                            // the prefixLen would change with the addition of this key,
+                            // so we need to recalc sofar
                             // TODO is it a problem that we're doing this without List.rev ?
-                            List.sumBy (fun lp -> leafPairSize newPrefix lp) st.keys
+                            List.sumBy (fun lp -> leafPairSize newPrefixLen lp) st.keys
                         else
                             st.sofarLeaf
-                    let available = pageSize - (sofar + LEAF_PAGE_OVERHEAD + 1 + newPrefix)
-                    let neededForKeyInline = neededForKeyBase + k.Length - newPrefix
-                    let neededForBothInline = neededForKeyInline + neededForValueInline
-                    let neededForKeyInlineValueOverflow = neededForKeyInline + neededForValueOverflow
-                    let fitBothInline = (available >= neededForBothInline)
-                    let wouldFitBothInlineOnNextPage = ((pageSize - LEAF_PAGE_OVERHEAD) >= neededForBothInline)
-                    let fitKeyInlineValueOverflow = (available >= neededForKeyInlineValueOverflow)
-                    let neededForKeyOverflow = neededForKeyBase + neededForOverflowPageNumber
-                    let neededForBothOverflow = neededForKeyOverflow + neededForValueOverflow
-                    let fitBothOverflow = (available >= neededForBothOverflow)
-                    let writeThisPage = (not (List.isEmpty st.keys)) && (not fitBothInline) && (wouldFitBothInlineOnNextPage || ( (not fitKeyInlineValueOverflow) && (not fitBothOverflow) ) )
+                    let available = pageSize - (sofar + LEAF_PAGE_OVERHEAD + 1 + newPrefixLen)
+                    let needed = kLocNeed k kloc newPrefixLen + vLocNeed vloc
+                    let fit = (available >= needed)
+                    let writeThisPage = (not (List.isEmpty st.keys)) && (not fit)
 
                     if writeThisPage then
                         writeLeaf st false
@@ -1065,52 +1178,27 @@ module bt =
                         st
 
                 let addPairToLeaf (st:LeafState) =
-                    let newPrefix = 
+                    // TODO ignore prefixLen for overflowed keys?
+                    let newPrefixLen = 
                         if List.isEmpty st.keys then
                             defaultPrefixLen k
                         else
-                            bcmp.PrefixMatch ((List.head st.keys).pair.Key) k st.prefixLen
+                            bcmp.PrefixMatch ((List.head st.keys).key) k st.prefixLen
                     let sofar = 
-                        if newPrefix < st.prefixLen then
+                        if newPrefixLen < st.prefixLen then
+                            // the prefixLen will change with the addition of this key,
+                            // so we need to recalc sofar
                             // TODO is it a problem that we're doing this without List.rev ?
-                            List.sumBy (fun lp -> leafPairSize newPrefix lp) st.keys
+                            List.sumBy (fun lp -> leafPairSize newPrefixLen lp) st.keys
                         else
                             st.sofarLeaf
-                    let available = pageSize - (sofar + LEAF_PAGE_OVERHEAD + 1 + newPrefix)
-                    let neededForKeyInline = neededForKeyBase + k.Length - newPrefix
-                    let neededForBothInline = neededForKeyInline + neededForValueInline
-                    let neededForKeyInlineValueOverflow = neededForKeyInline + neededForValueOverflow
-                    let fitBothInline = (available >= neededForBothInline)
-                    let fitKeyInlineValueOverflow = (available >= neededForKeyInlineValueOverflow)
-                    let blk = st.blk
-                    let newBlk,keyLoc,valueLoc = 
-                        if fitBothInline then
-                            blk,Inline,Inline
-                        else
-                            if null = v then failwith "never overflow a tombstone"
-
-                            if fitKeyInlineValueOverflow then
-                                let valueLoc = Overflow (v.Length |> int,blk.firstPage)
-                                writeOverflow blk v,Inline,valueLoc
-                            else
-                                let keyLoc = Overflow (k.Length, blk.firstPage)
-                                let tmpBlk = writeOverflow blk (new MemoryStream(k)) 
-                                let valueLoc = Overflow (v.Length |> int, tmpBlk.firstPage)
-                                writeOverflow tmpBlk v,keyLoc,valueLoc
-                    let lp = {
-                                pair=pair
-                                keyLoc=keyLoc
-                                valueLoc=valueLoc
-                                }
                     {st with 
-                        sofarLeaf=sofar + leafPairSize newPrefix lp
-                        blk=newBlk
+                        sofarLeaf=sofar + leafPairSize newPrefixLen lp
                         keys=lp::st.keys
-                        prefixLen=newPrefix
+                        prefixLen=newPrefixLen
                         }
                         
-                // this is the body of the foldLeaf function
-                maybeWriteLeaf st |> addPairToLeaf
+                maybeWriteLeaf {st with blk=blkAfterValue} |> addPairToLeaf
 
             // this is the body of writeLeaves
             //let source = seq { csr.First(); while csr.IsValid() do yield (csr.Key(), csr.Value()); csr.Next(); done }
@@ -1241,7 +1329,7 @@ module bt =
                         {stateWithK with sofar=sofar + neededForInline}
                     else
                         let keyOverflowFirstPage = blk.firstPage
-                        let newBlk = writeOverflow blk (new MemoryStream(k))
+                        let _,newBlk = writeOverflow blk (new MemoryStream(k))
                         {stateWithK with sofar=sofar + neededForOverflow; blk=newBlk; overflows=overflows.Add(k,keyOverflowFirstPage)}
 
 
