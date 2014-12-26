@@ -1033,6 +1033,49 @@ module bt =
 
             let vbuf:byte[] = Array.zeroCreate pageSize
 
+            // TODO can the overflow page number become a varint?
+            let neededForOverflowPageNumber = sizeof<int32>
+
+            // the max limit of an inline key is when that key is the only
+            // one in the leaf, and its value is overflowed.
+
+            let maxKeyInline = 
+                pageSize 
+                - LEAF_PAGE_OVERHEAD 
+                - 1 // prefixLen
+                - 1 // key flags
+                - Varint.SpaceNeededFor(int64 pageSize) // approx worst case inline key len
+                - 1 // value flags
+                - 9 // worst case varint value len
+                - neededForOverflowPageNumber // overflowed value page
+
+            let kLocNeed (k:byte[]) kloc prefixLen =
+                let klen = k.Length
+                match kloc with
+                | Inline ->
+                    1 + Varint.SpaceNeededFor(int64 klen) + klen - prefixLen
+                | Overflow _ ->
+                    1 + Varint.SpaceNeededFor(int64 klen) + neededForOverflowPageNumber
+
+            let vLocNeed vloc =
+                match vloc with
+                | Tombstone -> 
+                    1 + Varint.SpaceNeededFor(0L)
+                | Buffer vbuf ->
+                    let vlen = vbuf.Length
+                    1 + Varint.SpaceNeededFor(int64 vlen) + vlen
+                | Overflowed (vlen,_) ->
+                    1 + Varint.SpaceNeededFor(int64 vlen) + neededForOverflowPageNumber
+
+            let leafPairSize prefixLen lp =
+                kLocNeed lp.key lp.kLoc prefixLen
+                +
+                vLocNeed lp.vLoc
+
+            let defaultPrefixLen (k:byte[]) =
+                // TODO max prefix.  relative to page size?  must fit in byte.
+                if k.Length > 255 then 255 else k.Length
+
             let foldLeaf st (pair:kvp) = 
                 let k = pair.Key
                 // assert k <> null
@@ -1040,23 +1083,6 @@ module bt =
 
                 // TODO is it possible for this to conclude that the key must be overflowed
                 // when it would actually fit because of prefixing?
-
-                let neededForOverflowPageNumber = sizeof<int32>
-
-                // TODO can the overflow page number become a varint?
-
-                // the max limit of an inline key is when that key is the only
-                // one in the leaf, and its value is overflowed.
-
-                let maxKeyInline = 
-                    pageSize 
-                    - LEAF_PAGE_OVERHEAD 
-                    - 1 // prefixLen
-                    - 1 // key flags
-                    - Varint.SpaceNeededFor(int64 pageSize) // approx worst case inline key len
-                    - 1 // value flags
-                    - 9 // worst case varint value len
-                    - neededForOverflowPageNumber // overflowed value page
 
                 let blkAfterKey,kloc = 
                     if k.Length <= maxKeyInline then
@@ -1125,34 +1151,9 @@ module bt =
                 // or not.  note that it is possible to overflow these and then have them not
                 // fit into the current leaf and end up landing in the next leaf.
 
-                let kLocNeed (k:byte[]) kloc prefixLen =
-                    let klen = k.Length
-                    match kloc with
-                    | Inline ->
-                        1 + Varint.SpaceNeededFor(int64 klen) + klen - prefixLen
-                    | Overflow _ ->
-                        1 + Varint.SpaceNeededFor(int64 klen) + neededForOverflowPageNumber
+                let st = {st with blk=blkAfterValue}
 
-                let vLocNeed vloc =
-                    match vloc with
-                    | Tombstone -> 
-                        1 + Varint.SpaceNeededFor(0L)
-                    | Buffer vbuf ->
-                        let vlen = vbuf.Length
-                        1 + Varint.SpaceNeededFor(int64 vlen) + vlen
-                    | Overflowed (vlen,_) ->
-                        1 + Varint.SpaceNeededFor(int64 vlen) + neededForOverflowPageNumber
-
-                let leafPairSize prefixLen lp =
-                    kLocNeed lp.key lp.kLoc prefixLen
-                    +
-                    vLocNeed lp.vLoc
-
-                let defaultPrefixLen (k:byte[]) =
-                    // TODO max prefix.  relative to page size?  must fit in byte.
-                    if k.Length > 255 then 255 else k.Length
-
-                let maybeWriteLeaf st = 
+                let st = 
                     // TODO ignore prefixLen for overflowed keys?
                     let newPrefixLen = 
                         if List.isEmpty st.keys then
@@ -1177,7 +1178,7 @@ module bt =
                     else
                         st
 
-                let addPairToLeaf (st:LeafState) =
+                let st =
                     // TODO ignore prefixLen for overflowed keys?
                     let newPrefixLen = 
                         if List.isEmpty st.keys then
@@ -1198,7 +1199,7 @@ module bt =
                         prefixLen=newPrefixLen
                         }
                         
-                maybeWriteLeaf {st with blk=blkAfterValue} |> addPairToLeaf
+                st
 
             // this is the body of writeLeaves
             //let source = seq { csr.First(); while csr.IsValid() do yield (csr.Key(), csr.Value()); csr.Next(); done }
