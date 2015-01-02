@@ -546,15 +546,29 @@ type MultiCursor private (_subcursors:seq<ICursor>) =
     let mutable cur:ICursor option = None
     let mutable dir = Direction.WANDERING
 
-    let validSorted sortfunc = 
-        let valids = List.filter (fun (csr:ICursor) -> csr.IsValid()) subcursors
-        let sorted = List.sortWith sortfunc valids
-        sorted
-
     let find sortfunc = 
-        let vs = validSorted sortfunc
-        if vs.IsEmpty then None
-        else Some vs.Head
+        if List.isEmpty subcursors then None
+        else
+            let first =
+                let hd = List.head subcursors
+                if hd.IsValid() then Some hd else None
+
+            let tail = List.tail subcursors
+
+            if List.isEmpty tail then
+                first
+            else
+                let fldr (cur:ICursor option) (csr:ICursor) =
+                    if csr.IsValid() then 
+                        match cur with
+                        | Some winning -> 
+                            let cmp = sortfunc csr winning
+                            if cmp < 0 then Some csr else cur
+                        | None -> Some csr
+                    else
+                        cur
+                let result = List.fold fldr first tail
+                result
 
     let findMin() = 
         let sortfunc (a:ICursor) (b:ICursor) = a.KeyCompare(b.Key())

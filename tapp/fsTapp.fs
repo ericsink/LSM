@@ -46,9 +46,11 @@ let createMemorySegment (rand:Random) count =
 
 [<EntryPoint>]
 let main argv = 
+    printfn "tombstone"
+    fsTests.tombstone() 
+    #if not
     printfn "prefix_compression"
     fsTests.prefix_compression() 
-    #if not
     printfn "simple_write"
     fsTests.simple_write() 
     printfn "empty_cursor"
