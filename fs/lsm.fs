@@ -1547,6 +1547,8 @@ module bt =
             // TODO consider passing a block list for the segment into this
             // cursor so that the code here can detect if it tries to stray
             // out of bounds.
+
+            // TODO if currentPage = pagenum already...
             currentPage <- pagenum
             resetLeaf()
             if 0 = currentPage then 
