@@ -1,4 +1,8 @@
 
+worst case final parent page ptr
+
+seek in myOverflowReadStream
+
 still lots of automerge issues
 
 opencursor issues, info for optimistic merge
@@ -8,7 +12,8 @@ more test cases
 page level encryption
 
 need to actually design the file header
-checksums for data integrity
+    checksums for data integrity
+    format version number
 
 do we need IDatabase if there is only one implementation
 of it?  same for IWriteLock.

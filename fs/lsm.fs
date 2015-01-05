@@ -1,5 +1,5 @@
 ﻿(*
-    Copyright 2014 Zumero, LLC
+    Copyright 2014-2015 Zumero, LLC
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -55,7 +55,7 @@ type ICursor =
     abstract member Next : unit -> unit
     abstract member Prev : unit -> unit
     // the following are methods instead of properties because
-    // ICursor doesn't know how expensive they are to implement.
+    // ICursor doesn't know how expensive they will be to implement.
     abstract member IsValid : unit -> bool
     abstract member Key : unit -> byte[]
     abstract member Value : unit -> Stream
@@ -211,9 +211,6 @@ type private PageBuilder(pgsz:int) =
     let buf:byte[] = Array.zeroCreate pgsz
 
     member this.Reset() = cur <- 0
-    member this.Read(s:Stream) = 
-        utils.ReadFully(s, buf, 0, buf.Length)
-        cur <- 0
     member this.Write(s:Stream) = s.Write(buf, 0, buf.Length)
     member this.PageSize = buf.Length
     member this.Buffer = buf
@@ -1666,7 +1663,9 @@ module bt =
                 else
                     pr.Compare(klen, other)
             else
-                // TODO this could be more efficient
+                // TODO this could be more efficient. we could compare the key
+                // in place in the overflow without fetching the entire thing.
+
                 // TODO overflowed keys are not prefixed.  should they be?
                 let pagenum = pr.GetInt32()
                 let k = readOverflow klen fs pr.PageSize pagenum
@@ -2182,6 +2181,7 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
                         let remainder = PageBlock(headBlk.firstPage+specificSize, headBlk.lastPage)
                         freeBlocks <- remainder :: List.tail freeBlocks
                         // TODO problem: the list is probably no longer sorted.  is this okay?
+                        // is a re-sort of the list really worth it?
                         //printfn "reusing blk prune: %A, specificSize:%d, freeBlocks now: %A" headBlk specificSize freeBlocks
                         blk2
                     else
