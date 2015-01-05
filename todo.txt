@@ -1,15 +1,4 @@
 
-consider format change to overflow pages so we don't
-have to go back and rewrite the first page in the block.
-but then we'll have to walk every overflow page whenever
-we're walking keys forward.
-
-or have a special code path for streams that *do* support
-Length?
-
-or maybe just keep that first page in ram and only write
-it once.  still have to do extra seeks.
-
 still lots of automerge issues
 
 opencursor issues, info for optimistic merge
@@ -21,12 +10,12 @@ page level encryption
 need to actually design the file header
 checksums for data integrity
 
-bloom filters?
-
 do we need IDatabase if there is only one implementation
 of it?  same for IWriteLock.
 
 --
+
+bloom filters?
 
 try to improve the performance of multicursor
 
@@ -45,39 +34,6 @@ exists for a given file
 do we have a test that chains multicursors with other multicursors?
 
 #if integrity_checks
-
-yeah, ICursor is really close to seq anyway.  next would return a bool.
-current would return the tuple pair.  first() would just be the
-initial call to movenext.  last(), prev(), seek() aren't there.
-
-OpenCursor for idictionary -- sort the keys and then
-create a memory btree?  or copy the dictionary (so the
-values don't change) and just keep them both?
-
-it would be nice to have an in-memory data structure
-that has the functionality needed for an icursor.
-sorted keys, with the ability to specify the comparer.
-
-dictionary won't work because it's not sorted.
-
-map won't work because it only sorts the way it wants.
-
-sorteddictionary is (1) not immutable and (2) not WinRT
-bcl.
-
-can we have a readonly byte array?
-
-wrap a ReadOnlyDictionary the way we wrap a dictionary now?
-problem is that ROD is designed for cases where you want to
-pass it to somebody else knowing that they won't modify
-it.  what we care about is receiving it and knowing that
-the originator will not modify it.  not quite the same.
-
-ImmutableSortedDictionary from System.Collections.Immutable.
-This one could wrap as an ICursor without problems I think.
-Assuming the comparer is right.
-
-look at ExtCore.HashMap
 
 look at reducing memory allocations in writeLeaves
 
@@ -104,11 +60,6 @@ what are the embedded pointers in the runs in SQLite4 LSM?
 tombstones shouldn't need a length field as well.
 but the absence would mess up the space_needed calcs.
 and if the length is always zero, it's just a byte.
-
---------
-
-once "on disk", a segment is immutable.  reads only.
-only the first (in-memory) segment needs to support writes.
 
 --------
 

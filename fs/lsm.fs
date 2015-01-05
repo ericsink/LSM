@@ -840,17 +840,18 @@ module bt =
     let CreateFromSortedSequenceOfKeyValuePairs(fs:Stream, pageManager:IPages, source:seq<kvp>) = 
         let pageSize = pageManager.PageSize
         let token = pageManager.Begin()
+        let pbFirstOverflow = PageBuilder(pageSize)
         let pbOverflow = PageBuilder(pageSize)
 
         let writeOverflow (startingBlk:PageBlock) (ba:Stream) =
             let pageSize = pbOverflow.PageSize
 
             let buildFirstPage () =
-                pbOverflow.Reset()
-                pbOverflow.PutByte(OVERFLOW_NODE)
-                pbOverflow.PutByte(0uy) // starts 0, may be changed later
+                pbFirstOverflow.Reset()
+                pbFirstOverflow.PutByte(OVERFLOW_NODE)
+                pbFirstOverflow.PutByte(0uy) // starts 0, may be changed later
                 let room = (pageSize - (2 + sizeof<int32>))
-                let put = pbOverflow.PutStream2(ba, room)
+                let put = pbFirstOverflow.PutStream2(ba, room)
                 // something will be put in lastInt32 later
                 (put, put<room)
 
@@ -904,10 +905,10 @@ module bt =
                     if firstBlk.firstPage = firstBlk.lastPage then
                         // the first page landed on a boundary.
                         // we can just set the flag and write it now.
-                        pbOverflow.SetPageFlag(FLAG_BOUNDARY_NODE)
+                        pbFirstOverflow.SetPageFlag(FLAG_BOUNDARY_NODE)
                         let blk = pageManager.GetBlock(token)
-                        pbOverflow.SetLastInt32(blk.firstPage)
-                        pbOverflow.Write(fs)
+                        pbFirstOverflow.SetLastInt32(blk.firstPage)
+                        pbFirstOverflow.Write(fs)
                         utils.SeekPage(fs, pageSize, blk.firstPage)
                         if not finished then
                             writeOneBlock sofar blk
@@ -917,8 +918,8 @@ module bt =
                         let firstRegularPageNumber = firstBlk.firstPage + 1
                         if finished then
                             // the first page is also the last one
-                            pbOverflow.SetLastInt32(0) // number of regular pages following
-                            pbOverflow.Write(fs)
+                            pbFirstOverflow.SetLastInt32(0) // number of regular pages following
+                            pbFirstOverflow.Write(fs)
                             (sofar, PageBlock(firstRegularPageNumber,firstBlk.lastPage))
                         else
                             // we need to write more pages,
@@ -926,10 +927,7 @@ module bt =
                             // or the end of the stream, 
                             // whichever comes first
 
-                            // first, write out the first page, which we'll need to
-                            // go back and fix later.
-                            pbOverflow.SetLastInt32(0) // fix this later
-                            pbOverflow.Write(fs)
+                            utils.SeekPage(fs, pageSize, firstRegularPageNumber)
 
                             // availableBeforeBoundary is the number of pages until the boundary,
                             // NOT counting the boundary page, and the first page in the block
@@ -942,38 +940,44 @@ module bt =
                             let (numRegularPages, sofar, finished) = 
                                 writeRegularPages availableBeforeBoundary sofar
 
+                            pbFirstOverflow.SetLastInt32(numRegularPages)
                             if finished then
-                                let blk = PageBlock(firstRegularPageNumber + numRegularPages, firstBlk.lastPage)
                                 // go back and fix the first page
                                 utils.SeekPage(fs, pageSize, firstBlk.firstPage)
-                                pbOverflow.Read(fs)
-                                pbOverflow.SetLastInt32(numRegularPages)
-                                utils.SeekPage(fs, pageSize, firstBlk.firstPage)
-                                pbOverflow.Write(fs)
+                                pbFirstOverflow.Write(fs)
                                 // now reset to the next page in the block
+                                let blk = PageBlock(firstRegularPageNumber + numRegularPages, firstBlk.lastPage)
                                 utils.SeekPage(fs, pageSize, blk.firstPage)
                                 (sofar,blk)
                             else
-                                // we need to write out a regular page with a
+                                // we need to write out a regular page except with a
                                 // boundary pointer in it.  and we need to set
                                 // FLAG_ENDS_ON_BOUNDARY on the first
                                 // overflow page in this block.
+
                                 let (putBoundary,finished) = buildBoundaryPage ()
                                 if putBoundary=0 then
-                                    (sofar,PageBlock(firstRegularPageNumber + numRegularPages, firstBlk.lastPage))
+                                    // go back and fix the first page
+                                    utils.SeekPage(fs, pageSize, firstBlk.firstPage)
+                                    pbFirstOverflow.Write(fs)
+
+                                    // now reset to the next page in the block
+                                    let blk = PageBlock(firstRegularPageNumber + numRegularPages, firstBlk.lastPage)
+                                    utils.SeekPage(fs, pageSize, blk.firstPage)
+                                    (sofar,blk)
                                 else
+                                    // write the boundary page
                                     let sofar = sofar + putBoundary
                                     let blk = pageManager.GetBlock(token)
                                     pbOverflow.SetLastInt32(blk.firstPage)
                                     pbOverflow.Write(fs)
+
                                     // go back and fix the first page
+                                    pbFirstOverflow.SetPageFlag(FLAG_ENDS_ON_BOUNDARY)
                                     utils.SeekPage(fs, pageSize, firstBlk.firstPage)
-                                    pbOverflow.Read(fs)
-                                    pbOverflow.SetLastInt32(numRegularPages)
-                                    pbOverflow.SetPageFlag(FLAG_ENDS_ON_BOUNDARY)
-                                    utils.SeekPage(fs, pageSize, firstBlk.firstPage)
-                                    pbOverflow.Write(fs)
-                                    // now reset to the next page in the block
+                                    pbFirstOverflow.Write(fs)
+
+                                    // now reset to the first page in the next block
                                     utils.SeekPage(fs, pageSize, blk.firstPage)
                                     if not finished then
                                         writeOneBlock sofar blk
