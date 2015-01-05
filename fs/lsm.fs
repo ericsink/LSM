@@ -1261,7 +1261,7 @@ module bt =
         let writeParentNodes (startingBlk:PageBlock) children =
             // 2 for the page type and flags
             // 2 for the stored count
-            // 5 for the extra ptr we will add at the end, a varint, 5 is worst case TODO is it?
+            // 5 for the extra ptr we will add at the end, a varint, 5 is worst case (page num < 4294967295L)
             // 4 for lastInt32
             let PARENT_PAGE_OVERHEAD = 2 + 2 + 5 + 4
 
