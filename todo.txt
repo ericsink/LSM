@@ -12,8 +12,6 @@ more test cases
 
 try to improve the performance of multicursor
 
-write a value stream that doesn't know its length
-
 page level encryption
 
 need to actually design the file header
