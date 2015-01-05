@@ -48,23 +48,13 @@ the ability to write a btree into almost any kind of
 stream.  common use case remains writing with an
 involved page manager.
 
---------
-
 test multicursor with the same cursor twice?
 
 test multicursor with two identical subs?
 
---------
-
 still concerned about how much we are copying byte[] for keys
 
 what are the embedded pointers in the runs in SQLite4 LSM?
-
-tombstones shouldn't need a length field as well.
-but the absence would mess up the space_needed calcs.
-and if the length is always zero, it's just a byte.
-
---------
 
 now we can chain a
 zlib stream and compress as it goes in.

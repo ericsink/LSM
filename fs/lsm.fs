@@ -1017,7 +1017,6 @@ module bt =
                     match lp.vLoc with
                     | Tombstone ->
                         pb.PutByte(FLAG_TOMBSTONE)
-                        pb.PutVarint(0L) // TODO remove this
                     | Buffer (vbuf) ->
                         pb.PutByte(0uy)
                         pb.PutVarint(int64 vbuf.Length)
@@ -1083,7 +1082,7 @@ module bt =
             let vLocNeed vloc =
                 match vloc with
                 | Tombstone -> 
-                    1 + Varint.SpaceNeededFor(0L)
+                    1
                 | Buffer vbuf ->
                     let vlen = vbuf.Length
                     1 + Varint.SpaceNeededFor(int64 vlen) + vlen
@@ -1610,10 +1609,11 @@ module bt =
 
         let skipValue() =
             let vflag = pr.GetByte()
-            let vlen = pr.GetVarint()
             if 0uy <> (vflag &&& FLAG_TOMBSTONE) then ()
-            else if 0uy <> (vflag &&& FLAG_OVERFLOW) then pr.Skip(sizeof<int32>)
-            else pr.Skip(int vlen)
+            else 
+                let vlen = pr.GetVarint()
+                if 0uy <> (vflag &&& FLAG_OVERFLOW) then pr.Skip(sizeof<int32>)
+                else pr.Skip(int vlen)
 
         let readLeaf() =
             resetLeaf()
@@ -1823,13 +1823,14 @@ module bt =
                 skipKey()
 
                 let vflag = pr.GetByte()
-                let vlen = pr.GetVarint() |> int
                 if 0uy <> (vflag &&& FLAG_TOMBSTONE) then null
-                else if 0uy <> (vflag &&& FLAG_OVERFLOW) then 
-                    let pagenum = pr.GetInt32()
-                    new myOverflowReadStream(fs, pr.PageSize, pagenum, vlen) :> Stream
                 else 
-                    new MemoryStream(pr.GetArray (vlen)) :> Stream
+                    let vlen = pr.GetVarint() |> int
+                    if 0uy <> (vflag &&& FLAG_OVERFLOW) then 
+                        let pagenum = pr.GetInt32()
+                        new myOverflowReadStream(fs, pr.PageSize, pagenum, vlen) :> Stream
+                    else 
+                        new MemoryStream(pr.GetArray (vlen)) :> Stream
 
             member this.ValueLength() =
                 pr.SetPosition(leafKeys.[currentKey])
