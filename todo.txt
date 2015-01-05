@@ -1,16 +1,9 @@
 
-lz4
-
-tool to find closures, or nested functions that could be
-moved outside
-
 still lots of automerge issues
 
 opencursor issues, info for optimistic merge
 
 more test cases
-
-try to improve the performance of multicursor
 
 page level encryption
 
@@ -23,6 +16,13 @@ do we need IDatabase if there is only one implementation
 of it?  same for IWriteLock.
 
 --
+
+try to improve the performance of multicursor
+
+lz4
+
+tool to find closures, or nested functions that could be
+moved outside
 
 experiment with inline for certain functions
 
@@ -71,7 +71,8 @@ look at ExtCore.HashMap
 look at reducing memory allocations in writeLeaves
 
 write a test that verifies that BTreeSegment.Create
-never seeks if it has no boundary.  need a stream
+never seeks if it has no boundary.  (but overflows break
+this now).  need a stream
 that overrides seek and throws.  this test preserves
 the ability to write a btree into almost any kind of
 stream.  common use case remains writing with an
@@ -100,19 +101,8 @@ only the first (in-memory) segment needs to support writes.
 
 --------
 
-can we write an overflow without knowing its length in
-advance?  that would be handy.  maybe we could chain a
-zlib stream and compress as it goes in.  but how do we
-set the skip field?  we pretty much can't.  I suppose we
-could just write the whole thing and then go back and
-write the skip field.
-
-we can't do calculations on whether a value will fit if
-we don't know its length.  such a value automatically
-becomes an overflow.  after we write the overflow, then
-we know its length.
-
---------
+now we can chain a
+zlib stream and compress as it goes in.
 
 create shorter synthetic keys in the parent nodes?
 
