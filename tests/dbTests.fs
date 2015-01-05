@@ -295,6 +295,40 @@ let blobs() =
         // TODO ReadAll_SmallChunks
 
 [<Fact>]
+let blobs_of_many_sizes() = 
+    let r = Random(501)
+    let f = dbf("blobs_of_many_sizes" + tid())
+    let settings = {
+        Database.DefaultSettings with
+            DefaultPageSize = 256
+            PagesPerBlock = 4
+        }
+    use db = new Database(f, settings) :> IDatabase
+    let t1 = dseg()
+    for i in 200 .. 1500 do
+        let k:byte[] = i.ToString() |> to_utf8
+        let v:byte[] = Array.zeroCreate i
+        for q in 0 .. v.Length-1 do
+            v.[q] <- r.Next(255) |> byte
+        t1.[k] <- new MemoryStream(v)
+    let g = db.WriteSegment(t1)
+    async {
+        use! tx = db.RequestWriteLock()
+        tx.CommitSegments [ g ]
+    } |> Async.RunSynchronously
+    use csr = db.OpenCursor()
+    for k in t1.Keys do
+        let tvstrm = t1.[k]
+        tvstrm.Seek(0L, SeekOrigin.Begin) |> ignore
+        let tv = utils.ReadAll(tvstrm)
+        csr.Seek(k, SeekOp.SEEK_EQ)
+        Assert.True(csr.IsValid())
+        Assert.Equal(tv.Length, csr.ValueLength())
+        let tb1 = utils.ReadAll(csr.Value())
+        Assert.Equal(0, bcmp.Compare tv tb1)
+        // TODO ReadAll_SmallChunks
+
+[<Fact>]
 let hundredk() = 
     let f = dbf("hundredk" + tid())
     use db = new Database(f) :> IDatabase

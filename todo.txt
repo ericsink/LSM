@@ -1,4 +1,15 @@
 
+consider format change to overflow pages so we don't
+have to go back and rewrite the first page in the block.
+but then we'll have to walk every overflow page whenever
+we're walking keys forward.
+
+or have a special code path for streams that *do* support
+Length?
+
+or maybe just keep that first page in ram and only write
+it once.  still have to do extra seeks.
+
 still lots of automerge issues
 
 opencursor issues, info for optimistic merge
