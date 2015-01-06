@@ -24,9 +24,6 @@ try to improve the performance of multicursor
 
 lz4
 
-tool to find closures, or nested functions that could be
-moved outside
-
 experiment with inline for certain functions
 
 consider nessos streams instead of seq<kvp> ?
