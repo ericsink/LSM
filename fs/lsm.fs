@@ -1447,7 +1447,7 @@ module bt =
         do ReadFirstPage()
 
         override this.Length = int64 len
-        override this.CanRead = sofarOverall < len
+        override this.CanRead = sofarOverall < len // TODO always return true?
 
         override this.Read(ba,offset,wanted) =
             if sofarOverall >= len then
@@ -1519,14 +1519,15 @@ module bt =
                     num
 
         override this.CanSeek = false
+        override this.Seek(_,_) = raise (NotSupportedException())
+        override this.Position
+            with get() = int64 sofarOverall
+            and set(v) = this.Seek(v, SeekOrigin.Begin) |> ignore
+
         override this.CanWrite = false
         override this.SetLength(_) = raise (NotSupportedException())
         override this.Flush() = raise (NotSupportedException())
-        override this.Seek(_,_) = raise (NotSupportedException())
         override this.Write(_,_,_) = raise (NotSupportedException())
-        override this.Position
-            with get() = int64 sofarOverall
-            and set(_) = raise (NotSupportedException())
 
     let private readOverflow len fs pageSize (firstPage:int) =
         let ostrm = new myOverflowReadStream(fs, pageSize, firstPage, len)
