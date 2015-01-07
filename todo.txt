@@ -7,7 +7,7 @@ opencursor issues, info for optimistic merge
 
 more test cases
 
-page level encryption
+hooks for page level encryption plugins
 
 need to actually design the file header
     checksums for data integrity
@@ -22,7 +22,7 @@ bloom filters?
 
 try to improve the performance of multicursor
 
-lz4
+lz4 stream
 
 experiment with inline for certain functions
 
@@ -32,10 +32,11 @@ need something to make sure that only one Database object
 exists for a given file
 
 do we have a test that chains multicursors with other multicursors?
+do we need one?  that should actually never happen in normal use.
 
 #if integrity_checks
 
-look at reducing memory allocations in writeLeaves
+look at reducing memory allocations in writeLeaves.  (done?)
 
 write a test that verifies that BTreeSegment.Create
 never seeks if it has no boundary.  (but overflows break
