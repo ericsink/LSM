@@ -100,6 +100,49 @@ let simple_write() =
     Assert.Equal<string> ("43", k)
 
 [<Fact>]
+let first_prev() = 
+    let f = dbf("first_prev" + tid())
+    use db = new Database(f) :> IDatabase
+    let d = dseg()
+    for i in 1 .. 100 do
+        let s = i.ToString()
+        insert d s s
+    let seg = db.WriteSegment d
+    async {
+        use! tx = db.RequestWriteLock()
+        tx.CommitSegments [ seg ]
+    } |> Async.RunSynchronously
+    use csr = db.OpenCursor()
+    csr.First()
+    Assert.True (csr.IsValid())
+    csr.Prev()
+    Assert.False (csr.IsValid())
+
+[<Fact>]
+let last_next() = 
+    let f = dbf("last_next" + tid())
+    use db = new Database(f) :> IDatabase
+    let d = dseg()
+    for q in 0 .. 3 do
+        for i in q*100 .. q*100+100 do
+            let s = i.ToString()
+            insert d s s
+        let seg = db.WriteSegment d
+        async {
+            use! tx = db.RequestWriteLock()
+            tx.CommitSegments [ seg ]
+        } |> Async.RunSynchronously
+    use csr = db.OpenCursor()
+    csr.Seek((33).ToString() |> to_utf8, SeekOp.SEEK_GE)
+    Assert.True (csr.IsValid())
+    csr.Next()
+    Assert.True (csr.IsValid())
+    csr.Last()
+    Assert.True (csr.IsValid())
+    csr.Next()
+    Assert.False (csr.IsValid())
+
+[<Fact>]
 let prefix_compression() = 
     let f = dbf("prefix_compression" + tid())
     use db = new Database(f) :> IDatabase

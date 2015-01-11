@@ -7,6 +7,10 @@ Project("{f2a71f9b-5d33-465a-a702-920d77279786}") = "tests", "tests\tests.fsproj
 EndProject
 Project("{f2a71f9b-5d33-465a-a702-920d77279786}") = "tapp", "tapp\tapp.fsproj", "{8E0E8EC2-351C-4E2B-949C-0C526B963A37}"
 EndProject
+Project("{f2a71f9b-5d33-465a-a702-920d77279786}") = "demo", "demo\demo.fsproj", "{23B773F5-2FF4-487E-9550-0AFB493F9C2E}"
+EndProject
+Project("{f2a71f9b-5d33-465a-a702-920d77279786}") = "diag", "diag\diag.fsproj", "{A4FA52BB-6B48-4D18-A65D-3E6E72CFAABB}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -17,10 +21,18 @@ Global
 		{1DF29E4A-5B48-42F6-ACD1-256978AD4295}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{1DF29E4A-5B48-42F6-ACD1-256978AD4295}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{1DF29E4A-5B48-42F6-ACD1-256978AD4295}.Release|Any CPU.Build.0 = Release|Any CPU
+		{23B773F5-2FF4-487E-9550-0AFB493F9C2E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{23B773F5-2FF4-487E-9550-0AFB493F9C2E}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{23B773F5-2FF4-487E-9550-0AFB493F9C2E}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{23B773F5-2FF4-487E-9550-0AFB493F9C2E}.Release|Any CPU.Build.0 = Release|Any CPU
 		{8E0E8EC2-351C-4E2B-949C-0C526B963A37}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
 		{8E0E8EC2-351C-4E2B-949C-0C526B963A37}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{8E0E8EC2-351C-4E2B-949C-0C526B963A37}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{8E0E8EC2-351C-4E2B-949C-0C526B963A37}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A4FA52BB-6B48-4D18-A65D-3E6E72CFAABB}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A4FA52BB-6B48-4D18-A65D-3E6E72CFAABB}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A4FA52BB-6B48-4D18-A65D-3E6E72CFAABB}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A4FA52BB-6B48-4D18-A65D-3E6E72CFAABB}.Release|Any CPU.Build.0 = Release|Any CPU
 		{EC16340F-B28D-44EF-9101-FC496D16B255}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
 		{EC16340F-B28D-44EF-9101-FC496D16B255}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{EC16340F-B28D-44EF-9101-FC496D16B255}.Release|Any CPU.ActiveCfg = Release|Any CPU

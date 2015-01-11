@@ -80,6 +80,13 @@ type DbSettings =
         PagesPerBlock : int
     }
 
+type SegmentInfo =
+    {
+        root: int
+        age: int
+        blocks: PageBlock list
+    } // with override this.ToString() = sprintf "(%d,%A)" this.age this.blocks
+
 type IDatabase = 
     inherit IDisposable
     abstract member WriteSegmentFromSortedSequence : seq<kvp> -> Guid
@@ -91,6 +98,8 @@ type IDatabase =
     // TODO consider OpenCursorOnSegmentsInWaiting(seq<Guid>)
     // TODO consider ListSegmentsInCurrentState()
     // TODO consider OpenCursorOnSpecificSegment(seq<Guid>)
+
+    abstract member ListSegments : unit -> (Guid list)*Map<Guid,SegmentInfo>
 
     abstract member RequestWriteLock : int->Async<IWriteLock>
     abstract member RequestWriteLock : unit->Async<IWriteLock>
@@ -612,11 +621,13 @@ type MultiCursor private (_subcursors:seq<ICursor>) =
             let f (x:ICursor) = x.First()
             List.iter f subcursors
             cur <- findMin()
+            dir <- Direction.WANDERING
 
         member this.Last() =
             let f (x:ICursor) = x.Last()
             List.iter f subcursors
             cur <- findMax()
+            dir <- Direction.WANDERING
 
         // the following members are asking for the value of cur (an option)
         // without checking or matching on it.  they'll crash if cur is None.
@@ -1929,13 +1940,6 @@ type dbf(_path) =
         member this.OpenForReading() =
             new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite) :> Stream
 
-type private SegmentInfo =
-    {
-        root: int
-        age: int
-        blocks: PageBlock list
-    } // with override this.ToString() = sprintf "(%d,%A)" this.age this.blocks
-
 
 type private HeaderData =
     {
@@ -2802,6 +2806,9 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
             )
             let mc = MultiCursor.Create clist
             LivingCursor.Create mc
+
+        member this.ListSegments() =
+            (header.currentState, header.segments)
 
         member this.RequestWriteLock(timeout:int) =
             // TODO need a test case for this

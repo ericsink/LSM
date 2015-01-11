@@ -1,4 +1,34 @@
 
+need a more efficient way to add a zero-length value
+
+keys for documents:
+    d/collectionID/rid -> json
+
+keys for index entries:
+    i/collectionID/path/value/rid -> nothing
+
+    i vs d, single byte
+    
+    collID.  string?
+
+    path is a series of zero-terminated utf8 strings
+
+    special delimiter before the value
+
+    value is a type byte + encoding for that type
+
+    delimiter after the value
+
+    then rid
+
+how to make sure value cannot be interpreted as part of the
+path
+
+is an empty string valid as part of the path?
+
+perhaps each path element needs a prefix to show whether it is
+a string key or an array index?
+
 seek in myOverflowReadStream
 
 still lots of automerge issues
@@ -17,6 +47,14 @@ do we need IDatabase if there is only one implementation
 of it?  same for IWriteLock.
 
 --
+
+range splitting
+
+fractional cascading
+
+range deletes
+
+suffix deletes
 
 bloom filters?
 
