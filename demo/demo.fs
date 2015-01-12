@@ -90,62 +90,44 @@ module fj =
         s |> to_utf8
 
     // TODO this function could move into LSM
-    // TODO can this be implemented in terms of query_key_range
-    let query_key_prefix (csr:ICursor) (k:byte[]) = 
+    let query_key_range (db:IDatabase) (k1:byte[]) (k2:byte[]) = 
         seq {
-            csr.Seek(k, SeekOp.SEEK_GE)
-            while csr.IsValid() do 
-                let cur = csr.Key()
-                if bcmp.StartsWith cur k then
-                    yield cur
-                else
-                    csr.Last()
-                csr.Next()
-            }
-
-    // TODO this function could move into LSM
-    // TODO should this take a db instead and open the cursor itself?
-    let query_key_range (csr:ICursor) (k1:byte[]) (k2:byte[]) = 
-        seq {
+            use csr = db.OpenCursor()
             csr.Seek(k1, SeekOp.SEEK_GE)
-            while csr.IsValid() && csr.KeyCompare(k2)<0 do 
+            while csr.IsValid() && csr.KeyCompare(k2)<=0 do 
                 yield csr.Key()
                 csr.Next()
             }
 
-    let extract (ba:byte[]) =
+    let rec add_one (a:byte[]) ndx =
+        let b = a.[ndx]
+        if b < 255uy then
+            a.[ndx] <- b + 1uy
+        else
+            a.[ndx] <- 0uy
+            add_one a (ndx-1)
+
+    // TODO this function could move into LSM
+    let query_key_prefix (db:IDatabase) (k:byte[]) = 
+        let k2:byte[] = Array.zeroCreate k.Length
+        System.Array.Copy (k, 0, k2, 0, k.Length)
+        add_one k2 (k2.Length-1)
+        query_key_range db k k2
+
+    let extract_value_and_id_from_end_of_index_key (ba:byte[]) =
+        // TODO this will break when index key encoding changes to binary
         let s = ba |> from_utf8
         let parts = s.Split(':')
         let num = parts.Length
         (parts.[num-2], parts.[num-1])
 
-    let extract_value_and_recid (s:seq<byte[]>) =
-        Seq.map (fun ba -> extract ba) s
-
-    let query_equal dbFile k =
-        let f = dbf(dbFile)
-        use db = new Database(f) :> IDatabase
-        use csr = db.OpenCursor()
-        query_key_prefix csr k
-
-    let query_string_equal dbFile collId k v =
-        let f = dbf(dbFile)
-        use db = new Database(f) :> IDatabase
+    let query_string_equal db collId k v =
         let kpref = sprintf "x:%s:%s:s%s:" collId k v
         //printfn "kpref: %s" kpref
         let kb = kpref |> to_utf8
-        use csr = db.OpenCursor()
-        csr.Seek(kb, SeekOp.SEEK_GE)
-        while csr.IsValid() do
-            let csrKey = csr.Key() |> from_utf8
-            if csrKey.StartsWith(kpref) then
-                // TODO should return a list of record ids
-                printfn "%s" (csr.Key() |> from_utf8)
-            else
-                //printfn "DONE: %s" (csr.Key() |> from_utf8)
-                // this is just a way of forcing the loop to exit
-                csr.Last()
-            csr.Next()
+        let s1 = query_key_prefix db kb
+        let s2 = Seq.map (fun ba -> extract_value_and_id_from_end_of_index_key ba) s1
+        s2
 
     let slurp dbFile collId jsonFile =
         let json = File.ReadAllText(jsonFile)
@@ -212,7 +194,10 @@ module fj =
         | "query" ->
             let k = argv.[3]
             let v = argv.[4]
-            query_string_equal dbFile collId k v
+            let f = dbf(dbFile)
+            use db = new Database(f) :> IDatabase
+            let s = query_string_equal db collId k v
+            Seq.iter (fun (v,id) -> printfn "%s" id) s
         | _ -> failwith "unknown op"
 
         0 // return an integer exit code
