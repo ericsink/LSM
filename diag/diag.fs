@@ -18,18 +18,48 @@ open Zumero.LSM
 
 module diag =
 
+    let from_utf8 (ba:byte[]) =
+        System.Text.Encoding.UTF8.GetString (ba, 0, ba.Length)
+
     let list_segments dbFile =
         let f = dbf(dbFile)
         use db = new Database(f) :> IDatabase
         let segs = db.ListSegments()
         printfn "%A" segs
 
+    let list_all_keys dbFile =
+        let f = dbf(dbFile)
+        use db = new Database(f) :> IDatabase
+        use csr = db.OpenCursor()
+        csr.First()
+        while csr.IsValid() do
+            let k = csr.Key() |> from_utf8
+            printfn "%s" k
+            csr.Next()
+
+    let list_segment_keys dbFile g =
+        let f = dbf(dbFile)
+        use db = new Database(f) :> IDatabase
+        use csr = db.OpenSegmentCursor(g)
+        csr.First()
+        while csr.IsValid() do
+            let k = csr.Key() |> from_utf8
+            printfn "%s" k
+            csr.Next()
+
     [<EntryPoint>]
     let main argv = 
         let dbFile = argv.[0]
         let op = argv.[1]
         match op with
-        | "list_segments" -> list_segments dbFile
+        | "list_segments" -> 
+            list_segments dbFile
+        | "list_all_keys" -> 
+            list_all_keys dbFile
+        | "list_segment_keys" -> 
+            let seg = argv.[2]
+            let g = System.Guid.Parse(seg)
+            list_segment_keys dbFile g
         | _ -> failwith "Unknown op"
 
         0 // return an integer exit code

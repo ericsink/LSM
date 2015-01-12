@@ -1,4 +1,10 @@
 
+arrays:
+
+    SELECT c.givenName
+    FROM c IN Families.children
+    WHERE c.grade = 8
+
 how to do:
 
     SELECT * 

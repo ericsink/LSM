@@ -44,12 +44,14 @@ module fj =
         | JsonValue.Boolean b -> 
             "b" + if b then "1" else "0"
         | JsonValue.Float f -> 
+            // TODO should have index policy to specify how this should be indexed. float/decimal/integer.
             // TODO check to see if this is an integer?
             // TODO are we sure that JsonValue will only return float when decimal was not possible?
             "f" + f.ToString() // TODO how to deal with this?
         | JsonValue.Null -> 
             "n"
         | JsonValue.Number n -> 
+            // TODO should have index policy to specify how this should be indexed. float/decimal/integer.
             let optAsInt64 = try Some (System.Decimal.ToInt64(n)) with :? System.OverflowException -> None
             match optAsInt64 with
             | Some i64 ->
@@ -84,13 +86,53 @@ module fj =
         let vs = encodeJsonValue jv
 
         let s = sprintf "x:%s:%s:%s:%s" collId pathString vs rid
-        printfn "%s" s
+        //printfn "%s" s
         s |> to_utf8
+
+    // TODO this function could move into LSM
+    // TODO can this be implemented in terms of query_key_range
+    let query_key_prefix (csr:ICursor) (k:byte[]) = 
+        seq {
+            csr.Seek(k, SeekOp.SEEK_GE)
+            while csr.IsValid() do 
+                let cur = csr.Key()
+                if bcmp.StartsWith cur k then
+                    yield cur
+                else
+                    csr.Last()
+                csr.Next()
+            }
+
+    // TODO this function could move into LSM
+    // TODO should this take a db instead and open the cursor itself?
+    let query_key_range (csr:ICursor) (k1:byte[]) (k2:byte[]) = 
+        seq {
+            csr.Seek(k1, SeekOp.SEEK_GE)
+            while csr.IsValid() && csr.KeyCompare(k2)<0 do 
+                yield csr.Key()
+                csr.Next()
+            }
+
+    let extract (ba:byte[]) =
+        let s = ba |> from_utf8
+        let parts = s.Split(':')
+        let num = parts.Length
+        (parts.[num-2], parts.[num-1])
+
+    let extract_value_and_recid (s:seq<byte[]>) =
+        Seq.map (fun ba -> extract ba) s
+
+    let query_equal dbFile k =
+        let f = dbf(dbFile)
+        use db = new Database(f) :> IDatabase
+        use csr = db.OpenCursor()
+        query_key_prefix csr k
 
     let query_string_equal dbFile collId k v =
         let f = dbf(dbFile)
         use db = new Database(f) :> IDatabase
         let kpref = sprintf "x:%s:%s:s%s:" collId k v
+        printfn "kpref: %s" kpref
         let kb = kpref |> to_utf8
         use csr = db.OpenCursor()
         csr.Seek(kb, SeekOp.SEEK_GE)
@@ -100,6 +142,7 @@ module fj =
                 // TODO should return a list of record ids
                 printfn "%s" (csr.Key() |> from_utf8)
             else
+                printfn "DONE: %s" (csr.Key() |> from_utf8)
                 // this is just a way of forcing the loop to exit
                 csr.Last()
             csr.Next()
@@ -133,7 +176,7 @@ module fj =
 
             // TODO we don't generally want to get the id from the record
 
-            printfn "%A" id
+            //printfn "%A" id
 
             // store the doc itself
             // TODO compress this.  or ubjson.

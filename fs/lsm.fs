@@ -94,6 +94,7 @@ type IDatabase =
     abstract member ForgetWaitingSegments : seq<Guid> -> unit
 
     abstract member OpenCursor : unit->ICursor 
+    abstract member OpenSegmentCursor : Guid->ICursor 
     // TODO consider name such as OpenLivingCursorOnCurrentState()
     // TODO consider OpenCursorOnSegmentsInWaiting(seq<Guid>)
     // TODO consider ListSegmentsInCurrentState()
@@ -112,6 +113,20 @@ module CursorUtils =
         seq { csr.First(); while csr.IsValid() do yield new kvp(csr.Key(), csr.Value()); csr.Next(); done }
     let ToSortedSequenceOfTuples (csr:ICursor) = 
         seq { csr.First(); while csr.IsValid() do yield (csr.Key(), csr.Value()); csr.Next(); done }
+    let CountKeysForward (csr:ICursor) =
+        let mutable i = 0
+        csr.First()
+        while csr.IsValid() do
+            i <- i + 1
+            csr.Next()
+        i
+    let CountKeysBackward (csr:ICursor) =
+        let mutable i = 0
+        csr.Last()
+        while csr.IsValid() do
+            i <- i + 1
+            csr.Prev()
+        i
 
 type pgitem = 
     struct
@@ -122,6 +137,12 @@ type pgitem =
 
 
 module utils =
+    let to_utf8 (s:string) =
+        System.Text.Encoding.UTF8.GetBytes (s)
+
+    let from_utf8 (ba:byte[]) =
+        System.Text.Encoding.UTF8.GetString (ba, 0, ba.Length)
+
     let SeekPage(strm:Stream, pageSize, pageNumber) =
         if 0 = pageNumber then failwith "invalid page number"
         let pos = ((int64 pageNumber) - 1L) * int64 pageSize
@@ -210,6 +231,16 @@ module bcmp =
         while i<lim && x.[i]=y.[i] do
             i <- i + 1
         i
+
+    let StartsWith (x:byte[]) (y:byte[]) =
+        if x.Length < y.Length then
+            false
+        else
+            let len = y.Length
+            let mutable i = 0
+            while i<len && x.[i]=y.[i] do
+                i <- i + 1
+            i=len
 
 type private ByteComparer() =
     interface System.Collections.Generic.IComparer<byte[]> with
@@ -621,13 +652,13 @@ type MultiCursor private (_subcursors:seq<ICursor>) =
             let f (x:ICursor) = x.First()
             List.iter f subcursors
             cur <- findMin()
-            dir <- Direction.WANDERING
+            dir <- Direction.WANDERING // TODO why?
 
         member this.Last() =
             let f (x:ICursor) = x.Last()
             List.iter f subcursors
             cur <- findMax()
-            dir <- Direction.WANDERING
+            dir <- Direction.WANDERING // TODO why?
 
         // the following members are asking for the value of cur (an option)
         // without checking or matching on it.  they'll crash if cur is None.
@@ -852,6 +883,7 @@ module bt =
         let pbOverflow = PageBuilder(pageSize)
 
         let writeOverflow (startingBlk:PageBlock) (ba:Stream) =
+            printfn "BEGIN OVERFLOW: %A" startingBlk
             let pageSize = pbOverflow.PageSize
 
             let buildFirstPage () =
@@ -861,12 +893,14 @@ module bt =
                 let room = (pageSize - (2 + sizeof<int32>))
                 let put = pbFirstOverflow.PutStream2(ba, room)
                 // something will be put in lastInt32 later
+                printfn "buildFirstPage put: %d" put
                 (put, put<room)
 
             let buildRegularPage () = 
                 pbOverflow.Reset()
                 let room = pageSize
                 let put = pbOverflow.PutStream2(ba, room)
+                printfn "buildRegularPage put: %d" put
                 (put, put<room)
 
             let buildBoundaryPage () =
@@ -874,6 +908,7 @@ module bt =
                 let room = (pageSize - sizeof<int32>)
                 let put = pbOverflow.PutStream2(ba, room)
                 // something will be put in lastInt32 before the page is written
+                printfn "buildBoundaryPage put: %d" put
                 (put, put<room)
 
             let writeRegularPages _max _sofar =
@@ -903,6 +938,7 @@ module bt =
                 // won't fit and we have to continue into the next block.
                 // the boundary page will be like a regular overflow page,
                 // headerless, but it is four bytes smaller.
+                printfn "writeOneBlock: sofar=%d  blk=%A" sofar firstBlk
                 let (putFirst,finished) = buildFirstPage ()
                 if putFirst=0 then 
                     (sofar, firstBlk)
@@ -911,11 +947,13 @@ module bt =
                     // a couple of things before it gets written out.
                     let sofar = sofar + putFirst
                     if firstBlk.firstPage = firstBlk.lastPage then
+                        printfn "firstPage is last in block"
                         // the first page landed on a boundary.
                         // we can just set the flag and write it now.
                         pbFirstOverflow.SetPageFlag(FLAG_BOUNDARY_NODE)
                         let blk = pageManager.GetBlock(token)
                         pbFirstOverflow.SetLastInt32(blk.firstPage)
+                        printfn "    firstPage in next block: %d" (blk.firstPage)
                         pbFirstOverflow.Write(fs)
                         utils.SeekPage(fs, pageSize, blk.firstPage)
                         if not finished then
@@ -925,8 +963,9 @@ module bt =
                     else 
                         let firstRegularPageNumber = firstBlk.firstPage + 1
                         if finished then
+                            printfn "firstPage is only page"
                             // the first page is also the last one
-                            pbFirstOverflow.SetLastInt32(0) // number of regular pages following
+                            pbFirstOverflow.SetLastInt32(0) // offset to last used page in this block, which is this one
                             pbFirstOverflow.Write(fs)
                             (sofar, PageBlock(firstRegularPageNumber,firstBlk.lastPage))
                         else
@@ -945,12 +984,17 @@ module bt =
                                 then (firstBlk.lastPage - firstRegularPageNumber) 
                                 else System.Int32.MaxValue
 
+                            printfn "availableBeforeBoundary: %d" availableBeforeBoundary
+
                             let (numRegularPages, sofar, finished) = 
                                 writeRegularPages availableBeforeBoundary sofar
 
-                            pbFirstOverflow.SetLastInt32(numRegularPages)
+                            printfn "wrote %d regular pages" numRegularPages
+
                             if finished then
+                                printfn "done after regular"
                                 // go back and fix the first page
+                                pbFirstOverflow.SetLastInt32(numRegularPages)
                                 utils.SeekPage(fs, pageSize, firstBlk.firstPage)
                                 pbFirstOverflow.Write(fs)
                                 // now reset to the next page in the block
@@ -965,15 +1009,18 @@ module bt =
 
                                 let (putBoundary,finished) = buildBoundaryPage ()
                                 if putBoundary=0 then
+                                    printfn "actually, no"
                                     // go back and fix the first page
+                                    pbFirstOverflow.SetLastInt32(numRegularPages)
                                     utils.SeekPage(fs, pageSize, firstBlk.firstPage)
                                     pbFirstOverflow.Write(fs)
 
                                     // now reset to the next page in the block
                                     let blk = PageBlock(firstRegularPageNumber + numRegularPages, firstBlk.lastPage)
-                                    utils.SeekPage(fs, pageSize, blk.firstPage)
+                                    utils.SeekPage(fs, pageSize, firstBlk.lastPage)
                                     (sofar,blk)
                                 else
+                                    printfn "boundary page"
                                     // write the boundary page
                                     let sofar = sofar + putBoundary
                                     let blk = pageManager.GetBlock(token)
@@ -982,6 +1029,7 @@ module bt =
 
                                     // go back and fix the first page
                                     pbFirstOverflow.SetPageFlag(FLAG_ENDS_ON_BOUNDARY)
+                                    pbFirstOverflow.SetLastInt32(numRegularPages + 1)
                                     utils.SeekPage(fs, pageSize, firstBlk.firstPage)
                                     pbFirstOverflow.Write(fs)
 
@@ -992,7 +1040,9 @@ module bt =
                                     else
                                         (sofar,blk)
 
-            writeOneBlock 0 startingBlk
+            let res = writeOneBlock 0 startingBlk
+            printfn "DONE OVERFLOW: %A" res
+            res
 
         let pb = PageBuilder(pageSize)
 
@@ -1111,6 +1161,7 @@ module bt =
 
             let foldLeaf st (pair:kvp) = 
                 let k = pair.Key
+                //printfn "writing key: %s" (k|>utils.from_utf8)
                 // assert k <> null
                 // but pair.Value might be null (a tombstone)
 
@@ -1390,6 +1441,7 @@ module bt =
         let rootPage = writeOneLayerOfParentPages blkAfterLeaves leaves
 
         let g = pageManager.End(token, rootPage)
+        printfn "wrote segment: %A" g
         (g,rootPage)
 
     type private myOverflowReadStream(_fs:Stream, pageSize:int, _firstPage:int, _len:int) =
@@ -1402,7 +1454,8 @@ module bt =
         let mutable sofarOverall = 0
         let mutable sofarThisPage = 0
         let mutable firstPageInBlock = 0
-        let mutable countRegularDataPagesInBlock = 0 // not counting the first, and not counting any boundary
+        let mutable offsetToLastPageInThisBlock = 0 // add to firstPageInBlock to get the last one
+        let mutable countRegularDataPagesInBlock = 0       
         let mutable boundaryPageNumber = 0
         let mutable bytesOnThisPage = 0
         let mutable offsetOnThisPage = 0
@@ -1440,6 +1493,7 @@ module bt =
         let CheckPageFlag(f) = 0uy <> (buf.[1] &&& f)
 
         let ReadFirstPage() =
+            printfn "ReadFirstPage of overflow at currentPage: %d" currentPage
             firstPageInBlock <- currentPage
             ReadPage()
             if PageType() <> OVERFLOW_NODE then failwith "first overflow page has invalid page type"
@@ -1447,13 +1501,16 @@ module bt =
                 // first page landed on a boundary node
                 // lastInt32 is the next page number, which we'll fetch later
                 boundaryPageNumber <- currentPage
+                offsetToLastPageInThisBlock <- 0
                 countRegularDataPagesInBlock <- 0
             else 
-                countRegularDataPagesInBlock <- GetLastInt32()
+                offsetToLastPageInThisBlock <- GetLastInt32()
                 if CheckPageFlag(FLAG_ENDS_ON_BOUNDARY) then
-                    boundaryPageNumber <- currentPage + countRegularDataPagesInBlock + 1
+                    boundaryPageNumber <- currentPage + offsetToLastPageInThisBlock
+                    countRegularDataPagesInBlock <- offsetToLastPageInThisBlock - 1
                 else
                     boundaryPageNumber <- 0
+                    countRegularDataPagesInBlock <- offsetToLastPageInThisBlock
 
         do ReadFirstPage()
 
@@ -1720,11 +1777,15 @@ module bt =
         // this is not necessary, because each leaf has a pointer to
         // the leaf before it.
         let rec searchForwardForLeaf() = 
+            printfn "searchForwardForLeaf: currentPage: %d" currentPage
             let pt = pr.PageType
-            if pt = LEAF_NODE then true
+            if pt = LEAF_NODE then 
+                printfn "found leaf"
+                true
             else if pt = PARENT_NODE then 
                 // if we bump into a parent node, that means there are
                 // no more leaves.
+                printfn "found parent"
                 false
             else
                 let lastInt32 = pr.GetLastInt32()
@@ -1743,23 +1804,36 @@ module bt =
                 // fit).  it doesn't matter.  we just skip ahead.
                 //
                 if pr.CheckPageFlag(FLAG_BOUNDARY_NODE) then
+                    printfn "searchForwardForLeaf: boundary, jump to: %d" lastInt32
                     if setCurrentPage (lastInt32) then
+                        printfn "    ok"
                         searchForwardForLeaf()
                     else
+                        printfn "    fail"
                         false
                 else 
+                    let lastPage = currentPage + lastInt32
                     let endsOnBoundary = pr.CheckPageFlag(FLAG_ENDS_ON_BOUNDARY)
-                    if setCurrentPage (currentPage + lastInt32) then
-                        if endsOnBoundary then
+                    printfn "searchForwardForLeaf: lastPage: %d  endsOnBoundary: %b" lastPage endsOnBoundary
+                    if endsOnBoundary then
+                        if setCurrentPage lastPage then
+                            printfn "    ok"
                             let next = pr.GetLastInt32()
+                            printfn "    endsOnBoundary: next: %d" next
                             if setCurrentPage (next) then
                                 searchForwardForLeaf()
                             else
                                 false
                         else
-                            searchForwardForLeaf()
+                            printfn "    fail"
+                            false
                     else
-                        false
+                        if setCurrentPage (lastPage + 1) then
+                            printfn "    ok"
+                            searchForwardForLeaf()
+                        else
+                            printfn "    fail"
+                            false
 
         let leafIsValid() =
             let ok = (leafKeys <> null) && (countLeafKeys > 0) && (currentKey >= 0) && (currentKey < countLeafKeys)
@@ -2424,16 +2498,24 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
 
         let merge () = 
             // TODO this is silly if segs has only one item in it
-            //printfn "merge getting cursors: %A" segs
+            printfn "merge getting cursors: %A" segs
             let clist = lock critSectionCursors (fun () ->
                 let h = header
                 List.map (fun g -> getCursor h.segments g (Some checkForGoneSegment)) segs
             )
+            List.iter (fun csr ->
+                let count = CursorUtils.CountKeysForward(csr)
+                printfn "    subcursor count: %d" count
+                ) clist
             use mc = MultiCursor.Create clist
+            let mcCount = CursorUtils.CountKeysForward(mc)
             let pairs = CursorUtils.ToSortedSequenceOfKeyValuePairs mc
             use fs = io.OpenForWriting()
-            let (g,_) = BTreeSegment.CreateFromSortedSequence(fs, pageManager, pairs)
-            //printfn "merged %A to get %A" segs g
+            let (g,rootPage) = BTreeSegment.CreateFromSortedSequence(fs, pageManager, pairs)
+            use csrNew = BTreeSegment.OpenCursor(fs, pageSize, rootPage, null)
+            printfn "multicursor count: %d" mcCount
+            printfn "csrNew count forwards: %d" (CursorUtils.CountKeysForward(csrNew))
+            printfn "csrNew count backwards: %d" (CursorUtils.CountKeysBackward(csrNew))
             g
 
         let storePendingMerge g =
@@ -2806,6 +2888,13 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
             )
             let mc = MultiCursor.Create clist
             LivingCursor.Create mc
+
+        member this.OpenSegmentCursor(g:Guid) =
+            let csr = lock critSectionCursors (fun () ->
+                let h = header
+                getCursor h.segments g (Some checkForGoneSegment)
+            )
+            csr
 
         member this.ListSegments() =
             (header.currentState, header.segments)
