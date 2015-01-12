@@ -1,13 +1,27 @@
 
-need a more efficient way to add a zero-length value
+how to do:
+
+    SELECT * 
+    FROM Families.children
+
+need a more efficient way to add a zero-length value.
+should the value in kvp be a union (byte[] or stream 
+or tombstone)?
+
+range queries for nubmers won't work until we encode
+the index key in binary.  varint for integers?
+
+can query on whether a key is present
+
+can query on whether a value is a certain type
 
 keys for documents:
-    d/collectionID/rid -> json
+    j/collectionID/rid -> json
 
 keys for index entries:
-    i/collectionID/path/value/rid -> nothing
+    x/collectionID/path/value/rid -> nothing
 
-    i vs d, single byte
+    x vs j, single byte
     
     collID.  string?
 
@@ -20,6 +34,9 @@ keys for index entries:
     delimiter after the value
 
     then rid
+
+when a record changes, we need to update its index entries.
+how to get rid of the old ones?
 
 how to make sure value cannot be interpreted as part of the
 path
