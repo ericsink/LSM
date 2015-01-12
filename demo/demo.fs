@@ -1,4 +1,12 @@
-﻿
+﻿(*
+    Copyright 2014-2015 Zumero, LLC
+    All Rights Reserved.
+
+    This file is not open source.  
+
+    I haven't decided what to do with this code yet.
+*)
+
 open System.IO
 open FSharp.Data
 open Zumero.LSM
@@ -25,21 +33,35 @@ module fj =
             for (k,v) in a do
                 let newpath = (PathElement.Key k) :: path
                 flatten fn newpath v
-        | JsonValue.Array a -> () // TODO for now, we don't index arrays
-            #if not
+        | JsonValue.Array a -> 
             for i in 0 .. a.Length-1 do
                 let newpath = (PathElement.Index i) :: path
                 let v = a.[i]
                 flatten fn newpath v
-            #endif
             
     let encodeJsonValue jv =
         match jv with
-        | JsonValue.Boolean b -> "b" + if b then "1" else "0"
-        | JsonValue.Float f -> "f" + f.ToString() // TODO binary
-        | JsonValue.Null -> "n"
-        | JsonValue.Number n -> "i" + n.ToString() // TODO binary
-        | JsonValue.String s -> "s" + s
+        | JsonValue.Boolean b -> 
+            "b" + if b then "1" else "0"
+        | JsonValue.Float f -> 
+            // TODO check to see if this is an integer?
+            // TODO are we sure that JsonValue will only return float when decimal was not possible?
+            "f" + f.ToString() // TODO how to deal with this?
+        | JsonValue.Null -> 
+            "n"
+        | JsonValue.Number n -> 
+            let optAsInt64 = try Some (System.Decimal.ToInt64(n)) with :? System.OverflowException -> None
+            match optAsInt64 with
+            | Some i64 ->
+                let dec = decimal i64
+                if n = dec then
+                    "i" + i64.ToString()
+                else
+                    "d" + n.ToString()
+            | None ->
+                "d" + n.ToString()
+        | JsonValue.String s -> 
+            "s" + s
         | _ -> failwith "should have been flattened"
 
     let encode collId path jv rid =
@@ -114,7 +136,8 @@ module fj =
             printfn "%A" id
 
             // store the doc itself
-            d.[(sprintf "d:%s:%s" collId id) |> to_utf8] <- new MemoryStream((sprintf "%A" doc) |> to_utf8) :> Stream
+            // TODO compress this.  or ubjson.
+            d.[(sprintf "j:%s:%s" collId id) |> to_utf8] <- new MemoryStream((sprintf "%A" doc) |> to_utf8) :> Stream
 
             // now all the index items
             // TODO hook index policy to decide whether to index this record at all
