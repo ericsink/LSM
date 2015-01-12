@@ -132,7 +132,7 @@ module fj =
         let f = dbf(dbFile)
         use db = new Database(f) :> IDatabase
         let kpref = sprintf "x:%s:%s:s%s:" collId k v
-        printfn "kpref: %s" kpref
+        //printfn "kpref: %s" kpref
         let kb = kpref |> to_utf8
         use csr = db.OpenCursor()
         csr.Seek(kb, SeekOp.SEEK_GE)
@@ -142,7 +142,7 @@ module fj =
                 // TODO should return a list of record ids
                 printfn "%s" (csr.Key() |> from_utf8)
             else
-                printfn "DONE: %s" (csr.Key() |> from_utf8)
+                //printfn "DONE: %s" (csr.Key() |> from_utf8)
                 // this is just a way of forcing the loop to exit
                 csr.Last()
             csr.Next()
