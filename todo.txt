@@ -17,6 +17,11 @@ or tombstone)?
 range queries for nubmers won't work until we encode
 the index key in binary.  varint for integers?
 
+range query problem with end key.  needs to be the first
+sorted value which should not be included in the range.
+given the way keys are encoded, for an int, this would
+have to be N+1.
+
 can query on whether a key is present
 
 can query on whether a value is a certain type
@@ -42,7 +47,9 @@ keys for index entries:
     then rid
 
 when a record changes, we need to update its index entries.
-how to get rid of the old ones?
+how to get rid of the old ones?  list all index keys from the
+old version of the record.  list all index keys for the new
+version.  compare/update.
 
 how to make sure value cannot be interpreted as part of the
 path

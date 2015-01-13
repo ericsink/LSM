@@ -64,7 +64,7 @@ module fj =
                 "d" + n.ToString()
         | JsonValue.String s -> 
             "s" + s
-        | _ -> failwith "should have been flattened"
+        | _ -> failwith "no record or array here.  should have been flattened"
 
     let encode collId path jv rid =
         // TODO the only safe delimiter is a 0, building this as bytes, not as a string
@@ -94,7 +94,7 @@ module fj =
         seq {
             use csr = db.OpenCursor()
             csr.Seek(k1, SeekOp.SEEK_GE)
-            while csr.IsValid() && csr.KeyCompare(k2)<=0 do 
+            while csr.IsValid() && csr.KeyCompare(k2)<0 do 
                 yield csr.Key()
                 csr.Next()
             }
@@ -111,6 +111,8 @@ module fj =
     let query_key_prefix (db:IDatabase) (k:byte[]) = 
         let k2:byte[] = Array.zeroCreate k.Length
         System.Array.Copy (k, 0, k2, 0, k.Length)
+        // TODO should maybe add_one to the char before the colon,
+        // not to the colon itself.
         add_one k2 (k2.Length-1)
         query_key_range db k k2
 
