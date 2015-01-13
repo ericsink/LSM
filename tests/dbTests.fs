@@ -333,7 +333,7 @@ let blobs() =
         csr.Seek(k, SeekOp.SEEK_EQ)
         Assert.True(csr.IsValid())
         Assert.Equal(tv.Length, csr.ValueLength())
-        let tb1 = utils.ReadAll(csr.Value())
+        let tb1 = utils.ReadValue(csr.Value())
         Assert.Equal(0, bcmp.Compare tv tb1)
         // TODO ReadAll_SmallChunks
 
@@ -367,7 +367,7 @@ let blobs_of_many_sizes() =
         csr.Seek(k, SeekOp.SEEK_EQ)
         Assert.True(csr.IsValid())
         Assert.Equal(tv.Length, csr.ValueLength())
-        let tb1 = utils.ReadAll(csr.Value())
+        let tb1 = utils.ReadValue(csr.Value())
         Assert.Equal(0, bcmp.Compare tv tb1)
         // TODO ReadAll_SmallChunks
 
@@ -537,17 +537,17 @@ let tombstone() =
     lc.First ();
     Assert.True (lc.IsValid ());
     Assert.Equal<string> ("a", lc.Key () |> from_utf8);
-    Assert.Equal<string> ("1", lc.Value () |> utils.ReadAll |> from_utf8);
+    Assert.Equal<string> ("1", lc.Value () |> utils.ReadValue |> from_utf8);
 
     lc.Next ();
     Assert.True (lc.IsValid ());
     Assert.Equal<string> ("c", lc.Key () |> from_utf8);
-    Assert.Equal<string> ("3", lc.Value () |> utils.ReadAll |> from_utf8);
+    Assert.Equal<string> ("3", lc.Value () |> utils.ReadValue |> from_utf8);
 
     lc.Next ();
     Assert.True (lc.IsValid ());
     Assert.Equal<string> ("d", lc.Key () |> from_utf8);
-    Assert.Equal<string> ("4", lc.Value () |> utils.ReadAll |> from_utf8);
+    Assert.Equal<string> ("4", lc.Value () |> utils.ReadValue |> from_utf8);
 
     lc.Next ();
     Assert.False (lc.IsValid ());
@@ -588,7 +588,7 @@ let overwrite() =
     let getb() =
         use csr = db.OpenCursor()
         csr.Seek(to_utf8 "b", SeekOp.SEEK_EQ)
-        csr.Value() |> utils.ReadAll |> from_utf8
+        csr.Value() |> utils.ReadValue |> from_utf8
     Assert.Equal<string>("2", getb())
     let t2 = dseg()
     insert t2 "b" "5"

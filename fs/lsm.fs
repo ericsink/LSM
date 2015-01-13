@@ -64,7 +64,7 @@ type ICursor =
     // ICursor doesn't know how expensive they will be to implement.
     abstract member IsValid : unit -> bool
     abstract member Key : unit -> byte[]
-    abstract member Value : unit -> Stream
+    abstract member Value : unit -> Blob
     abstract member ValueLength : unit -> int
 
     abstract member KeyCompare : k:byte[] -> int
@@ -119,7 +119,7 @@ type IDatabase =
 
 module CursorUtils =
     let ToSortedSequenceOfKeyValuePairs (csr:ICursor) = 
-        seq { csr.First(); while csr.IsValid() do yield new kvp(csr.Key(), let v = csr.Value() in if v = null then Blob.Tombstone else v |> Blob.Stream); csr.Next(); done }
+        seq { csr.First(); while csr.IsValid() do yield new kvp(csr.Key(), csr.Value()); csr.Next(); done }
     let ToSortedSequenceOfTuples (csr:ICursor) = 
         seq { csr.First(); while csr.IsValid() do yield (csr.Key(), csr.Value()); csr.Next(); done }
     let CountKeysForward (csr:ICursor) =
@@ -183,6 +183,18 @@ module utils =
         let buf:byte[] = Array.zeroCreate len
         ReadFully(strm, buf, 0, len)
         buf
+
+    let ReadValue(b:Blob) =
+        match b with
+        | Blob.Stream strm ->
+            let len = int (strm.Length - strm.Position)
+            let buf:byte[] = Array.zeroCreate len
+            ReadFully(strm, buf, 0, len)
+            buf
+        | Blob.Array a ->
+            a
+        | Blob.Tombstone ->
+            null
 
 module bcmp = 
     // this code is very non-F#-ish.  but it's much faster than the
@@ -529,6 +541,7 @@ type private PageReader(pgsz:int) =
             let r = (a1<<<56) ||| (a2<<<48) ||| (a3<<<40) ||| (a4<<<32) ||| (a5<<<24) ||| (a6<<<16) ||| (a7<<<8) ||| a8
             int64 r
 
+#if not
 module misc =
     // TODO not sure this is useful.  it opens an ICursor for a dictionary,
     // using an object expression.  this code is trusting the dictionary not
@@ -592,6 +605,7 @@ module misc =
             member this.Seek (k, sop) =
                 cur := search k 0 (keys.Length-1) sop -1 -1
         }
+#endif
 
 type private Direction = FORWARD=0 | BACKWARD=1 | WANDERING=2
 
@@ -1924,14 +1938,16 @@ module bt =
                 skipKey()
 
                 let vflag = pr.GetByte()
-                if 0uy <> (vflag &&& FLAG_TOMBSTONE) then null
+                if 0uy <> (vflag &&& FLAG_TOMBSTONE) then Blob.Tombstone
                 else 
                     let vlen = pr.GetVarint() |> int
                     if 0uy <> (vflag &&& FLAG_OVERFLOW) then 
                         let pagenum = pr.GetInt32()
-                        new myOverflowReadStream(fs, pr.PageSize, pagenum, vlen) :> Stream
+                        let strm = new myOverflowReadStream(fs, pr.PageSize, pagenum, vlen) :> Stream
+                        Blob.Stream strm
                     else 
-                        new MemoryStream(pr.GetArray (vlen)) :> Stream
+                        let a = pr.GetArray (vlen)
+                        Blob.Array a
 
             member this.ValueLength() =
                 pr.SetPosition(leafKeys.[currentKey])

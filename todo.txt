@@ -1,4 +1,8 @@
 
+writeOverflow could maybe be smarter in cases where the
+data is coming from a byte[] or even from a stream where
+length works?
+
 what if a zero-length value gets overflowed?
 
 arrays:
@@ -12,11 +16,7 @@ how to do:
     SELECT * 
     FROM Families.children
 
-need a more efficient way to add a zero-length value.
-should the value in kvp be a union (byte[] or stream 
-or tombstone)?
-
-range queries for nubmers won't work until we encode
+range queries for numbers won't work until we encode
 the index key in binary.  varint for integers?
 
 range query problem with end key.  needs to be the first
