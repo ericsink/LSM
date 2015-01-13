@@ -155,6 +155,7 @@ module fj =
                     printfn "%A" g
                 } |> Async.RunSynchronously
 
+        let emptyValue:byte[] = Array.empty
         for i in 0 .. a.Length-1 do
             let doc = a.[i]
             let id = doc.Item("id").AsString()
@@ -174,7 +175,7 @@ module fj =
                 // TODO hook index policy to decide whether to index this key
                 // TODO index policy notion of precision?  index only part of the value?
                 let k = encode collId path jv id
-                let v = new MemoryStream(to_utf8 "") // TODO slow
+                let v = new MemoryStream(emptyValue) // TODO slow
                 d.[k] <- v
             flatten fn [] doc
 
