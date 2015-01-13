@@ -169,6 +169,7 @@ module fj =
             // now all the index items
             // TODO hook index policy to decide whether to index this record at all
             let fn path jv =
+                // search list of indexes to find out if anything wants this
                 // TODO hook index policy to decide whether to index this key
                 // TODO index policy notion of precision?  index only part of the value?
                 let k = encode collId path jv id

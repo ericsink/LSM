@@ -93,6 +93,7 @@ type IDatabase =
     abstract member WriteSegment : System.Collections.Generic.IDictionary<byte[],Stream> -> Guid
     abstract member ForgetWaitingSegments : seq<Guid> -> unit
 
+    abstract member GetFreeBlocks : unit->PageBlock list
     abstract member OpenCursor : unit->ICursor 
     abstract member OpenSegmentCursor : Guid->ICursor 
     // TODO consider name such as OpenLivingCursorOnCurrentState()
@@ -101,6 +102,7 @@ type IDatabase =
     // TODO consider OpenCursorOnSpecificSegment(seq<Guid>)
 
     abstract member ListSegments : unit -> (Guid list)*Map<Guid,SegmentInfo>
+    abstract member PageSize: unit->int
 
     abstract member RequestWriteLock : int->Async<IWriteLock>
     abstract member RequestWriteLock : unit->Async<IWriteLock>
@@ -2214,6 +2216,8 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
 
     let critSectionNextPage = obj()
     let getBlock specificSize =
+        //printfn "getBlock: specificSize=%d" specificSize
+        //printfn "freeBlocks: %A" freeBlocks
         lock critSectionNextPage (fun () -> 
             if specificSize > 0 then
                 if List.isEmpty freeBlocks || specificSize > (List.head freeBlocks).CountPages then
@@ -2238,11 +2242,18 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
                         //printfn "blk.CountPages: %d" (headBlk.CountPages)
                         headBlk
             else
-                let size = settings.PagesPerBlock
-                let newBlk = PageBlock(nextPage, nextPage+size-1) 
-                nextPage <- nextPage + size
-                //printfn "newBlk: %A" newBlk
-                newBlk
+                if List.isEmpty freeBlocks then
+                    let size = settings.PagesPerBlock
+                    let newBlk = PageBlock(nextPage, nextPage+size-1) 
+                    nextPage <- nextPage + size
+                    //printfn "newBlk: %A" newBlk
+                    newBlk
+                else
+                    let headBlk = List.head freeBlocks
+                    freeBlocks <- List.tail freeBlocks
+                    //printfn "reusing blk: %A, specificSize:%d, freeBlocks now: %A" headBlk specificSize freeBlocks
+                    //printfn "blk.CountPages: %d" (headBlk.CountPages)
+                    headBlk
             )
 
     let addFreeBlocks blocks =
@@ -2777,8 +2788,8 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
         {
             AutoMergeEnabled = true
             AutoMergeMinimumPages = 4
-            DefaultPageSize = 256
-            PagesPerBlock = 10
+            DefaultPageSize = 4096
+            PagesPerBlock = 256
         }
 
     new(_io:IDatabaseFile) =
@@ -2855,6 +2866,10 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
                 getCursor h.segments g (Some checkForGoneSegment)
             )
             csr
+
+        member this.GetFreeBlocks() = freeBlocks
+
+        member this.PageSize() = pageSize
 
         member this.ListSegments() =
             (header.currentState, header.segments)

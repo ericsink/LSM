@@ -24,8 +24,15 @@ module diag =
     let list_segments dbFile =
         let f = dbf(dbFile)
         use db = new Database(f) :> IDatabase
-        let segs = db.ListSegments()
-        printfn "%A" segs
+        let (state,segs) = db.ListSegments()
+        //printfn "%A" state
+        //printfn "%A" segs
+        List.iter (fun g ->
+            let info = segs.[g]
+            let blocks = info.blocks
+            let pages = List.sumBy (fun (pb:PageBlock) -> pb.CountPages) blocks
+            printfn "%A : age=%d  pages=%d  root=%d" g (info.age) pages (info.root)
+            ) state
 
     let list_all_keys dbFile =
         let f = dbf(dbFile)
@@ -34,8 +41,19 @@ module diag =
         csr.First()
         while csr.IsValid() do
             let k = csr.Key() |> from_utf8
-            printfn "%s" k
+            printfn "%s -- %d" k (csr.ValueLength())
             csr.Next()
+
+    let list_free_blocks dbFile =
+        let f = dbf(dbFile)
+        use db = new Database(f) :> IDatabase
+        let fb = db.GetFreeBlocks()
+        let pageSize = db.PageSize()
+        let total = List.sumBy (fun (pb:PageBlock) -> pb.CountPages) fb
+        printfn "%A" fb
+        printfn "Total pages: %d" total
+        printfn "Page Size: %d" pageSize
+        printfn "Total bytes: %d" (total * pageSize)
 
     let list_segment_keys dbFile g =
         let f = dbf(dbFile)
@@ -56,6 +74,8 @@ module diag =
             list_segments dbFile
         | "list_all_keys" -> 
             list_all_keys dbFile
+        | "list_free_blocks" -> 
+            list_free_blocks dbFile
         | "list_segment_keys" -> 
             let seg = argv.[2]
             let g = System.Guid.Parse(seg)
