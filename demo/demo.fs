@@ -7,6 +7,7 @@
     I haven't decided what to do with this code yet.
 *)
 
+open System
 open System.IO
 open FSharp.Data
 open Zumero.LSM
@@ -164,7 +165,7 @@ module fj =
 
             // store the doc itself
             // TODO compress this.  or ubjson.
-            d.[(sprintf "j:%s:%s" collId id) |> to_utf8] <- new MemoryStream((sprintf "%A" doc) |> to_utf8) :> Stream
+            //d.[(sprintf "j:%s:%s" collId id) |> to_utf8] <- new MemoryStream((sprintf "%A" doc) |> to_utf8) :> Stream
 
             // now all the index items
             // TODO hook index policy to decide whether to index this record at all
@@ -199,8 +200,12 @@ module fj =
             let v = argv.[4]
             let f = dbf(dbFile)
             use db = new Database(f) :> IDatabase
+            let t1 = DateTime.Now
             let s = query_string_equal db collId k v
+            let t2 = DateTime.Now
+            let diff = t2 - t1
             Seq.iter (fun (v,id) -> printfn "%s" id) s
+            printfn "%f ms" (diff.TotalMilliseconds)
         | _ -> failwith "unknown op"
 
         0 // return an integer exit code
