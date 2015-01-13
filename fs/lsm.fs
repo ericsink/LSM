@@ -22,7 +22,13 @@ open System.Linq // used for OrderBy
 
 open FSharpx.Collections
 
-type kvp = System.Collections.Generic.KeyValuePair<byte[],Stream>
+[<RequireQualifiedAccess>]
+type Blob =
+    | Stream of Stream
+    | Array of byte[]
+    | Tombstone
+
+type kvp = System.Collections.Generic.KeyValuePair<byte[],Blob>
 
 type IPendingSegment = interface end
 
@@ -91,6 +97,7 @@ type IDatabase =
     inherit IDisposable
     abstract member WriteSegmentFromSortedSequence : seq<kvp> -> Guid
     abstract member WriteSegment : System.Collections.Generic.IDictionary<byte[],Stream> -> Guid
+    abstract member WriteSegment : System.Collections.Generic.IDictionary<byte[],Blob> -> Guid
     abstract member ForgetWaitingSegments : seq<Guid> -> unit
 
     abstract member GetFreeBlocks : unit->PageBlock list
@@ -112,7 +119,7 @@ type IDatabase =
 
 module CursorUtils =
     let ToSortedSequenceOfKeyValuePairs (csr:ICursor) = 
-        seq { csr.First(); while csr.IsValid() do yield new kvp(csr.Key(), csr.Value()); csr.Next(); done }
+        seq { csr.First(); while csr.IsValid() do yield new kvp(csr.Key(), let v = csr.Value() in if v = null then Blob.Tombstone else v |> Blob.Stream); csr.Next(); done }
     let ToSortedSequenceOfTuples (csr:ICursor) = 
         seq { csr.First(); while csr.IsValid() do yield (csr.Key(), csr.Value()); csr.Next(); done }
     let CountKeysForward (csr:ICursor) =
@@ -1183,30 +1190,68 @@ module bt =
                     else 0
 
                 let blkAfterValue, vloc = 
-                    if pair.Value = null then
+                    match pair.Value with
+                    | Blob.Tombstone ->
                         blkAfterKey, Tombstone
-                    else match kloc with
+                    | _ ->
+                        match kloc with
                          | Inline ->
                             if maxValueInline = 0 then
-                                let valuePage = blkAfterKey.firstPage
-                                let len,newBlk = writeOverflow blkAfterKey pair.Value
-                                newBlk, (Overflowed (len,valuePage))
+                                match pair.Value with
+                                | Blob.Tombstone ->
+                                    blkAfterKey, Tombstone
+                                | Blob.Stream strm ->
+                                    let valuePage = blkAfterKey.firstPage
+                                    let len,newBlk = writeOverflow blkAfterKey strm
+                                    newBlk, (Overflowed (len,valuePage))
+                                | Blob.Array a ->
+                                    if a.Length = 0 then
+                                        blkAfterKey, Buffer a
+                                    else
+                                        let valuePage = blkAfterKey.firstPage
+                                        let strm = new MemoryStream(a)
+                                        let len,newBlk = writeOverflow blkAfterKey strm
+                                        newBlk, (Overflowed (len,valuePage))
                             else
-                                let vread = utils.ReadFully2(pair.Value, vbuf, 0, maxValueInline+1)
-                                if vread < maxValueInline then
-                                    // TODO this alloc+copy is unfortunate
-                                    let va:byte[] = Array.zeroCreate vread
-                                    System.Array.Copy (vbuf, 0, va, 0, vread)
-                                    blkAfterKey, Buffer va
+                                match pair.Value with
+                                | Blob.Tombstone ->
+                                    blkAfterKey, Tombstone
+                                | Blob.Stream strm ->
+                                    let vread = utils.ReadFully2(strm, vbuf, 0, maxValueInline+1)
+                                    if vread < maxValueInline then
+                                        // TODO this alloc+copy is unfortunate
+                                        let va:byte[] = Array.zeroCreate vread
+                                        System.Array.Copy (vbuf, 0, va, 0, vread)
+                                        blkAfterKey, Buffer va
+                                    else
+                                        let valuePage = blkAfterKey.firstPage
+                                        let len,newBlk = writeOverflow blkAfterKey (new myConcatStream(vbuf, vread, strm))
+                                        newBlk, (Overflowed (len,valuePage))
+                                | Blob.Array a ->
+                                    if a.Length < maxValueInline then
+                                        blkAfterKey, Buffer a
+                                    else
+                                        let valuePage = blkAfterKey.firstPage
+                                        let strm = new MemoryStream(a)
+                                        let len,newBlk = writeOverflow blkAfterKey strm
+                                        newBlk, (Overflowed (len,valuePage))
+
+                         | Overflow _ ->
+                            match pair.Value with
+                            | Blob.Tombstone ->
+                                blkAfterKey, Tombstone
+                            | Blob.Stream strm ->
+                                let valuePage = blkAfterKey.firstPage
+                                let len,newBlk = writeOverflow blkAfterKey strm
+                                newBlk, (Overflowed (len,valuePage))
+                            | Blob.Array a ->
+                                if a.Length = 0 then
+                                    blkAfterKey, Buffer a
                                 else
                                     let valuePage = blkAfterKey.firstPage
-                                    let len,newBlk = writeOverflow blkAfterKey (new myConcatStream(vbuf, vread, pair.Value))
+                                    let strm = new MemoryStream(a)
+                                    let len,newBlk = writeOverflow blkAfterKey strm
                                     newBlk, (Overflowed (len,valuePage))
-                         | Overflow _ ->
-                            let valuePage = blkAfterKey.firstPage
-                            let len,newBlk = writeOverflow blkAfterKey pair.Value
-                            newBlk, (Overflowed (len,valuePage))
-
 
                 let lp = {
                             key=k
@@ -1956,7 +2001,24 @@ type BTreeSegment =
         // TODO which is faster?  how does linq OrderBy implement sorting
         // of a sequence?
         // http://code.logos.com/blog/2010/04/a_truly_lazy_orderby_in_linq.html
-        let sortedSeq = pairs.AsEnumerable().OrderBy((fun (x:kvp) -> x.Key), ByteComparer())
+        let s1 = pairs.AsEnumerable()
+        let s2 = Seq.map (fun (x:System.Collections.Generic.KeyValuePair<byte[],Stream>) -> kvp(x.Key, if x.Value = null then Blob.Tombstone else x.Value |> Blob.Stream)) s1
+        let sortedSeq = s2.OrderBy((fun (x:kvp) -> x.Key), ByteComparer())
+#endif
+        bt.CreateFromSortedSequenceOfKeyValuePairs (fs, pageManager, sortedSeq)
+
+    static member SortAndCreate(fs:Stream, pageManager:IPages, pairs:System.Collections.Generic.IDictionary<byte[],Blob>) =
+#if not
+        let keys:byte[][] = (Array.ofSeq pairs.Keys)
+        let sortfunc x y = bcmp.Compare x y
+        Array.sortInPlaceWith sortfunc keys
+        let sortedSeq = seq { for k in keys do yield kvp(k,pairs.[k]) done }
+#else
+        // TODO which is faster?  how does linq OrderBy implement sorting
+        // of a sequence?
+        // http://code.logos.com/blog/2010/04/a_truly_lazy_orderby_in_linq.html
+        let s1 = pairs.AsEnumerable()
+        let sortedSeq = s1.OrderBy((fun (x:kvp) -> x.Key), ByteComparer())
 #endif
         bt.CreateFromSortedSequenceOfKeyValuePairs (fs, pageManager, sortedSeq)
 
@@ -2815,6 +2877,11 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
             g
 
         member this.WriteSegment(pairs:System.Collections.Generic.IDictionary<byte[],Stream>) =
+            use fs = io.OpenForWriting()
+            let (g,_) = BTreeSegment.SortAndCreate(fs, pageManager, pairs)
+            g
+
+        member this.WriteSegment(pairs:System.Collections.Generic.IDictionary<byte[],Blob>) =
             use fs = io.OpenForWriting()
             let (g,_) = BTreeSegment.SortAndCreate(fs, pageManager, pairs)
             g

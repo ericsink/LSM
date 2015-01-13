@@ -1,4 +1,6 @@
 
+what if a zero-length value gets overflowed?
+
 arrays:
 
     SELECT c.givenName

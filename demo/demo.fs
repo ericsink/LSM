@@ -143,7 +143,7 @@ module fj =
         let f = dbf(dbFile)
         use db = new Database(f) :> IDatabase
 
-        let d = System.Collections.Generic.Dictionary<byte[],Stream>()
+        let d = System.Collections.Generic.Dictionary<byte[],Blob>()
 
         let flush count =
             if d.Count >= count then
@@ -155,7 +155,8 @@ module fj =
                     printfn "%A" g
                 } |> Async.RunSynchronously
 
-        let emptyValue:byte[] = Array.empty
+        let emptyByteArray:byte[] = Array.empty
+        let emptyBlobValue = Blob.Array emptyByteArray
         for i in 0 .. a.Length-1 do
             let doc = a.[i]
             let id = doc.Item("id").AsString()
@@ -175,8 +176,7 @@ module fj =
                 // TODO hook index policy to decide whether to index this key
                 // TODO index policy notion of precision?  index only part of the value?
                 let k = encode collId path jv id
-                let v = new MemoryStream(emptyValue) // TODO slow
-                d.[k] <- v
+                d.[k] <- emptyBlobValue
             flatten fn [] doc
 
             // when the dictionary gets too large, flush it to a segment
