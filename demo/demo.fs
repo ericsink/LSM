@@ -23,6 +23,98 @@ module fj =
     let from_utf8 (ba:byte[]) =
         System.Text.Encoding.UTF8.GetString (ba, 0, ba.Length)
 
+    let write_decimal (ms:MemoryStream) (d:decimal) =
+        ms.WriteByte('D'B)
+        let a = System.Decimal.GetBits(d)
+        for i in a do
+            let ba = BitConverter.GetBytes(i)
+            ms.Write(ba, 0, ba.Length)
+
+    let write_integer (ms:MemoryStream) (i64:int64) =
+        if i64 >= -128L && i64 <= 127L then
+            let v = int8 i64
+            ms.WriteByte('i'B)
+            ms.WriteByte(byte v)
+        else if i64 >= 0L && i64 <= 255L then
+            let v = byte i64
+            ms.WriteByte('U'B)
+            ms.WriteByte(v)
+        else if i64 >= (int64 System.Int16.MinValue) && i64 <= (int64 System.Int16.MaxValue) then
+            let v = int16 i64
+            ms.WriteByte('I'B)
+            let ba = BitConverter.GetBytes(v)
+            if BitConverter.IsLittleEndian then
+                Array.Reverse ba
+            ms.Write(ba, 0, ba.Length)
+        else if i64 >= (int64 System.Int32.MinValue) && i64 <= (int64 System.Int32.MaxValue) then
+            let v = int32 i64
+            ms.WriteByte('l'B)
+            let ba = BitConverter.GetBytes(v)
+            if BitConverter.IsLittleEndian then
+                Array.Reverse ba
+            ms.Write(ba, 0, ba.Length)
+        else
+            ms.WriteByte('L'B)
+            let ba = BitConverter.GetBytes(i64)
+            if BitConverter.IsLittleEndian then
+                Array.Reverse ba
+            ms.Write(ba, 0, ba.Length)
+
+    let write_string (ms:MemoryStream) s =
+        let ba = to_utf8 s
+        write_integer ms (ba.Length |> int64)
+        ms.Write(ba, 0, ba.Length)
+
+    let rec to_ubjson (ms:MemoryStream) jv =
+        match jv with
+        | JsonValue.Boolean b -> if b then ms.WriteByte('T'B) else ms.WriteByte('F'B)
+        | JsonValue.Null -> ms.WriteByte('Z'B)
+        | JsonValue.Float f ->
+            ms.WriteByte('D'B)
+            let ba = BitConverter.GetBytes(f)
+            if BitConverter.IsLittleEndian then
+                Array.Reverse ba
+            ms.Write(ba, 0, ba.Length)
+        | JsonValue.Number n ->
+            let optAsInt64 = try Some (System.Decimal.ToInt64(n)) with :? System.OverflowException -> None
+            match optAsInt64 with
+            | Some i64 ->
+                let dec = decimal i64
+                if n = dec then
+                    write_integer ms i64
+                else
+                    #if not
+                    // TODO try float?
+                    ms.WriteByte('H'B)
+                    let s = jv.AsString()
+                    write_string ms s
+                    #endif
+                    write_decimal ms n
+            | None ->
+                #if not
+                // TODO try float?
+                ms.WriteByte('H'B)
+                let s = jv.AsString()
+                write_string ms s
+                #endif
+                write_decimal ms n
+        | JsonValue.String s ->
+                ms.WriteByte('S'B)
+                let s = jv.AsString()
+                write_string ms s
+        | JsonValue.Record a -> 
+            ms.WriteByte('{'B)
+            for (k,v) in a do
+                write_string ms k
+                to_ubjson ms v
+            ms.WriteByte('}'B)
+        | JsonValue.Array a -> 
+            ms.WriteByte('['B)
+            for i in 0 .. a.Length-1 do
+                let v = a.[i]
+                to_ubjson ms v
+            ms.WriteByte(']'B)
+            
     let rec flatten fn path jv =
         match jv with
         | JsonValue.Boolean b -> fn path jv
@@ -157,6 +249,7 @@ module fj =
 
         let emptyByteArray:byte[] = Array.empty
         let emptyBlobValue = Blob.Array emptyByteArray
+        let msub = new MemoryStream()
         for i in 0 .. a.Length-1 do
             let doc = a.[i]
             let id = doc.Item("id").AsString()
@@ -167,7 +260,12 @@ module fj =
 
             // store the doc itself
             // TODO compress this.  or ubjson.
+            msub.SetLength(0L)
+            msub.Position <- 0L
+            to_ubjson msub doc
+            let ub = msub.ToArray()
             //d.[(sprintf "j:%s:%s" collId id) |> to_utf8] <- new MemoryStream((sprintf "%A" doc) |> to_utf8) :> Stream
+            d.[(sprintf "j:%s:%s" collId id) |> to_utf8] <- Blob.Array ub
 
             // now all the index items
             // TODO hook index policy to decide whether to index this record at all

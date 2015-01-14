@@ -56,10 +56,8 @@ version.  compare/update.
 how to make sure value cannot be interpreted as part of the
 path
 
-is an empty string valid as part of the path?
-
-perhaps each path element needs a prefix to show whether it is
-a string key or an array index?
+is an empty string valid as part of the path?  a json record
+can have an empty string as a key, right?
 
 seek in myOverflowReadStream
 
