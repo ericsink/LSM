@@ -30,6 +30,13 @@ module fj =
             let ba = BitConverter.GetBytes(i)
             ms.Write(ba, 0, ba.Length)
 
+    let write_varint (ms:MemoryStream) (i64:int64) =
+            ms.WriteByte('V'B)
+            let len = Varint.SpaceNeededFor i64
+            let ba:byte[] = Array.zeroCreate len
+            Varint.write ba 0 i64 |> ignore
+            ms.Write(ba, 0, ba.Length)
+
     let write_integer (ms:MemoryStream) (i64:int64) =
         if i64 >= -128L && i64 <= 127L then
             let v = int8 i64
