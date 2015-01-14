@@ -144,6 +144,9 @@ module fj =
         | JsonValue.Null -> 
             "n"
         | JsonValue.Number n -> 
+            // TODO consider just putting the decimal number in as binary, if we can figure out
+            // how to order the bits so it sorts properly
+
             // TODO should have index policy to specify how this should be indexed. float/decimal/integer.
             let optAsInt64 = try Some (System.Decimal.ToInt64(n)) with :? System.OverflowException -> None
             match optAsInt64 with
@@ -270,7 +273,7 @@ module fj =
             // now all the index items
             // TODO hook index policy to decide whether to index this record at all
             let fn path jv =
-                // search list of indexes to find out if anything wants this
+                // TODO search list of indexes to find out if anything wants this
                 // TODO hook index policy to decide whether to index this key
                 // TODO index policy notion of precision?  index only part of the value?
                 let k = encode collId path jv id

@@ -267,6 +267,150 @@ type private ByteComparer() =
     interface System.Collections.Generic.IComparer<byte[]> with
         member this.Compare(x,y) = bcmp.Compare x y
 
+module Varint =
+    let SpaceNeededFor v :int = 
+        if v<=240L then 1
+        else if v<=2287L then 2
+        else if v<=67823L then 3
+        else if v<=16777215L then 4
+        else if v<=4294967295L then 5
+        else if v<=1099511627775L then 6
+        else if v<=281474976710655L then 7
+        else if v<=72057594037927935L then 8
+        else 9
+
+    let read (buf:byte[]) cur =
+        let a0 = uint64 buf.[cur]
+        if a0 <= 240UL then 
+            cur+1, int64 a0
+        else if a0 <= 248UL then
+            let a1 = uint64 buf.[cur+1]            
+            let r = (240UL + 256UL * (a0 - 241UL) + a1)
+            cur+2, int64 r
+        else if a0 = 249UL then
+            let a1 = uint64 buf.[cur+1]
+            let a2 = uint64 buf.[cur+2]
+            let r = (2288UL + 256UL * a1 + a2)
+            cur+3, int64 r
+        else if a0 = 250UL then
+            let a1 = uint64 buf.[cur+1]
+            let a2 = uint64 buf.[cur+2]
+            let a3 = uint64 buf.[cur+3]
+            let r = (a1<<<16) ||| (a2<<<8) ||| a3
+            cur+4, int64 r
+        else if a0 = 251UL then
+            let a1 = uint64 buf.[cur+1]
+            let a2 = uint64 buf.[cur+2]
+            let a3 = uint64 buf.[cur+3]
+            let a4 = uint64 buf.[cur+4]
+            let r = (a1<<<24) ||| (a2<<<16) ||| (a3<<<8) ||| a4
+            cur+5, int64 r
+        else if a0 = 252UL then
+            let a1 = uint64 buf.[cur+1]
+            let a2 = uint64 buf.[cur+2]
+            let a3 = uint64 buf.[cur+3]
+            let a4 = uint64 buf.[cur+4]
+            let a5 = uint64 buf.[cur+5]
+            let r = (a1<<<32) ||| (a2<<<24) ||| (a3<<<16) ||| (a4<<<8) ||| a5
+            cur+6, int64 r
+        else if a0 = 253UL then
+            let a1 = uint64 buf.[cur+1]
+            let a2 = uint64 buf.[cur+2]
+            let a3 = uint64 buf.[cur+3]
+            let a4 = uint64 buf.[cur+4]
+            let a5 = uint64 buf.[cur+5]
+            let a6 = uint64 buf.[cur+6]
+            let r = (a1<<<40) ||| (a2<<<32) ||| (a3<<<24) ||| (a4<<<16) ||| (a5<<<8) ||| a6
+            cur+7, int64 r
+        else if a0 = 254UL then
+            let a1 = uint64 buf.[cur+1]
+            let a2 = uint64 buf.[cur+2]
+            let a3 = uint64 buf.[cur+3]
+            let a4 = uint64 buf.[cur+4]
+            let a5 = uint64 buf.[cur+5]
+            let a6 = uint64 buf.[cur+6]
+            let a7 = uint64 buf.[cur+7]
+            let r = (a1<<<48) ||| (a2<<<40) ||| (a3<<<32) ||| (a4<<<24) ||| (a5<<<16) ||| (a6<<<8) ||| a7
+            cur+8, int64 r
+        else
+            let a1 = uint64 buf.[cur+1]
+            let a2 = uint64 buf.[cur+2]
+            let a3 = uint64 buf.[cur+3]
+            let a4 = uint64 buf.[cur+4]
+            let a5 = uint64 buf.[cur+5]
+            let a6 = uint64 buf.[cur+6]
+            let a7 = uint64 buf.[cur+7]
+            let a8 = uint64 buf.[cur+8]
+            let r = (a1<<<56) ||| (a2<<<48) ||| (a3<<<40) ||| (a4<<<32) ||| (a5<<<24) ||| (a6<<<16) ||| (a7<<<8) ||| a8
+            cur+9, int64 r
+
+    let write (buf:byte[]) cur (ov:int64) =
+        // assert ov >= 0
+        let v:uint64 = uint64 ov
+        if v<=240UL then 
+            buf.[cur] <- byte v
+            cur + 1
+        else if v<=2287UL then 
+            buf.[cur] <- byte ((v - 240UL) / 256UL + 241UL)
+            buf.[cur+1] <- byte ((v - 240UL) % 256UL)
+            cur + 2
+        else if v<=67823UL then 
+            buf.[cur] <- 249uy
+            buf.[cur+1] <- byte ((v - 2288UL) / 256UL)
+            buf.[cur+2] <- byte ((v - 2288UL) % 256UL)
+            cur + 3
+        else if v<=16777215UL then 
+            buf.[cur] <- 250uy
+            buf.[cur+1] <- byte (v >>> 16)
+            buf.[cur+2] <- byte (v >>>  8)
+            buf.[cur+3] <- byte (v >>>  0)
+            cur + 4
+        else if v<=4294967295UL then 
+            buf.[cur] <- 251uy
+            buf.[cur+1] <- byte (v >>> 24)
+            buf.[cur+2] <- byte (v >>> 16)
+            buf.[cur+3] <- byte (v >>>  8)
+            buf.[cur+4] <- byte (v >>>  0)
+            cur + 5
+        else if v<=1099511627775UL then 
+            buf.[cur] <- 252uy
+            buf.[cur+1] <- byte (v >>> 32)
+            buf.[cur+2] <- byte (v >>> 24)
+            buf.[cur+3] <- byte (v >>> 16)
+            buf.[cur+4] <- byte (v >>>  8)
+            buf.[cur+5] <- byte (v >>>  0)
+            cur + 6
+        else if v<=281474976710655UL then 
+            buf.[cur] <- 253uy
+            buf.[cur+1] <- byte (v >>> 40)
+            buf.[cur+2] <- byte (v >>> 32)
+            buf.[cur+3] <- byte (v >>> 24)
+            buf.[cur+4] <- byte (v >>> 16)
+            buf.[cur+5] <- byte (v >>>  8)
+            buf.[cur+6] <- byte (v >>>  0)
+            cur + 7
+        else if v<=72057594037927935UL then 
+            buf.[cur] <- 254uy
+            buf.[cur+1] <- byte (v >>> 48)
+            buf.[cur+2] <- byte (v >>> 40)
+            buf.[cur+3] <- byte (v >>> 32)
+            buf.[cur+4] <- byte (v >>> 24)
+            buf.[cur+5] <- byte (v >>> 16)
+            buf.[cur+6] <- byte (v >>>  8)
+            buf.[cur+7] <- byte (v >>>  0)
+            cur + 8
+        else
+            buf.[cur] <- 255uy
+            buf.[cur+1] <- byte (v >>> 56)
+            buf.[cur+2] <- byte (v >>> 48)
+            buf.[cur+3] <- byte (v >>> 40)
+            buf.[cur+4] <- byte (v >>> 32)
+            buf.[cur+5] <- byte (v >>> 24)
+            buf.[cur+6] <- byte (v >>> 16)
+            buf.[cur+7] <- byte (v >>>  8)
+            buf.[cur+8] <- byte (v >>>  0)
+            cur + 9
+
 type private PageBuilder(pgsz:int) =
     let mutable cur = 0
     let buf:byte[] = Array.zeroCreate pgsz
@@ -339,71 +483,7 @@ type private PageBuilder(pgsz:int) =
         buf.[at+1] <- byte (v >>>  0)
 
     member this.PutVarint(ov:int64) =
-        // assert ov >= 0
-        let v:uint64 = uint64 ov
-        if v<=240UL then 
-            buf.[cur] <- byte v
-            cur <- cur + 1
-        else if v<=2287UL then 
-            buf.[cur] <- byte ((v - 240UL) / 256UL + 241UL)
-            buf.[cur+1] <- byte ((v - 240UL) % 256UL)
-            cur <- cur + 2
-        else if v<=67823UL then 
-            buf.[cur] <- 249uy
-            buf.[cur+1] <- byte ((v - 2288UL) / 256UL)
-            buf.[cur+2] <- byte ((v - 2288UL) % 256UL)
-            cur <- cur + 3
-        else if v<=16777215UL then 
-            buf.[cur] <- 250uy
-            buf.[cur+1] <- byte (v >>> 16)
-            buf.[cur+2] <- byte (v >>>  8)
-            buf.[cur+3] <- byte (v >>>  0)
-            cur <- cur + 4
-        else if v<=4294967295UL then 
-            buf.[cur] <- 251uy
-            buf.[cur+1] <- byte (v >>> 24)
-            buf.[cur+2] <- byte (v >>> 16)
-            buf.[cur+3] <- byte (v >>>  8)
-            buf.[cur+4] <- byte (v >>>  0)
-            cur <- cur + 5
-        else if v<=1099511627775UL then 
-            buf.[cur] <- 252uy
-            buf.[cur+1] <- byte (v >>> 32)
-            buf.[cur+2] <- byte (v >>> 24)
-            buf.[cur+3] <- byte (v >>> 16)
-            buf.[cur+4] <- byte (v >>>  8)
-            buf.[cur+5] <- byte (v >>>  0)
-            cur <- cur + 6
-        else if v<=281474976710655UL then 
-            buf.[cur] <- 253uy
-            buf.[cur+1] <- byte (v >>> 40)
-            buf.[cur+2] <- byte (v >>> 32)
-            buf.[cur+3] <- byte (v >>> 24)
-            buf.[cur+4] <- byte (v >>> 16)
-            buf.[cur+5] <- byte (v >>>  8)
-            buf.[cur+6] <- byte (v >>>  0)
-            cur <- cur + 7
-        else if v<=72057594037927935UL then 
-            buf.[cur] <- 254uy
-            buf.[cur+1] <- byte (v >>> 48)
-            buf.[cur+2] <- byte (v >>> 40)
-            buf.[cur+3] <- byte (v >>> 32)
-            buf.[cur+4] <- byte (v >>> 24)
-            buf.[cur+5] <- byte (v >>> 16)
-            buf.[cur+6] <- byte (v >>>  8)
-            buf.[cur+7] <- byte (v >>>  0)
-            cur <- cur + 8
-        else
-            buf.[cur] <- 255uy
-            buf.[cur+1] <- byte (v >>> 56)
-            buf.[cur+2] <- byte (v >>> 48)
-            buf.[cur+3] <- byte (v >>> 40)
-            buf.[cur+4] <- byte (v >>> 32)
-            buf.[cur+5] <- byte (v >>> 24)
-            buf.[cur+6] <- byte (v >>> 16)
-            buf.[cur+7] <- byte (v >>>  8)
-            buf.[cur+8] <- byte (v >>>  0)
-            cur <- cur + 9
+        cur <- Varint.write buf cur ov
 
 type private PageReader(pgsz:int) =
     let mutable cur = 0
@@ -468,78 +548,9 @@ type private PageReader(pgsz:int) =
         int r2
 
     member this.GetVarint() :int64 =
-        let a0 = uint64 buf.[cur]
-        if a0 <= 240UL then 
-            cur <- cur + 1
-            int64 a0
-        else if a0 <= 248UL then
-            let a1 = uint64 buf.[cur+1]
-            cur <- cur + 2
-            let r = (240UL + 256UL * (a0 - 241UL) + a1)
-            int64 r
-        else if a0 = 249UL then
-            let a1 = uint64 buf.[cur+1]
-            let a2 = uint64 buf.[cur+2]
-            cur <- cur + 3
-            let r = (2288UL + 256UL * a1 + a2)
-            int64 r
-        else if a0 = 250UL then
-            let a1 = uint64 buf.[cur+1]
-            let a2 = uint64 buf.[cur+2]
-            let a3 = uint64 buf.[cur+3]
-            cur <- cur + 4
-            let r = (a1<<<16) ||| (a2<<<8) ||| a3
-            int64 r
-        else if a0 = 251UL then
-            let a1 = uint64 buf.[cur+1]
-            let a2 = uint64 buf.[cur+2]
-            let a3 = uint64 buf.[cur+3]
-            let a4 = uint64 buf.[cur+4]
-            cur <- cur + 5
-            let r = (a1<<<24) ||| (a2<<<16) ||| (a3<<<8) ||| a4
-            int64 r
-        else if a0 = 252UL then
-            let a1 = uint64 buf.[cur+1]
-            let a2 = uint64 buf.[cur+2]
-            let a3 = uint64 buf.[cur+3]
-            let a4 = uint64 buf.[cur+4]
-            let a5 = uint64 buf.[cur+5]
-            cur <- cur + 6
-            let r = (a1<<<32) ||| (a2<<<24) ||| (a3<<<16) ||| (a4<<<8) ||| a5
-            int64 r
-        else if a0 = 253UL then
-            let a1 = uint64 buf.[cur+1]
-            let a2 = uint64 buf.[cur+2]
-            let a3 = uint64 buf.[cur+3]
-            let a4 = uint64 buf.[cur+4]
-            let a5 = uint64 buf.[cur+5]
-            let a6 = uint64 buf.[cur+6]
-            cur <- cur + 7
-            let r = (a1<<<40) ||| (a2<<<32) ||| (a3<<<24) ||| (a4<<<16) ||| (a5<<<8) ||| a6
-            int64 r
-        else if a0 = 254UL then
-            let a1 = uint64 buf.[cur+1]
-            let a2 = uint64 buf.[cur+2]
-            let a3 = uint64 buf.[cur+3]
-            let a4 = uint64 buf.[cur+4]
-            let a5 = uint64 buf.[cur+5]
-            let a6 = uint64 buf.[cur+6]
-            let a7 = uint64 buf.[cur+7]
-            cur <- cur + 8
-            let r = (a1<<<48) ||| (a2<<<40) ||| (a3<<<32) ||| (a4<<<24) ||| (a5<<<16) ||| (a6<<<8) ||| a7
-            int64 r
-        else
-            let a1 = uint64 buf.[cur+1]
-            let a2 = uint64 buf.[cur+2]
-            let a3 = uint64 buf.[cur+3]
-            let a4 = uint64 buf.[cur+4]
-            let a5 = uint64 buf.[cur+5]
-            let a6 = uint64 buf.[cur+6]
-            let a7 = uint64 buf.[cur+7]
-            let a8 = uint64 buf.[cur+8]
-            cur <- cur + 9
-            let r = (a1<<<56) ||| (a2<<<48) ||| (a3<<<40) ||| (a4<<<32) ||| (a5<<<24) ||| (a6<<<16) ||| (a7<<<8) ||| a8
-            int64 r
+        let (newCur, v) = Varint.read buf cur
+        cur <- newCur
+        v
 
 #if not
 module misc =
@@ -785,18 +796,6 @@ type LivingCursor private (ch:ICursor) =
             | SeekOp.SEEK_GE -> skipTombstonesForward()
             | SeekOp.SEEK_LE -> skipTombstonesBackward()
             | _ -> ()
-
-module Varint =
-    let SpaceNeededFor v :int = 
-        if v<=240L then 1
-        else if v<=2287L then 2
-        else if v<=67823L then 3
-        else if v<=16777215L then 4
-        else if v<=4294967295L then 5
-        else if v<=1099511627775L then 6
-        else if v<=281474976710655L then 7
-        else if v<=72057594037927935L then 8
-        else 9
 
 module bt =
     // page types
