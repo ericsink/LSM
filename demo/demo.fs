@@ -191,7 +191,7 @@ module fj =
                 failwith "no match"
             printfn "%s" json2
             #endif
-            //d.[(sprintf "j:%s:%s" collId id) |> to_utf8] <- new MemoryStream((sprintf "%A" doc) |> to_utf8) :> Stream
+            //d.[(sprintf "j:%s:%s" collId id) |> to_utf8] <- (sprintf "%A" doc) |> to_utf8 |> Blob.Array
             d.[(sprintf "j:%s:%s" collId id) |> to_utf8] <- Blob.Array ub
 
             // now all the index items
