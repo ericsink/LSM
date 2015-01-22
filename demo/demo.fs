@@ -14,6 +14,8 @@ open System.IO
 open FSharp.Data
 open Zumero.LSM
 
+open ubjson
+
 module fj =
     type PathElement =
         | Key of string
@@ -25,50 +27,49 @@ module fj =
     let from_utf8 (ba:byte[]) =
         System.Text.Encoding.UTF8.GetString (ba, 0, ba.Length)
 
+    let gid() = 
+        let g = "_" + Guid.NewGuid().ToString()
+        let g = g.Replace ("{", "")
+        let g = g.Replace ("}", "")
+        let g = g.Replace ("-", "")
+        g
+
     let rec flatten fn path jv =
         match jv with
-        | JsonValue.Boolean b -> fn path jv
-        | JsonValue.Float f -> fn path jv
-        | JsonValue.Null -> fn path jv
-        | JsonValue.Number n -> fn path jv
-        | JsonValue.String s -> fn path jv
-        | JsonValue.Record a -> 
+        | ubJsonValue.Record a -> 
             for (k,v) in a do
                 let newpath = (PathElement.Key k) :: path
                 flatten fn newpath v
-        | JsonValue.Array a -> 
+        | ubJsonValue.Array a -> 
             for i in 0 .. a.Length-1 do
                 let newpath = (PathElement.Index i) :: path
                 let v = a.[i]
                 flatten fn newpath v
+        | _ -> fn path jv
             
     let encodeJsonValue jv =
         match jv with
-        | JsonValue.Boolean b -> 
+        | ubJsonValue.Boolean b -> 
             "b" + if b then "1" else "0"
-        | JsonValue.Float f -> 
+        | ubJsonValue.Float f -> 
             // TODO should have index policy to specify how this should be indexed. float/decimal/integer.
             // TODO check to see if this is an integer?
             // TODO are we sure that JsonValue will only return float when decimal was not possible?
             "f" + f.ToString() // TODO how to deal with this?
-        | JsonValue.Null -> 
+        | ubJsonValue.Integer i -> 
+            // TODO should have index policy to specify how this should be indexed. float/decimal/integer.
+            // TODO check to see if this is an integer?
+            // TODO are we sure that JsonValue will only return float when decimal was not possible?
+            "i" + i.ToString() // TODO how to deal with this?
+        | ubJsonValue.Null -> 
             "n"
-        | JsonValue.Number n -> 
+        | ubJsonValue.Decimal n -> 
             // TODO consider just putting the decimal number in as binary, if we can figure out
             // how to order the bits so it sorts properly
 
             // TODO should have index policy to specify how this should be indexed. float/decimal/integer.
-            let optAsInt64 = try Some (System.Decimal.ToInt64(n)) with :? System.OverflowException -> None
-            match optAsInt64 with
-            | Some i64 ->
-                let dec = decimal i64
-                if n = dec then
-                    "i" + i64.ToString()
-                else
-                    "d" + n.ToString()
-            | None ->
-                "d" + n.ToString()
-        | JsonValue.String s -> 
+            "d" + n.ToString()
+        | ubJsonValue.String s -> 
             "s" + s
         | _ -> failwith "no record or array here.  should have been flattened"
 
@@ -165,9 +166,7 @@ module fj =
         let msub = new MemoryStream()
         for i in 0 .. a.Length-1 do
             let doc = a.[i]
-            let id = doc.Item("id").AsString()
-
-            // TODO we don't generally want to get the id from the record
+            let id = gid()
 
             //printfn "%A" id
 
@@ -177,6 +176,7 @@ module fj =
             msub.Position <- 0L
             ubjson.toUbjson msub doc
             let ub = msub.ToArray()
+            let ubParsed = ubjson.ubJsonValue.Parse(ub)
             #if not
             let ubParsed = ubjson.ubJsonValue.Parse(ub)
             let sb = System.Text.StringBuilder()
@@ -202,7 +202,8 @@ module fj =
                 // TODO index policy notion of precision?  index only part of the value?
                 let k = encode collId path jv id
                 d.[k] <- emptyBlobValue
-            flatten fn [] doc
+            // TODO remove old index entries for this doc
+            flatten fn [] ubParsed
 
             // when the dictionary gets too large, flush it to a segment
 

@@ -42,18 +42,22 @@ module ubjson =
     let from_utf8 (ba:byte[]) =
         System.Text.Encoding.UTF8.GetString (ba, 0, ba.Length)
 
-    [<RequireQualifiedAccess>]
+    // TODO decimal would be cool, for precision/accounting/etc, but how to format it
+    // for lexicographic sort?  Collatable.  and probably nobody else supports this.
+    // couch/mongo/raven/documentdb
+
+    //[<RequireQualifiedAccess>]
     type ubJsonValue =
       | String of string
       | Integer of int64
-      | Decimal of decimal
+      | Decimal of decimal // TODO not sure we want this.  But maybe.
       | Float of float
-      | Record of properties:(string * ubJsonValue)[]
+      | Record of properties:(string * ubJsonValue)[] // TODO shouldn't this be a dictionary instead of an array of tuples?
       | Array of elements:ubJsonValue[]
       | Boolean of bool
       | Null  
 
-    type private ubJsonParser(ub:byte[]) =
+    type private ubJsonParser (ub:byte[]) =
         let mutable i = 0
         let ba = ub
 
@@ -96,6 +100,7 @@ module ubjson =
             | 'l'B -> parseInt32() |> int
             | _ -> throw()
 
+        // TODO not sure we want H
         and parseH() =
             ensure (ba.[i] = 'H'B)
             i <- i + 1
@@ -194,7 +199,7 @@ module ubjson =
 
     type ubJsonValue with
 
-      /// Parses the specified JSON string
+      /// Parses the specified ubJSON bytes
       static member Parse(a:byte[]) =
         ubJsonParser(a).Parse()
 
@@ -203,13 +208,6 @@ module ubjson =
         let a = System.Decimal.GetBits(d)
         for i in a do
             let ba = BitConverter.GetBytes(i)
-            ms.Write(ba, 0, ba.Length)
-
-    let write_varint (ms:MemoryStream) (i64:int64) =
-            ms.WriteByte('V'B)
-            let len = Varint.SpaceNeededFor i64
-            let ba:byte[] = Array.zeroCreate len
-            Varint.write ba 0 i64 |> ignore
             ms.Write(ba, 0, ba.Length)
 
     let write_integer (ms:MemoryStream) (i64:int64) =
@@ -270,7 +268,8 @@ module ubjson =
                 let v = a.[i]
                 toJson sb v
             sb.Append("]") |> ignore
-            
+
+    // TODO maybe this should build ubJsonValue objects instead
     let rec toUbjson (ms:MemoryStream) jv =
         match jv with
         | JsonValue.Boolean b -> if b then ms.WriteByte('T'B) else ms.WriteByte('F'B)
@@ -315,6 +314,53 @@ module ubjson =
             for i in 0 .. a.Length-1 do
                 let v = a.[i]
                 toUbjson ms v
+            ms.WriteByte(']'B)
+            
+    let rec toUbjson2 (ms:MemoryStream) jv =
+        match jv with
+        | ubJsonValue.Boolean b -> if b then ms.WriteByte('T'B) else ms.WriteByte('F'B)
+        | ubJsonValue.Null -> ms.WriteByte('Z'B)
+        | ubJsonValue.Float f ->
+            ms.WriteByte('D'B)
+            let ba = BitConverter.GetBytes(f)
+            if BitConverter.IsLittleEndian then
+                Array.Reverse ba
+            ms.Write(ba, 0, ba.Length)
+        | ubJsonValue.Integer i ->
+            write_integer ms i
+        | ubJsonValue.Decimal n ->
+            let optAsInt64 = try Some (System.Decimal.ToInt64(n)) with :? System.OverflowException -> None
+            match optAsInt64 with
+            | Some i64 ->
+                let dec = decimal i64
+                if n = dec then
+                    write_integer ms i64
+                else
+                    // TODO try float?
+                    ms.WriteByte('H'B)
+                    let s = n.ToString()
+                    write_string ms s
+                    //write_decimal ms n
+            | None ->
+                // TODO try float?
+                ms.WriteByte('H'B)
+                let s = n.ToString()
+                write_string ms s
+                //write_decimal ms n
+        | ubJsonValue.String s ->
+                ms.WriteByte('S'B)
+                write_string ms s
+        | ubJsonValue.Record a -> 
+            ms.WriteByte('{'B)
+            for (k,v) in a do
+                write_string ms k
+                toUbjson2 ms v
+            ms.WriteByte('}'B)
+        | ubJsonValue.Array a -> 
+            ms.WriteByte('['B)
+            for i in 0 .. a.Length-1 do
+                let v = a.[i]
+                toUbjson2 ms v
             ms.WriteByte(']'B)
             
 
