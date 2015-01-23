@@ -171,17 +171,17 @@ module fj =
             //printfn "%A" id
 
             // store the doc itself
-            // TODO compress this.  or ubjson.  or maybe even compressed ubjson.
+            // TODO compress this?
             msub.SetLength(0L)
             msub.Position <- 0L
-            ubjson.toUbjson msub doc
+            let ubParsed = doc.ToUbjson()
+            ubParsed.Encode (msub)
             let ub = msub.ToArray()
-            let ubParsed = ubjson.ubJsonValue.Parse(ub)
+            //d.[(sprintf "j:%s:%s" collId id) |> to_utf8] <- (sprintf "%A" doc) |> to_utf8 |> Blob.Array
+            d.[(sprintf "j:%s:%s" collId id) |> to_utf8] <- Blob.Array ub
             #if not
             let ubParsed = ubjson.ubJsonValue.Parse(ub)
-            let sb = System.Text.StringBuilder()
-            ubjson.toJson sb ubParsed
-            let json2 = sb.ToString()
+            let json2 = ubjson.toJson ubParsed
             let doc2 = JsonValue.Parse(json2)
             let s1 = doc.ToString()
             let s2 = doc2.ToString()
@@ -191,8 +191,6 @@ module fj =
                 failwith "no match"
             printfn "%s" json2
             #endif
-            //d.[(sprintf "j:%s:%s" collId id) |> to_utf8] <- (sprintf "%A" doc) |> to_utf8 |> Blob.Array
-            d.[(sprintf "j:%s:%s" collId id) |> to_utf8] <- Blob.Array ub
 
             // now all the index items
             // TODO hook index policy to decide whether to index this record at all

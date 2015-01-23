@@ -37,7 +37,7 @@ module ubjson =
     open Zumero.LSM
 
     let to_utf8 (s:string) =
-        System.Text.Encoding.UTF8.GetBytes (s)
+        System.Text.Encoding.UTF8.GetBytes (s) // null/zero terminator NOT included
 
     let from_utf8 (ba:byte[]) =
         System.Text.Encoding.UTF8.GetString (ba, 0, ba.Length)
@@ -45,6 +45,9 @@ module ubjson =
     // TODO decimal would be cool, for precision/accounting/etc, but how to format it
     // for lexicographic sort?  Collatable.  and probably nobody else supports this.
     // couch/mongo/raven/documentdb
+    // json.net
+
+    // TODO DateTime ?
 
     //[<RequireQualifiedAccess>]
     type ubJsonValue =
@@ -62,6 +65,7 @@ module ubjson =
         let ba = ub
 
         let af:byte[] = Array.zeroCreate 8
+        let ad:byte[] = Array.zeroCreate 16
 
         let throw() =
             let msg = sprintf "Invalid ubJSON starting at %d: byte=%d" i (int (ba.[i]))
@@ -77,7 +81,7 @@ module ubjson =
             | 'l'B -> parseInt32() |> int64 |> ubJsonValue.Integer
             | 'L'B -> parseInt64() |> int64 |> ubJsonValue.Integer
             | 'D'B -> parseFloat() |> ubJsonValue.Float
-            | 'H'B -> parseH() |> ubJsonValue.Decimal
+            | 'c'B -> parseDecimal() |> ubJsonValue.Decimal
             | '{'B -> parseRecord()
             | '['B -> parseArray()
             | 't'B -> i <- i + 1; true |> ubJsonValue.Boolean
@@ -98,22 +102,21 @@ module ubjson =
             | 'U'B -> parseByte() |> int
             | 'I'B -> parseInt16() |> int
             | 'l'B -> parseInt32() |> int
+            // a 64 bit length is considered pathalogical
             | _ -> throw()
 
-        // TODO not sure we want H
-        and parseH() =
-            ensure (ba.[i] = 'H'B)
-            i <- i + 1
-            let s = parseString()
-            match TextConversions.AsDecimal (System.Globalization.CultureInfo.InvariantCulture) s with
-            | Some d -> d
-            | None -> throw()
+        and parseDecimal() =
+            ensure (ba.[i] = 'c'B)
+            Array.Copy(ba, i+1, ad, 0, 16)
+            i <- i + 17
+            let d = 0m // TODO use constructor
+            d
 
         and parseFloat() =
             ensure (ba.[i] = 'D'B)
             Array.Copy(ba, i+1, af, 0, 8)
             i <- i + 9
-            Array.Reverse af
+            Array.Reverse af // TODO always?
             let f = BitConverter.ToDouble(af, 0)
             f
 
@@ -197,20 +200,14 @@ module ubjson =
                 throw()
             value
 
-    type ubJsonValue with
-
-      /// Parses the specified ubJSON bytes
-      static member Parse(a:byte[]) =
-        ubJsonParser(a).Parse()
-
-    let write_decimal (ms:MemoryStream) (d:decimal) =
+    let encodeDecimal (ms:MemoryStream) (d:decimal) =
         ms.WriteByte('c'B)
         let a = System.Decimal.GetBits(d)
         for i in a do
             let ba = BitConverter.GetBytes(i)
             ms.Write(ba, 0, ba.Length)
 
-    let write_integer (ms:MemoryStream) (i64:int64) =
+    let encodeInteger (ms:MemoryStream) (i64:int64) =
         if i64 >= -128L && i64 <= 127L then
             let v = int8 i64
             ms.WriteByte('i'B)
@@ -240,83 +237,42 @@ module ubjson =
                 Array.Reverse ba
             ms.Write(ba, 0, ba.Length)
 
-    let write_string (ms:MemoryStream) s =
+    let encodeString (ms:MemoryStream) s =
         let ba = to_utf8 s
-        write_integer ms (ba.Length |> int64)
+        encodeInteger ms (ba.Length |> int64)
         ms.Write(ba, 0, ba.Length)
 
-    let rec toJson (sb:StringBuilder) uv =
-        match uv with
-        | ubJsonValue.Boolean b -> (if b then sb.Append("true") else sb.Append("false")) |> ignore
-        | ubJsonValue.Null -> sb.Append("null") |> ignore
-        | ubJsonValue.Float f -> sb.Append(f.ToString()) |> ignore
-        | ubJsonValue.Decimal d -> sb.Append(d.ToString()) |> ignore
-        | ubJsonValue.Integer i -> sb.Append(i.ToString()) |> ignore
-        | ubJsonValue.String s -> sb.Append(sprintf "\"%s\"" s) |> ignore
-        | ubJsonValue.Record a -> 
-            sb.Append("{") |> ignore
-            for i in 0 .. a.Length-1 do
-                if i > 0 then sb.Append(",") |> ignore
-                let (k,v) = a.[i]
-                sb.Append(sprintf "\"%s\":" k) |> ignore
-                toJson sb v
-            sb.Append("}") |> ignore
-        | ubJsonValue.Array a -> 
-            sb.Append("[") |> ignore
-            for i in 0 .. a.Length-1 do
-                if i > 0 then sb.Append(",") |> ignore
-                let v = a.[i]
-                toJson sb v
-            sb.Append("]") |> ignore
+    let toJson uv =
+        let sb = StringBuilder()
 
-    // TODO maybe this should build ubJsonValue objects instead
-    let rec toUbjson (ms:MemoryStream) jv =
-        match jv with
-        | JsonValue.Boolean b -> if b then ms.WriteByte('T'B) else ms.WriteByte('F'B)
-        | JsonValue.Null -> ms.WriteByte('Z'B)
-        | JsonValue.Float f ->
-            ms.WriteByte('D'B)
-            let ba = BitConverter.GetBytes(f)
-            if BitConverter.IsLittleEndian then
-                Array.Reverse ba
-            ms.Write(ba, 0, ba.Length)
-        | JsonValue.Number n ->
-            let optAsInt64 = try Some (System.Decimal.ToInt64(n)) with :? System.OverflowException -> None
-            match optAsInt64 with
-            | Some i64 ->
-                let dec = decimal i64
-                if n = dec then
-                    write_integer ms i64
-                else
-                    // TODO try float?
-                    ms.WriteByte('H'B)
-                    let s = jv.AsString()
-                    write_string ms s
-                    //write_decimal ms n
-            | None ->
-                // TODO try float?
-                ms.WriteByte('H'B)
-                let s = jv.AsString()
-                write_string ms s
-                //write_decimal ms n
-        | JsonValue.String s ->
-                ms.WriteByte('S'B)
-                let s = jv.AsString()
-                write_string ms s
-        | JsonValue.Record a -> 
-            ms.WriteByte('{'B)
-            for (k,v) in a do
-                write_string ms k
-                toUbjson ms v
-            ms.WriteByte('}'B)
-        | JsonValue.Array a -> 
-            ms.WriteByte('['B)
-            for i in 0 .. a.Length-1 do
-                let v = a.[i]
-                toUbjson ms v
-            ms.WriteByte(']'B)
-            
-    let rec toUbjson2 (ms:MemoryStream) jv =
+        let rec f (sb:StringBuilder) uv =
+            match uv with
+            | ubJsonValue.Boolean b -> (if b then sb.Append("true") else sb.Append("false")) |> ignore
+            | ubJsonValue.Null -> sb.Append("null") |> ignore
+            | ubJsonValue.Float f -> sb.Append(f.ToString()) |> ignore
+            | ubJsonValue.Decimal d -> sb.Append(d.ToString()) |> ignore
+            | ubJsonValue.Integer i -> sb.Append(i.ToString()) |> ignore
+            | ubJsonValue.String s -> sb.Append(sprintf "\"%s\"" s) |> ignore // TODO escape
+            | ubJsonValue.Record a -> 
+                sb.Append("{") |> ignore
+                for i in 0 .. a.Length-1 do
+                    if i > 0 then sb.Append(",") |> ignore
+                    let (k,v) = a.[i]
+                    sb.Append(sprintf "\"%s\":" k) |> ignore
+                    f sb v
+                sb.Append("}") |> ignore
+            | ubJsonValue.Array a -> 
+                sb.Append("[") |> ignore
+                for i in 0 .. a.Length-1 do
+                    if i > 0 then sb.Append(",") |> ignore
+                    let v = a.[i]
+                    f sb v
+                sb.Append("]") |> ignore
+
+        f sb uv
+        sb.ToString()
+               
+    let rec encode (ms:MemoryStream) jv =
         match jv with
         | ubJsonValue.Boolean b -> if b then ms.WriteByte('T'B) else ms.WriteByte('F'B)
         | ubJsonValue.Null -> ms.WriteByte('Z'B)
@@ -327,40 +283,153 @@ module ubjson =
                 Array.Reverse ba
             ms.Write(ba, 0, ba.Length)
         | ubJsonValue.Integer i ->
-            write_integer ms i
+            encodeInteger ms i
         | ubJsonValue.Decimal n ->
             let optAsInt64 = try Some (System.Decimal.ToInt64(n)) with :? System.OverflowException -> None
             match optAsInt64 with
             | Some i64 ->
                 let dec = decimal i64
                 if n = dec then
-                    write_integer ms i64
+                    encodeInteger ms i64
                 else
-                    // TODO try float?
-                    ms.WriteByte('H'B)
-                    let s = n.ToString()
-                    write_string ms s
-                    //write_decimal ms n
+                    encodeDecimal ms n
             | None ->
-                // TODO try float?
-                ms.WriteByte('H'B)
-                let s = n.ToString()
-                write_string ms s
-                //write_decimal ms n
+                encodeDecimal ms n
         | ubJsonValue.String s ->
                 ms.WriteByte('S'B)
-                write_string ms s
+                encodeString ms s
         | ubJsonValue.Record a -> 
             ms.WriteByte('{'B)
             for (k,v) in a do
-                write_string ms k
-                toUbjson2 ms v
+                encodeString ms k
+                encode ms v
             ms.WriteByte('}'B)
         | ubJsonValue.Array a -> 
             ms.WriteByte('['B)
             for i in 0 .. a.Length-1 do
                 let v = a.[i]
-                toUbjson2 ms v
+                encode ms v
             ms.WriteByte(']'B)
-            
+          
+    let kEndSequence = 0uy
+    let kNull = 1uy
+    let kFalse = 2uy
+    let kTrue = 3uy
+    let kNegInt = 4uy
+    let kPosInt = 5uy
+    let kNegFloat = 6uy
+    let kPosFloat = 7uy
+    let kNegDecimal = 8uy
+    let kPosDecimal = 9uy
+    let kString = 10uy
+    let kArray = 11uy
+    let kRecord = 12uy
+    let kSpecial = 13uy
+    let kError = 255uy
+
+    // TODO is there any chance this collatable format should just be the format
+    // we use for storage?  one problem is that integers here always use 8-9 bytes,
+    // but the ub-like format is more compact for small values.
+
+    let rec toCollatable (ms:MemoryStream) jv =
+        match jv with
+        | ubJsonValue.Boolean b -> if b then ms.WriteByte(kTrue) else ms.WriteByte(kFalse)
+        | ubJsonValue.Null -> ms.WriteByte(kNull)
+        | ubJsonValue.Float f ->
+            if f < 0.0 then ms.WriteByte(kNegFloat) else ms.WriteByte(kPosFloat)
+            let ba = BitConverter.GetBytes(f)
+            if BitConverter.IsLittleEndian then
+                Array.Reverse ba
+            if f < 0.0 then
+                for i in 0 .. ba.Length-1 do
+                    ba.[i] <- (ba.[i]) ^^^ 255uy
+            ms.Write(ba, 0, ba.Length)
+        | ubJsonValue.Integer i ->
+            if i < 0L then ms.WriteByte(kNegInt) else ms.WriteByte(kPosInt)
+            let ba = BitConverter.GetBytes(i)
+            if BitConverter.IsLittleEndian then
+                Array.Reverse ba
+            if i < 0L then
+                for i in 0 .. ba.Length-1 do
+                    ba.[i] <- (ba.[i]) ^^^ 255uy
+            ms.Write(ba, 0, ba.Length)
+        | ubJsonValue.Decimal n ->
+            if n < 0m then ms.WriteByte(kNegDecimal) else ms.WriteByte(kPosDecimal)
+            let a = System.Decimal.GetBits(n)
+            // TODO change endian
+            // TODO invert on negative?
+            for i in a do
+                let ba = BitConverter.GetBytes(i)
+                ms.Write(ba, 0, ba.Length)
+        | ubJsonValue.String s ->
+                // TODO do we need to rework this string so it will sort with case insensitivity?
+                ms.WriteByte(kString)
+                // TODO write this zero-terminated?  or with a length prefix?
+                // zero-terminated would allow prefix search
+                let ba = to_utf8 s
+                ms.Write(ba, 0, ba.Length)
+                ms.WriteByte(0uy)
+        | ubJsonValue.Record a -> 
+            ms.WriteByte(kRecord)
+            for (k,v) in a do
+                let ba = to_utf8 k
+                ms.Write(ba, 0, ba.Length)
+                ms.WriteByte(0uy)
+                toCollatable ms v
+            ms.WriteByte(kEndSequence)
+        | ubJsonValue.Array a -> 
+            ms.WriteByte(kArray)
+            for i in 0 .. a.Length-1 do
+                let v = a.[i]
+                toCollatable ms v
+            ms.WriteByte(kEndSequence)
+
+    type JsonValue with
+         member this.ToUbjson() =
+            let rec fn jv =
+                match jv with
+                | JsonValue.Boolean b -> ubJsonValue.Boolean b
+                | JsonValue.Null -> ubJsonValue.Null
+                | JsonValue.Float f -> ubJsonValue.Float f
+                | JsonValue.String s -> ubJsonValue.String s
+                | JsonValue.Number n ->
+                    let optAsInt64 = try Some (System.Decimal.ToInt64(n)) with :? System.OverflowException -> None
+                    match optAsInt64 with
+                    | Some i64 ->
+                        let dec = decimal i64
+                        if n = dec then
+                            ubJsonValue.Integer i64
+                        else
+                            ubJsonValue.Decimal n
+                    | None ->
+                        ubJsonValue.Decimal n
+                | JsonValue.Record a -> 
+                    let a2:(string*ubJsonValue)[] = Array.zeroCreate a.Length
+                    for i in 0 .. a.Length-1 do
+                        let (k,v) = a.[i]
+                        a2.[i] <- (k, fn v)
+                    ubJsonValue.Record a2
+                | JsonValue.Array a -> 
+                    let a2:ubJsonValue[] = Array.zeroCreate a.Length
+                    for i in 0 .. a.Length-1 do
+                        let v = a.[i]
+                        a2.[i] <- fn v
+                    ubJsonValue.Array a2
+
+            fn this
+
+    type ubJsonValue with
+
+        static member Parse(a:byte[]) =
+            ubJsonParser(a).Parse()
+
+        member this.ToJson() =
+            toJson this
+
+        member this.ToCollatable (ms:MemoryStream) =
+            toCollatable ms this
+
+        member this.Encode (ms:MemoryStream) =
+            encode ms this
+
 
