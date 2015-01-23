@@ -138,6 +138,24 @@ module fj =
         let s2 = Seq.map (fun ba -> extract_value_and_id_from_end_of_index_key ba) s1
         s2
 
+    let addDocument (pairBuf:PairBuffer) (msub:MemoryStream) collId id (ub:ubJsonValue) =
+        msub.SetLength(0L)
+        msub.Position <- 0L
+        ub.Encode (msub)
+        let uba = msub.ToArray()
+        pairBuf.AddPair((sprintf "j:%s:%s" collId id) |> to_utf8, Blob.Array uba)
+
+        // now all the index items
+        // TODO hook index policy to decide whether to index this record at all
+        let fn path jv =
+            // TODO search list of indexes to find out if anything wants this
+            // TODO hook index policy to decide whether to index this key
+            // TODO index policy notion of precision?  index only part of the value?
+            let k = encode collId path jv id
+            pairBuf.AddEmptyKey(k)
+        // TODO remove old index entries for this doc
+        flatten fn [] ub
+
     let slurp dbFile collId jsonFile =
         let json = File.ReadAllText(jsonFile)
         let parsed = JsonValue.Parse(json)
@@ -149,67 +167,17 @@ module fj =
         let f = dbf(dbFile)
         use db = new Database(f) :> IDatabase
 
-        let d = System.Collections.Generic.Dictionary<byte[],Blob>()
+        let pairBuf = PairBuffer(db, 10000)
 
-        let flush count =
-            if d.Count >= count then
-                let g = db.WriteSegment(d)
-                d.Clear()
-                async {
-                    use! tx = db.RequestWriteLock()
-                    tx.CommitSegments [ g ]
-                    printfn "%A" g
-                } |> Async.RunSynchronously
-
-        let emptyByteArray:byte[] = Array.empty
-        let emptyBlobValue = Blob.Array emptyByteArray
         let msub = new MemoryStream()
         for i in 0 .. a.Length-1 do
             let doc = a.[i]
             let id = gid()
 
-            //printfn "%A" id
-
-            // store the doc itself
-            // TODO compress this?
-            msub.SetLength(0L)
-            msub.Position <- 0L
             let ubParsed = doc.ToUbjson()
-            ubParsed.Encode (msub)
-            let ub = msub.ToArray()
-            //d.[(sprintf "j:%s:%s" collId id) |> to_utf8] <- (sprintf "%A" doc) |> to_utf8 |> Blob.Array
-            d.[(sprintf "j:%s:%s" collId id) |> to_utf8] <- Blob.Array ub
-            #if not
-            let ubParsed = ubjson.ubJsonValue.Parse(ub)
-            let json2 = ubjson.toJson ubParsed
-            let doc2 = JsonValue.Parse(json2)
-            let s1 = doc.ToString()
-            let s2 = doc2.ToString()
-            if s1 <> s2 then 
-                printfn "doc1: %s" s1
-                printfn "doc2: %s" s2
-                failwith "no match"
-            printfn "%s" json2
-            #endif
+            addDocument pairBuf msub collId id ubParsed
 
-            // now all the index items
-            // TODO hook index policy to decide whether to index this record at all
-            let fn path jv =
-                // TODO search list of indexes to find out if anything wants this
-                // TODO hook index policy to decide whether to index this key
-                // TODO index policy notion of precision?  index only part of the value?
-                let k = encode collId path jv id
-                d.[k] <- emptyBlobValue
-            // TODO remove old index entries for this doc
-            flatten fn [] ubParsed
-
-            // when the dictionary gets too large, flush it to a segment
-
-            flush 10000
-
-        // flush anything left in the dictionary
-
-        flush 0
+        pairBuf.Commit()
 
     [<EntryPoint>]
     let main argv = 

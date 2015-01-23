@@ -2963,3 +2963,33 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
         member this.RequestWriteLock() =
             getWriteLock false (-1) (Some doAutoMerge)
 
+    type PairBuffer(_db:IDatabase, _limit:int) =
+        let db = _db
+        let limit = _limit
+        let d = System.Collections.Generic.Dictionary<byte[],Blob>()
+        let mutable segs = []
+        let emptyByteArray:byte[] = Array.empty
+        let emptyBlobValue = Blob.Array emptyByteArray
+
+        member this.Flush() =
+            if d.Count > 0 then
+                let g = db.WriteSegment(d)
+                segs <- g :: segs
+                d.Clear()
+
+        member this.AddPair(k:byte[], v:Blob) =
+            // TODO dictionary deals with byte[] keys by reference.
+            d.[k] <- v
+            if d.Count >= limit then
+                this.Flush()
+
+        member this.AddEmptyKey(k:byte[]) =
+            this.AddPair(k, emptyBlobValue)
+
+        member this.Commit() =
+            this.Flush()
+            async {
+                use! tx = db.RequestWriteLock()
+                tx.CommitSegments segs
+            } |> Async.RunSynchronously
+            segs <- []
