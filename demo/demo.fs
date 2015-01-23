@@ -138,6 +138,36 @@ module fj =
         let s2 = Seq.map (fun ba -> extract_value_and_id_from_end_of_index_key ba) s1
         s2
 
+    let wrap k id =
+        let a:ubJsonValue[] = Array.zeroCreate 2
+        a.[0] <- k
+        a.[1] <-ubJsonValue.String id
+        ubJsonValue.Array a
+
+    let fullEmit (pairBuf:PairBuffer) collId (ms:MemoryStream) id ndxId (k:ubJsonValue) (v:ubJsonValue option) =
+        ms.SetLength(0L)
+        ms.Position <- 0L
+        let kpref = (sprintf "x:%s:%s:" collId ndxId) |> to_utf8
+        ms.Write(kpref, 0, kpref.Length)
+        let fullKey = wrap k id
+        fullKey.ToCollatable(ms)
+        let kba = ms.ToArray()
+        match v with
+        | Some uv -> 
+            ms.SetLength(0L)
+            ms.Position <- 0L
+            uv.Encode(ms)
+            let vb = ms.ToArray()
+            pairBuf.AddPair(kba, Blob.Array vb)
+        | None -> 
+            pairBuf.AddEmptyKey(kba)
+
+    let map_description (doc:ubJsonValue) emit = 
+        match doc.TryGetProperty("description") with
+        | Some ub ->
+            emit "description" ub (Some doc)
+        | None -> ()
+
     let addDocument (pairBuf:PairBuffer) (msub:MemoryStream) collId id (ub:ubJsonValue) =
         msub.SetLength(0L)
         msub.Position <- 0L
@@ -145,6 +175,11 @@ module fj =
         let uba = msub.ToArray()
         pairBuf.AddPair((sprintf "j:%s:%s" collId id) |> to_utf8, Blob.Array uba)
 
+        let myEmit = fullEmit pairBuf collId msub id
+
+        map_description ub myEmit
+
+        #if not
         // now all the index items
         // TODO hook index policy to decide whether to index this record at all
         let fn path jv =
@@ -155,6 +190,7 @@ module fj =
             pairBuf.AddEmptyKey(k)
         // TODO remove old index entries for this doc
         flatten fn [] ub
+        #endif
 
     let slurp dbFile collId jsonFile =
         let json = File.ReadAllText(jsonFile)

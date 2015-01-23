@@ -420,6 +420,12 @@ module ubjson =
 
     type ubJsonValue with
 
+        member this.TryGetProperty(propertyName) = 
+            match this with
+            | ubJsonValue.Record properties -> 
+                Array.tryFind (fst >> (=) propertyName) properties |> Option.map snd
+            | _ -> None
+
         static member Parse(a:byte[]) =
             ubJsonParser(a).Parse()
 
