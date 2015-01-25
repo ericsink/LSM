@@ -2986,10 +2986,7 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
         member this.AddEmptyKey(k:byte[]) =
             this.AddPair(k, emptyBlobValue)
 
-        member this.Commit() =
-            this.Flush()
-            async {
-                use! tx = db.RequestWriteLock()
-                tx.CommitSegments segs
-            } |> Async.RunSynchronously
+        member this.Commit(tx:IWriteLock) =
+            tx.CommitSegments segs
             segs <- []
+

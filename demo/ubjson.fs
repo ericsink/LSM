@@ -49,13 +49,17 @@ module ubjson =
 
     // TODO DateTime ?
 
+    // TODO blob?
+
     //[<RequireQualifiedAccess>]
     type ubJsonValue =
       | String of string
       | Integer of int64
-      | Decimal of decimal // TODO not sure we want this.  But maybe.
+      | Decimal of decimal
       | Float of float
-      | Record of properties:(string * ubJsonValue)[] // TODO shouldn't this be a dictionary instead of an array of tuples?
+      | Record of properties:(string * ubJsonValue)[] 
+      // TODO shouldn't record be a dictionary instead of an array of tuples?
+      // but we lose dupes, and ordering.
       | Array of elements:ubJsonValue[]
       | Boolean of bool
       | Null  
@@ -102,14 +106,14 @@ module ubjson =
             | 'U'B -> parseByte() |> int
             | 'I'B -> parseInt16() |> int
             | 'l'B -> parseInt32() |> int
-            // a 64 bit length is considered pathalogical
+            | 'L'B -> parseInt64() |> int // TODO 64 bit trunc 32
             | _ -> throw()
 
         and parseDecimal() =
             ensure (ba.[i] = 'c'B)
             Array.Copy(ba, i+1, ad, 0, 16)
             i <- i + 17
-            let d = 0m // TODO use constructor
+            let d = 0m // TODO use constructor with three ints
             d
 
         and parseFloat() =
@@ -201,7 +205,7 @@ module ubjson =
             value
 
     let encodeDecimal (ms:MemoryStream) (d:decimal) =
-        ms.WriteByte('c'B)
+        ms.WriteByte('c'B) // TODO or maybe m (the F# suffix)
         let a = System.Decimal.GetBits(d)
         for i in a do
             let ba = BitConverter.GetBytes(i)

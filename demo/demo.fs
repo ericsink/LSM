@@ -165,19 +165,21 @@ module fj =
     let map_description (doc:ubJsonValue) emit = 
         match doc.TryGetProperty("description") with
         | Some ub ->
-            emit "description" ub (Some doc)
+            match ub with
+            | ubJsonValue.String s -> emit ub None
+            | _ -> ()
         | None -> ()
 
-    let addDocument (pairBuf:PairBuffer) (msub:MemoryStream) collId id (ub:ubJsonValue) =
-        msub.SetLength(0L)
-        msub.Position <- 0L
-        ub.Encode (msub)
-        let uba = msub.ToArray()
+    let addDocument (pairBuf:PairBuffer) (ms:MemoryStream) collId id (doc:ubJsonValue) =
+        ms.SetLength(0L)
+        ms.Position <- 0L
+        doc.Encode (ms)
+        let uba = ms.ToArray()
         pairBuf.AddPair((sprintf "j:%s:%s" collId id) |> to_utf8, Blob.Array uba)
 
-        let myEmit = fullEmit pairBuf collId msub id
-
-        map_description ub myEmit
+        // TODO look up views.  for each, get a name and a map function.
+        let myEmit = fullEmit pairBuf collId ms id "desc"
+        map_description doc myEmit
 
         #if not
         // now all the index items
@@ -213,7 +215,10 @@ module fj =
             let ubParsed = doc.ToUbjson()
             addDocument pairBuf msub collId id ubParsed
 
-        pairBuf.Commit()
+        async {
+            use! tx = db.RequestWriteLock()
+            pairBuf.Commit(tx)
+        } |> Async.RunSynchronously
 
     [<EntryPoint>]
     let main argv = 
