@@ -127,4 +127,29 @@ zlib stream and compress as it goes in.
 
 create shorter synthetic keys in the parent nodes?
 
+--------
+
+kinds of queries:
+
+string =.  works with any specific path.
+
+integer, double = or range.  any specific path.
+
+how to deal with arrays?
+
+the overall list of documents is like an array.  except it doesn't
+have specific indices.  will somebody want to query on an array and
+say "I want a string of value 'x' and it must appear at position 4?"
+
+select blah from collection -- collection is an array of documents,
+each of which is an array or record?
+
+
+postgresql
+documentdb sql
+n1ql
+apache drill
+
+
+
 

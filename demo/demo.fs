@@ -101,6 +101,11 @@ module fj =
         seq {
             use csr = db.OpenCursor()
             csr.Seek(k1, SeekOp.SEEK_GE)
+            // we assume the keys are like index encoded.  first the
+            // actual key followed by the record number.  so if we are
+            // querying on the actual key, we'll never find an exact match.
+            // the matches will all be GT the query key.  and k2 must be
+            // constructed such that all the matches we want are strictly LT.
             while csr.IsValid() && csr.KeyCompare(k2)<0 do 
                 yield csr.Key()
                 csr.Next()
@@ -119,7 +124,8 @@ module fj =
         let k2:byte[] = Array.zeroCreate k.Length
         System.Array.Copy (k, 0, k2, 0, k.Length)
         // TODO should maybe add_one to the char before the colon,
-        // not to the colon itself.
+        // not to the colon itself.  but this function shouldn't know
+        // about the format of the key encoding.
         add_one k2 (k2.Length-1)
         query_key_range db k k2
 
@@ -144,13 +150,19 @@ module fj =
         a.[1] <-ubJsonValue.String id
         ubJsonValue.Array a
 
-    let fullEmit (pairBuf:PairBuffer) collId (ms:MemoryStream) id ndxId (k:ubJsonValue) (v:ubJsonValue option) =
-        ms.SetLength(0L)
-        ms.Position <- 0L
+    let writeIndexPreface (ms:MemoryStream) collId ndxId =
+        // TODO or maybe the index preface should go inside the json
+        // TODO 0 instead of colon
         let kpref = (sprintf "x:%s:%s:" collId ndxId) |> to_utf8
         ms.Write(kpref, 0, kpref.Length)
-        let fullKey = wrap k id
-        fullKey.ToCollatable(ms)
+
+    let fullEmitIndexPair (pairBuf:PairBuffer) collId (ms:MemoryStream) id ndxId (k:ubJsonValue) (v:ubJsonValue option) =
+        ms.SetLength(0L)
+        ms.Position <- 0L
+        writeIndexPreface ms collId ndxId
+        k.ToCollatable(ms)
+        // TODO delim
+        (id |> ubJsonValue.String).ToCollatable(ms)
         let kba = ms.ToArray()
         match v with
         | Some uv -> 
@@ -162,12 +174,22 @@ module fj =
         | None -> 
             pairBuf.AddEmptyKey(kba)
 
-    let map_description (doc:ubJsonValue) emit = 
-        match doc.TryGetProperty("description") with
+    let makeQueryKey collId (ms:MemoryStream) ndxId (k:ubJsonValue) =
+        ms.SetLength(0L)
+        ms.Position <- 0L
+        writeIndexPreface ms collId ndxId
+        k.ToCollatable(ms)
+        ms.ToArray()
+
+    let map_group (doc:ubJsonValue) emit = 
+        match doc.TryGetProperty("group") with
         | Some ub ->
             match ub with
             | ubJsonValue.String s -> emit ub None
-            | _ -> ()
+            // TODO should we fuss if group is not a string?
+            // TODO should we index it anyway?  (relying on the query to care about the type)
+            // TODO or should we coerce the type?
+            | _ -> () 
         | None -> ()
 
     let addDocument (pairBuf:PairBuffer) (ms:MemoryStream) collId id (doc:ubJsonValue) =
@@ -175,11 +197,12 @@ module fj =
         ms.Position <- 0L
         doc.Encode (ms)
         let uba = ms.ToArray()
+        // TODO 0 instead of colon
         pairBuf.AddPair((sprintf "j:%s:%s" collId id) |> to_utf8, Blob.Array uba)
 
         // TODO look up views.  for each, get a name and a map function.
-        let myEmit = fullEmit pairBuf collId ms id "desc"
-        map_description doc myEmit
+        let myEmit = fullEmitIndexPair pairBuf collId ms id "group"
+        map_group doc myEmit
 
         #if not
         // now all the index items
@@ -220,6 +243,18 @@ module fj =
             pairBuf.Commit(tx)
         } |> Async.RunSynchronously
 
+    let parseLiteral s =
+        // TODO this is dreadful.
+        let s2 = "[\"" + s + "\"]"
+        let j = JsonValue.Parse(s2)
+        let a =
+            match j with
+            | JsonValue.Array a -> a
+            | _ -> failwith "wrong"
+        let lit = a.[0]
+        let ub = lit.ToUbjson()
+        ub
+
     [<EntryPoint>]
     let main argv = 
         let dbFile = argv.[0]
@@ -230,16 +265,16 @@ module fj =
             let jsonFile = argv.[3]
             slurp dbFile collId jsonFile
         | "query" ->
-            let k = argv.[3]
-            let v = argv.[4]
+            let ndx = argv.[3]
+            let k = argv.[4] |> parseLiteral
+            printfn "k: %A" k
             let f = dbf(dbFile)
             use db = new Database(f) :> IDatabase
-            let t1 = DateTime.Now
-            let s = query_string_equal db collId k v
-            let t2 = DateTime.Now
-            let diff = t2 - t1
-            Seq.iter (fun (v,id) -> printfn "%s" id) s
-            printfn "%f ms" (diff.TotalMilliseconds)
+            let ms = new MemoryStream()
+            let qk = makeQueryKey collId ms ndx k
+            printfn "qk: %A" qk
+            let s = query_key_prefix db qk
+            Seq.iter (fun (ba) -> printfn "%A" ba) s
         | _ -> failwith "unknown op"
 
         0 // return an integer exit code

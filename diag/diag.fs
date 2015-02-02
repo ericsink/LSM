@@ -40,8 +40,9 @@ module diag =
         use csr = db.OpenCursor()
         csr.First()
         while csr.IsValid() do
-            let k = csr.Key() |> from_utf8
-            printfn "%s -- %d" k (csr.ValueLength())
+            let k = csr.Key()
+            // TODO need function to decode a key
+            printfn "%A -- %d" k (csr.ValueLength())
             csr.Next()
 
     let list_free_blocks dbFile =
