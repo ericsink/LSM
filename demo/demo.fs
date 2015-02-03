@@ -220,6 +220,7 @@ module fj =
     let slurp dbFile collId jsonFile =
         let json = File.ReadAllText(jsonFile)
         let parsed = JsonValue.Parse(json)
+        let foo = json_parser.parseJsonString json
         let a =
             match parsed with
             | JsonValue.Array a -> a
