@@ -73,7 +73,7 @@ module ubjson =
             | 'l'B -> parseInt32() |> int64 |> JsonValue.JInteger
             | 'L'B -> parseInt64() |> int64 |> JsonValue.JInteger
             | 'D'B -> parseFloat() |> JsonValue.JFloat
-            | 'c'B -> parseDecimal() |> JsonValue.JDecimal
+            | 'H'B -> i <- i + 1; parseString() |> JsonValue.JNumberString
             | '{'B -> parseRecord()
             | '['B -> parseArray()
             | 't'B -> i <- i + 1; true |> JsonValue.JBoolean
@@ -235,16 +235,33 @@ module ubjson =
         ms.Write(ba, 0, ba.Length)
 
     let toJson uv =
-        let sb = StringBuilder()
+        let escape (s:string) (sb:StringBuilder) =
+            sb.Append('"') |> ignore
+            for i in 0 .. s.Length-1 do
+                let c = s.[i]
+                match c with
+                | '\\' | '"' | '/' -> sb.Append('\\').Append(c) |> ignore
+                | '\b' -> sb.Append("\\b") |> ignore
+                | '\t' -> sb.Append("\\t") |> ignore
+                | '\n' -> sb.Append("\\n") |> ignore
+                | '\f' -> sb.Append("\\f") |> ignore
+                | '\r' -> sb.Append("\\r") |> ignore
+                | _ ->
+                    if c < ' ' then
+                        let t = "000" + String.Format("X", c)
+                        sb.Append("\\u" + t.Substring(t.Length-4)) |> ignore
+                    else
+                        sb.Append(c) |> ignore
+            sb.Append('"') |> ignore
 
         let rec f (sb:StringBuilder) uv =
             match uv with
             | JsonValue.JBoolean b -> (if b then sb.Append("true") else sb.Append("false")) |> ignore
             | JsonValue.JNull -> sb.Append("null") |> ignore
             | JsonValue.JFloat f -> sb.Append(f.ToString()) |> ignore
-            | JsonValue.JDecimal d -> sb.Append(d.ToString()) |> ignore
+            | JsonValue.JNumberString s -> sb.Append(s) |> ignore
             | JsonValue.JInteger i -> sb.Append(i.ToString()) |> ignore
-            | JsonValue.JString s -> sb.Append(sprintf "\"%s\"" s) |> ignore // TODO escape
+            | JsonValue.JString s -> escape s sb
             | JsonValue.JObject a -> 
                 sb.Append("{") |> ignore
                 for i in 0 .. a.Length-1 do
@@ -261,11 +278,11 @@ module ubjson =
                     f sb v
                 sb.Append("]") |> ignore
 
+        let sb = StringBuilder()
         f sb uv
         sb.ToString()
 
-    // TODO rename the following function toBinary           
-    let rec encode (ms:MemoryStream) jv =
+    let rec toBinary (ms:MemoryStream) jv =
         match jv with
         | JsonValue.JBoolean b -> if b then ms.WriteByte('T'B) else ms.WriteByte('F'B)
         | JsonValue.JNull -> ms.WriteByte('Z'B)
@@ -277,31 +294,23 @@ module ubjson =
             ms.Write(ba, 0, ba.Length)
         | JsonValue.JInteger i ->
             encodeInteger ms i
-        | JsonValue.JDecimal n ->
-            let optAsInt64 = try Some (System.Decimal.ToInt64(n)) with :? System.OverflowException -> None
-            match optAsInt64 with
-            | Some i64 ->
-                let dec = decimal i64
-                if n = dec then
-                    encodeInteger ms i64
-                else
-                    encodeDecimal ms n
-            | None ->
-                encodeDecimal ms n
+        | JsonValue.JNumberString s ->
+            ms.WriteByte('H'B)
+            encodeString ms s
         | JsonValue.JString s ->
-                ms.WriteByte('S'B)
-                encodeString ms s
+            ms.WriteByte('S'B)
+            encodeString ms s
         | JsonValue.JObject a -> 
             ms.WriteByte('{'B)
             for (k,v) in a do
                 encodeString ms k
-                encode ms v
+                toBinary ms v
             ms.WriteByte('}'B)
         | JsonValue.JArray a -> 
             ms.WriteByte('['B)
             for i in 0 .. a.Length-1 do
                 let v = a.[i]
-                encode ms v
+                toBinary ms v
             ms.WriteByte(']'B)
           
     let kEndSequence = 0uy
@@ -322,7 +331,9 @@ module ubjson =
 
     // TODO is there any chance this collatable format should just be the format
     // we use for storage?  one problem is that integers here always use 8-9 bytes,
-    // but the ub-like format is more compact for small values.
+    // but the ub-like format is more compact for small values.  also, if we ever store
+    // strings in a munged format so they will order differently, that's a problem.
+    // also, JNumberString is not collatable.
 
     let rec toCollatable (ms:MemoryStream) jv =
         match jv with
@@ -346,22 +357,16 @@ module ubjson =
                 for i in 0 .. ba.Length-1 do
                     ba.[i] <- (ba.[i]) ^^^ 255uy
             ms.Write(ba, 0, ba.Length)
-        | JsonValue.JDecimal n ->
-            if n < 0m then ms.WriteByte(kNegDecimal) else ms.WriteByte(kPosDecimal)
-            let a = System.Decimal.GetBits(n)
-            // TODO change endian
-            // TODO invert on negative?
-            for i in a do
-                let ba = BitConverter.GetBytes(i)
-                ms.Write(ba, 0, ba.Length)
+        | JsonValue.JNumberString n ->
+            failwith "JNumberString cannot be used in indexes"
         | JsonValue.JString s ->
-                // TODO do we need to rework this string so it will sort with case insensitivity?
-                ms.WriteByte(kString)
-                // TODO write this zero-terminated?  or with a length prefix?
-                // zero-terminated would allow prefix search
-                let ba = to_utf8 s
-                ms.Write(ba, 0, ba.Length)
-                ms.WriteByte(0uy)
+            // TODO do we need to rework this string so it will sort with case insensitivity?
+            ms.WriteByte(kString)
+            // TODO write this zero-terminated?  or with a length prefix?
+            // zero-terminated would allow prefix search
+            let ba = to_utf8 s
+            ms.Write(ba, 0, ba.Length)
+            ms.WriteByte(0uy)
         | JsonValue.JObject a -> 
             ms.WriteByte(kRecord)
             for (k,v) in a do
@@ -385,17 +390,18 @@ module ubjson =
                 Array.tryFind (fst >> (=) propertyName) properties |> Option.map snd
             | _ -> None
 
-        // TODO ParseBinary
-        static member Parse(a:byte[]) =
+        static member ParseBinary(a:byte[]) =
             ubJsonParser(a).Parse()
 
         member this.ToJson() =
             toJson this
 
+        // TODO need ParseCollatable
+
         member this.ToCollatable (ms:MemoryStream) =
             toCollatable ms this
 
-        member this.Encode (ms:MemoryStream) =
-            encode ms this
+        member this.ToBinary (ms:MemoryStream) =
+            toBinary ms this
 
 

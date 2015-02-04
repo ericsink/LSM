@@ -47,57 +47,6 @@ module fj =
                 let v = a.[i]
                 flatten fn newpath v
         | _ -> fn path jv
-    
-    // TODO the followung function can go away        
-    let encodeJsonValue jv =
-        match jv with
-        | JsonValue.JBoolean b -> 
-            "b" + if b then "1" else "0"
-        | JsonValue.JFloat f -> 
-            // TODO should have index policy to specify how this should be indexed. float/decimal/integer.
-            // TODO check to see if this is an integer?
-            // TODO are we sure that JsonValue will only return float when decimal was not possible?
-            "f" + f.ToString() // TODO how to deal with this?
-        | JsonValue.JInteger i -> 
-            // TODO should have index policy to specify how this should be indexed. float/decimal/integer.
-            // TODO check to see if this is an integer?
-            // TODO are we sure that JsonValue will only return float when decimal was not possible?
-            "i" + i.ToString() // TODO how to deal with this?
-        | JsonValue.JNull -> 
-            "n"
-        | JsonValue.JDecimal n -> 
-            // TODO consider just putting the decimal number in as binary, if we can figure out
-            // how to order the bits so it sorts properly
-
-            // TODO should have index policy to specify how this should be indexed. float/decimal/integer.
-            "d" + n.ToString()
-        | JsonValue.JString s -> 
-            "s" + s
-        | _ -> failwith "no record or array here.  should have been flattened"
-
-    // TODO the followung function can go away        
-    let encode collId path jv rid =
-        // TODO the only safe delimiter is a 0, building this as bytes, not as a string
-
-        // or escape things.  ugly.
-
-        // or just store an index number which is referenced elsewhere.  more efficient?
-        // but prefix key compression should help a lot.
-
-        let fldr cur acc =
-            let s = match cur with
-                    | PathElement.Key k ->
-                        "r" + k
-                    | PathElement.Index i ->
-                        "a" + i.ToString()
-            if acc = "" then s else acc + ":" + s
-
-        let pathString = List.foldBack fldr path ""
-        let vs = encodeJsonValue jv
-
-        let s = sprintf "x:%s:%s:%s:%s" collId pathString vs rid
-        //printfn "%s" s
-        s |> to_utf8
 
     // TODO this function could move into LSM
     let query_key_range (db:IDatabase) (k1:byte[]) (k2:byte[]) = 
@@ -132,30 +81,6 @@ module fj =
         add_one k2 (k2.Length-1)
         query_key_range db k k2
 
-    // TODO the followung function can go away        
-    let extract_value_and_id_from_end_of_index_key (ba:byte[]) =
-        // TODO this will break when index key encoding changes to binary
-        let s = ba |> from_utf8
-        let parts = s.Split(':')
-        let num = parts.Length
-        (parts.[num-2], parts.[num-1])
-
-    // TODO the followung function can go away        
-    let query_string_equal db collId k v =
-        let kpref = sprintf "x:%s:%s:s%s:" collId k v
-        //printfn "kpref: %s" kpref
-        let kb = kpref |> to_utf8
-        let s1 = query_key_prefix db kb
-        let s2 = Seq.map (fun ba -> extract_value_and_id_from_end_of_index_key ba) s1
-        s2
-
-    // TODO the followung function can go away        
-    let wrap k id =
-        let a:JsonValue[] = Array.zeroCreate 2
-        a.[0] <- k
-        a.[1] <-JsonValue.JString id
-        JsonValue.JArray a
-
     let writeIndexPreface (ms:MemoryStream) collId ndxId =
         // TODO or maybe the index preface should go inside the json
         // TODO 0 instead of colon
@@ -174,7 +99,7 @@ module fj =
         | Some uv -> 
             ms.SetLength(0L)
             ms.Position <- 0L
-            uv.Encode(ms)
+            uv.ToBinary(ms)
             let vb = ms.ToArray()
             pairBuf.AddPair(kba, Blob.Array vb)
         | None -> 
@@ -201,7 +126,7 @@ module fj =
     let addDocument (pairBuf:PairBuffer) (ms:MemoryStream) collId id (doc:JsonValue) =
         ms.SetLength(0L)
         ms.Position <- 0L
-        doc.Encode (ms)
+        doc.ToBinary (ms)
         let uba = ms.ToArray()
         // TODO 0 instead of colon
         pairBuf.AddPair((sprintf "j:%s:%s" collId id) |> to_utf8, Blob.Array uba)

@@ -27,7 +27,7 @@ module json_parser =
         | JString of string
         | JInteger of int64
         | JFloat of float
-        | JDecimal of decimal // TODO ?
+        | JNumberString of string
         | JBoolean   of bool
         | JNull
         | JArray   of JsonValue[]
@@ -66,12 +66,16 @@ module json_parser =
                        ||| NumberLiteralOptions.AllowFraction
                        ||| NumberLiteralOptions.AllowExponent
 
-    // TODO we could return unrepresentable numbers as a JNumberString?  or decimal.
     let jnumber : Parser<JsonValue, unit> =
         numberLiteral numberFormat "number"
         |>> fun nl ->
+            try
+                // TODO if the number is 25.0 is IsInteger true?
                 if nl.IsInteger then JInteger (int64 nl.String)
                 else JFloat (float nl.String)
+            with
+            | :? System.OverflowException as e ->
+                JNumberString (nl.String)
 
     let jtrue  = stringReturn "true"  (JBoolean true)
     let jfalse = stringReturn "false" (JBoolean false)
