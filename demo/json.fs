@@ -42,23 +42,6 @@ module JsonStuff =
         | JArray   of JsonValue[]
         | JObject of (string*JsonValue)[] // TODO Map
 
-    type PathElement =
-        | Key of string
-        | Index of int
-
-    let rec flatten fn path jv =
-        match jv with
-        | JsonValue.JObject a -> 
-            for (k,v) in a do
-                let newpath = (PathElement.Key k) :: path
-                flatten fn newpath v
-        | JsonValue.JArray a -> 
-            for i in 0 .. a.Length-1 do
-                let newpath = (PathElement.Index i) :: path
-                let v = a.[i]
-                flatten fn newpath v
-        | _ -> fn path jv
-
     // some abbreviations
     let ws   = spaces // eats any whitespace
     let str s = pstring s
@@ -81,8 +64,8 @@ module JsonStuff =
             )
 
         between (str "\"") (str "\"")
-                (stringsSepBy (manySatisfy (fun c -> c <> '"' && c <> '\\'))
-                              (str "\\" >>. (escape <|> unicodeEscape)))
+                (stringsSepBy (manySatisfy (fun c -> c <> '"' && c <> '\\')) (str "\\" >>. (escape <|> unicodeEscape)))
+                              
 
     let jstring = stringLiteral |>> JString
 
@@ -485,4 +468,21 @@ module JsonStuff =
 
         member this.ToBinary (ms:MemoryStream) =
             toBinary ms this
+
+    type PathElement =
+        | Key of string
+        | Index of int
+
+    let rec flatten fn path jv =
+        match jv with
+        | JsonValue.JObject a -> 
+            for (k,v) in a do
+                let newpath = (PathElement.Key k) :: path
+                flatten fn newpath v
+        | JsonValue.JArray a -> 
+            for i in 0 .. a.Length-1 do
+                let newpath = (PathElement.Index i) :: path
+                let v = a.[i]
+                flatten fn newpath v
+        | _ -> fn path jv
 
