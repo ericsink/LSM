@@ -11,10 +11,11 @@ namespace Zumero
 
 open System
 open System.IO
-open FSharp.Data
-open Zumero.LSM
+open FParsec
 
+open Zumero.LSM
 open ubjson
+open json_parser
 
 module fj =
     type PathElement =
@@ -36,43 +37,45 @@ module fj =
 
     let rec flatten fn path jv =
         match jv with
-        | ubJsonValue.Record a -> 
+        | JsonValue.JObject a -> 
             for (k,v) in a do
                 let newpath = (PathElement.Key k) :: path
                 flatten fn newpath v
-        | ubJsonValue.Array a -> 
+        | JsonValue.JArray a -> 
             for i in 0 .. a.Length-1 do
                 let newpath = (PathElement.Index i) :: path
                 let v = a.[i]
                 flatten fn newpath v
         | _ -> fn path jv
-            
+    
+    // TODO the followung function can go away        
     let encodeJsonValue jv =
         match jv with
-        | ubJsonValue.Boolean b -> 
+        | JsonValue.JBoolean b -> 
             "b" + if b then "1" else "0"
-        | ubJsonValue.Float f -> 
+        | JsonValue.JFloat f -> 
             // TODO should have index policy to specify how this should be indexed. float/decimal/integer.
             // TODO check to see if this is an integer?
             // TODO are we sure that JsonValue will only return float when decimal was not possible?
             "f" + f.ToString() // TODO how to deal with this?
-        | ubJsonValue.Integer i -> 
+        | JsonValue.JInteger i -> 
             // TODO should have index policy to specify how this should be indexed. float/decimal/integer.
             // TODO check to see if this is an integer?
             // TODO are we sure that JsonValue will only return float when decimal was not possible?
             "i" + i.ToString() // TODO how to deal with this?
-        | ubJsonValue.Null -> 
+        | JsonValue.JNull -> 
             "n"
-        | ubJsonValue.Decimal n -> 
+        | JsonValue.JDecimal n -> 
             // TODO consider just putting the decimal number in as binary, if we can figure out
             // how to order the bits so it sorts properly
 
             // TODO should have index policy to specify how this should be indexed. float/decimal/integer.
             "d" + n.ToString()
-        | ubJsonValue.String s -> 
+        | JsonValue.JString s -> 
             "s" + s
         | _ -> failwith "no record or array here.  should have been flattened"
 
+    // TODO the followung function can go away        
     let encode collId path jv rid =
         // TODO the only safe delimiter is a 0, building this as bytes, not as a string
 
@@ -129,6 +132,7 @@ module fj =
         add_one k2 (k2.Length-1)
         query_key_range db k k2
 
+    // TODO the followung function can go away        
     let extract_value_and_id_from_end_of_index_key (ba:byte[]) =
         // TODO this will break when index key encoding changes to binary
         let s = ba |> from_utf8
@@ -136,6 +140,7 @@ module fj =
         let num = parts.Length
         (parts.[num-2], parts.[num-1])
 
+    // TODO the followung function can go away        
     let query_string_equal db collId k v =
         let kpref = sprintf "x:%s:%s:s%s:" collId k v
         //printfn "kpref: %s" kpref
@@ -144,11 +149,12 @@ module fj =
         let s2 = Seq.map (fun ba -> extract_value_and_id_from_end_of_index_key ba) s1
         s2
 
+    // TODO the followung function can go away        
     let wrap k id =
-        let a:ubJsonValue[] = Array.zeroCreate 2
+        let a:JsonValue[] = Array.zeroCreate 2
         a.[0] <- k
-        a.[1] <-ubJsonValue.String id
-        ubJsonValue.Array a
+        a.[1] <-JsonValue.JString id
+        JsonValue.JArray a
 
     let writeIndexPreface (ms:MemoryStream) collId ndxId =
         // TODO or maybe the index preface should go inside the json
@@ -156,13 +162,13 @@ module fj =
         let kpref = (sprintf "x:%s:%s:" collId ndxId) |> to_utf8
         ms.Write(kpref, 0, kpref.Length)
 
-    let fullEmitIndexPair (pairBuf:PairBuffer) collId (ms:MemoryStream) id ndxId (k:ubJsonValue) (v:ubJsonValue option) =
+    let fullEmitIndexPair (pairBuf:PairBuffer) collId (ms:MemoryStream) id ndxId (k:JsonValue) (v:JsonValue option) =
         ms.SetLength(0L)
         ms.Position <- 0L
         writeIndexPreface ms collId ndxId
         k.ToCollatable(ms)
         // TODO delim
-        (id |> ubJsonValue.String).ToCollatable(ms)
+        (id |> JsonValue.JString).ToCollatable(ms)
         let kba = ms.ToArray()
         match v with
         | Some uv -> 
@@ -174,25 +180,25 @@ module fj =
         | None -> 
             pairBuf.AddEmptyKey(kba)
 
-    let makeQueryKey collId (ms:MemoryStream) ndxId (k:ubJsonValue) =
+    let makeQueryKey collId (ms:MemoryStream) ndxId (k:JsonValue) =
         ms.SetLength(0L)
         ms.Position <- 0L
         writeIndexPreface ms collId ndxId
         k.ToCollatable(ms)
         ms.ToArray()
 
-    let map_group (doc:ubJsonValue) emit = 
+    let map_group (doc:JsonValue) emit = 
         match doc.TryGetProperty("group") with
         | Some ub ->
             match ub with
-            | ubJsonValue.String s -> emit ub None
+            | JsonValue.JString s -> emit ub None
             // TODO should we fuss if group is not a string?
             // TODO should we index it anyway?  (relying on the query to care about the type)
             // TODO or should we coerce the type?
             | _ -> () 
         | None -> ()
 
-    let addDocument (pairBuf:PairBuffer) (ms:MemoryStream) collId id (doc:ubJsonValue) =
+    let addDocument (pairBuf:PairBuffer) (ms:MemoryStream) collId id (doc:JsonValue) =
         ms.SetLength(0L)
         ms.Position <- 0L
         doc.Encode (ms)
@@ -219,12 +225,15 @@ module fj =
 
     let slurp dbFile collId jsonFile =
         let json = File.ReadAllText(jsonFile)
-        let parsed = JsonValue.Parse(json)
-        let foo = json_parser.parseJsonString json
-        let a =
+        let parsed = json_parser.parseJsonString json
+        let a = 
             match parsed with
-            | JsonValue.Array a -> a
-            | _ -> failwith "wrong"
+            | Success (result, userState, endPos) ->
+                match result with
+                | JsonValue.JArray a -> a
+                | _ -> failwith "wrong"
+            | Failure (errorAsString, error, userState) -> 
+                failwith errorAsString
 
         let f = dbf(dbFile)
         use db = new Database(f) :> IDatabase
@@ -236,25 +245,12 @@ module fj =
             let doc = a.[i]
             let id = gid()
 
-            let ubParsed = doc.ToUbjson()
-            addDocument pairBuf msub collId id ubParsed
+            addDocument pairBuf msub collId id doc
 
         async {
             use! tx = db.RequestWriteLock()
             pairBuf.Commit(tx)
         } |> Async.RunSynchronously
-
-    let parseLiteral s =
-        // TODO this is dreadful.
-        let s2 = "[\"" + s + "\"]"
-        let j = JsonValue.Parse(s2)
-        let a =
-            match j with
-            | JsonValue.Array a -> a
-            | _ -> failwith "wrong"
-        let lit = a.[0]
-        let ub = lit.ToUbjson()
-        ub
 
     [<EntryPoint>]
     let main argv = 
@@ -267,7 +263,7 @@ module fj =
             slurp dbFile collId jsonFile
         | "query" ->
             let ndx = argv.[3]
-            let k = argv.[4] |> parseLiteral
+            let k = argv.[4] |> JsonValue.JString
             printfn "k: %A" k
             let f = dbf(dbFile)
             use db = new Database(f) :> IDatabase

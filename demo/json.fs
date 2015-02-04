@@ -23,24 +23,16 @@ module json_parser =
 
     open FParsec
 
-    type Json = JString of string
-              | JNumber of float
-              | JBool   of bool
-              | JNull
-              | JArray   of Json[]
-              | JObject of Map<string, Json>
+    type JsonValue = 
+        | JString of string
+        | JInteger of int64
+        | JFloat of float
+        | JDecimal of decimal // TODO ?
+        | JBoolean   of bool
+        | JNull
+        | JArray   of JsonValue[]
+        | JObject of (string*JsonValue)[] // TODO Map
 
-
-    // This is a general JSON parser that will parse any JSON file into an AST.
-    // See e.g. http://www.json.org/, for a specification of JSON.
-
-    // The FParsec tutorial discusses this parser in detail.
-
-    // Note that in typical applications you often don't need to parse any general
-    // JSON file, but only files describing objects of a certain type. In those cases
-    // it might be more convenient to parse the input with specialized parsers
-    // instead of using the indirect approach via an intermediate AST. The parser
-    // definitions below should be useful in any case.
 
     // some abbreviations
     let ws   = spaces // eats any whitespace
@@ -69,14 +61,20 @@ module json_parser =
 
     let jstring = stringLiteral |>> JString
 
-    // TODO integers
+    // -?[0-9]+(\.[0-9]*)?([eE][+-]?[0-9]+)?
+    let numberFormat =     NumberLiteralOptions.AllowMinusSign
+                       ||| NumberLiteralOptions.AllowFraction
+                       ||| NumberLiteralOptions.AllowExponent
 
-    let jnumber = pfloat |>> JNumber // pfloat will accept a little more than specified by JSON
-                                     // as valid numbers (such as NaN or Infinity), but that makes
-                                     // it only more robust
+    // TODO we could return unrepresentable numbers as a JNumberString?  or decimal.
+    let jnumber : Parser<JsonValue, unit> =
+        numberLiteral numberFormat "number"
+        |>> fun nl ->
+                if nl.IsInteger then JInteger (int64 nl.String)
+                else JFloat (float nl.String)
 
-    let jtrue  = stringReturn "true"  (JBool true)
-    let jfalse = stringReturn "false" (JBool false)
+    let jtrue  = stringReturn "true"  (JBoolean true)
+    let jfalse = stringReturn "false" (JBoolean false)
     let jnull  = stringReturn "null" JNull
 
     // jvalue, jlist and jobject are three mutually recursive grammar productions.
@@ -91,7 +89,7 @@ module json_parser =
     let keyValue = tuple2 stringLiteral (ws >>. str ":" >>. ws >>. jvalue)
 
     let jlist   = listBetweenStrings "[" "]" jvalue (Array.ofList >> JArray)
-    let jobject = listBetweenStrings "{" "}" keyValue (Map.ofList >> JObject)
+    let jobject = listBetweenStrings "{" "}" keyValue (Array.ofList >> JObject) // TODO Map
 
     do jvalueRef := choice [jobject
                             jlist
