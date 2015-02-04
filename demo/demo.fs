@@ -14,14 +14,9 @@ open System.IO
 open FParsec
 
 open Zumero.LSM
-open ubjson
-open json_parser
+open JsonStuff
 
 module fj =
-    type PathElement =
-        | Key of string
-        | Index of int
-
     let to_utf8 (s:string) =
         System.Text.Encoding.UTF8.GetBytes (s)
 
@@ -34,19 +29,6 @@ module fj =
         let g = g.Replace ("}", "")
         let g = g.Replace ("-", "")
         g
-
-    let rec flatten fn path jv =
-        match jv with
-        | JsonValue.JObject a -> 
-            for (k,v) in a do
-                let newpath = (PathElement.Key k) :: path
-                flatten fn newpath v
-        | JsonValue.JArray a -> 
-            for i in 0 .. a.Length-1 do
-                let newpath = (PathElement.Index i) :: path
-                let v = a.[i]
-                flatten fn newpath v
-        | _ -> fn path jv
 
     // TODO this function could move into LSM
     let query_key_range (db:IDatabase) (k1:byte[]) (k2:byte[]) = 
@@ -135,22 +117,9 @@ module fj =
         let myEmit = fullEmitIndexPair pairBuf collId ms id "group"
         map_group doc myEmit
 
-        #if not
-        // now all the index items
-        // TODO hook index policy to decide whether to index this record at all
-        let fn path jv =
-            // TODO search list of indexes to find out if anything wants this
-            // TODO hook index policy to decide whether to index this key
-            // TODO index policy notion of precision?  index only part of the value?
-            let k = encode collId path jv id
-            pairBuf.AddEmptyKey(k)
-        // TODO remove old index entries for this doc
-        flatten fn [] ub
-        #endif
-
     let slurp dbFile collId jsonFile =
         let json = File.ReadAllText(jsonFile)
-        let parsed = json_parser.parseJsonString json
+        let parsed = parseJsonString json
         let a = 
             match parsed with
             | Success (result, userState, endPos) ->
@@ -169,7 +138,6 @@ module fj =
         for i in 0 .. a.Length-1 do
             let doc = a.[i]
             let id = gid()
-
             addDocument pairBuf msub collId id doc
 
         async {
