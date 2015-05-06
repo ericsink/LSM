@@ -64,7 +64,7 @@ trait IPages {
     fn End(token:IPendingSegment, page:PageNum) -> Guid;
 }
 
-#[derive(PartialEq)]
+#[derive(PartialEq,Copy,Clone)]
 enum SeekOp {
     SEEK_EQ = 0,
     SEEK_LE = 1,
@@ -81,7 +81,7 @@ trait ICursor : Drop {
     fn IsValid(&self) -> bool;
     fn Key(&self) -> Box<[u8]>;
     fn Value(&self) -> Blob;
-    fn ValueLength(&self) -> u32; // TODO should probably be usize?
+    fn ValueLength(&self) -> i32; // because a negative length is a tombstone
     fn KeyCompare(&self, k:&[u8]) -> i32;
 
     fn CountKeysForward(&mut self) -> u32 {
@@ -728,23 +728,24 @@ enum Direction {
 }
 
 struct MultiCursor<'a> { 
+    // TODO maybe this should be an array of boxed cursors
     subcursors : Box<[&'a mut ICursor]>, 
     cur : Option<usize>,
     dir : Direction,
 }
 
 impl<'a> MultiCursor<'a> {
-    fn find(&self, sortfunc : &Fn(&ICursor,&ICursor) -> i32) -> Option<usize> {
+    fn find(&self, compare_func : &Fn(&ICursor,&ICursor) -> i32) -> Option<usize> {
         if self.subcursors.is_empty() {
             None
         } else {
-            let mut res = None;
+            let mut res = None::<usize>;
             for i in 0 .. self.subcursors.len() {
                 match res {
                     Some(winning) => {
-                        let x = self.subcursors[i];
-                        let y = self.subcursors[winning];
-                        let c = sortfunc(x,y);
+                        let x = &self.subcursors[i];
+                        let y = &self.subcursors[winning];
+                        let c = compare_func(&**x,&**y);
                         if c<0 {
                             res = Some(i)
                         }
@@ -759,13 +760,13 @@ impl<'a> MultiCursor<'a> {
     }
 
     fn findMin(&self) -> Option<usize> {
-        let sortfunc = |a:&ICursor,b:&ICursor| a.KeyCompare(&*b.Key());
-        self.find(&sortfunc)
+        let compare_func = |a:&ICursor,b:&ICursor| a.KeyCompare(&*b.Key());
+        self.find(&compare_func)
     }
 
     fn findMax(&self) -> Option<usize> {
-        let sortfunc = |a:&ICursor,b:&ICursor| b.KeyCompare(&*a.Key());
-        self.find(&sortfunc)
+        let compare_func = |a:&ICursor,b:&ICursor| b.KeyCompare(&*a.Key());
+        self.find(&compare_func)
     }
 
     // TODO this thing wants to own its subcursors.  The .NET
@@ -836,7 +837,7 @@ impl<'a> ICursor for MultiCursor<'a> {
         }
     }
 
-    fn ValueLength(&self) -> u32 {
+    fn ValueLength(&self) -> i32 {
         match self.cur {
             Some(icur) => self.subcursors[icur].ValueLength(),
             None => panic!()
@@ -846,12 +847,11 @@ impl<'a> ICursor for MultiCursor<'a> {
     fn Next(&mut self) {
         match self.cur {
             Some(icur) => {
-                let cur = self.subcursors[icur];
-                let k = cur.Key();
+                let k = self.subcursors[icur].Key();
                 for j in 0 .. self.subcursors.len() {
-                    let csr = self.subcursors[j];
+                    let csr = &mut self.subcursors[j];
                     if (self.dir != Direction::FORWARD) && (icur != j) { 
-                        csr.Seek (&*k, SeekOp::SEEK_GE); 
+                        (*csr).Seek (&*k, SeekOp::SEEK_GE); 
                     }
                     if csr.IsValid() && (0 == csr.KeyCompare(&*k)) { 
                         csr.Next(); 
@@ -867,12 +867,11 @@ impl<'a> ICursor for MultiCursor<'a> {
     fn Prev(&mut self) {
         match self.cur {
             Some(icur) => {
-                let cur = self.subcursors[icur];
-                let k = cur.Key();
+                let k = self.subcursors[icur].Key();
                 for j in 0 .. self.subcursors.len() {
-                    let csr = self.subcursors[j];
+                    let csr = &mut self.subcursors[j];
                     if (self.dir != Direction::BACKWARD) && (icur != j) { 
-                        csr.Seek (&*k, SeekOp::SEEK_LE); 
+                        (*csr).Seek (&*k, SeekOp::SEEK_LE); 
                     }
                     if csr.IsValid() && (0 == csr.KeyCompare(&*k)) { 
                         csr.Prev(); 
@@ -890,9 +889,8 @@ impl<'a> ICursor for MultiCursor<'a> {
         self.dir = Direction::WANDERING;
         let mut found = false;
         for j in 0 .. self.subcursors.len() {
-            let csr = self.subcursors[j];
-            csr.Seek(k,sop);
-            if self.cur.is_none() && csr.IsValid() && ( (SeekOp::SEEK_EQ == sop) || (0 == csr.KeyCompare (k)) ) { 
+            self.subcursors[j].Seek(k,sop);
+            if self.cur.is_none() && self.subcursors[j].IsValid() && ( (SeekOp::SEEK_EQ == sop) || (0 == self.subcursors[j].KeyCompare (k)) ) { 
                 self.cur = Some(j);
                 found = true;
                 break;
@@ -919,185 +917,88 @@ impl<'a> ICursor for MultiCursor<'a> {
 
 }
 
+struct LivingCursor { 
+    chain : Box<ICursor>
+}
+
+impl LivingCursor {
+    fn skipTombstonesForward(&mut self) {
+        while self.chain.IsValid() && self.chain.ValueLength()<0 {
+            self.chain.Next();
+        }
+    }
+
+    fn skipTombstonesBackward(&mut self) {
+        while self.chain.IsValid() && self.chain.ValueLength()<0 {
+            self.chain.Prev();
+        }
+    }
+
+    fn Create(ch : Box<ICursor>) -> LivingCursor {
+        LivingCursor { chain : ch }
+    }
+}
+
+impl Drop for LivingCursor {
+    fn drop(&mut self) {
+        // TODO
+        println!("Dropping!");
+    }
+}
+
+impl ICursor for LivingCursor {
+    fn First(&mut self) {
+        self.chain.First();
+        self.skipTombstonesForward();
+    }
+
+    fn Last(&mut self) {
+        self.chain.Last();
+        self.skipTombstonesBackward();
+    }
+
+    fn Key(&self) -> Box<[u8]> {
+        self.chain.Key()
+    }
+
+    fn Value(&self) -> Blob {
+        self.chain.Value()
+    }
+
+    fn ValueLength(&self) -> i32 {
+        self.chain.ValueLength()
+    }
+
+    fn IsValid(&self) -> bool {
+        self.chain.IsValid() && self.chain.ValueLength() >= 0
+    }
+
+    fn KeyCompare(&self, k:&[u8]) -> i32 {
+        self.chain.KeyCompare(k)
+    }
+
+    fn Next(&mut self) {
+        self.chain.Next();
+        self.skipTombstonesForward();
+    }
+
+    fn Prev(&mut self) {
+        self.chain.Prev();
+        self.skipTombstonesBackward();
+    }
+
+    fn Seek(&mut self, k:&[u8], sop:SeekOp) {
+        self.chain.Seek(k, sop);
+        match sop {
+            SeekOp::SEEK_GE => self.skipTombstonesForward(),
+            SeekOp::SEEK_LE => self.skipTombstonesBackward(),
+            SeekOp::SEEK_EQ => (),
+        }
+    }
+
+}
 
 /*
-
-type MultiCursor private (_subcursors:seq<ICursor>) =
-    let subcursors = List.ofSeq _subcursors
-    let mutable cur:ICursor option = None
-    let mutable dir = Direction.WANDERING
-
-    let find sortfunc = 
-        if List.isEmpty subcursors then None
-        else
-            let first =
-                let hd = List.head subcursors
-                if hd.IsValid() then Some hd else None
-
-            let tail = List.tail subcursors
-
-            if List.isEmpty tail then
-                first
-            else
-                let fldr (cur:ICursor option) (csr:ICursor) =
-                    if csr.IsValid() then 
-                        match cur with
-                        | Some winning -> 
-                            let cmp = sortfunc csr winning
-                            if cmp < 0 then Some csr else cur
-                        | None -> Some csr
-                    else
-                        cur
-                let result = List.fold fldr first tail
-                result
-
-    let findMin() = 
-        let sortfunc (a:ICursor) (b:ICursor) = a.KeyCompare(b.Key())
-        find sortfunc
-    
-    let findMax() = 
-        let sortfunc (a:ICursor) (b:ICursor) = b.KeyCompare(a.Key())
-        find sortfunc
-
-    let dispose itIsSafeToAlsoFreeManagedObjects =
-        if itIsSafeToAlsoFreeManagedObjects then
-            List.iter (fun (x:ICursor) -> x.Dispose();) subcursors
-
-    override this.Finalize() =
-        dispose false
-
-    static member Create(_subcursors:seq<ICursor>) :ICursor =
-        let mc = new MultiCursor(_subcursors)
-        mc :> ICursor
-               
-    static member Create([<ParamArray>] _subcursors: ICursor[]) :ICursor =
-        let mc = new MultiCursor(_subcursors)
-        mc :> ICursor
-               
-    interface ICursor with
-        member this.Dispose() =
-            dispose true
-            GC.SuppressFinalize(this)
-
-        member this.IsValid() = 
-            match cur with
-            | Some csr -> csr.IsValid()
-            | None -> false
-
-        member this.First() =
-            let f (x:ICursor) = x.First()
-            List.iter f subcursors
-            cur <- findMin()
-            dir <- Direction.WANDERING // TODO why?
-
-        member this.Last() =
-            let f (x:ICursor) = x.Last()
-            List.iter f subcursors
-            cur <- findMax()
-            dir <- Direction.WANDERING // TODO why?
-
-        // the following members are asking for the value of cur (an option)
-        // without checking or matching on it.  they'll crash if cur is None.
-        // this matches the C# behavior and the expected behavior of ICursor.
-        // don't call these methods without checking IsValid() first.
-        member this.Key() = cur.Value.Key()
-        member this.KeyCompare(k) = cur.Value.KeyCompare(k)
-        member this.Value() = cur.Value.Value()
-        member this.ValueLength() = cur.Value.ValueLength()
-
-        member this.Next() =
-            let k = cur.Value.Key()
-            let f (csr:ICursor) :unit = 
-                if (dir <> Direction.FORWARD) && (csr <> cur.Value) then csr.Seek (k, SeekOp.SEEK_GE)
-                if csr.IsValid() && (0 = csr.KeyCompare(k)) then csr.Next()
-            List.iter f subcursors
-            cur <- findMin()
-            dir <- Direction.FORWARD
-
-        member this.Prev() =
-            let k = cur.Value.Key()
-            let f (csr:ICursor) :unit = 
-                if (dir <> Direction.BACKWARD) && (csr <> cur.Value) then csr.Seek (k, SeekOp.SEEK_LE)
-                if csr.IsValid() && (0 = csr.KeyCompare(k)) then csr.Prev()
-            List.iter f subcursors
-            cur <- findMax()
-            dir <- Direction.BACKWARD
-
-        member this.Seek (k, sop) =
-            cur <- None
-            dir <- Direction.WANDERING
-            let f (csr:ICursor) :bool =
-                csr.Seek (k, sop)
-                if cur.IsNone && csr.IsValid() && ( (SeekOp.SEEK_EQ = sop) || (0 = csr.KeyCompare (k)) ) then 
-                    cur <- Some csr
-                    true
-                else
-                    false
-            if not (List.exists f subcursors) then
-                match sop with
-                | SeekOp.SEEK_GE ->
-                    cur <- findMin()
-                    if cur.IsSome then dir <- Direction.FORWARD
-                | SeekOp.SEEK_LE ->
-                    cur <- findMax()
-                    if cur.IsSome then dir <- Direction.BACKWARD
-                | _ -> ()
-
-type LivingCursor private (ch:ICursor) =
-    let chain = ch
-
-    let skipTombstonesForward() =
-        while (chain.IsValid() && (chain.ValueLength() < 0)) do
-            chain.Next()
-
-    let skipTombstonesBackward() =
-        while (chain.IsValid() && (chain.ValueLength() < 0)) do
-            chain.Prev()
-
-    let dispose itIsSafeToAlsoFreeManagedObjects =
-        if itIsSafeToAlsoFreeManagedObjects then
-            chain.Dispose()
-
-    static member Create(_chain:ICursor) :ICursor =
-        let csr = new LivingCursor(_chain)
-        csr :> ICursor
-               
-    override this.Finalize() =
-        dispose false
-
-    interface ICursor with
-        member this.Dispose() =
-            dispose true
-            GC.SuppressFinalize(this)
-
-        member this.First() = 
-            chain.First()
-            skipTombstonesForward()
-
-        member this.Last() = 
-            chain.Last()
-            skipTombstonesBackward()
-
-        member this.Key() = chain.Key()
-        member this.Value() = chain.Value()
-        member this.ValueLength() = chain.ValueLength()
-        member this.IsValid() = chain.IsValid() && (chain.ValueLength() >= 0)
-        member this.KeyCompare k = chain.KeyCompare k
-
-        member this.Next() =
-            chain.Next()
-            skipTombstonesForward()
-
-        member this.Prev() =
-            chain.Prev()
-            skipTombstonesBackward()
-        
-        member this.Seek (k, sop) =
-            chain.Seek (k, sop)
-            match sop with
-            | SeekOp.SEEK_GE -> skipTombstonesForward()
-            | SeekOp.SEEK_LE -> skipTombstonesBackward()
-            | _ -> ()
 
 module bt =
     // page types
