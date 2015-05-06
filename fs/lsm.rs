@@ -64,6 +64,7 @@ trait IPages {
     fn End(token:IPendingSegment, page:PageNum) -> Guid;
 }
 
+#[derive(PartialEq)]
 enum SeekOp {
     SEEK_EQ = 0,
     SEEK_LE = 1,
@@ -71,27 +72,19 @@ enum SeekOp {
 }
 
 // TODO return Result
-trait ICursor : Drop + Iterator<Item=kvp> {
-    fn Seek(&self, k:&[u8], sop:SeekOp);
-    fn First(&self);
-    fn Last(&self);
-    fn Next(&self);
-    fn Prev(&self);
+trait ICursor : Drop {
+    fn Seek(&mut self, k:&[u8], sop:SeekOp);
+    fn First(&mut self);
+    fn Last(&mut self);
+    fn Next(&mut self);
+    fn Prev(&mut self);
     fn IsValid(&self) -> bool;
     fn Key(&self) -> Box<[u8]>;
     fn Value(&self) -> Blob;
-    fn ValueLength(&self) -> u32;
+    fn ValueLength(&self) -> u32; // TODO should probably be usize?
     fn KeyCompare(&self, k:&[u8]) -> i32;
 
-    fn next(& mut self) -> Option<kvp> {
-        if self.IsValid() {
-            return Some(kvp{Key:self.Key(), Value:self.Value()})
-        } else {
-            return None;
-        }
-    }
-
-    fn CountKeysForward(&self) -> u32 {
+    fn CountKeysForward(&mut self) -> u32 {
         let mut i = 0;
         self.First();
         while self.IsValid() {
@@ -101,7 +94,7 @@ trait ICursor : Drop + Iterator<Item=kvp> {
         i
     }
 
-    fn CountKeysBackward(&self) -> u32 {
+    fn CountKeysBackward(&mut self) -> u32 {
         let mut i = 0;
         self.Last();
         while self.IsValid() {
@@ -111,6 +104,18 @@ trait ICursor : Drop + Iterator<Item=kvp> {
         i
     }
 }
+
+impl Iterator for ICursor {
+    type Item = kvp;
+    fn next(& mut self) -> Option<kvp> {
+        if self.IsValid() {
+            return Some(kvp{Key:self.Key(), Value:self.Value()})
+        } else {
+            return None;
+        }
+    }
+}
+
 
 // TODO return Result
 trait IWriteLock : Drop {
@@ -146,8 +151,8 @@ trait IDatabase : Drop {
     fn ForgetWaitingSegments(s:Iterator<Item=Guid>);
 
     fn GetFreeBlocks() -> Iterator<Item=PageBlock>;
-    fn OpenCursor() -> ICursor<Item=kvp>; // why do we have to specify Item here?  and what lifetime?
-    fn OpenSegmentCursor(Guid) ->ICursor<Item=kvp>;
+    fn OpenCursor() -> ICursor; // why do we have to specify Item here?  and what lifetime?
+    fn OpenSegmentCursor(Guid) ->ICursor;
     // TODO consider name such as OpenLivingCursorOnCurrentState()
     // TODO consider OpenCursorOnSegmentsInWaiting(seq<Guid>)
     // TODO consider ListSegmentsInCurrentState()
@@ -499,14 +504,7 @@ struct PageBuilder {
 
 impl PageBuilder {
     fn new(pgsz : usize) -> PageBuilder { 
-        // TODO
-        // all we want is a boxed array of a given fixed size.
-        // this seems like a silly way to do this.
-        let mut v = Vec::with_capacity(pgsz as usize);
-        for i in 0..pgsz {
-            v.push(0);
-        }
-        let ba = v.into_boxed_slice();
+        let mut ba = vec![0;pgsz].into_boxed_slice();
         PageBuilder { cur:0, buf:ba } 
     }
 
@@ -613,7 +611,7 @@ struct PageReader {
 
 impl PageReader {
 
-    fn Position(&self) -> usize {
+    pub fn Position(&self) -> usize {
         self.cur
     }
 
@@ -722,15 +720,205 @@ impl PageReader {
 
 }
 
+#[derive(PartialEq)]
 enum Direction {
     FORWARD = 0,
     BACKWARD = 1,
     WANDERING = 2,
 }
 
-struct MultiCursor {
-    subcursors : Vec<ICursor>,
+struct MultiCursor<'a> { 
+    subcursors : Box<[&'a mut ICursor]>, 
+    cur : Option<usize>,
+    dir : Direction,
 }
+
+impl<'a> MultiCursor<'a> {
+    fn find(&self, sortfunc : &Fn(&ICursor,&ICursor) -> i32) -> Option<usize> {
+        if self.subcursors.is_empty() {
+            None
+        } else {
+            let mut res = None;
+            for i in 0 .. self.subcursors.len() {
+                match res {
+                    Some(winning) => {
+                        let x = self.subcursors[i];
+                        let y = self.subcursors[winning];
+                        let c = sortfunc(x,y);
+                        if c<0 {
+                            res = Some(i)
+                        }
+                    },
+                    None => {
+                        res = Some(i)
+                    }
+                }
+            }
+            res
+        }
+    }
+
+    fn findMin(&self) -> Option<usize> {
+        let sortfunc = |a:&ICursor,b:&ICursor| a.KeyCompare(&*b.Key());
+        self.find(&sortfunc)
+    }
+
+    fn findMax(&self) -> Option<usize> {
+        let sortfunc = |a:&ICursor,b:&ICursor| b.KeyCompare(&*a.Key());
+        self.find(&sortfunc)
+    }
+
+    // TODO this thing wants to own its subcursors.  The .NET
+    // version propagates dispose().  How to do this?
+    // See Drop trait below.
+
+    fn Create(subs: Vec<&'a mut ICursor>) -> MultiCursor<'a> {
+        let s = subs.into_boxed_slice();
+        MultiCursor { subcursors: s, cur : None, dir : Direction::WANDERING }
+    }
+
+}
+
+impl<'a> Drop for MultiCursor<'a> {
+    fn drop(&mut self) {
+        // TODO
+        println!("Dropping!");
+    }
+}
+
+impl<'a> ICursor for MultiCursor<'a> {
+    fn IsValid(&self) -> bool {
+        match self.cur {
+            Some(i) => self.subcursors[i].IsValid(),
+            None => false
+        }
+    }
+
+    fn First(&mut self) {
+        for i in 0 .. self.subcursors.len() {
+            self.subcursors[i].First();
+        }
+        self.cur = self.findMin();
+        self.dir = Direction::WANDERING; // TODO why?
+    }
+
+    fn Last(&mut self) {
+        for i in 0 .. self.subcursors.len() {
+            self.subcursors[i].Last();
+        }
+        self.cur = self.findMax();
+        self.dir = Direction::WANDERING; // TODO why?
+    }
+
+    // the following members are asking for the value of cur (an option)
+    // without checking or matching on it.  they'll crash if cur is None.
+    // this matches the C# behavior and the expected behavior of ICursor.
+    // don't call these methods without checking IsValid() first.
+
+    fn Key(&self) -> Box<[u8]> {
+        match self.cur {
+            Some(icur) => self.subcursors[icur].Key(),
+            None => panic!()
+        }
+    }
+
+    fn KeyCompare(&self, k:&[u8]) -> i32 {
+        match self.cur {
+            Some(icur) => self.subcursors[icur].KeyCompare(k),
+            None => panic!()
+        }
+    }
+
+    fn Value(&self) -> Blob {
+        match self.cur {
+            Some(icur) => self.subcursors[icur].Value(),
+            None => panic!()
+        }
+    }
+
+    fn ValueLength(&self) -> u32 {
+        match self.cur {
+            Some(icur) => self.subcursors[icur].ValueLength(),
+            None => panic!()
+        }
+    }
+
+    fn Next(&mut self) {
+        match self.cur {
+            Some(icur) => {
+                let cur = self.subcursors[icur];
+                let k = cur.Key();
+                for j in 0 .. self.subcursors.len() {
+                    let csr = self.subcursors[j];
+                    if (self.dir != Direction::FORWARD) && (icur != j) { 
+                        csr.Seek (&*k, SeekOp::SEEK_GE); 
+                    }
+                    if csr.IsValid() && (0 == csr.KeyCompare(&*k)) { 
+                        csr.Next(); 
+                    }
+                }
+                self.cur = self.findMin();
+                self.dir = Direction::FORWARD;
+            },
+            None => panic!()
+        }
+    }
+
+    fn Prev(&mut self) {
+        match self.cur {
+            Some(icur) => {
+                let cur = self.subcursors[icur];
+                let k = cur.Key();
+                for j in 0 .. self.subcursors.len() {
+                    let csr = self.subcursors[j];
+                    if (self.dir != Direction::BACKWARD) && (icur != j) { 
+                        csr.Seek (&*k, SeekOp::SEEK_LE); 
+                    }
+                    if csr.IsValid() && (0 == csr.KeyCompare(&*k)) { 
+                        csr.Prev(); 
+                    }
+                }
+            },
+            None => panic!()
+        }
+        self.cur = self.findMax();
+        self.dir = Direction::BACKWARD;
+    }
+
+    fn Seek(&mut self, k:&[u8], sop:SeekOp) {
+        self.cur = None;
+        self.dir = Direction::WANDERING;
+        let mut found = false;
+        for j in 0 .. self.subcursors.len() {
+            let csr = self.subcursors[j];
+            csr.Seek(k,sop);
+            if self.cur.is_none() && csr.IsValid() && ( (SeekOp::SEEK_EQ == sop) || (0 == csr.KeyCompare (k)) ) { 
+                self.cur = Some(j);
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            match sop {
+                SeekOp::SEEK_GE => {
+                    self.cur = self.findMin();
+                    if self.cur.is_some() { 
+                        self.dir = Direction::FORWARD; 
+                    }
+                },
+                SeekOp::SEEK_LE => {
+                    self.cur = self.findMax();
+                    if self.cur.is_some() { 
+                        self.dir = Direction::BACKWARD; 
+                    }
+                },
+                _ => ()
+            }
+        }
+    }
+
+}
+
 
 /*
 
@@ -3117,4 +3305,6 @@ fn main()
 // no currying, no partial application
 // no significant whitespace
 // strings are utf8, no converting things
+// seriously miss full type inference
+//
 
