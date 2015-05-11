@@ -15,6 +15,7 @@
 */
 
 #![feature(collections)]
+#![feature(box_syntax)]
 
 use std::io;
 use std::io::Seek;
@@ -253,7 +254,7 @@ mod bcmp {
         (xlen - ylen) as i32
     }
 
-    fn PrefixMatch (x:&[u8], y:&[u8], max:usize) -> usize {
+    pub fn PrefixMatch (x:&[u8], y:&[u8], max:usize) -> usize {
         let xlen = x.len();
         let ylen = y.len();
         let len = if xlen<ylen { xlen } else { ylen };
@@ -1071,7 +1072,7 @@ mod bt {
         prevLeaf : usize,
         prefixLen : usize,
         firstLeaf : usize,
-        leaves : Vec<Box<pgitem>>,
+        leaves : Vec<pgitem>,
         blk : PageBlock,
     }
 
@@ -1084,10 +1085,16 @@ mod bt {
     use super::IPendingSegment;
     use super::SeekWrite;
     use super::Varint;
+    use super::Blob;
+    use super::bcmp;
 
     fn CreateFromSortedSequenceOfKeyValuePairs(fs:&mut SeekWrite, pageManager:&mut IPages, source:&Iterator<Item=kvp>) {
 
-        fn writeOverflow (startingBlock: PageBlock, ba: &mut Read, pageManager: &mut IPages, fs: &mut SeekWrite) {
+        fn writeOverflow(startingBlock: PageBlock, 
+                         ba: &mut Read, 
+                         pageManager: &mut IPages, 
+                         fs: &mut SeekWrite
+                        ) -> io::Result<(usize,PageBlock)> {
             fn buildFirstPage(ba:&mut Read, pbFirstOverflow : &mut PageBuilder, pageSize : usize) -> io::Result<(usize,bool)> {
                 //let siz = std::mem::size_of::<i32> as usize;
                 let siz = 4;
@@ -1284,19 +1291,24 @@ mod bt {
             let mut pbFirstOverflow = PageBuilder::new(pageSize);
             let mut pbOverflow = PageBuilder::new(pageSize);
 
-            writeOneBlock(0, startingBlock, fs, ba, pageSize, &mut pbOverflow, &mut pbFirstOverflow, pageManager, &token);
+            writeOneBlock(0, startingBlock, fs, ba, pageSize, &mut pbOverflow, &mut pbFirstOverflow, pageManager, &token)
         }
 
-        fn writeLeaves(leavesBlk:PageBlock,
-                       pageManager: &mut IPages
-                       ) -> (PageBlock,Vec<pgitem>,usize) {
+        fn writeLeaves<I>(leavesBlk:PageBlock,
+                       pageManager: &mut IPages,
+                       source: I,
+                       vbuf: &mut [u8],
+                       fs: &mut SeekWrite, 
+                       pb: &mut PageBuilder,
+                       token: &mut IPendingSegment,
+                       ) -> io::Result<(PageBlock,Vec<pgitem>,usize)> where I: Iterator<Item=kvp> {
             // 2 for the page type and flags
             // 4 for the prev page
             // 2 for the stored count
             // 4 for lastInt32 (which isn't in pb.Available)
             let LEAF_PAGE_OVERHEAD = 2 + 4 + 2 + 4;
 
-            fn buildLeaf(st: LeafState, pb: &mut PageBuilder) {
+            fn buildLeaf(st: &LeafState, pb: &mut PageBuilder) {
                 pb.Reset();
                 pb.PutByte(PageType::LEAF_NODE as u8);
                 pb.PutByte(0u8); // flags
@@ -1304,21 +1316,19 @@ mod bt {
                 // TODO prefixLen is one byte.  should it be two?
                 pb.PutByte(st.prefixLen as u8);
                 if st.prefixLen > 0 {
-                    let k = st.keys[0].key;
-                    pb.PutArray(&k[0 .. st.prefixLen]);
+                    pb.PutArray(&st.keys[0].key[0 .. st.prefixLen]);
                 }
                 pb.PutInt16 (st.keys.len() as i16);
-                for lp in st.keys {
-                    let k = lp.key;
+                for lp in &st.keys {
                     match lp.kLoc {
                         KeyLocation::Inline => {
                             pb.PutByte(0u8); // flags
-                            pb.PutVarint(k.len() as u64);
-                            pb.PutArray(&k[st.prefixLen .. k.len() - st.prefixLen]);
+                            pb.PutVarint(lp.key.len() as u64);
+                            pb.PutArray(&lp.key[st.prefixLen .. lp.key.len() - st.prefixLen]);
                         },
                         KeyLocation::Overflow(kpage) => {
                             pb.PutByte(ValueFlag::FLAG_OVERFLOW as u8);
-                            pb.PutVarint(k.len() as u64);
+                            pb.PutVarint(lp.key.len() as u64);
                             pb.PutInt32(kpage as i32);
                         },
                     }
@@ -1326,7 +1336,7 @@ mod bt {
                         ValueLocation::Tombstone => {
                             pb.PutByte(ValueFlag::FLAG_TOMBSTONE as u8);
                         },
-                        ValueLocation::Buffer (vbuf) => {
+                        ValueLocation::Buffer (ref vbuf) => {
                             pb.PutByte(0u8);
                             pb.PutVarint(vbuf.len() as u64);
                             pb.PutArray(&vbuf);
@@ -1340,14 +1350,14 @@ mod bt {
                 }
             }
 
-            fn writeLeaf(st: LeafState, 
+            fn writeLeaf(st: &mut LeafState, 
                          isRootPage: bool, 
                          pb: &mut PageBuilder, 
                          fs: &mut SeekWrite, 
                          pageSize: usize,
                          pageManager: &mut IPages,
                          token: &IPendingSegment,
-                         ) -> LeafState { 
+                         ) { 
                 buildLeaf(st, pb);
                 let thisPageNumber = st.blk.firstPage;
                 let firstLeaf = if st.leaves.is_empty() { thisPageNumber } else { st.firstLeaf };
@@ -1366,18 +1376,16 @@ mod bt {
                 if nextBlk.firstPage != (thisPageNumber+1) {
                     utils::SeekPage(fs.as_seek(), pageSize, nextBlk.firstPage);
                 }
-                let pg = pgitem {page:thisPageNumber, key:st.keys[0].key};
-                st.leaves.push(Box::new(pg));
-                LeafState
-                    {
-                        sofarLeaf: 0,
-                        keys: Vec::new(),
-                        prevLeaf: thisPageNumber,
-                        prefixLen: 0,
-                        firstLeaf: firstLeaf,
-                        blk: nextBlk,
-                        leaves: st.leaves,
-                    }
+                let mut ba = Vec::new();
+                ba.push_all(&st.keys[0].key);
+                let pg = pgitem {page:thisPageNumber, key:ba.into_boxed_slice()};
+                st.leaves.push(pg);
+                st.sofarLeaf = 0;
+                st.keys = Vec::new();
+                st.prevLeaf = thisPageNumber;
+                st.prefixLen = 0;
+                st.firstLeaf = firstLeaf;
+                st.blk = nextBlk;
             }
 
             // TODO can the overflow page number become a varint?
@@ -1414,7 +1422,7 @@ mod bt {
                     ValueLocation::Tombstone => {
                         1
                     },
-                    ValueLocation::Buffer(vbuf) => {
+                    ValueLocation::Buffer(ref vbuf) => {
                         let vlen = vbuf.len();
                         1 + Varint::SpaceNeededFor(vlen as u64) + vlen
                     },
@@ -1435,41 +1443,34 @@ mod bt {
                 if k.len() > 255 { 255 } else { k.len() }
             }
 
-        }
-    }
+            // this is the body of writeLeaves
+            //let source = seq { csr.First(); while csr.IsValid() do yield (csr.Key(), csr.Value()); csr.Next(); done }
+            let mut st = LeafState {
+                sofarLeaf:0,
+                firstLeaf:0,
+                prevLeaf:0,
+                keys:Vec::new(),
+                prefixLen:0,
+                leaves:Vec::new(),
+                blk:leavesBlk,
+                };
 
-}
-
-/*
-
-module bt =
-
-    let CreateFromSortedSequenceOfKeyValuePairs(fs:Stream, pageManager:IPages, source:seq<kvp>) = 
-        let pageSize = pageManager.PageSize
-        let token = pageManager.Begin()
-        let pbFirstOverflow = PageBuilder(pageSize)
-        let pbOverflow = PageBuilder(pageSize)
-
-        let pb = PageBuilder(pageSize)
-
-        let writeLeaves (leavesBlk:PageBlock) :PageBlock*(pgitem list)*int =
-            let vbuf:byte[] = Array.zeroCreate pageSize
-
-            let foldLeaf st (pair:kvp) = 
-                let k = pair.Key
+            for mut pair in source {
+                let k = pair.Key;
                 // assert k <> null
                 // but pair.Value might be null (a tombstone)
 
                 // TODO is it possible for this to conclude that the key must be overflowed
                 // when it would actually fit because of prefixing?
 
-                let blkAfterKey,kloc = 
-                    if k.Length <= maxKeyInline then
-                        st.blk, Inline
-                    else
-                        let vPage = st.blk.firstPage
-                        let _,newBlk = writeOverflow st.blk (new MemoryStream(k))
-                        newBlk, (Overflow (vPage))
+                let (blkAfterKey,kloc) = 
+                    if k.len() <= maxKeyInline {
+                        (st.blk, KeyLocation::Inline)
+                    } else {
+                        let vPage = st.blk.firstPage;
+                        let (_,newBlk) = try!(writeOverflow(st.blk, &mut &*k, pageManager, fs));
+                        (newBlk, KeyLocation::Overflow(vPage))
+                    };
 
                 // the max limit of an inline value is when the key is inline
                 // on a new page.
@@ -1479,165 +1480,196 @@ module bt =
                     - LEAF_PAGE_OVERHEAD 
                     - 1 // prefixLen
                     - 1 // key flags
-                    - Varint.SpaceNeededFor(int64 k.Length)
-                    - k.Length 
+                    - Varint::SpaceNeededFor(k.len() as u64)
+                    - k.len() 
                     - 1 // value flags
+                    ;
 
                 // availableOnNewPageAfterKey needs to accomodate the value and its length as a varint.
                 // it might already be <=0 because of the key length
 
                 let maxValueInline = 
-                    if availableOnNewPageAfterKey > 0 then                    
-                        let neededForVarintLen = Varint.SpaceNeededFor(int64 availableOnNewPageAfterKey)
-                        let avail2 = availableOnNewPageAfterKey - neededForVarintLen
-                        if avail2 > 0 then avail2 else 0
-                    else 0
+                    if availableOnNewPageAfterKey > 0 {
+                        let neededForVarintLen = Varint::SpaceNeededFor(availableOnNewPageAfterKey as u64);
+                        let avail2 = availableOnNewPageAfterKey - neededForVarintLen;
+                        if avail2 > 0 { avail2 } else { 0 }
+                    } else {
+                        0
+                    };
 
-                let blkAfterValue, vloc = 
-                    match pair.Value with
-                    | Blob.Tombstone ->
-                        blkAfterKey, Tombstone
-                    | _ ->
-                        match kloc with
-                         | Inline ->
-                            if maxValueInline = 0 then
-                                match pair.Value with
-                                | Blob.Tombstone ->
-                                    blkAfterKey, Tombstone
-                                | Blob.Stream strm ->
-                                    let valuePage = blkAfterKey.firstPage
-                                    let len,newBlk = writeOverflow blkAfterKey strm
-                                    newBlk, (Overflowed (len,valuePage))
-                                | Blob.Array a ->
-                                    if a.Length = 0 then
-                                        blkAfterKey, Buffer a
-                                    else
-                                        let valuePage = blkAfterKey.firstPage
-                                        let strm = new MemoryStream(a)
-                                        let len,newBlk = writeOverflow blkAfterKey strm
-                                        newBlk, (Overflowed (len,valuePage))
-                            else
-                                match pair.Value with
-                                | Blob.Tombstone ->
-                                    blkAfterKey, Tombstone
-                                | Blob.Stream strm ->
-                                    let vread = utils::ReadFully2(strm, vbuf, 0, maxValueInline+1)
-                                    if vread < maxValueInline then
-                                        // TODO this alloc+copy is unfortunate
-                                        let va:byte[] = Array.zeroCreate vread
-                                        System.Array.Copy (vbuf, 0, va, 0, vread)
-                                        blkAfterKey, Buffer va
-                                    else
-                                        let valuePage = blkAfterKey.firstPage
-                                        let len,newBlk = writeOverflow blkAfterKey (new myConcatStream(vbuf, vread, strm))
-                                        newBlk, (Overflowed (len,valuePage))
-                                | Blob.Array a ->
-                                    if a.Length < maxValueInline then
-                                        blkAfterKey, Buffer a
-                                    else
-                                        let valuePage = blkAfterKey.firstPage
-                                        let strm = new MemoryStream(a)
-                                        let len,newBlk = writeOverflow blkAfterKey strm
-                                        newBlk, (Overflowed (len,valuePage))
+                let (blkAfterValue, vloc) = 
+                    match pair.Value {
+                        Blob::Tombstone => {
+                            (blkAfterKey, ValueLocation::Tombstone)
+                        },
+                        _ => match kloc {
+                             KeyLocation::Inline => {
+                                if maxValueInline == 0 {
+                                    match pair.Value {
+                                        Blob::Tombstone => {
+                                            (blkAfterKey, ValueLocation::Tombstone)
+                                        },
+                                        Blob::Stream(ref mut strm) => {
+                                            let valuePage = blkAfterKey.firstPage;
+                                            let (len,newBlk) = try!(writeOverflow(blkAfterKey, &mut *strm, pageManager, fs));
+                                            (newBlk, ValueLocation::Overflowed(len,valuePage))
+                                        },
+                                        Blob::Array(a) => {
+                                            if a.len() == 0 {
+                                                (blkAfterKey, ValueLocation::Buffer(a))
+                                            } else {
+                                                let valuePage = blkAfterKey.firstPage;
+                                                let strm = a; // TODO need a Read for this
+                                                let (len,newBlk) = try!(writeOverflow(blkAfterKey, &mut &*strm, pageManager, fs));
+                                                (newBlk, ValueLocation::Overflowed(len,valuePage))
+                                            }
+                                        },
+                                    }
+                                } else {
+                                    match pair.Value {
+                                        Blob::Tombstone => {
+                                            (blkAfterKey, ValueLocation::Tombstone)
+                                        },
+                                        Blob::Stream(ref mut strm) => {
+                                            let vread = try!(utils::ReadFully(&mut *strm, &mut vbuf[0 .. maxValueInline+1]));
+                                            let vbuf = &vbuf[0 .. vread];
+                                            if vread < maxValueInline {
+                                                // TODO this alloc+copy is unfortunate
+                                                let mut va = Vec::new();
+                                                for i in 0 .. vbuf.len() {
+                                                    va.push(vbuf[i]);
+                                                }
+                                                (blkAfterKey, ValueLocation::Buffer(va.into_boxed_slice()))
+                                            } else {
+                                                let valuePage = blkAfterKey.firstPage;
+                                                let (len,newBlk) = try!(writeOverflow(blkAfterKey, &mut (vbuf.chain(strm)), pageManager, fs));
+                                                (newBlk, ValueLocation::Overflowed (len,valuePage))
+                                            }
+                                        },
+                                        Blob::Array(a) => {
+                                            if a.len() < maxValueInline {
+                                                (blkAfterKey, ValueLocation::Buffer(a))
+                                            } else {
+                                                let valuePage = blkAfterKey.firstPage;
+                                                let strm = a; // TODO need a Read for this
+                                                let (len,newBlk) = try!(writeOverflow(blkAfterKey, &mut &*strm, pageManager, fs));
+                                                (newBlk, ValueLocation::Overflowed(len,valuePage))
+                                            }
+                                        },
+                                    }
+                                }
+                             },
 
-                         | Overflow _ ->
-                            match pair.Value with
-                            | Blob.Tombstone ->
-                                blkAfterKey, Tombstone
-                            | Blob.Stream strm ->
-                                let valuePage = blkAfterKey.firstPage
-                                let len,newBlk = writeOverflow blkAfterKey strm
-                                newBlk, (Overflowed (len,valuePage))
-                            | Blob.Array a ->
-                                if a.Length = 0 then
-                                    blkAfterKey, Buffer a
-                                else
-                                    let valuePage = blkAfterKey.firstPage
-                                    let strm = new MemoryStream(a)
-                                    let len,newBlk = writeOverflow blkAfterKey strm
-                                    newBlk, (Overflowed (len,valuePage))
-
-                let lp = {
-                            key=k
-                            kLoc=kloc
-                            vLoc=vloc
-                            }
+                             KeyLocation::Overflow(_) => {
+                                match pair.Value {
+                                    Blob::Tombstone => {
+                                        (blkAfterKey, ValueLocation::Tombstone)
+                                    },
+                                    Blob::Stream(ref mut strm) => {
+                                        let valuePage = blkAfterKey.firstPage;
+                                        let (len,newBlk) = try!(writeOverflow(blkAfterKey, &mut *strm, pageManager, fs));
+                                        (newBlk, ValueLocation::Overflowed(len,valuePage))
+                                    },
+                                    Blob::Array(a) => {
+                                        if a.len() == 0 {
+                                            (blkAfterKey, ValueLocation::Buffer(a))
+                                        } else {
+                                            let valuePage = blkAfterKey.firstPage;
+                                            let strm = a; // TODO need a Read for this
+                                            let (len,newBlk) = try!(writeOverflow(blkAfterKey, &mut &*strm, pageManager, fs));
+                                            (newBlk, ValueLocation::Overflowed(len,valuePage))
+                                        }
+                                    }
+                                }
+                             }
+                        }
+                };
 
                 // whether/not the key/value are to be overflowed is now already decided.
                 // now all we have to do is decide if this key/value are going into this leaf
                 // or not.  note that it is possible to overflow these and then have them not
                 // fit into the current leaf and end up landing in the next leaf.
 
-                let st = {st with blk=blkAfterValue}
+                st.blk=blkAfterValue;
 
-                let st = 
-                    // TODO ignore prefixLen for overflowed keys?
-                    let newPrefixLen = 
-                        if List.isEmpty st.keys then
-                            defaultPrefixLen k
-                        else
-                            bcmp.PrefixMatch ((List.head st.keys).key) k st.prefixLen
-                    let sofar = 
-                        if newPrefixLen < st.prefixLen then
-                            // the prefixLen would change with the addition of this key,
-                            // so we need to recalc sofar
-                            // TODO is it a problem that we're doing this without List.rev ?
-                            List.sumBy (fun lp -> leafPairSize newPrefixLen lp) st.keys
-                        else
-                            st.sofarLeaf
-                    let available = pageSize - (sofar + LEAF_PAGE_OVERHEAD + 1 + newPrefixLen)
-                    let needed = kLocNeed k kloc newPrefixLen + vLocNeed vloc
-                    let fit = (available >= needed)
-                    let writeThisPage = (not (List.isEmpty st.keys)) && (not fit)
-
-                    if writeThisPage then
-                        writeLeaf st false
-                    else
-                        st
-
-                let st =
-                    // TODO ignore prefixLen for overflowed keys?
-                    let newPrefixLen = 
-                        if List.isEmpty st.keys then
-                            defaultPrefixLen k
-                        else
-                            bcmp.PrefixMatch ((List.head st.keys).key) k st.prefixLen
-                    let sofar = 
-                        if newPrefixLen < st.prefixLen then
-                            // the prefixLen will change with the addition of this key,
-                            // so we need to recalc sofar
-                            // TODO is it a problem that we're doing this without List.rev ?
-                            List.sumBy (fun lp -> leafPairSize newPrefixLen lp) st.keys
-                        else
-                            st.sofarLeaf
-                    {st with 
-                        sofarLeaf=sofar + leafPairSize newPrefixLen lp
-                        keys=lp::st.keys
-                        prefixLen=newPrefixLen
+                // TODO ignore prefixLen for overflowed keys?
+                let newPrefixLen = 
+                    if st.keys.len()==0 {
+                        defaultPrefixLen(&k)
+                    } else {
+                        bcmp::PrefixMatch(&*st.keys[0].key, &k, st.prefixLen)
+                    };
+                let sofar = 
+                    if newPrefixLen < st.prefixLen {
+                        // the prefixLen would change with the addition of this key,
+                        // so we need to recalc sofar
+                        // TODO is it a problem that we're doing this without List.rev ?
+                        let mut sum = 0;
+                        for lp in &st.keys {
+                            sum = sum + leafPairSize(newPrefixLen, lp);
                         }
-                        
-                st
+                        // TODO iter sum?
+                        sum
+                    } else {
+                        st.sofarLeaf
+                    };
+                let available = pageSize - (sofar + LEAF_PAGE_OVERHEAD + 1 + newPrefixLen);
+                let needed = kLocNeed(&k, &kloc, newPrefixLen) + vLocNeed(&vloc);
+                let fit = (available >= needed);
+                let writeThisPage = (! st.keys.is_empty()) && (! fit);
 
-            // this is the body of writeLeaves
-            //let source = seq { csr.First(); while csr.IsValid() do yield (csr.Key(), csr.Value()); csr.Next(); done }
-            let initialState = {
-                sofarLeaf=0
-                firstLeaf=0
-                prevLeaf=0
-                keys=[]
-                prefixLen=(-1)
-                leaves=[]
-                blk=leavesBlk
+                if writeThisPage {
+                    writeLeaf(&mut st, false, pb, fs, pageSize, pageManager, token)
                 }
-            let middleState = Seq.fold foldLeaf initialState source
-            let finalState = 
-                if not (List.isEmpty middleState.keys) then
-                    let isRootNode = List.isEmpty middleState.leaves
-                    writeLeaf middleState isRootNode
-                else
-                    middleState
-            (finalState.blk,finalState.leaves,finalState.firstLeaf)
 
+                // TODO ignore prefixLen for overflowed keys?
+                let newPrefixLen = 
+                    if st.keys.is_empty() {
+                        defaultPrefixLen(&k)
+                    } else {
+                        bcmp::PrefixMatch(&*st.keys[0].key, &k, st.prefixLen)
+                    };
+                let sofar = 
+                    if newPrefixLen < st.prefixLen {
+                        // the prefixLen will change with the addition of this key,
+                        // so we need to recalc sofar
+                        // TODO is it a problem that we're doing this without List.rev ?
+                        let mut sum = 0;
+                        for lp in &st.keys {
+                            sum = sum + leafPairSize(newPrefixLen, lp);
+                        }
+                        // TODO iter sum?
+                        sum
+                    } else {
+                        st.sofarLeaf
+                    };
+                let lp = LeafPair {
+                            key:k,
+                            kLoc:kloc,
+                            vLoc:vloc,
+                            };
+
+                st.sofarLeaf=sofar + leafPairSize(newPrefixLen, &lp);
+                st.keys.push(box lp);
+                st.prefixLen=newPrefixLen;
+            }
+
+            if !st.keys.is_empty() {
+                let isRootNode = st.leaves.is_empty();
+                writeLeaf(&mut st, isRootNode, pb, fs, pageSize, pageManager, token)
+            }
+            Ok((st.blk,st.leaves,st.firstLeaf))
+        }
+
+    }
+
+}
+
+/*
+
+module bt =
+
+    let CreateFromSortedSequenceOfKeyValuePairs(fs:Stream, pageManager:IPages, source:seq<kvp>) = 
         // this is the body of Create
         let startingBlk = pageManager.GetBlock(token)
         utils.SeekPage(fs, pageSize, startingBlk.firstPage)
@@ -3296,5 +3328,6 @@ fn main()
 // strings are utf8, no converting things
 // seriously miss full type inference
 // weird that it's safe to use unsigned
+// don't avoid mutability.  in rust, it's safe, and avoiding it is painful.
 //
 
