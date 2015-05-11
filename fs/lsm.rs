@@ -33,21 +33,19 @@ struct kvp {
     Value : Blob,
 }
 
-trait IPendingSegment {
-}
-
-type PageNum = u32;
-type PageSize = u32;
+struct IPendingSegment;
 
 struct PageBlock {
-    firstPage : PageNum,
-    lastPage : PageNum,
+    firstPage : usize,
+    lastPage : usize,
 }
 
 impl PageBlock {
-    // TODO constructor?
+    fn new(first : usize, last : usize) -> PageBlock {
+        PageBlock { firstPage:first, lastPage:last }
+    }
 
-    fn CountPages(&self) -> u32 {
+    fn CountPages(&self) -> usize {
         self.lastPage - self.firstPage + 1
     }
 }
@@ -58,10 +56,10 @@ struct Guid {
 
 // TODO return Result
 trait IPages {
-    fn PageSize() -> PageSize;
-    fn Begin() -> IPendingSegment;
-    fn GetBlock(token:IPendingSegment) -> PageBlock;
-    fn End(token:IPendingSegment, page:PageNum) -> Guid;
+    fn PageSize(&self) -> usize;
+    fn Begin(&mut self) -> IPendingSegment;
+    fn GetBlock(&mut self, token:&IPendingSegment) -> PageBlock;
+    fn End(&mut self, token:IPendingSegment, page:usize) -> Guid;
 }
 
 #[derive(PartialEq,Copy,Clone)]
@@ -79,8 +77,16 @@ trait ICursor : Drop {
     fn Next(&mut self);
     fn Prev(&mut self);
     fn IsValid(&self) -> bool;
-    fn Key(&self) -> Box<[u8]>;
+
+    // TODO we wish Key() could return a reference, but the lifetime
+    // would need to be "until the next call", and Rust can't really
+    // do that.
+    fn Key(&self) -> Box<[u8]>; 
+
+    // TODO similarly with Value().  When the Blob is an array, we would
+    // prefer to return a reference to the bytes in the page.
     fn Value(&self) -> Blob;
+
     fn ValueLength(&self) -> i32; // because a negative length is a tombstone
     fn KeyCompare(&self, k:&[u8]) -> i32;
 
@@ -126,6 +132,11 @@ trait IWriteLock : Drop {
 trait SeekRead : Seek + Read {
 }
 
+trait SeekWrite {
+    fn as_seek(&mut self) -> &mut Seek;
+    fn as_write(&mut self) -> &mut Write;
+}
+
 trait IDatabaseFile {
     fn OpenForReading() -> SeekRead;
     fn OpenForWriting() -> SeekRead;
@@ -134,12 +145,12 @@ trait IDatabaseFile {
 struct DbSettings {
     AutoMergeEnabled : bool,
     AutoMergeMinimumPages : i32,
-    DefaultPageSize : PageSize,
+    DefaultPageSize : usize,
     PagesPerBlock : u32,
 }
 
 struct SegmentInfo {
-    root : PageNum,
+    root : usize,
     age : i32,
     blocks : Vec<PageBlock>
 }
@@ -159,7 +170,7 @@ trait IDatabase : Drop {
     // TODO consider OpenCursorOnSpecificSegment(seq<Guid>)
 
     // fn ListSegments : unit -> (Guid list)*Map<Guid,SegmentInfo>
-    fn PageSize() -> PageSize;
+    fn PageSize() -> usize;
 
     // fn RequestWriteLock : int->Async<IWriteLock>
     // fn RequestWriteLock : unit->Async<IWriteLock>
@@ -168,34 +179,36 @@ trait IDatabase : Drop {
     // fn BackgroundMergeJobs : unit->Async<Guid list> list // TODO have Auto in the name of this?
 }
 
-struct pgitem {
-    page : PageNum,
-    key : [u8],
-    // TODO constructor impl ?
-}
+mod utils {
+    use std::io;
+    use std::io::Seek;
+    use std::io::Read;
+    use std::io::Write;
+    use std::io::SeekFrom;
 
-fn SeekPage(strm:&mut Seek, pageSize:PageSize, pageNumber:PageNum) {
-    if 0==pageNumber { panic!("invalid page number") }
-    let pos = (pageNumber - 1) * pageSize;
-    strm.seek(SeekFrom::Start(pos as u64));
-}
-
-fn ReadFully(strm:&mut Read, buf: &mut [u8]) -> io::Result<usize> {
-    let mut sofar = 0;
-    let len = buf.len();
-    loop {
-        let cur = &mut buf[sofar..len];
-        let n = try!(strm.read(cur));
-        if n==0 {
-            break;
-        }
-        sofar += n;
-        if sofar==len {
-            break;
-        }
+    pub fn SeekPage(strm:&mut Seek, pageSize:usize, pageNumber:usize) {
+        if 0==pageNumber { panic!("invalid page number") }
+        let pos = (pageNumber - 1) * pageSize;
+        strm.seek(SeekFrom::Start(pos as u64));
     }
-    let res : io::Result<usize> = Ok(sofar);
-    res
+
+    pub fn ReadFully(strm:&mut Read, buf: &mut [u8]) -> io::Result<usize> {
+        let mut sofar = 0;
+        let len = buf.len();
+        loop {
+            let cur = &mut buf[sofar..len];
+            let n = try!(strm.read(cur));
+            if n==0 {
+                break;
+            }
+            sofar += n;
+            if sofar==len {
+                break;
+            }
+        }
+        let res : io::Result<usize> = Ok(sofar);
+        res
+    }
 }
 
 mod bcmp {
@@ -267,7 +280,7 @@ mod bcmp {
 }
 
 mod Varint {
-    fn SpaceNeededFor(v:u64) -> usize {
+    pub fn SpaceNeededFor(v:u64) -> usize {
         if v<=240 { 1 }
         else if v<=2287 { 2 }
         else if v<=67823 { 3 }
@@ -279,32 +292,32 @@ mod Varint {
         else { 9 }
     }
 
-    pub fn read (buf:&[u8], cur:usize) -> (usize,i64) {
+    pub fn read (buf:&[u8], cur:usize) -> (usize,u64) {
         let a0 = buf[cur] as u64;
         if a0 <= 240u64 { 
-            (cur+1, a0 as i64)
+            (cur+1, a0)
         } else if a0 <= 248u64 {
             let a1 = buf[cur+1] as u64;
             let r = (240u64 + 256u64 * (a0 - 241u64) + a1);
-            (cur+2, r as i64)
+            (cur+2, r)
         } else if a0 == 249u64 {
             let a1 = buf[cur+1] as u64;
             let a2 = buf[cur+2] as u64;
             let r = (2288u64 + 256u64 * a1 + a2);
-            (cur+3, r as i64)
+            (cur+3, r)
         } else if a0 == 250u64 {
             let a1 = buf[cur+1] as u64;
             let a2 = buf[cur+2] as u64;
             let a3 = buf[cur+3] as u64;
             let r = (a1<<16) | (a2<<8) | a3;
-            (cur+4, r as i64)
+            (cur+4, r)
         } else if a0 == 251u64 {
             let a1 = buf[cur+1] as u64;
             let a2 = buf[cur+2] as u64;
             let a3 = buf[cur+3] as u64;
             let a4 = buf[cur+4] as u64;
             let r = (a1<<24) | (a2<<16) | (a3<<8) | a4;
-            (cur+5, r as i64)
+            (cur+5, r)
         } else if a0 == 252u64 {
             let a1 = buf[cur+1] as u64;
             let a2 = buf[cur+2] as u64;
@@ -312,7 +325,7 @@ mod Varint {
             let a4 = buf[cur+4] as u64;
             let a5 = buf[cur+5] as u64;
             let r = (a1<<32) | (a2<<24) | (a3<<16) | (a4<<8) | a5;
-            (cur+6, r as i64)
+            (cur+6, r)
         } else if a0 == 253u64 {
             let a1 = buf[cur+1] as u64;
             let a2 = buf[cur+2] as u64;
@@ -321,7 +334,7 @@ mod Varint {
             let a5 = buf[cur+5] as u64;
             let a6 = buf[cur+6] as u64;
             let r = (a1<<40) | (a2<<32) | (a3<<24) | (a4<<16) | (a5<<8) | a6;
-            (cur+7, r as i64)
+            (cur+7, r)
         } else if a0 == 254u64 {
             let a1 = buf[cur+1] as u64;
             let a2 = buf[cur+2] as u64;
@@ -331,7 +344,7 @@ mod Varint {
             let a6 = buf[cur+6] as u64;
             let a7 = buf[cur+7] as u64;
             let r = (a1<<48) | (a2<<40) | (a3<<32) | (a4<<24) | (a5<<16) | (a6<<8) | a7;
-            (cur+8, r as i64)
+            (cur+8, r)
         } else {
             let a1 = buf[cur+1] as u64;
             let a2 = buf[cur+2] as u64;
@@ -342,13 +355,11 @@ mod Varint {
             let a7 = buf[cur+7] as u64;
             let a8 = buf[cur+8] as u64;
             let r = (a1<<56) | (a2<<48) | (a3<<40) | (a4<<32) | (a5<<24) | (a6<<16) | (a7<<8) | a8;
-            (cur+9, r as i64)
+            (cur+9, r)
         }
     }
 
-    pub fn write (buf:&mut [u8], cur:usize, ov:i64) -> usize {
-        // assert ov >= 0
-        let v = ov as u64;
+    pub fn write (buf:&mut [u8], cur:usize, v:u64) -> usize {
         if v<=240u64 { 
             buf[cur] = v as u8;
             cur + 1
@@ -533,7 +544,7 @@ impl PageBuilder {
     }
 
     fn SetPageFlag(&mut self, x:u8) {
-        self.buf[1] = self.buf[1] | x;
+        self.buf[1] = self.buf[1] | (x);
     }
 
     fn PutByte(&mut self, x:u8) {
@@ -542,7 +553,7 @@ impl PageBuilder {
     }
 
     fn PutStream2(&mut self, s:&mut Read, len:usize) -> io::Result<usize> {
-        let n = try!(ReadFully(s, &mut self.buf[self.cur .. self.cur + len]));
+        let n = try!(utils::ReadFully(s, &mut self.buf[self.cur .. self.cur + len]));
         self.cur = self.cur + n;
         let res : io::Result<usize> = Ok(n);
         res
@@ -598,7 +609,7 @@ impl PageBuilder {
         write_i16_be(&mut self.buf[at .. at+siz], ov);
     }
 
-    fn PutVarint(&mut self, ov:i64) {
+    fn PutVarint(&mut self, ov:u64) {
         self.cur = Varint::write(&mut *self.buf, self.cur, ov);
     }
 
@@ -624,7 +635,7 @@ impl PageReader {
     }
 
     fn Read(&mut self, strm:&mut Read) -> io::Result<usize> {
-        ReadFully(strm, &mut self.buf)
+        utils::ReadFully(strm, &mut self.buf)
     }
 
     // TODO member this.Read(s:Stream, off, len) = utils.ReadFully(s, buf, off, len)
@@ -712,7 +723,7 @@ impl PageReader {
     }
     */
 
-    fn GetVarint(&mut self) -> i64 {
+    fn GetVarint(&mut self) -> u64 {
         let (newCur, v) = Varint::read(&*self.buf, self.cur);
         self.cur = newCur;
         v
@@ -720,21 +731,20 @@ impl PageReader {
 
 }
 
-#[derive(PartialEq)]
+#[derive(PartialEq,Copy,Clone)]
 enum Direction {
     FORWARD = 0,
     BACKWARD = 1,
     WANDERING = 2,
 }
 
-struct MultiCursor<'a> { 
-    // TODO maybe this should be an array of boxed cursors
-    subcursors : Box<[&'a mut ICursor]>, 
+struct MultiCursor { 
+    subcursors : Box<[Box<ICursor>]>, 
     cur : Option<usize>,
     dir : Direction,
 }
 
-impl<'a> MultiCursor<'a> {
+impl MultiCursor {
     fn find(&self, compare_func : &Fn(&ICursor,&ICursor) -> i32) -> Option<usize> {
         if self.subcursors.is_empty() {
             None
@@ -769,25 +779,21 @@ impl<'a> MultiCursor<'a> {
         self.find(&compare_func)
     }
 
-    // TODO this thing wants to own its subcursors.  The .NET
-    // version propagates dispose().  How to do this?
-    // See Drop trait below.
-
-    fn Create(subs: Vec<&'a mut ICursor>) -> MultiCursor<'a> {
+    fn Create(subs: Vec<Box<ICursor>>) -> MultiCursor {
         let s = subs.into_boxed_slice();
         MultiCursor { subcursors: s, cur : None, dir : Direction::WANDERING }
     }
 
 }
 
-impl<'a> Drop for MultiCursor<'a> {
+impl Drop for MultiCursor {
     fn drop(&mut self) {
         // TODO
         println!("Dropping!");
     }
 }
 
-impl<'a> ICursor for MultiCursor<'a> {
+impl ICursor for MultiCursor {
     fn IsValid(&self) -> bool {
         match self.cur {
             Some(i) => self.subcursors[i].IsValid(),
@@ -811,8 +817,8 @@ impl<'a> ICursor for MultiCursor<'a> {
         self.dir = Direction::WANDERING; // TODO why?
     }
 
-    // the following members are asking for the value of cur (an option)
-    // without checking or matching on it.  they'll crash if cur is None.
+    // the following members are designed to panic if called when
+    // the cursor is not valid.
     // this matches the C# behavior and the expected behavior of ICursor.
     // don't call these methods without checking IsValid() first.
 
@@ -910,7 +916,7 @@ impl<'a> ICursor for MultiCursor<'a> {
                         self.dir = Direction::BACKWARD; 
                     }
                 },
-                _ => ()
+                SeekOp::SEEK_EQ => ()
             }
         }
     }
@@ -934,7 +940,7 @@ impl LivingCursor {
         }
     }
 
-    fn Create(ch : Box<ICursor>) -> LivingCursor {
+    pub fn Create(ch : Box<ICursor>) -> LivingCursor {
         LivingCursor { chain : ch }
     }
 }
@@ -998,159 +1004,164 @@ impl ICursor for LivingCursor {
 
 }
 
-/*
+mod bt {
 
-module bt =
+    use std::io::Write;
+    use std::collections::HashMap;
+
+    use super::PageBlock;
+
     // page types
-    // TODO enum?
-    let private LEAF_NODE:byte = 1uy
-    let private PARENT_NODE:byte = 2uy
-    let private OVERFLOW_NODE:byte = 3uy
+    enum PageType {
+        LEAF_NODE = 1,
+        PARENT_NODE = 2,
+        OVERFLOW_NODE = 3,
+    }
 
     // flags on values
-    // TODO enum?
-    let private FLAG_OVERFLOW:byte = 1uy
-    let private FLAG_TOMBSTONE:byte = 2uy
+    enum ValueFlag {
+        FLAG_OVERFLOW = 1,
+        FLAG_TOMBSTONE = 2,
+    }
 
     // flags on pages
-    // TODO enum?
-    let private FLAG_ROOT_NODE:byte = 1uy
-    let private FLAG_BOUNDARY_NODE:byte = 2uy
-    let private FLAG_ENDS_ON_BOUNDARY:byte = 4uy
+    enum PageFlag {
+        FLAG_ROOT_NODE = 1,
+        FLAG_BOUNDARY_NODE = 2,
+        FLAG_ENDS_ON_BOUNDARY = 3,
+    }
 
+    struct pgitem {
+        page : usize,
+        key : Box<[u8]>, // TODO reference instead of box?
+        // TODO constructor impl ?
+    }
 
-    type private ParentState = 
-        { 
-            sofar:int 
-            items:pgitem list 
-            overflows:Map<byte[],int32>
-            nextGeneration:pgitem list 
-            blk:PageBlock
-        }
+    struct ParentState<'a> {
+        sofar : i32,
+        items : Vec<pgitem>,
+        overflows : HashMap<&'a [u8],i32>,
+        nextGeneration : Vec<pgitem>,
+        blk : PageBlock,
+    }
 
     // TODO gratuitously different names of the items in these
     // two unions
 
-    type private KeyLocation =
-        | Inline
-        | Overflow of page:int
+    enum KeyLocation {
+        Inline,
+        Overflow(usize),
+    }
 
-    type private ValueLocation =
-        | Tombstone
-        | Buffer of vbuf:byte[]
-        | Overflowed of len:int*page:int
+    enum ValueLocation {
+        Tombstone,
+        Buffer(Box<[u8]>), // TODO reference instead of box?
+        Overflowed(usize,usize),
+    }
 
-    type private LeafPair =
-        {
-            key:byte[]
-            kLoc:KeyLocation
-            vLoc:ValueLocation
-        }
+    struct LeafPair {
+        key : Box<[u8]>,
+        kLoc : KeyLocation,
+        vLoc : ValueLocation,
+    }
 
-    type private LeafState =
-        // TODO considered making this a struct, but it doesn't make much/any perf difference
-        {
-            sofarLeaf:int
-            keys:(LeafPair list)
-            prevLeaf:int
-            prefixLen:int
-            firstLeaf:int32
-            leaves:pgitem list 
-            blk:PageBlock
-        }
+    struct LeafState {
+        sofarLeaf : usize,
+        keys : Vec<Box<LeafPair>>,
+        prevLeaf : usize,
+        prefixLen : usize,
+        firstLeaf : usize,
+        leaves : Vec<Box<pgitem>>,
+        blk : PageBlock,
+    }
 
-    let findPrefix keys =
-        let fldr acc b = 
-            let (first,cur) = acc
-            let n = bcmp.PrefixMatch first b cur
-            (first,n)
-        let k = List.head keys
-        let b = List.fold fldr (k, k.Length) (List.tail keys)
-        let len = snd b
-        len
+    use super::utils;
+    use super::IPages;
+    use super::kvp;
+    use super::PageBuilder;
+    use std::io;
+    use std::io::Read;
+    use super::IPendingSegment;
+    use super::SeekWrite;
+    use super::Varint;
 
-    type private myConcatStream(_a:byte[], _alen:int, _s:Stream) =
-        inherit Stream()
-        let a = _a
-        let alen = _alen
-        let s = _s
-        let mutable sofar = 0L
+    fn CreateFromSortedSequenceOfKeyValuePairs(fs:&mut SeekWrite, pageManager:&mut IPages, source:&Iterator<Item=kvp>) {
 
-        override this.CanRead = true
-
-        override this.Read(ba,offset,wanted) =
-            if (int sofar) < alen then
-                let available = alen - int sofar
-                let num = Math.Min (available, wanted)
-                System.Array.Copy (a, int sofar, ba, offset, num)
-                sofar <- sofar + int64 num
-                num
-            else  
-                let num = s.Read(ba,offset,wanted)
-                sofar <- sofar + int64 num
-                num
-
-        override this.CanSeek = false
-        override this.CanWrite = false
-        override this.Length = raise (NotSupportedException())
-        override this.SetLength(_) = raise (NotSupportedException())
-        override this.Flush() = raise (NotSupportedException())
-        override this.Seek(_,_) = raise (NotSupportedException())
-        override this.Write(_,_,_) = raise (NotSupportedException())
-        override this.Position
-            with get() = raise (NotSupportedException())
-            and set(_) = raise (NotSupportedException())
-
-    let CreateFromSortedSequenceOfKeyValuePairs(fs:Stream, pageManager:IPages, source:seq<kvp>) = 
-        let pageSize = pageManager.PageSize
-        let token = pageManager.Begin()
-        let pbFirstOverflow = PageBuilder(pageSize)
-        let pbOverflow = PageBuilder(pageSize)
-
-        let writeOverflow (startingBlk:PageBlock) (ba:Stream) =
-            let pageSize = pbOverflow.PageSize
-
-            let buildFirstPage () =
-                pbFirstOverflow.Reset()
-                pbFirstOverflow.PutByte(OVERFLOW_NODE)
-                pbFirstOverflow.PutByte(0uy) // starts 0, may be changed later
-                let room = (pageSize - (2 + sizeof<int32>))
-                let put = pbFirstOverflow.PutStream2(ba, room)
+        fn writeOverflow (startingBlock: PageBlock, ba: &mut Read, pageManager: &mut IPages, fs: &mut SeekWrite) {
+            fn buildFirstPage(ba:&mut Read, pbFirstOverflow : &mut PageBuilder, pageSize : usize) -> io::Result<(usize,bool)> {
+                //let siz = std::mem::size_of::<i32> as usize;
+                let siz = 4;
+                pbFirstOverflow.Reset();
+                pbFirstOverflow.PutByte(PageType::OVERFLOW_NODE as u8);
+                pbFirstOverflow.PutByte(0u8); // starts 0, may be changed later
+                let room = (pageSize - (2 + siz));
                 // something will be put in lastInt32 later
-                (put, put<room)
+                match pbFirstOverflow.PutStream2(ba, room) {
+                    Ok(put) => Ok((put, put<room)),
+                    Err(e) => Err(e),
+                }
+            };
 
-            let buildRegularPage () = 
-                pbOverflow.Reset()
-                let room = pageSize
-                let put = pbOverflow.PutStream2(ba, room)
-                (put, put<room)
+            fn buildRegularPage(ba:&mut Read, pbOverflow : &mut PageBuilder, pageSize : usize) -> io::Result<(usize,bool)> {
+                pbOverflow.Reset();
+                let room = pageSize;
+                match pbOverflow.PutStream2(ba, room) {
+                    Ok(put) => Ok((put, put<room)),
+                    Err(e) => Err(e),
+                }
+            };
 
-            let buildBoundaryPage () =
-                pbOverflow.Reset()
-                let room = (pageSize - sizeof<int32>)
-                let put = pbOverflow.PutStream2(ba, room)
+            fn buildBoundaryPage(ba:&mut Read, pbOverflow : &mut PageBuilder, pageSize : usize) -> io::Result<(usize,bool)> {
+                //let siz = std::mem::size_of::<i32> as usize;
+                let siz = 4;
+                pbOverflow.Reset();
+                let room = (pageSize - siz);
                 // something will be put in lastInt32 before the page is written
-                (put, put<room)
+                match pbOverflow.PutStream2(ba, room) {
+                    Ok(put) => Ok((put, put<room)),
+                    Err(e) => Err(e),
+                }
+            }
 
-            let writeRegularPages _max _sofar =
-                let rec fn i sofar =
-                    if i < _max then
-                        let (put, finished) = buildRegularPage()
-                        if put=0 then
-                            (i, sofar, true)
-                        else
-                            let sofar = sofar + put
-                            pbOverflow.Write(fs)
-                            if not finished then                            
-                                fn (i+1) sofar
-                            else 
-                                (i+1, sofar, true)
-                    else
-                        (i, sofar, false)
+            fn writeRegularPages(max :usize, 
+                                 sofar :usize, 
+                                 pb : &mut PageBuilder, 
+                                 fs : &mut SeekWrite, 
+                                 ba : &mut Read, 
+                                 pageSize : usize
+                                 ) -> io::Result<(usize,usize,bool)> {
+                let mut i = 0;
+                loop {
+                    if i < max {
+                        let (put, finished) = try!(buildRegularPage(ba, pb, pageSize));
+                        if put==0 {
+                            return Ok((i, sofar, true));
+                        } else {
+                            let sofar = sofar + put;
+                            pb.Write(fs.as_write());
+                            if finished {
+                                return Ok((i+1, sofar, true));
+                            } else {
+                                i = i + 1;
+                            }
+                        }
+                    } else {
+                        return Ok((i, sofar, false));
+                    }
+                }
+            }
 
-                fn 0 _sofar
-
-            let rec writeOneBlock sofar (firstBlk:PageBlock) :int*PageBlock =
+            // TODO misnamed
+            fn writeOneBlock(param_sofar: usize, 
+                             param_firstBlk: PageBlock,
+                             fs: &mut SeekWrite, 
+                             ba: &mut Read, 
+                             pageSize: usize,
+                             pbOverflow: &mut PageBuilder,
+                             pbFirstOverflow: &mut PageBuilder,
+                             pageManager: &mut IPages,
+                             token: &IPendingSegment
+                             ) -> io::Result<(usize,PageBlock)> {
                 // each trip through this loop will write out one
                 // block, starting with the overflow first page,
                 // followed by zero-or-more "regular" overflow pages,
@@ -1159,213 +1170,290 @@ module bt =
                 // won't fit and we have to continue into the next block.
                 // the boundary page will be like a regular overflow page,
                 // headerless, but it is four bytes smaller.
-                let (putFirst,finished) = buildFirstPage ()
-                if putFirst=0 then 
-                    (sofar, firstBlk)
-                else
-                    // note that we haven't written the first page yet.  we may have to fix
-                    // a couple of things before it gets written out.
-                    let sofar = sofar + putFirst
-                    if firstBlk.firstPage = firstBlk.lastPage then
-                        // the first page landed on a boundary.
-                        // we can just set the flag and write it now.
-                        pbFirstOverflow.SetPageFlag(FLAG_BOUNDARY_NODE)
-                        let blk = pageManager.GetBlock(token)
-                        pbFirstOverflow.SetLastInt32(blk.firstPage)
-                        pbFirstOverflow.Write(fs)
-                        utils.SeekPage(fs, pageSize, blk.firstPage)
-                        if not finished then
-                            writeOneBlock sofar blk
-                        else
-                            (sofar, blk)
-                    else 
-                        let firstRegularPageNumber = firstBlk.firstPage + 1
-                        if finished then
-                            // the first page is also the last one
-                            pbFirstOverflow.SetLastInt32(0) // offset to last used page in this block, which is this one
-                            pbFirstOverflow.Write(fs)
-                            (sofar, PageBlock(firstRegularPageNumber,firstBlk.lastPage))
-                        else
-                            // we need to write more pages,
-                            // until the end of the block,
-                            // or the end of the stream, 
-                            // whichever comes first
+                let mut loop_sofar = param_sofar;
+                let mut loop_firstBlk = param_firstBlk;
+                loop {
+                    let sofar = loop_sofar;
+                    let firstBlk = loop_firstBlk;
+                    let (putFirst,finished) = try!(buildFirstPage (ba, pbFirstOverflow, pageSize));
+                    if putFirst==0 { 
+                        return Ok((sofar, firstBlk));
+                    } else {
+                        // note that we haven't written the first page yet.  we may have to fix
+                        // a couple of things before it gets written out.
+                        let sofar = sofar + putFirst;
+                        if firstBlk.firstPage == firstBlk.lastPage {
+                            // the first page landed on a boundary.
+                            // we can just set the flag and write it now.
+                            pbFirstOverflow.SetPageFlag(PageFlag::FLAG_BOUNDARY_NODE as u8);
+                            let blk = pageManager.GetBlock(token);
+                            pbFirstOverflow.SetLastInt32(blk.firstPage as i32);
+                            pbFirstOverflow.Write(fs.as_write());
+                            utils::SeekPage(fs.as_seek(), pageSize, blk.firstPage);
+                            if !finished {
+                                loop_sofar = sofar;
+                                loop_firstBlk = blk;
+                            } else {
+                                return Ok((sofar, blk));
+                            }
+                        } else {
+                            let firstRegularPageNumber = (firstBlk.firstPage + 1) as usize;
+                            if finished {
+                                // the first page is also the last one
+                                pbFirstOverflow.SetLastInt32(0); // offset to last used page in this block, which is this one
+                                pbFirstOverflow.Write(fs.as_write());
+                                return Ok((sofar, PageBlock::new(firstRegularPageNumber,firstBlk.lastPage)));
+                            } else {
+                                // we need to write more pages,
+                                // until the end of the block,
+                                // or the end of the stream, 
+                                // whichever comes first
 
-                            utils.SeekPage(fs, pageSize, firstRegularPageNumber)
+                                utils::SeekPage(fs.as_seek(), pageSize, firstRegularPageNumber);
 
-                            // availableBeforeBoundary is the number of pages until the boundary,
-                            // NOT counting the boundary page, and the first page in the block
-                            // has already been accounted for, so we're just talking about data pages.
-                            let availableBeforeBoundary = 
-                                if firstBlk.lastPage > 0 
-                                then (firstBlk.lastPage - firstRegularPageNumber) 
-                                else System.Int32.MaxValue
+                                // availableBeforeBoundary is the number of pages until the boundary,
+                                // NOT counting the boundary page, and the first page in the block
+                                // has already been accounted for, so we're just talking about data pages.
+                                let availableBeforeBoundary = 
+                                    if firstBlk.lastPage > 0 
+                                        { (firstBlk.lastPage - firstRegularPageNumber) }
+                                    else 
+                                        { usize::max_value() }
+                                    ;
 
-                            let (numRegularPages, sofar, finished) = 
-                                writeRegularPages availableBeforeBoundary sofar
+                                let (numRegularPages, sofar, finished) = 
+                                    try!(writeRegularPages(availableBeforeBoundary, sofar, pbOverflow, fs, ba, pageSize));
 
-                            if finished then
-                                // go back and fix the first page
-                                pbFirstOverflow.SetLastInt32(numRegularPages)
-                                utils.SeekPage(fs, pageSize, firstBlk.firstPage)
-                                pbFirstOverflow.Write(fs)
-                                // now reset to the next page in the block
-                                let blk = PageBlock(firstRegularPageNumber + numRegularPages, firstBlk.lastPage)
-                                utils.SeekPage(fs, pageSize, blk.firstPage)
-                                (sofar,blk)
-                            else
-                                // we need to write out a regular page except with a
-                                // boundary pointer in it.  and we need to set
-                                // FLAG_ENDS_ON_BOUNDARY on the first
-                                // overflow page in this block.
-
-                                let (putBoundary,finished) = buildBoundaryPage ()
-                                if putBoundary=0 then
+                                if finished {
                                     // go back and fix the first page
-                                    pbFirstOverflow.SetLastInt32(numRegularPages)
-                                    utils.SeekPage(fs, pageSize, firstBlk.firstPage)
-                                    pbFirstOverflow.Write(fs)
-
+                                    pbFirstOverflow.SetLastInt32(numRegularPages as i32);
+                                    utils::SeekPage(fs.as_seek(), pageSize, firstBlk.firstPage);
+                                    pbFirstOverflow.Write(fs.as_write());
                                     // now reset to the next page in the block
-                                    let blk = PageBlock(firstRegularPageNumber + numRegularPages, firstBlk.lastPage)
-                                    utils.SeekPage(fs, pageSize, firstBlk.lastPage)
-                                    (sofar,blk)
-                                else
-                                    // write the boundary page
-                                    let sofar = sofar + putBoundary
-                                    let blk = pageManager.GetBlock(token)
-                                    pbOverflow.SetLastInt32(blk.firstPage)
-                                    pbOverflow.Write(fs)
+                                    let blk = PageBlock::new(firstRegularPageNumber + numRegularPages, firstBlk.lastPage);
+                                    utils::SeekPage(fs.as_seek(), pageSize, blk.firstPage);
+                                    return Ok((sofar,blk));
+                                } else {
+                                    // we need to write out a regular page except with a
+                                    // boundary pointer in it.  and we need to set
+                                    // FLAG_ENDS_ON_BOUNDARY on the first
+                                    // overflow page in this block.
 
-                                    // go back and fix the first page
-                                    pbFirstOverflow.SetPageFlag(FLAG_ENDS_ON_BOUNDARY)
-                                    pbFirstOverflow.SetLastInt32(numRegularPages + 1)
-                                    utils.SeekPage(fs, pageSize, firstBlk.firstPage)
-                                    pbFirstOverflow.Write(fs)
+                                    let (putBoundary,finished) = try!(buildBoundaryPage (ba, pbOverflow, pageSize));
+                                    if putBoundary==0 {
+                                        // go back and fix the first page
+                                        pbFirstOverflow.SetLastInt32(numRegularPages as i32);
+                                        utils::SeekPage(fs.as_seek(), pageSize, firstBlk.firstPage);
+                                        pbFirstOverflow.Write(fs.as_write());
 
-                                    // now reset to the first page in the next block
-                                    utils.SeekPage(fs, pageSize, blk.firstPage)
-                                    if not finished then
-                                        writeOneBlock sofar blk
-                                    else
-                                        (sofar,blk)
+                                        // now reset to the next page in the block
+                                        let blk = PageBlock::new(firstRegularPageNumber + numRegularPages, firstBlk.lastPage);
+                                        utils::SeekPage(fs.as_seek(), pageSize, firstBlk.lastPage);
+                                        return Ok((sofar,blk));
+                                    } else {
+                                        // write the boundary page
+                                        let sofar = sofar + putBoundary;
+                                        let blk = pageManager.GetBlock(token);
+                                        pbOverflow.SetLastInt32(blk.firstPage as i32);
+                                        pbOverflow.Write(fs.as_write());
 
-            writeOneBlock 0 startingBlk
+                                        // go back and fix the first page
+                                        pbFirstOverflow.SetPageFlag(PageFlag::FLAG_ENDS_ON_BOUNDARY as u8);
+                                        pbFirstOverflow.SetLastInt32((numRegularPages + 1) as i32);
+                                        utils::SeekPage(fs.as_seek(), pageSize, firstBlk.firstPage);
+                                        pbFirstOverflow.Write(fs.as_write());
 
-        let pb = PageBuilder(pageSize)
+                                        // now reset to the first page in the next block
+                                        utils::SeekPage(fs.as_seek(), pageSize, blk.firstPage);
+                                        if finished {
+                                            loop_sofar = sofar;
+                                            loop_firstBlk = blk;
+                                        } else {
+                                            return Ok((sofar,blk));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
 
-        let writeLeaves (leavesBlk:PageBlock) :PageBlock*(pgitem list)*int =
+            let pageSize = pageManager.PageSize();
+            let token = pageManager.Begin();
+            let mut pbFirstOverflow = PageBuilder::new(pageSize);
+            let mut pbOverflow = PageBuilder::new(pageSize);
+
+            writeOneBlock(0, startingBlock, fs, ba, pageSize, &mut pbOverflow, &mut pbFirstOverflow, pageManager, &token);
+        }
+
+        fn writeLeaves(leavesBlk:PageBlock,
+                       pageManager: &mut IPages
+                       ) -> (PageBlock,Vec<pgitem>,usize) {
             // 2 for the page type and flags
             // 4 for the prev page
             // 2 for the stored count
             // 4 for lastInt32 (which isn't in pb.Available)
-            let LEAF_PAGE_OVERHEAD = 2 + 4 + 2 + 4
+            let LEAF_PAGE_OVERHEAD = 2 + 4 + 2 + 4;
 
-            let buildLeaf st =
-                pb.Reset()
-                pb.PutByte(LEAF_NODE)
-                pb.PutByte(0uy) // flags
-                pb.PutInt32 (st.prevLeaf) // prev page num.
+            fn buildLeaf(st: LeafState, pb: &mut PageBuilder) {
+                pb.Reset();
+                pb.PutByte(PageType::LEAF_NODE as u8);
+                pb.PutByte(0u8); // flags
+                pb.PutInt32 (st.prevLeaf as i32); // prev page num.
                 // TODO prefixLen is one byte.  should it be two?
-                pb.PutByte(byte st.prefixLen)
-                if st.prefixLen > 0 then
-                    let k = (List.head st.keys).key
-                    pb.PutArray(k, 0, st.prefixLen)
-                pb.PutInt16 (st.keys.Length)
-                List.iter (fun lp ->
-                    let k = lp.key
-                    match lp.kLoc with
-                    | Inline ->
-                        pb.PutByte(0uy) // flags
-                        pb.PutVarint(int64 k.Length)
-                        pb.PutArray(k, st.prefixLen, k.Length - st.prefixLen)
-                    | Overflow kpage ->
-                        pb.PutByte(FLAG_OVERFLOW)
-                        pb.PutVarint(int64 k.Length)
-                        pb.PutInt32(kpage)
-                    match lp.vLoc with
-                    | Tombstone ->
-                        pb.PutByte(FLAG_TOMBSTONE)
-                    | Buffer (vbuf) ->
-                        pb.PutByte(0uy)
-                        pb.PutVarint(int64 vbuf.Length)
-                        pb.PutArray(vbuf)
-                    | Overflowed (vlen,vpage) ->
-                        pb.PutByte(FLAG_OVERFLOW)
-                        pb.PutVarint(int64 vlen)
-                        pb.PutInt32(vpage)
-                   ) (List.rev st.keys) // TODO rev is unfortunate
-
-            let writeLeaf st isRootPage = 
-                buildLeaf st
-                let thisPageNumber = st.blk.firstPage
-                let firstLeaf = if List.isEmpty st.leaves then thisPageNumber else st.firstLeaf
-                let nextBlk = 
-                    if isRootPage then
-                        PageBlock(thisPageNumber + 1, st.blk.lastPage)
-                    else if thisPageNumber = st.blk.lastPage then
-                        pb.SetPageFlag FLAG_BOUNDARY_NODE
-                        let newBlk = pageManager.GetBlock(token)
-                        pb.SetLastInt32(newBlk.firstPage)
-                        newBlk
-                    else
-                        PageBlock(thisPageNumber + 1, st.blk.lastPage)
-                pb.Write(fs)
-                if nextBlk.firstPage <> (thisPageNumber+1) then utils.SeekPage(fs, pageSize, nextBlk.firstPage)
-                {
-                    sofarLeaf=0
-                    keys=[]
-                    prevLeaf=thisPageNumber
-                    prefixLen=(-1)
-                    firstLeaf=firstLeaf
-                    blk=nextBlk
-                    leaves=pgitem(thisPageNumber,(List.head st.keys).key)::st.leaves
+                pb.PutByte(st.prefixLen as u8);
+                if st.prefixLen > 0 {
+                    let k = st.keys[0].key;
+                    pb.PutArray(&k[0 .. st.prefixLen]);
+                }
+                pb.PutInt16 (st.keys.len() as i16);
+                for lp in st.keys {
+                    let k = lp.key;
+                    match lp.kLoc {
+                        KeyLocation::Inline => {
+                            pb.PutByte(0u8); // flags
+                            pb.PutVarint(k.len() as u64);
+                            pb.PutArray(&k[st.prefixLen .. k.len() - st.prefixLen]);
+                        },
+                        KeyLocation::Overflow(kpage) => {
+                            pb.PutByte(ValueFlag::FLAG_OVERFLOW as u8);
+                            pb.PutVarint(k.len() as u64);
+                            pb.PutInt32(kpage as i32);
+                        },
                     }
+                    match lp.vLoc {
+                        ValueLocation::Tombstone => {
+                            pb.PutByte(ValueFlag::FLAG_TOMBSTONE as u8);
+                        },
+                        ValueLocation::Buffer (vbuf) => {
+                            pb.PutByte(0u8);
+                            pb.PutVarint(vbuf.len() as u64);
+                            pb.PutArray(&vbuf);
+                        },
+                        ValueLocation::Overflowed (vlen,vpage) => {
+                            pb.PutByte(ValueFlag::FLAG_OVERFLOW as u8);
+                            pb.PutVarint(vlen as u64);
+                            pb.PutInt32(vpage as i32);
+                        },
+                    }
+                }
+            }
 
-            let vbuf:byte[] = Array.zeroCreate pageSize
+            fn writeLeaf(st: LeafState, 
+                         isRootPage: bool, 
+                         pb: &mut PageBuilder, 
+                         fs: &mut SeekWrite, 
+                         pageSize: usize,
+                         pageManager: &mut IPages,
+                         token: &IPendingSegment,
+                         ) -> LeafState { 
+                buildLeaf(st, pb);
+                let thisPageNumber = st.blk.firstPage;
+                let firstLeaf = if st.leaves.is_empty() { thisPageNumber } else { st.firstLeaf };
+                let nextBlk = 
+                    if isRootPage {
+                        PageBlock::new(thisPageNumber + 1, st.blk.lastPage)
+                    } else if thisPageNumber == st.blk.lastPage {
+                        pb.SetPageFlag(PageFlag::FLAG_BOUNDARY_NODE as u8);
+                        let newBlk = pageManager.GetBlock(token);
+                        pb.SetLastInt32(newBlk.firstPage as i32);
+                        newBlk
+                    } else {
+                        PageBlock::new(thisPageNumber + 1, st.blk.lastPage)
+                    };
+                pb.Write(fs.as_write());
+                if nextBlk.firstPage != (thisPageNumber+1) {
+                    utils::SeekPage(fs.as_seek(), pageSize, nextBlk.firstPage);
+                }
+                let pg = pgitem {page:thisPageNumber, key:st.keys[0].key};
+                st.leaves.push(Box::new(pg));
+                LeafState
+                    {
+                        sofarLeaf: 0,
+                        keys: Vec::new(),
+                        prevLeaf: thisPageNumber,
+                        prefixLen: 0,
+                        firstLeaf: firstLeaf,
+                        blk: nextBlk,
+                        leaves: st.leaves,
+                    }
+            }
 
             // TODO can the overflow page number become a varint?
-            let neededForOverflowPageNumber = sizeof<int32>
+            const neededForOverflowPageNumber: usize = 4;
 
             // the max limit of an inline key is when that key is the only
             // one in the leaf, and its value is overflowed.
 
+            let pageSize = pageManager.PageSize();
             let maxKeyInline = 
                 pageSize 
                 - LEAF_PAGE_OVERHEAD 
                 - 1 // prefixLen
                 - 1 // key flags
-                - Varint.SpaceNeededFor(int64 pageSize) // approx worst case inline key len
+                - Varint::SpaceNeededFor(pageSize as u64) // approx worst case inline key len
                 - 1 // value flags
                 - 9 // worst case varint value len
-                - neededForOverflowPageNumber // overflowed value page
+                - neededForOverflowPageNumber; // overflowed value page
 
-            let kLocNeed (k:byte[]) kloc prefixLen =
-                let klen = k.Length
-                match kloc with
-                | Inline ->
-                    1 + Varint.SpaceNeededFor(int64 klen) + klen - prefixLen
-                | Overflow _ ->
-                    1 + Varint.SpaceNeededFor(int64 klen) + neededForOverflowPageNumber
+            fn kLocNeed(k: &[u8], kloc: &KeyLocation, prefixLen: usize) -> usize {
+                let klen = k.len();
+                match *kloc {
+                    KeyLocation::Inline => {
+                        1 + Varint::SpaceNeededFor(klen as u64) + klen - prefixLen
+                    },
+                    KeyLocation::Overflow(_) => {
+                        1 + Varint::SpaceNeededFor(klen as u64) + neededForOverflowPageNumber
+                    },
+                }
+            }
 
-            let vLocNeed vloc =
-                match vloc with
-                | Tombstone -> 
-                    1
-                | Buffer vbuf ->
-                    let vlen = vbuf.Length
-                    1 + Varint.SpaceNeededFor(int64 vlen) + vlen
-                | Overflowed (vlen,_) ->
-                    1 + Varint.SpaceNeededFor(int64 vlen) + neededForOverflowPageNumber
+            fn vLocNeed (vloc: &ValueLocation) -> usize {
+                match *vloc {
+                    ValueLocation::Tombstone => {
+                        1
+                    },
+                    ValueLocation::Buffer(vbuf) => {
+                        let vlen = vbuf.len();
+                        1 + Varint::SpaceNeededFor(vlen as u64) + vlen
+                    },
+                    ValueLocation::Overflowed(vlen,_) => {
+                        1 + Varint::SpaceNeededFor(vlen as u64) + neededForOverflowPageNumber
+                    },
+                }
+            }
 
-            let leafPairSize prefixLen lp =
-                kLocNeed lp.key lp.kLoc prefixLen
+            fn leafPairSize(prefixLen: usize, lp: &LeafPair) -> usize {
+                kLocNeed(&lp.key, &lp.kLoc, prefixLen)
                 +
-                vLocNeed lp.vLoc
+                vLocNeed(&lp.vLoc)
+            }
 
-            let defaultPrefixLen (k:byte[]) =
+            fn defaultPrefixLen (k:&[u8]) -> usize {
                 // TODO max prefix.  relative to page size?  must fit in byte.
-                if k.Length > 255 then 255 else k.Length
+                if k.len() > 255 { 255 } else { k.len() }
+            }
+
+        }
+    }
+
+}
+
+/*
+
+module bt =
+
+    let CreateFromSortedSequenceOfKeyValuePairs(fs:Stream, pageManager:IPages, source:seq<kvp>) = 
+        let pageSize = pageManager.PageSize
+        let token = pageManager.Begin()
+        let pbFirstOverflow = PageBuilder(pageSize)
+        let pbOverflow = PageBuilder(pageSize)
+
+        let pb = PageBuilder(pageSize)
+
+        let writeLeaves (leavesBlk:PageBlock) :PageBlock*(pgitem list)*int =
+            let vbuf:byte[] = Array.zeroCreate pageSize
 
             let foldLeaf st (pair:kvp) = 
                 let k = pair.Key
@@ -1433,7 +1521,7 @@ module bt =
                                 | Blob.Tombstone ->
                                     blkAfterKey, Tombstone
                                 | Blob.Stream strm ->
-                                    let vread = utils.ReadFully2(strm, vbuf, 0, maxValueInline+1)
+                                    let vread = utils::ReadFully2(strm, vbuf, 0, maxValueInline+1)
                                     if vread < maxValueInline then
                                         // TODO this alloc+copy is unfortunate
                                         let va:byte[] = Array.zeroCreate vread
@@ -3207,5 +3295,6 @@ fn main()
 // no significant whitespace
 // strings are utf8, no converting things
 // seriously miss full type inference
+// weird that it's safe to use unsigned
 //
 
