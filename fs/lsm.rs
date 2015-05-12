@@ -23,20 +23,26 @@ use std::io::Read;
 use std::io::Write;
 use std::io::SeekFrom;
 
-enum Blob {
+const size_i32 :usize = 4; // TODO
+const size_i16 :usize = 2; // TODO
+
+pub enum Blob {
     Stream(Box<Read>),
     Array(Box<[u8]>),
     Tombstone,
 }
 
-struct kvp {
+pub struct kvp {
     Key : Box<[u8]>,
     Value : Blob,
 }
 
-struct IPendingSegment;
+// TODO make this a trait?
+pub struct IPendingSegment {
+    unused : i32
+}
 
-struct PageBlock {
+pub struct PageBlock {
     firstPage : usize,
     lastPage : usize,
 }
@@ -51,12 +57,13 @@ impl PageBlock {
     }
 }
 
-struct Guid {
-    a : [u8; 16]
+pub struct Guid {
+    //a : [u8; 16]
+    hack : i32
 }
 
 // TODO return Result
-trait IPages {
+pub trait IPages {
     fn PageSize(&self) -> usize;
     fn Begin(&mut self) -> IPendingSegment;
     fn GetBlock(&mut self, token:&IPendingSegment) -> PageBlock;
@@ -122,7 +129,6 @@ impl Iterator for ICursor {
         }
     }
 }
-
 
 // TODO return Result
 trait IWriteLock : Drop {
@@ -572,40 +578,35 @@ impl PageBuilder {
 
     // TODO should be u32
     fn PutInt32(&mut self, ov:i32) {
-        const siz :usize = std::mem::size_of::<i32> as usize;
         let at = self.cur;
-        write_i32_be(&mut self.buf[at .. at+siz], ov);
-        self.cur = self.cur + siz;
+        write_i32_be(&mut self.buf[at .. at+size_i32], ov);
+        self.cur = self.cur + size_i32;
     }
 
     // TODO should be u32
     fn SetSecondToLastInt32(&mut self, page:i32) {
-        let siz = std::mem::size_of::<i32> as usize;
         let len = self.buf.len();
-        let at = len - 2 * siz;
+        let at = len - 2 * size_i32;
         if self.cur > at { panic!("SetSecondToLastInt32 is squashing data"); }
-        write_i32_be(&mut self.buf[at .. at+siz], page);
+        write_i32_be(&mut self.buf[at .. at+size_i32], page);
     }
 
     // TODO should be u32
     fn SetLastInt32(&mut self, page:i32) {
-        let siz = std::mem::size_of::<i32> as usize;
         let len = self.buf.len();
-        let at = len - 1 * siz;
+        let at = len - 1 * size_i32;
         if self.cur > at { panic!("SetLastInt32 is squashing data"); }
-        write_i32_be(&mut self.buf[at .. at+siz], page);
+        write_i32_be(&mut self.buf[at .. at+size_i32], page);
     }
 
     fn PutInt16(&mut self, ov:i16) {
-        let siz = std::mem::size_of::<i16> as usize;
         let at = self.cur;
-        write_i16_be(&mut self.buf[at .. at+siz], ov);
-        self.cur = self.cur + siz;
+        write_i16_be(&mut self.buf[at .. at+size_i16], ov);
+        self.cur = self.cur + size_i16;
     }
 
     fn PutInt16At(&mut self, at:usize, ov:i16) {
-        let siz = std::mem::size_of::<i16> as usize;
-        write_i16_be(&mut self.buf[at .. at+siz], ov);
+        write_i16_be(&mut self.buf[at .. at+size_i16], ov);
     }
 
     fn PutVarint(&mut self, ov:u64) {
@@ -668,16 +669,14 @@ impl PageReader {
     }
 
     fn GetInt32(&mut self) -> i32 {
-        let siz = std::mem::size_of::<i32> as usize;
         let at = self.cur;
-        let r = read_i32_be(&self.buf[at .. at+siz]);
-        self.cur = self.cur + siz;
+        let r = read_i32_be(&self.buf[at .. at+size_i32]);
+        self.cur = self.cur + size_i32;
         r
     }
 
     fn GetInt32At(&self, at:usize) -> i32 {
-        let siz = std::mem::size_of::<i32> as usize;
-        read_i32_be(&self.buf[at .. at+siz])
+        read_i32_be(&self.buf[at .. at+size_i32])
     }
 
     fn CheckPageFlag(&self, f:u8) -> bool {
@@ -685,24 +684,21 @@ impl PageReader {
     }
 
     fn GetSecondToLastInt32(&self) -> i32 {
-        let siz = std::mem::size_of::<i32> as usize;
         let len = self.buf.len();
-        let at = len - 2 * siz;
+        let at = len - 2 * size_i32;
         self.GetInt32At(at)
     }
 
     fn GetLastInt32(&self) -> i32 {
-        let siz = std::mem::size_of::<i32> as usize;
         let len = self.buf.len();
-        let at = len - 1 * siz;
+        let at = len - 1 * size_i32;
         self.GetInt32At(at)
     }
 
     fn GetInt16(&mut self) -> i16 {
-        let siz = std::mem::size_of::<i16> as usize;
         let at = self.cur;
-        let r = read_i16_be(&self.buf[at .. at+siz]);
-        self.cur = self.cur + siz;
+        let r = read_i16_be(&self.buf[at .. at+size_i16]);
+        self.cur = self.cur + size_i16;
         r
     }
 
@@ -1084,14 +1080,12 @@ mod bt {
     use super::Blob;
     use super::bcmp;
     use super::Guid;
+    use super::size_i32;
 
-    //const size_i32 :usize = std::mem::size_of::<i32>;
-    const size_i32 :usize = 4; // TODO
-
-    fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite, 
-                                                          pageManager: &mut IPages, 
-                                                          source: I,
-                                                         ) -> io::Result<(Guid,usize)> where I:Iterator<Item=kvp>, SeekWrite : Seek+Write {
+    pub fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite, 
+                                                            pageManager: &mut IPages, 
+                                                            source: I,
+                                                           ) -> io::Result<(Guid,usize)> where I:Iterator<Item=kvp>, SeekWrite : Seek+Write {
 
         fn writeOverflow<SeekWrite>(startingBlock: PageBlock, 
                                     ba: &mut Read, 
@@ -1120,10 +1114,8 @@ mod bt {
             };
 
             fn buildBoundaryPage(ba:&mut Read, pbOverflow : &mut PageBuilder, pageSize : usize) -> io::Result<(usize,bool)> {
-                //let siz = std::mem::size_of::<i32> as usize;
-                let siz = 4;
                 pbOverflow.Reset();
-                let room = (pageSize - siz);
+                let room = (pageSize - size_i32);
                 // something will be put in lastInt32 before the page is written
                 match pbOverflow.PutStream2(ba, room) {
                     Ok(put) => Ok((put, put<room)),
@@ -1325,7 +1317,7 @@ mod bt {
                         KeyLocation::Inline => {
                             pb.PutByte(0u8); // flags
                             pb.PutVarint(lp.key.len() as u64);
-                            pb.PutArray(&lp.key[st.prefixLen .. lp.key.len() - st.prefixLen]);
+                            pb.PutArray(&lp.key[st.prefixLen .. lp.key.len()]);
                         },
                         KeyLocation::Overflow(kpage) => {
                             pb.PutByte(ValueFlag::FLAG_OVERFLOW as u8);
@@ -1845,6 +1837,77 @@ mod bt {
         Ok((g,rootPage))
     }
 
+}
+
+struct foo {
+    num : usize,
+    i : usize,
+}
+
+impl Iterator for foo {
+    type Item = kvp;
+    fn next(& mut self) -> Option<kvp> {
+        if self.i >= self.num {
+            None
+        }
+        else {
+            fn create_array(n : usize) -> Box<[u8]> {
+                let mut kv = Vec::new();
+                for i in 0 .. n {
+                    kv.push(i as u8);
+                }
+                let k = kv.into_boxed_slice();
+                k
+            }
+
+            let r = kvp{Key:create_array(self.i), Value:Blob::Array(create_array(self.i))};
+            self.i = self.i + 1;
+            Some(r)
+        }
+    }
+}
+
+struct SimplePageManager {
+    pageSize : usize,
+    nextPage : usize,
+}
+
+impl IPages for SimplePageManager {
+    fn PageSize(&self) -> usize {
+        self.pageSize
+    }
+
+    fn Begin(&mut self) -> IPendingSegment {
+        IPendingSegment { unused : 0}
+    }
+
+    fn GetBlock(&mut self, token:&IPendingSegment) -> PageBlock {
+        let blk = PageBlock::new(self.nextPage, self.nextPage + 10 - 1);
+        self.nextPage = self.nextPage + 10;
+        blk
+    }
+
+    fn End(&mut self, token:IPendingSegment, page:usize) -> Guid {
+        Guid { hack : 0 }
+    }
+
+}
+
+fn hack() -> io::Result<bool> {
+    use std::fs::File;
+
+    let mut f = try!(File::create("data.bin"));
+
+    let src = foo {num:100, i:0};
+    let mut mgr = SimplePageManager {pageSize: 4096, nextPage: 1};
+    bt::CreateFromSortedSequenceOfKeyValuePairs(&mut f, &mut mgr, src);
+
+    let res : io::Result<bool> = Ok(true);
+    res
+}
+
+fn main() {
+    hack();
 }
 
 /*
@@ -3357,11 +3420,6 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
             segs <- []
 */
 
-fn main() 
-{
-
-}
-
 // derive debug is %A
 // [u8] is not on the heap.  it's like a primitive that is 7 bytes long.  it's a value type.
 // no each()
@@ -3375,4 +3433,5 @@ fn main()
 // braces vim %
 // semicolons A ;, end-of-line comments
 // typing tetris
+// miss sprintf syntax
 //
