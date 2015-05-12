@@ -1860,7 +1860,9 @@ impl Iterator for foo {
                 k
             }
 
-            let r = kvp{Key:create_array(self.i), Value:Blob::Array(create_array(self.i))};
+            let k = format!("{}", self.i).into_bytes().into_boxed_slice();
+            let v = format!("{}", self.i * 2).into_bytes().into_boxed_slice();
+            let r = kvp{Key:k, Value:Blob::Array(v)};
             self.i = self.i + 1;
             Some(r)
         }
