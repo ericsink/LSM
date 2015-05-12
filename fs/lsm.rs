@@ -62,6 +62,12 @@ pub struct Guid {
     hack : i32
 }
 
+impl Guid {
+    fn NewGuid() -> Guid {
+        Guid { hack:0 }
+    }
+}
+
 // TODO return Result
 pub trait IPages {
     fn PageSize(&self) -> usize;
@@ -1839,6 +1845,59 @@ mod bt {
 
 }
 
+use std::collections::HashMap;
+
+struct HeaderData {
+    // TODO currentState is an ordered copy of segments.Keys.  eliminate duplication?
+    // or add assertions and tests to make sure they never get out of sync?
+    currentState: Vec<Guid>,
+    segments: HashMap<Guid,SegmentInfo>,
+    headerOverflow: Option<PageBlock>,
+    changeCounter: i64,
+    mergeCounter: i64,
+}
+
+struct PendingSegment {
+    blockList: Vec<PageBlock>
+}
+
+impl PendingSegment {
+    fn AddBlock(&mut self, b: PageBlock) {
+        let len = self.blockList.len();
+        if (! (self.blockList.is_empty())) && (b.firstPage == self.blockList[len-1].lastPage+1) {
+            // note that by consolidating blocks here, the segment info list will
+            // not have information about the fact that the two blocks were
+            // originally separate.  that's okay, since all we care about here is
+            // keeping track of which pages are used.  but the btree code itself
+            // is still treating the last page of the first block as a boundary
+            // page, even though its pointer to the next block goes to the very
+            // next page, because its page manager happened to give it a block
+            // which immediately follows the one it had.
+            self.blockList[len-1].lastPage = b.lastPage;
+        } else {
+            self.blockList.push(b);
+        }
+    }
+
+    fn End(&mut self, lastPage: usize) -> (Guid, &Vec<PageBlock>, Option<PageBlock>) {
+        let len = self.blockList.len();
+        let unused = {
+            let givenLastPage = self.blockList[len-1].lastPage;
+            if lastPage < givenLastPage {
+                self.blockList[len-1].lastPage = lastPage;
+                Some (PageBlock::new(lastPage+1, givenLastPage))
+            } else {
+                None
+            }
+        };
+        (Guid::NewGuid(), &self.blockList, unused)
+    }
+}
+
+//impl IPendingSegment for PendingSegment { }
+
+// ----------------------------------------------------------------
+
 struct foo {
     num : usize,
     i : usize,
@@ -1890,7 +1949,7 @@ impl IPages for SimplePageManager {
     }
 
     fn End(&mut self, token:IPendingSegment, page:usize) -> Guid {
-        Guid { hack : 0 }
+        Guid::NewGuid()
     }
 
 }
@@ -2491,44 +2550,6 @@ type dbf(_path) =
             new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.ReadWrite) :> Stream
         member this.OpenForReading() =
             new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite) :> Stream
-
-
-type private HeaderData =
-    {
-        // TODO currentState is an ordered copy of segments.Keys.  eliminate duplication?
-        // or add assertions and tests to make sure they never get out of sync?
-        currentState: Guid list
-        segments: Map<Guid,SegmentInfo>
-        headerOverflow: PageBlock option
-        changeCounter: int64
-        mergeCounter: int64
-    }
-
-type private PendingSegment() =
-    let mutable blockList:PageBlock list = []
-    interface IPendingSegment
-    member this.AddBlock((b:PageBlock)) =
-        if (not (List.isEmpty blockList)) && (b.firstPage = (List.head blockList).lastPage+1) then
-            // note that by consolidating blocks here, the segment info list will
-            // not have information about the fact that the two blocks were
-            // originally separate.  that's okay, since all we care about here is
-            // keeping track of which pages are used.  but the btree code itself
-            // is still treating the last page of the first block as a boundary
-            // page, even though its pointer to the next block goes to the very
-            // next page, because its page manager happened to give it a block
-            // which immediately follows the one it had.
-            blockList <- PageBlock((List.head blockList).firstPage, b.lastPage) :: blockList.Tail
-        else
-            blockList <- b :: blockList
-    member this.End(lastPage) =
-        let lastBlock = List.head blockList
-        let unused = 
-            if lastPage < lastBlock.lastPage then
-                blockList <- PageBlock(lastBlock.firstPage, lastPage) :: (List.tail blockList)
-                Some (PageBlock(lastPage+1, lastBlock.lastPage))
-            else
-                None
-        (Guid.NewGuid(), blockList, unused)
 
 
 // used for testing purposes
