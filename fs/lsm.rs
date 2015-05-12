@@ -133,11 +133,6 @@ trait IWriteLock : Drop {
 trait SeekRead : Seek + Read {
 }
 
-trait SeekWrite {
-    fn as_seek(&mut self) -> &mut Seek;
-    fn as_write(&mut self) -> &mut Write;
-}
-
 trait IDatabaseFile {
     fn OpenForReading() -> SeekRead;
     fn OpenForWriting() -> SeekRead;
@@ -1082,19 +1077,19 @@ mod bt {
     use super::PageBuilder;
     use std::io;
     use std::io::Read;
+    use std::io::Seek;
     use super::IPendingSegment;
-    use super::SeekWrite;
     use super::Varint;
     use super::Blob;
     use super::bcmp;
 
-    fn CreateFromSortedSequenceOfKeyValuePairs(fs:&mut SeekWrite, pageManager:&mut IPages, source:&Iterator<Item=kvp>) {
+    fn CreateFromSortedSequenceOfKeyValuePairs<SeekWrite>(fs:SeekWrite, pageManager:&mut IPages, source:&Iterator<Item=kvp>) where SeekWrite : Seek+Write {
 
-        fn writeOverflow(startingBlock: PageBlock, 
+        fn writeOverflow<SeekWrite>(startingBlock: PageBlock, 
                          ba: &mut Read, 
                          pageManager: &mut IPages, 
                          fs: &mut SeekWrite
-                        ) -> io::Result<(usize,PageBlock)> {
+                        ) -> io::Result<(usize,PageBlock)> where SeekWrite : Seek+Write {
             fn buildFirstPage(ba:&mut Read, pbFirstOverflow : &mut PageBuilder, pageSize : usize) -> io::Result<(usize,bool)> {
                 //let siz = std::mem::size_of::<i32> as usize;
                 let siz = 4;
@@ -1130,13 +1125,13 @@ mod bt {
                 }
             }
 
-            fn writeRegularPages(max :usize, 
+            fn writeRegularPages<SeekWrite>(max :usize, 
                                  sofar :usize, 
                                  pb : &mut PageBuilder, 
                                  fs : &mut SeekWrite, 
                                  ba : &mut Read, 
                                  pageSize : usize
-                                 ) -> io::Result<(usize,usize,bool)> {
+                                 ) -> io::Result<(usize,usize,bool)> where SeekWrite : Seek+Write {
                 let mut i = 0;
                 loop {
                     if i < max {
@@ -1145,7 +1140,7 @@ mod bt {
                             return Ok((i, sofar, true));
                         } else {
                             let sofar = sofar + put;
-                            pb.Write(fs.as_write());
+                            pb.Write(fs);
                             if finished {
                                 return Ok((i+1, sofar, true));
                             } else {
@@ -1159,7 +1154,7 @@ mod bt {
             }
 
             // TODO misnamed
-            fn writeOneBlock(param_sofar: usize, 
+            fn writeOneBlock<SeekWrite>(param_sofar: usize, 
                              param_firstBlk: PageBlock,
                              fs: &mut SeekWrite, 
                              ba: &mut Read, 
@@ -1168,7 +1163,7 @@ mod bt {
                              pbFirstOverflow: &mut PageBuilder,
                              pageManager: &mut IPages,
                              token: &IPendingSegment
-                             ) -> io::Result<(usize,PageBlock)> {
+                             ) -> io::Result<(usize,PageBlock)> where SeekWrite : Seek+Write {
                 // each trip through this loop will write out one
                 // block, starting with the overflow first page,
                 // followed by zero-or-more "regular" overflow pages,
@@ -1195,8 +1190,8 @@ mod bt {
                             pbFirstOverflow.SetPageFlag(PageFlag::FLAG_BOUNDARY_NODE as u8);
                             let blk = pageManager.GetBlock(token);
                             pbFirstOverflow.SetLastInt32(blk.firstPage as i32);
-                            pbFirstOverflow.Write(fs.as_write());
-                            utils::SeekPage(fs.as_seek(), pageSize, blk.firstPage);
+                            pbFirstOverflow.Write(fs);
+                            utils::SeekPage(fs, pageSize, blk.firstPage);
                             if !finished {
                                 loop_sofar = sofar;
                                 loop_firstBlk = blk;
@@ -1208,7 +1203,7 @@ mod bt {
                             if finished {
                                 // the first page is also the last one
                                 pbFirstOverflow.SetLastInt32(0); // offset to last used page in this block, which is this one
-                                pbFirstOverflow.Write(fs.as_write());
+                                pbFirstOverflow.Write(fs);
                                 return Ok((sofar, PageBlock::new(firstRegularPageNumber,firstBlk.lastPage)));
                             } else {
                                 // we need to write more pages,
@@ -1216,7 +1211,7 @@ mod bt {
                                 // or the end of the stream, 
                                 // whichever comes first
 
-                                utils::SeekPage(fs.as_seek(), pageSize, firstRegularPageNumber);
+                                utils::SeekPage(fs, pageSize, firstRegularPageNumber);
 
                                 // availableBeforeBoundary is the number of pages until the boundary,
                                 // NOT counting the boundary page, and the first page in the block
@@ -1234,11 +1229,11 @@ mod bt {
                                 if finished {
                                     // go back and fix the first page
                                     pbFirstOverflow.SetLastInt32(numRegularPages as i32);
-                                    utils::SeekPage(fs.as_seek(), pageSize, firstBlk.firstPage);
-                                    pbFirstOverflow.Write(fs.as_write());
+                                    utils::SeekPage(fs, pageSize, firstBlk.firstPage);
+                                    pbFirstOverflow.Write(fs);
                                     // now reset to the next page in the block
                                     let blk = PageBlock::new(firstRegularPageNumber + numRegularPages, firstBlk.lastPage);
-                                    utils::SeekPage(fs.as_seek(), pageSize, blk.firstPage);
+                                    utils::SeekPage(fs, pageSize, blk.firstPage);
                                     return Ok((sofar,blk));
                                 } else {
                                     // we need to write out a regular page except with a
@@ -1250,28 +1245,28 @@ mod bt {
                                     if putBoundary==0 {
                                         // go back and fix the first page
                                         pbFirstOverflow.SetLastInt32(numRegularPages as i32);
-                                        utils::SeekPage(fs.as_seek(), pageSize, firstBlk.firstPage);
-                                        pbFirstOverflow.Write(fs.as_write());
+                                        utils::SeekPage(fs, pageSize, firstBlk.firstPage);
+                                        pbFirstOverflow.Write(fs);
 
                                         // now reset to the next page in the block
                                         let blk = PageBlock::new(firstRegularPageNumber + numRegularPages, firstBlk.lastPage);
-                                        utils::SeekPage(fs.as_seek(), pageSize, firstBlk.lastPage);
+                                        utils::SeekPage(fs, pageSize, firstBlk.lastPage);
                                         return Ok((sofar,blk));
                                     } else {
                                         // write the boundary page
                                         let sofar = sofar + putBoundary;
                                         let blk = pageManager.GetBlock(token);
                                         pbOverflow.SetLastInt32(blk.firstPage as i32);
-                                        pbOverflow.Write(fs.as_write());
+                                        pbOverflow.Write(fs);
 
                                         // go back and fix the first page
                                         pbFirstOverflow.SetPageFlag(PageFlag::FLAG_ENDS_ON_BOUNDARY as u8);
                                         pbFirstOverflow.SetLastInt32((numRegularPages + 1) as i32);
-                                        utils::SeekPage(fs.as_seek(), pageSize, firstBlk.firstPage);
-                                        pbFirstOverflow.Write(fs.as_write());
+                                        utils::SeekPage(fs, pageSize, firstBlk.firstPage);
+                                        pbFirstOverflow.Write(fs);
 
                                         // now reset to the first page in the next block
-                                        utils::SeekPage(fs.as_seek(), pageSize, blk.firstPage);
+                                        utils::SeekPage(fs, pageSize, blk.firstPage);
                                         if finished {
                                             loop_sofar = sofar;
                                             loop_firstBlk = blk;
@@ -1294,14 +1289,14 @@ mod bt {
             writeOneBlock(0, startingBlock, fs, ba, pageSize, &mut pbOverflow, &mut pbFirstOverflow, pageManager, &token)
         }
 
-        fn writeLeaves<I>(leavesBlk:PageBlock,
+        fn writeLeaves<I,SeekWrite>(leavesBlk:PageBlock,
                        pageManager: &mut IPages,
                        source: I,
                        vbuf: &mut [u8],
                        fs: &mut SeekWrite, 
                        pb: &mut PageBuilder,
                        token: &mut IPendingSegment,
-                       ) -> io::Result<(PageBlock,Vec<pgitem>,usize)> where I: Iterator<Item=kvp> {
+                       ) -> io::Result<(PageBlock,Vec<pgitem>,usize)> where I: Iterator<Item=kvp> , SeekWrite : Seek+Write {
             // 2 for the page type and flags
             // 4 for the prev page
             // 2 for the stored count
@@ -1350,14 +1345,14 @@ mod bt {
                 }
             }
 
-            fn writeLeaf(st: &mut LeafState, 
+            fn writeLeaf<SeekWrite>(st: &mut LeafState, 
                          isRootPage: bool, 
                          pb: &mut PageBuilder, 
                          fs: &mut SeekWrite, 
                          pageSize: usize,
                          pageManager: &mut IPages,
                          token: &IPendingSegment,
-                         ) { 
+                         ) where SeekWrite : Seek+Write { 
                 buildLeaf(st, pb);
                 let thisPageNumber = st.blk.firstPage;
                 let firstLeaf = if st.leaves.is_empty() { thisPageNumber } else { st.firstLeaf };
@@ -1372,9 +1367,9 @@ mod bt {
                     } else {
                         PageBlock::new(thisPageNumber + 1, st.blk.lastPage)
                     };
-                pb.Write(fs.as_write());
+                pb.Write(fs);
                 if nextBlk.firstPage != (thisPageNumber+1) {
-                    utils::SeekPage(fs.as_seek(), pageSize, nextBlk.firstPage);
+                    utils::SeekPage(fs, pageSize, nextBlk.firstPage);
                 }
                 let mut ba = Vec::new();
                 ba.push_all(&st.keys[0].key);
