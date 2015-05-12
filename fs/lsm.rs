@@ -570,13 +570,15 @@ impl PageBuilder {
         self.cur = self.cur + ba.len();
     }
 
+    // TODO should be u32
     fn PutInt32(&mut self, ov:i32) {
-        let siz = std::mem::size_of::<i32> as usize;
+        const siz :usize = std::mem::size_of::<i32> as usize;
         let at = self.cur;
         write_i32_be(&mut self.buf[at .. at+siz], ov);
         self.cur = self.cur + siz;
     }
 
+    // TODO should be u32
     fn SetSecondToLastInt32(&mut self, page:i32) {
         let siz = std::mem::size_of::<i32> as usize;
         let len = self.buf.len();
@@ -585,6 +587,7 @@ impl PageBuilder {
         write_i32_be(&mut self.buf[at .. at+siz], page);
     }
 
+    // TODO should be u32
     fn SetLastInt32(&mut self, page:i32) {
         let siz = std::mem::size_of::<i32> as usize;
         let len = self.buf.len();
@@ -1033,10 +1036,8 @@ mod bt {
         // TODO constructor impl ?
     }
 
-    struct ParentState<'a> {
-        sofar : i32,
-        items : Vec<pgitem>,
-        overflows : HashMap<&'a [u8],i32>,
+    struct ParentState {
+        sofar : usize,
         nextGeneration : Vec<pgitem>,
         blk : PageBlock,
     }
@@ -1082,21 +1083,26 @@ mod bt {
     use super::Varint;
     use super::Blob;
     use super::bcmp;
+    use super::Guid;
 
-    fn CreateFromSortedSequenceOfKeyValuePairs<SeekWrite>(fs:SeekWrite, pageManager:&mut IPages, source:&Iterator<Item=kvp>) where SeekWrite : Seek+Write {
+    //const size_i32 :usize = std::mem::size_of::<i32>;
+    const size_i32 :usize = 4; // TODO
+
+    fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite, 
+                                                          pageManager: &mut IPages, 
+                                                          source: I,
+                                                         ) -> io::Result<(Guid,usize)> where I:Iterator<Item=kvp>, SeekWrite : Seek+Write {
 
         fn writeOverflow<SeekWrite>(startingBlock: PageBlock, 
-                         ba: &mut Read, 
-                         pageManager: &mut IPages, 
-                         fs: &mut SeekWrite
-                        ) -> io::Result<(usize,PageBlock)> where SeekWrite : Seek+Write {
+                                    ba: &mut Read, 
+                                    pageManager: &mut IPages, 
+                                    fs: &mut SeekWrite
+                                   ) -> io::Result<(usize,PageBlock)> where SeekWrite : Seek+Write {
             fn buildFirstPage(ba:&mut Read, pbFirstOverflow : &mut PageBuilder, pageSize : usize) -> io::Result<(usize,bool)> {
-                //let siz = std::mem::size_of::<i32> as usize;
-                let siz = 4;
                 pbFirstOverflow.Reset();
                 pbFirstOverflow.PutByte(PageType::OVERFLOW_NODE as u8);
                 pbFirstOverflow.PutByte(0u8); // starts 0, may be changed later
-                let room = (pageSize - (2 + siz));
+                let room = (pageSize - (2 + size_i32));
                 // something will be put in lastInt32 later
                 match pbFirstOverflow.PutStream2(ba, room) {
                     Ok(put) => Ok((put, put<room)),
@@ -1290,13 +1296,13 @@ mod bt {
         }
 
         fn writeLeaves<I,SeekWrite>(leavesBlk:PageBlock,
-                       pageManager: &mut IPages,
-                       source: I,
-                       vbuf: &mut [u8],
-                       fs: &mut SeekWrite, 
-                       pb: &mut PageBuilder,
-                       token: &mut IPendingSegment,
-                       ) -> io::Result<(PageBlock,Vec<pgitem>,usize)> where I: Iterator<Item=kvp> , SeekWrite : Seek+Write {
+                                    pageManager: &mut IPages,
+                                    source: I,
+                                    vbuf: &mut [u8],
+                                    fs: &mut SeekWrite, 
+                                    pb: &mut PageBuilder,
+                                    token: &IPendingSegment,
+                                    ) -> io::Result<(PageBlock,Vec<pgitem>,usize)> where I: Iterator<Item=kvp> , SeekWrite : Seek+Write {
             // 2 for the page type and flags
             // 4 for the prev page
             // 2 for the stored count
@@ -1371,6 +1377,7 @@ mod bt {
                 if nextBlk.firstPage != (thisPageNumber+1) {
                     utils::SeekPage(fs, pageSize, nextBlk.firstPage);
                 }
+                // TODO isn't there a better way to copy a slice?
                 let mut ba = Vec::new();
                 ba.push_all(&st.keys[0].key);
                 let pg = pgitem {page:thisPageNumber, key:ba.into_boxed_slice()};
@@ -1656,20 +1663,161 @@ mod bt {
             Ok((st.blk,st.leaves,st.firstLeaf))
         }
 
-    }
+        fn writeParentNodes<SeekWrite>(startingBlk: PageBlock, 
+                                       children: &[pgitem],
+                                       pageSize: usize,
+                                       fs: &mut SeekWrite,
+                                       pageManager: &mut IPages,
+                                       token: &IPendingSegment,
+                                       lastLeaf: usize,
+                                       firstLeaf: usize,
+                                       pb: &mut PageBuilder,
+                                      ) -> io::Result<(PageBlock, Vec<pgitem>)> where SeekWrite : Seek+Write {
+            // 2 for the page type and flags
+            // 2 for the stored count
+            // 5 for the extra ptr we will add at the end, a varint, 5 is worst case (page num < 4294967295L)
+            // 4 for lastInt32
+            const PARENT_PAGE_OVERHEAD :usize = 2 + 2 + 5 + 4;
 
-}
+            fn calcAvailable(currentSize: usize, couldBeRoot: bool, pageSize: usize) -> usize {
+                let basicSize = pageSize - currentSize;
+                let allowanceForRootNode = if couldBeRoot { size_i32 } else { 0 }; // first/last Leaf, lastInt32 already
+                basicSize - allowanceForRootNode
+            }
 
-/*
+            fn buildParentPage(items: &[&pgitem], 
+                               lastPtr: usize, 
+                               overflows: &HashMap<usize,usize>,
+                               pb : &mut PageBuilder,
+                              ) {
+                pb.Reset();
+                pb.PutByte(PageType::PARENT_NODE as u8);
+                pb.PutByte(0u8);
+                pb.PutInt16(items.len() as i16);
+                // store all the ptrs, n+1 of them
+                for x in items.iter() {
+                    pb.PutVarint(x.page as u64);
+                }
+                pb.PutVarint(lastPtr as u64);
+                // store all the keys, n of them
+                for i in 0 .. items.len() {
+                    let x = &items[i];
+                    match overflows.get(&i) {
+                        Some(pg) => {
+                            pb.PutByte(ValueFlag::FLAG_OVERFLOW as u8);
+                            pb.PutVarint(x.key.len() as u64);
+                            pb.PutInt32(*pg as i32);
+                        },
+                        None => {
+                            pb.PutByte(0u8);
+                            pb.PutVarint(x.key.len() as u64);
+                            pb.PutArray(&x.key);
+                        },
+                    }
+                }
+            }
 
-module bt =
+            fn writeParentPage<SeekWrite>(st: &mut ParentState, 
+                                          items: &[&pgitem],
+                                          overflows: &HashMap<usize,usize>,
+                                          pair:&pgitem, 
+                                          isRootNode: bool, 
+                                          pb: &mut PageBuilder, 
+                                          lastLeaf: usize,
+                                          fs: &mut SeekWrite,
+                                          pageManager: &mut IPages,
+                                          pageSize: usize,
+                                          token: &IPendingSegment,
+                                          firstLeaf: usize,
+                                         ) where SeekWrite : Seek+Write {
+                let pagenum = pair.page;
+                // assert st.sofar > 0
+                let thisPageNumber = st.blk.firstPage;
+                buildParentPage(items, pagenum, &overflows, pb);
+                let nextBlk =
+                    if isRootNode {
+                        pb.SetPageFlag(PageFlag::FLAG_ROOT_NODE as u8);
+                        pb.SetSecondToLastInt32(firstLeaf as i32);
+                        pb.SetLastInt32(lastLeaf as i32);
+                        PageBlock::new(thisPageNumber+1,st.blk.lastPage)
+                    } else {
+                        if (st.blk.firstPage == st.blk.lastPage) {
+                            pb.SetPageFlag(PageFlag::FLAG_BOUNDARY_NODE as u8);
+                            let newBlk = pageManager.GetBlock(token);
+                            pb.SetLastInt32(newBlk.firstPage as i32);
+                            newBlk
+                        } else {
+                            PageBlock::new(thisPageNumber+1,st.blk.lastPage)
+                        }
+                    };
+                pb.Write(fs);
+                if nextBlk.firstPage != (thisPageNumber+1) {
+                    utils::SeekPage(fs, pageSize, nextBlk.firstPage);
+                }
+                st.sofar = 0;
+                st.blk = nextBlk;
+                // TODO isn't there a better way to copy a slice?
+                let mut ba = Vec::new();
+                ba.push_all(&pair.key);
+                let pg = pgitem {page:thisPageNumber, key:ba.into_boxed_slice()};
+                st.nextGeneration.push(pg);
+            }
 
-    let CreateFromSortedSequenceOfKeyValuePairs(fs:Stream, pageManager:IPages, source:seq<kvp>) = 
+            // this is the body of writeParentNodes
+            let mut st = ParentState {nextGeneration:Vec::new(),sofar:0,blk:startingBlk,};
+            let mut items = Vec::new();
+            let mut overflows = HashMap::new();
+            for i in 0 .. children.len()-1 {
+                let pair = &children[i];
+                let pagenum = pair.page;
+
+                let neededEitherWay = 1 + Varint::SpaceNeededFor(pair.key.len() as u64) + Varint::SpaceNeededFor(pagenum as u64);
+                let neededForInline = neededEitherWay + pair.key.len();
+                let neededForOverflow = neededEitherWay + size_i32;
+                let couldBeRoot = st.nextGeneration.is_empty();
+
+                let available = calcAvailable(st.sofar, couldBeRoot, pageSize);
+                let fitsInline = (available >= neededForInline);
+                let wouldFitInlineOnNextPage = ((pageSize - PARENT_PAGE_OVERHEAD) >= neededForInline);
+                let fitsOverflow = (available >= neededForOverflow);
+                let writeThisPage = (! fitsInline) && (wouldFitInlineOnNextPage || (! fitsOverflow));
+
+                if writeThisPage {
+                    // assert sofar > 0
+                    writeParentPage(&mut st, &items, &overflows, pair, false, pb, lastLeaf, fs, pageManager, pageSize, token, firstLeaf);
+                }
+
+                if st.sofar == 0 {
+                    st.sofar = PARENT_PAGE_OVERHEAD;
+                    items.clear();
+                }
+
+                items.push(pair);
+                if calcAvailable(st.sofar, st.nextGeneration.is_empty(), pageSize) >= neededForInline {
+                    st.sofar = st.sofar + neededForInline;
+                } else {
+                    let keyOverflowFirstPage = st.blk.firstPage;
+                    let (_,newBlk) = try!(writeOverflow(st.blk, &mut &*pair.key, pageManager, fs));
+                    st.sofar = st.sofar + neededForOverflow;
+                    st.blk = newBlk;
+                    overflows.insert(items.len()-1,keyOverflowFirstPage);
+                }
+            }
+            let isRootNode = st.nextGeneration.is_empty();
+            writeParentPage(&mut st, &items, &overflows, &children[children.len()-1], isRootNode, pb, lastLeaf, fs,
+            pageManager, pageSize, token, firstLeaf);
+            Ok((st.blk,st.nextGeneration))
+        }
+
         // this is the body of Create
-        let startingBlk = pageManager.GetBlock(token)
-        utils.SeekPage(fs, pageSize, startingBlk.firstPage)
+        let pageSize = pageManager.PageSize();
+        let mut pb = PageBuilder::new(pageSize);
+        let token = pageManager.Begin();
+        let startingBlk = pageManager.GetBlock(&token);
+        utils::SeekPage(fs, pageSize, startingBlk.firstPage);
 
-        let (blkAfterLeaves, leaves, firstLeaf) = writeLeaves startingBlk
+        let mut vbuf = vec![0;pageSize].into_boxed_slice();
+        let (blkAfterLeaves, leaves, firstLeaf) = try!(writeLeaves(startingBlk, pageManager, source, &mut vbuf, fs, &mut pb, &token));
 
         // all the leaves are written.
         // now write the parent pages.
@@ -1677,131 +1825,31 @@ module bt =
         // keep writing until we have written a level which has only one node,
         // which is the root node.
 
-        let lastLeaf = leaves.[0].page
+        let lastLeaf = leaves[0].page;
 
-        let writeParentNodes (startingBlk:PageBlock) children =
-            // 2 for the page type and flags
-            // 2 for the stored count
-            // 5 for the extra ptr we will add at the end, a varint, 5 is worst case (page num < 4294967295L)
-            // 4 for lastInt32
-            let PARENT_PAGE_OVERHEAD = 2 + 2 + 5 + 4
+        let rootPage = {
+            let mut blk = blkAfterLeaves;
+            let mut children = leaves;
+            loop {
+                let (newBlk,newChildren) = try!(writeParentNodes(blk, &children, pageSize, fs, pageManager, &token, lastLeaf, firstLeaf, &mut pb));
+                blk = newBlk;
+                children = newChildren;
+                if children.len()==1 {
+                    break;
+                }
+            }
+            children[0].page
+        };
 
-            let calcAvailable currentSize couldBeRoot =
-                let basicSize = pageSize - currentSize
-                let allowanceForRootNode = if couldBeRoot then (sizeof<int32>) else 0 // first/last Leaf, lastInt32 already
-                basicSize - allowanceForRootNode
+        let g = pageManager.End(token, rootPage);
+        Ok((g,rootPage))
+    }
 
-            let buildParentPage (items:pgitem list) lastPtr (overflows:Map<byte[],int32>) =
-                pb.Reset ()
-                pb.PutByte (PARENT_NODE)
-                pb.PutByte (0uy)
-                pb.PutInt16 (items.Length)
-                // store all the ptrs, n+1 of them
-                List.iter (fun (x:pgitem) -> pb.PutVarint(int64 (x.page))) items
-                pb.PutVarint(int64 lastPtr)
-                // store all the keys, n of them
-                let fn (x:pgitem) = 
-                    let k = x.key
-                    match overflows.TryFind(k) with
-                    | Some pg ->
-                        pb.PutByte(FLAG_OVERFLOW)
-                        pb.PutVarint(int64 k.Length)
-                        pb.PutInt32(pg)
-                    | None ->
-                        pb.PutByte(0uy)
-                        pb.PutVarint(int64 k.Length)
-                        pb.PutArray(k)
-                List.iter fn items
+}
 
-            let writeParentPage st (pair:pgitem) isRootNode =
-                let pagenum = pair.page
-                let k = pair.key
-                let {items=items; blk=blk; overflows=overflows; nextGeneration=nextGeneration} = st
-                // assert st.sofar > 0
-                let thisPageNumber = blk.firstPage
-                // TODO needing to reverse the items list here is rather unfortunate
-                buildParentPage (List.rev items) pagenum overflows
-                let nextBlk =
-                    if isRootNode then
-                        pb.SetPageFlag(FLAG_ROOT_NODE)
-                        pb.SetSecondToLastInt32(firstLeaf)
-                        pb.SetLastInt32(lastLeaf)
-                        PageBlock(thisPageNumber+1,blk.lastPage)
-                    else
-                        if (blk.firstPage = blk.lastPage) then
-                            pb.SetPageFlag(FLAG_BOUNDARY_NODE)
-                            let newBlk = pageManager.GetBlock(token)
-                            pb.SetLastInt32(newBlk.firstPage)
-                            newBlk
-                        else
-                            PageBlock(thisPageNumber+1,blk.lastPage)
-                pb.Write(fs)
-                if nextBlk.firstPage <> (thisPageNumber+1) then utils.SeekPage(fs, pageSize, nextBlk.firstPage)
-                {sofar=0; items=[]; blk=nextBlk; overflows=Map.empty; nextGeneration=pgitem(thisPageNumber,k)::nextGeneration}
+/*
 
-            let foldParent (pair:pgitem) st =
-                let pagenum = pair.page
-                let k = pair.key
-
-                let neededEitherWay = 1 + Varint.SpaceNeededFor (int64 k.Length) + Varint.SpaceNeededFor (int64 pagenum)
-                let neededForInline = neededEitherWay + k.Length
-                let neededForOverflow = neededEitherWay + sizeof<int32>
-                let couldBeRoot = (List.isEmpty st.nextGeneration)
-
-                let maybeWriteParent st = 
-                    let available = calcAvailable (st.sofar) couldBeRoot
-                    let fitsInline = (available >= neededForInline)
-                    let wouldFitInlineOnNextPage = ((pageSize - PARENT_PAGE_OVERHEAD) >= neededForInline)
-                    let fitsOverflow = (available >= neededForOverflow)
-                    let writeThisPage = (not fitsInline) && (wouldFitInlineOnNextPage || (not fitsOverflow))
-
-                    if writeThisPage then
-                        // assert sofar > 0
-                        writeParentPage st pair false
-                    else
-                        st
-
-                let initParent st = 
-                    if st.sofar = 0 then
-                        {st with sofar=PARENT_PAGE_OVERHEAD; items=[]; }
-                    else
-                        st
-
-                let addKeyToParent st = 
-                    let {sofar=sofar; items=items; blk=blk; overflows=overflows} = st
-                    let stateWithK = {st with items=pair :: items}
-                    if calcAvailable sofar (List.isEmpty st.nextGeneration) >= neededForInline then
-                        {stateWithK with sofar=sofar + neededForInline}
-                    else
-                        let keyOverflowFirstPage = blk.firstPage
-                        let _,newBlk = writeOverflow blk (new MemoryStream(k))
-                        {stateWithK with sofar=sofar + neededForOverflow; blk=newBlk; overflows=overflows.Add(k,keyOverflowFirstPage)}
-
-
-                // this is the body of the foldParent function
-                maybeWriteParent st |> initParent |> addKeyToParent
-
-            // this is the body of writeParentNodes
-            // children is in reverse order.  so List.head children is actually the very last child.
-            let lastChild = List.head children
-            let initialState = {nextGeneration=[];sofar=0;items=[];blk=startingBlk;overflows=Map.empty}
-            let middleState = List.foldBack foldParent (List.tail children) initialState 
-            let isRootNode = (List.isEmpty middleState.nextGeneration)
-            let finalState = writeParentPage middleState lastChild isRootNode
-            let {blk=blk;nextGeneration=ng} = finalState
-            (blk,ng)
-
-        let rec writeOneLayerOfParentPages (blk:PageBlock) (children:pgitem list) :int32 =
-            if children.Length > 1 then
-                let (newBlk,newChildren) = writeParentNodes blk children
-                writeOneLayerOfParentPages newBlk newChildren
-            else
-                children.[0].page
-
-        let rootPage = writeOneLayerOfParentPages blkAfterLeaves leaves
-
-        let g = pageManager.End(token, rootPage)
-        (g,rootPage)
+module bt =
 
     type private myOverflowReadStream(_fs:Stream, pageSize:int, _firstPage:int, _len:int) =
         inherit Stream()
@@ -3324,5 +3372,7 @@ fn main()
 // seriously miss full type inference
 // weird that it's safe to use unsigned
 // don't avoid mutability.  in rust, it's safe, and avoiding it is painful.
+// braces vim %
+// semicolons A ;, end-of-line comments
+// typing tetris
 //
-
