@@ -1918,6 +1918,7 @@ mod Database {
     use std::io::Error;
     use std::io::ErrorKind;
     use std::fs::File;
+    use std::fs::OpenOptions;
     use std::collections::HashMap;
     use super::utils;
     use super::SegmentInfo;
@@ -2118,6 +2119,7 @@ mod Database {
     }
 
     struct db {
+        path: String,
         pageSize: usize,
         settings: DbSettings,
         fsMine: File,
@@ -2131,7 +2133,6 @@ mod Database {
 
     impl db {
         fn new(path : &str, settings : DbSettings) -> io::Result<db> {
-            use std::fs::OpenOptions;
 
             let mut f = try!(OpenOptions::new()
                     .read(true)
@@ -2148,6 +2149,7 @@ mod Database {
             freeBlocks.sort_by(|a,b| b.CountPages().cmp(&a.CountPages()));
 
             let res = db {
+                path: String::from_str(path),
                 pageSize: pageSize,
                 settings: settings, 
                 fsMine: f, 
@@ -2191,6 +2193,51 @@ mod Database {
                     headBlk
                 }
             }
+        }
+
+        // this code should not be called in a release build.  it helps
+        // finds problems by zeroing out pages in blocks that
+        // have been freed.
+        fn stomp(&self, blocks:Vec<PageBlock>) -> io::Result<()> {
+            let bad = vec![0;self.pageSize].into_boxed_slice();
+            let mut fs = try!(OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(&self.path));
+            for b in blocks {
+                for x in b.firstPage .. b.lastPage+1 {
+                    utils::SeekPage(&mut fs, self.pageSize, x);
+                    fs.write(&bad);
+                }
+            }
+            Ok(())
+        }
+
+        fn addFreeBlocks(&mut self, blocks:Vec<PageBlock>) {
+
+            // all additions to the freeBlocks list should happen here
+            // by calling this function.
+            //
+            // the list is kept consolidated and sorted by size descending.
+            // unfortunately this requires two sorts, and they happen here
+            // inside a critical section.  but the benefit is considered
+            // worth the trouble.
+            
+            // TODO it is important that freeBlocks contains no overlaps.
+            // add debug-only checks to verify?
+
+            // TODO is there such a thing as a block that is so small we
+            // don't want to bother with it?  what about a single-page block?
+            // should this be a configurable setting?
+
+            // TODO if the last block of the file is free, consider just
+            // moving nextPage back.
+
+            for b in blocks {
+                self.freeBlocks.push(b);
+            }
+            consolidateBlockList(&mut self.freeBlocks);
+            self.freeBlocks.sort_by(|a,b| b.CountPages().cmp(&a.CountPages()));
         }
 
         // a stored segmentinfo for a segment is a single blob of bytes.
@@ -2863,57 +2910,6 @@ type BTreeSegment =
 
 
 type Database(_io:IDatabaseFile, _settings:DbSettings) =
-
-    let addFreeBlocks blocks =
-        // this code should not be called in a release build.  it helps
-        // finds problems by zeroing out pages in blocks that
-        // have been freed.
-        let stomp() =
-            let bad:byte[] = Array.zeroCreate pageSize
-            use fs = io.OpenForWriting()
-            List.iter (fun (b:PageBlock) ->
-                //printfn "stomping on block: %A" b
-                for x in b.firstPage .. b.lastPage do
-                    utils.SeekPage(fs, pageSize, x)
-                    fs.Write(bad,0,pageSize)
-                ) blocks
-
-        //stomp() // TODO remove.  or maybe a setting?  probably not.
-
-        lock critSectionNextPage (fun () ->
-            // all additions to the freeBlocks list should happen here
-            // by calling this function.
-            //
-            // the list is kept consolidated and sorted by size descending.
-            // unfortunately this requires two sorts, and they happen here
-            // inside a critical section.  but the benefit is considered
-            // worth the trouble.
-            
-            // TODO it is important that freeBlocks contains no overlaps.
-            // add debug-only checks to verify?
-
-            // TODO is there such a thing as a block that is so small we
-            // don't want to bother with it?  what about a single-page block?
-            // should this be a configurable setting?
-
-            // TODO if the last block of the file is free, consider just
-            // moving nextPage back.
-
-            let newList = freeBlocks @ blocks |> consolidateBlockList
-            let sorted = List.sortBy (fun (x:PageBlock) -> -(x.CountPages)) newList
-            freeBlocks <- sorted
-        )
-        //printfn "freeBlocks: %A" freeBlocks
-        #if not
-        printfn "lastPage: %d" (nextPage-1)
-        let c1 = header |> listAllBlocks |> consolidateBlockList
-        printfn "usedBlocks: %A" c1
-        let c2 = c1 |> invertBlockList
-        printfn "inverted: %A" c2
-        let c3 = List.sortBy (fun (x:PageBlock) -> -(x.CountPages)) c2
-        printfn "calc: %A" c3
-        printfn ""
-        #endif
 
     let critSectionCursors = obj()
     let mutable cursors:Map<Guid,ICursor list> = Map.empty
