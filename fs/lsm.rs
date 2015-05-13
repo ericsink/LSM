@@ -42,6 +42,7 @@ pub struct IPendingSegment {
     unused : i32
 }
 
+#[derive(Hash,PartialEq,Eq,Copy,Clone)]
 pub struct PageBlock {
     firstPage : usize,
     lastPage : usize,
@@ -69,6 +70,10 @@ impl Guid {
 
     fn NewGuid() -> Guid {
         Guid { a:[0; 16] } // TODO
+    }
+
+    fn ToByteArray(&self) -> [u8;16] {
+        self.a
     }
 }
 
@@ -158,7 +163,7 @@ struct DbSettings {
     AutoMergeEnabled : bool,
     AutoMergeMinimumPages : i32,
     DefaultPageSize : usize,
-    PagesPerBlock : u32,
+    PagesPerBlock : usize,
 }
 
 struct SegmentInfo {
@@ -1909,15 +1914,20 @@ mod Database {
     use std::io::Read;
     use std::io::Seek;
     use std::io::SeekFrom;
+    use std::io::Write;
     use std::io::Error;
     use std::io::ErrorKind;
+    use std::fs::File;
     use std::collections::HashMap;
     use super::utils;
     use super::SegmentInfo;
     use super::Guid;
     use super::PageReader;
+    use super::PageBuilder;
+    use super::Varint;
     use super::PageBlock;
     use super::HeaderData;
+    use super::DbSettings;
 
     const HEADER_SIZE_IN_BYTES: usize = 4096;
 
@@ -2049,84 +2059,239 @@ mod Database {
 
     }
 
+    fn consolidateBlockList(blocks: &mut Vec<PageBlock>) {
+        blocks.sort_by(|a,b| a.firstPage.cmp(&b.firstPage));
+        loop {
+            if blocks.len()==1 {
+                break;
+            }
+            let mut did = false;
+            for i in 1 .. blocks.len() {
+                if blocks[i-1].lastPage+1 == blocks[i].firstPage {
+                    blocks[i-1].lastPage = blocks[i].lastPage;
+                    blocks.remove(i);
+                    did = true;
+                    break;
+                }
+            }
+            if !did {
+                break;
+            }
+        }
+    }
+
+    fn invertBlockList(blocks: &Vec<PageBlock>) -> Vec<PageBlock> {
+        let len = blocks.len();
+        let mut result = Vec::new();
+        for i in 0 .. len {
+            result.push(blocks[i]);
+        }
+        result.sort_by(|a,b| a.firstPage.cmp(&b.firstPage));
+        for i in 0 .. len-1 {
+            result[i].firstPage = result[i].lastPage+1;
+            result[i].lastPage = result[i+1].firstPage-1;
+        }
+        result.remove(len-1);
+        result
+    }
+
+    fn listAllBlocks(h:&HeaderData, segmentsInWaiting:&HashMap<Guid,SegmentInfo>, pageSize: usize) -> Vec<PageBlock> {
+        let headerBlock = PageBlock::new(1, HEADER_SIZE_IN_BYTES / pageSize);
+        let mut blocks = Vec::new();
+
+        fn grab(blocks: &mut Vec<PageBlock>, from: &HashMap<Guid,SegmentInfo>) {
+            for info in from.values() {
+                for b in info.blocks.iter() {
+                    blocks.push(*b);
+                }
+            }
+        }
+
+        grab(&mut blocks, &h.segments);
+        grab(&mut blocks, segmentsInWaiting);
+        blocks.push(headerBlock);
+        match h.headerOverflow {
+            Some(blk) => blocks.push(blk),
+            None => ()
+        }
+        blocks
+    }
+
+    struct db {
+        pageSize: usize,
+        settings: DbSettings,
+        fsMine: File,
+        header: HeaderData,
+        nextPage: usize,
+        segmentsInWaiting: HashMap<Guid,SegmentInfo>,
+        freeBlocks: Vec<PageBlock>,
+        // TODO cursors
+        // TODO pendingMerges
+    }
+
+    impl db {
+        fn new(path : &str, settings : DbSettings) -> io::Result<db> {
+            use std::fs::OpenOptions;
+
+            let mut f = try!(OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create(true)
+                    .open(path));
+
+            let (header,pageSize,firstAvailablePage) = try!(readHeader(&mut f));
+
+            let segmentsInWaiting = HashMap::new();
+            let mut blocks = listAllBlocks(&header, &segmentsInWaiting, pageSize);
+            consolidateBlockList(&mut blocks);
+            let mut freeBlocks = invertBlockList(&blocks);
+            freeBlocks.sort_by(|a,b| b.CountPages().cmp(&a.CountPages()));
+
+            let res = db {
+                pageSize: pageSize,
+                settings: settings, 
+                fsMine: f, 
+                header: header, 
+                nextPage: firstAvailablePage,
+                segmentsInWaiting: segmentsInWaiting,
+                freeBlocks: freeBlocks,
+            };
+            Ok(res)
+        }
+
+        fn getBlock(&mut self, specificSize: usize) -> PageBlock {
+            if specificSize > 0 {
+                if self.freeBlocks.is_empty() || specificSize > self.freeBlocks[0].CountPages() {
+                    let newBlk = PageBlock::new(self.nextPage, self.nextPage+specificSize-1);
+                    self.nextPage = self.nextPage + specificSize;
+                    newBlk
+                } else {
+                    let headBlk = self.freeBlocks[0];
+                    if headBlk.CountPages() > specificSize {
+                        // trim the block to size
+                        let blk2 = PageBlock::new(headBlk.firstPage, headBlk.firstPage+specificSize-1); 
+                        self.freeBlocks[0].firstPage = self.freeBlocks[0].firstPage + specificSize;
+                        // TODO problem: the list is probably no longer sorted.  is this okay?
+                        // is a re-sort of the list really worth it?
+                        blk2
+                    } else {
+                        self.freeBlocks.remove(0);
+                        headBlk
+                    }
+                }
+            } else {
+                if self.freeBlocks.is_empty() {
+                    let size = self.settings.PagesPerBlock;
+                    let newBlk = PageBlock::new(self.nextPage, self.nextPage+size-1) ;
+                    self.nextPage = self.nextPage + size;
+                    newBlk
+                } else {
+                    let headBlk = self.freeBlocks[0];
+                    self.freeBlocks.remove(0);
+                    headBlk
+                }
+            }
+        }
+
+        // a stored segmentinfo for a segment is a single blob of bytes.
+        // root page
+        // age
+        // number of pairs
+        // each pair is startBlock,countBlocks
+        // all in varints
+
+        fn writeHeader(&mut self, hdr:&mut HeaderData) {
+            fn spaceNeededForSegmentInfo(info: &SegmentInfo) -> usize {
+                let mut a = 0;
+                for t in info.blocks.iter() {
+                    a = a + Varint::SpaceNeededFor(t.firstPage as u64);
+                    a = a + Varint::SpaceNeededFor(t.CountPages() as u64);
+                }
+                a = a + Varint::SpaceNeededFor(info.root as u64);
+                a = a + Varint::SpaceNeededFor(info.age as u64);
+                a = a + Varint::SpaceNeededFor(info.blocks.len() as u64);
+                a
+            }
+
+            fn spaceForHeader(h:&HeaderData) -> usize {
+                let mut a = Varint::SpaceNeededFor(h.currentState.len() as u64);
+                // TODO use currentState with a lookup into h.segments instead?
+                // should be the same, right?
+                for info in h.segments.values() {
+                    a = a + spaceNeededForSegmentInfo(&info) + 16;
+                }
+                a
+            }
+
+            fn buildSegmentList(h:&HeaderData) -> PageBuilder {
+                let space = spaceForHeader(h);
+                let mut pb = PageBuilder::new(space);
+                // TODO format version number
+                pb.PutVarint(h.currentState.len() as u64);
+                for g in h.currentState.iter() {
+                    pb.PutArray(&g.ToByteArray());
+                    match h.segments.get(&g) {
+                        Some(info) => {
+                            pb.PutVarint(info.root as u64);
+                            pb.PutVarint(info.age as u64);
+                            pb.PutVarint(info.blocks.len() as u64);
+                            // we store PageBlock as first/count instead of first/last, since the
+                            // count will always compress better as a varint.
+                            for t in info.blocks.iter() {
+                                pb.PutVarint(t.firstPage as u64);
+                                pb.PutVarint(t.CountPages() as u64);
+                            }
+                        },
+                        None => panic!() // TODO
+                    }
+                }
+                //if 0 != pb.Available then failwith "not exactly full"
+                pb
+            }
+
+            let mut pb = PageBuilder::new(HEADER_SIZE_IN_BYTES);
+            pb.PutInt32(self.pageSize as i32);
+
+            pb.PutVarint(hdr.changeCounter);
+            pb.PutVarint(hdr.mergeCounter);
+
+            let pbSegList = buildSegmentList(hdr);
+            let buf = pbSegList.Buffer();
+            pb.PutVarint(buf.len() as u64);
+
+            let headerOverflow =
+                if (pb.Available() >= (buf.len() + 1)) {
+                    pb.PutByte(0u8);
+                    pb.PutArray(buf);
+                    None
+                } else {
+                    pb.PutByte(1u8);
+                    let fits = pb.Available() - 4 - 4;
+                    let extra = buf.len() - fits;
+                    let extraPages = extra / self.pageSize + if (extra % self.pageSize) != 0 { 1 } else { 0 };
+                    //printfn "extra pages: %d" extraPages
+                    let blk = self.getBlock(extraPages);
+                    utils::SeekPage(&mut self.fsMine, self.pageSize, blk.firstPage);
+                    self.fsMine.write(&buf[fits .. buf.len()]);
+                    pb.PutInt32(fits as i32);
+                    pb.PutInt32(blk.firstPage as i32);
+                    pb.PutArray(&buf[0 .. fits]);
+                    Some(blk)
+                };
+
+            self.fsMine.seek(SeekFrom::Start(0));
+            pb.Write(&mut self.fsMine);
+            self.fsMine.flush();
+            hdr.headerOverflow = headerOverflow
+        }
+
+    }
+
 }
 
 //impl IPendingSegment for PendingSegment { }
 
 // ----------------------------------------------------------------
-
-struct foo {
-    num : usize,
-    i : usize,
-}
-
-impl Iterator for foo {
-    type Item = kvp;
-    fn next(& mut self) -> Option<kvp> {
-        if self.i >= self.num {
-            None
-        }
-        else {
-            fn create_array(n : usize) -> Box<[u8]> {
-                let mut kv = Vec::new();
-                for i in 0 .. n {
-                    kv.push(i as u8);
-                }
-                let k = kv.into_boxed_slice();
-                k
-            }
-
-            let k = format!("{}", self.i).into_bytes().into_boxed_slice();
-            let v = format!("{}", self.i * 2).into_bytes().into_boxed_slice();
-            let r = kvp{Key:k, Value:Blob::Array(v)};
-            self.i = self.i + 1;
-            Some(r)
-        }
-    }
-}
-
-struct SimplePageManager {
-    pageSize : usize,
-    nextPage : usize,
-}
-
-impl IPages for SimplePageManager {
-    fn PageSize(&self) -> usize {
-        self.pageSize
-    }
-
-    fn Begin(&mut self) -> IPendingSegment {
-        IPendingSegment { unused : 0}
-    }
-
-    fn GetBlock(&mut self, token:&IPendingSegment) -> PageBlock {
-        let blk = PageBlock::new(self.nextPage, self.nextPage + 10 - 1);
-        self.nextPage = self.nextPage + 10;
-        blk
-    }
-
-    fn End(&mut self, token:IPendingSegment, page:usize) -> Guid {
-        Guid::NewGuid()
-    }
-
-}
-
-fn hack() -> io::Result<bool> {
-    use std::fs::File;
-
-    let mut f = try!(File::create("data.bin"));
-
-    let src = foo {num:100, i:0};
-    let mut mgr = SimplePageManager {pageSize: 4096, nextPage: 1};
-    bt::CreateFromSortedSequenceOfKeyValuePairs(&mut f, &mut mgr, src);
-
-    let res : io::Result<bool> = Ok(true);
-    res
-}
-
-fn main() {
-    hack();
-}
 
 /*
 
@@ -2697,145 +2862,7 @@ type BTreeSegment =
         bt.OpenCursor(fs,pageSize,rootPage,hook)
 
 
-type dbf(_path) = 
-    let path = _path
-
-    // TODO this code should move elsewhere, since this file wants to be a PCL
-
-    interface IDatabaseFile with
-        member this.OpenForWriting() =
-            new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.ReadWrite) :> Stream
-        member this.OpenForReading() =
-            new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite) :> Stream
-
-
-// used for testing purposes
-type SimplePageManager(_pageSize) =
-    let pageSize = _pageSize
-
-    let WASTE_PAGES_AFTER_EACH_BLOCK = 3
-    let PAGES_PER_BLOCK = 10
-
-    let critSectionNextPage = obj()
-    let mutable nextPage = 1
-
-    let getBlock num =
-        lock critSectionNextPage (fun () -> 
-            let blk = PageBlock(nextPage, nextPage+num-1) 
-            nextPage <- nextPage + num + WASTE_PAGES_AFTER_EACH_BLOCK
-            blk
-            )
-
-    interface IPages with
-        member this.PageSize = pageSize
-
-        member this.Begin() = PendingSegment() :> IPendingSegment
-
-        // note that we assume that a single pending segment is going
-        // to be written by a single thread.  the concrete PendingSegment
-        // class above is not threadsafe.
-
-        member this.GetBlock(token) =
-            let ps = token :?> PendingSegment
-            let blk = getBlock PAGES_PER_BLOCK
-            ps.AddBlock(blk)
-            blk
-
-        member this.End(token, lastPage) =
-            let ps = token :?> PendingSegment
-            let (g,_,_) = ps.End(lastPage)
-            g
-
 type Database(_io:IDatabaseFile, _settings:DbSettings) =
-    let io = _io
-    let settings = _settings
-    let fsMine = io.OpenForWriting()
-
-    let (firstReadOfHeader,pageSize,firstAvailablePage) = readHeader()
-
-    let mutable header = firstReadOfHeader
-    let mutable nextPage = firstAvailablePage
-    let mutable segmentsInWaiting: Map<Guid,SegmentInfo> = Map.empty
-
-    let consolidateBlockList blocks =
-        let sortedBlocks = List.sortBy (fun (x:PageBlock) -> x.firstPage) blocks
-        let fldr acc (t:PageBlock) =
-            let (blk:PageBlock, pile) = acc
-            if blk.lastPage + 1 = t.firstPage then
-                (PageBlock(blk.firstPage, t.lastPage), pile)
-            else
-                (PageBlock(t.firstPage, t.lastPage), blk :: pile)
-        let folded = List.fold fldr (List.head sortedBlocks, []) (List.tail sortedBlocks)
-        let consolidated = (fst folded) :: (snd folded)
-        consolidated
-
-    let invertBlockList blocks =
-        let sortedBlocks = List.sortBy (fun (x:PageBlock) -> x.firstPage) blocks
-        let fldr acc (t:PageBlock) =
-            let (prev:PageBlock, result) = acc
-            (t, PageBlock(prev.lastPage+1, t.firstPage-1) :: result)
-        let folded = List.fold fldr (List.head sortedBlocks, []) (List.tail sortedBlocks)
-        // if is being used to calculate free blocks, it won't find any free
-        // blocks between the last used page and the end of the file
-        snd folded
-
-    let listAllBlocks h =
-        let headerBlock = PageBlock(1, HEADER_SIZE_IN_BYTES / pageSize)
-        let currentBlocks = Map.fold (fun acc _ info -> info.blocks @ acc) [] h.segments
-        let inWaitingBlocks = Map.fold (fun acc _ info -> info.blocks @ acc) [] segmentsInWaiting
-        let segmentBlocks = headerBlock :: currentBlocks @ inWaitingBlocks
-        match h.headerOverflow with
-            | Some blk ->
-                blk :: segmentBlocks
-            | None ->
-                segmentBlocks
-
-    let initialFreeBlocks = header |> listAllBlocks |> consolidateBlockList |> invertBlockList |> List.sortBy (fun (x:PageBlock) -> -(x.CountPages)) 
-    //do printfn "initialFreeBlocks: %A" initialFreeBlocks
-
-    let mutable freeBlocks:PageBlock list = initialFreeBlocks
-
-    let critSectionNextPage = obj()
-    let getBlock specificSize =
-        //printfn "getBlock: specificSize=%d" specificSize
-        //printfn "freeBlocks: %A" freeBlocks
-        lock critSectionNextPage (fun () -> 
-            if specificSize > 0 then
-                if List.isEmpty freeBlocks || specificSize > (List.head freeBlocks).CountPages then
-                    let newBlk = PageBlock(nextPage, nextPage+specificSize-1) 
-                    nextPage <- nextPage + specificSize
-                    //printfn "newBlk: %A" newBlk
-                    newBlk
-                else
-                    let headBlk = List.head freeBlocks
-                    if headBlk.CountPages > specificSize then
-                        // trim the block to size
-                        let blk2 = PageBlock(headBlk.firstPage, headBlk.firstPage+specificSize-1) 
-                        let remainder = PageBlock(headBlk.firstPage+specificSize, headBlk.lastPage)
-                        freeBlocks <- remainder :: List.tail freeBlocks
-                        // TODO problem: the list is probably no longer sorted.  is this okay?
-                        // is a re-sort of the list really worth it?
-                        //printfn "reusing blk prune: %A, specificSize:%d, freeBlocks now: %A" headBlk specificSize freeBlocks
-                        blk2
-                    else
-                        freeBlocks <- List.tail freeBlocks
-                        //printfn "reusing blk: %A, specificSize:%d, freeBlocks now: %A" headBlk specificSize freeBlocks
-                        //printfn "blk.CountPages: %d" (headBlk.CountPages)
-                        headBlk
-            else
-                if List.isEmpty freeBlocks then
-                    let size = settings.PagesPerBlock
-                    let newBlk = PageBlock(nextPage, nextPage+size-1) 
-                    nextPage <- nextPage + size
-                    //printfn "newBlk: %A" newBlk
-                    newBlk
-                else
-                    let headBlk = List.head freeBlocks
-                    freeBlocks <- List.tail freeBlocks
-                    //printfn "reusing blk: %A, specificSize:%d, freeBlocks now: %A" headBlk specificSize freeBlocks
-                    //printfn "blk.CountPages: %d" (headBlk.CountPages)
-                    headBlk
-            )
 
     let addFreeBlocks blocks =
         // this code should not be called in a release build.  it helps
@@ -2961,76 +2988,6 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
         }
 
     let critSectionHeader = obj()
-
-    // a stored segmentinfo for a segment is a single blob of bytes.
-    // root page
-    // age
-    // number of pairs
-    // each pair is startBlock,countBlocks
-    // all in varints
-
-    let writeHeader hdr =
-        let spaceNeededForSegmentInfo (info:SegmentInfo) =
-            let a = List.sumBy (fun (t:PageBlock) -> Varint.SpaceNeededFor(t.firstPage |> int64) + Varint.SpaceNeededFor(t.CountPages |> int64)) info.blocks
-            let b = Varint.SpaceNeededFor(info.root |> int64)
-            let c = Varint.SpaceNeededFor(info.age |> int64)
-            let d = Varint.SpaceNeededFor(List.length info.blocks |> int64)
-            a + b + c + d
-
-        let spaceForHeader h =
-            Varint.SpaceNeededFor(List.length h.currentState |> int64) 
-                + List.sumBy (fun g -> (Map.find g h.segments |> spaceNeededForSegmentInfo) + 16) h.currentState
-
-        let buildSegmentList h =
-            let space = spaceForHeader h
-            let pb = PageBuilder(space)
-            // TODO format version number
-            pb.PutVarint(List.length h.currentState |> int64)
-            List.iter (fun (g:Guid) -> 
-                pb.PutArray(g.ToByteArray())
-                let info = Map.find g h.segments
-                pb.PutVarint(info.root |> int64)
-                pb.PutVarint(info.age |> int64)
-                pb.PutVarint(List.length info.blocks |> int64)
-                // we store PageBlock as first/count instead of first/last, since the
-                // count will always compress better as a varint.
-                List.iter (fun (t:PageBlock) -> pb.PutVarint(t.firstPage |> int64); pb.PutVarint(t.CountPages |> int64);) info.blocks
-                ) h.currentState
-            //if 0 <> pb.Available then failwith "not exactly full"
-            pb.Buffer
-
-        let pb = PageBuilder(HEADER_SIZE_IN_BYTES)
-        pb.PutInt32(pageSize)
-
-        pb.PutVarint(hdr.changeCounter)
-        pb.PutVarint(hdr.mergeCounter)
-
-        let buf = buildSegmentList hdr
-        pb.PutVarint(buf.Length |> int64)
-
-        let headerOverflow =
-            if (pb.Available >= (buf.Length + 1)) then
-                pb.PutByte(0uy)
-                pb.PutArray(buf)
-                None
-            else
-                pb.PutByte(1uy)
-                let fits = pb.Available - 4 - 4
-                let extra = buf.Length - fits
-                let extraPages = extra / pageSize + if (extra % pageSize) <> 0 then 1 else 0
-                //printfn "extra pages: %d" extraPages
-                let blk = getBlock (extraPages)
-                utils.SeekPage(fsMine, pageSize, blk.firstPage)
-                fsMine.Write(buf, fits, extra)
-                pb.PutInt32(fits)
-                pb.PutInt32(blk.firstPage)
-                pb.PutArray(buf, 0, fits)
-                Some blk
-
-        fsMine.Seek(0L, SeekOrigin.Begin) |> ignore
-        pb.Write(fsMine)
-        fsMine.Flush()
-        {hdr with headerOverflow=headerOverflow}
 
     let critSectionMerging = obj()
     // this keeps track of which segments are currently involved in a merge.
@@ -3494,6 +3451,80 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
             tx.CommitSegments segs
             segs <- []
 */
+
+struct foo {
+    num : usize,
+    i : usize,
+}
+
+impl Iterator for foo {
+    type Item = kvp;
+    // TODO this doesn't actually generate the pairs in order
+    fn next(& mut self) -> Option<kvp> {
+        if self.i >= self.num {
+            None
+        }
+        else {
+            fn create_array(n : usize) -> Box<[u8]> {
+                let mut kv = Vec::new();
+                for i in 0 .. n {
+                    kv.push(i as u8);
+                }
+                let k = kv.into_boxed_slice();
+                k
+            }
+
+            let k = format!("{}", self.i).into_bytes().into_boxed_slice();
+            let v = format!("{}", self.i * 2).into_bytes().into_boxed_slice();
+            let r = kvp{Key:k, Value:Blob::Array(v)};
+            self.i = self.i + 1;
+            Some(r)
+        }
+    }
+}
+
+struct SimplePageManager {
+    pageSize : usize,
+    nextPage : usize,
+}
+
+impl IPages for SimplePageManager {
+    fn PageSize(&self) -> usize {
+        self.pageSize
+    }
+
+    fn Begin(&mut self) -> IPendingSegment {
+        IPendingSegment { unused : 0}
+    }
+
+    fn GetBlock(&mut self, token:&IPendingSegment) -> PageBlock {
+        let blk = PageBlock::new(self.nextPage, self.nextPage + 10 - 1);
+        self.nextPage = self.nextPage + 10;
+        blk
+    }
+
+    fn End(&mut self, token:IPendingSegment, page:usize) -> Guid {
+        Guid::NewGuid()
+    }
+
+}
+
+fn hack() -> io::Result<bool> {
+    use std::fs::File;
+
+    let mut f = try!(File::create("data.bin"));
+
+    let src = foo {num:100, i:0};
+    let mut mgr = SimplePageManager {pageSize: 4096, nextPage: 1};
+    bt::CreateFromSortedSequenceOfKeyValuePairs(&mut f, &mut mgr, src);
+
+    let res : io::Result<bool> = Ok(true);
+    res
+}
+
+fn main() {
+    hack();
+}
 
 // derive debug is %A
 // [u8] is not on the heap.  it's like a primitive that is 7 bytes long.  it's a value type.
