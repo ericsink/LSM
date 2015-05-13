@@ -57,14 +57,18 @@ impl PageBlock {
     }
 }
 
+#[derive(Hash,PartialEq,Eq,Copy,Clone)]
 pub struct Guid {
-    //a : [u8; 16]
-    hack : i32
+    a : [u8; 16]
 }
 
 impl Guid {
+    fn new(ba: [u8; 16]) -> Guid {
+        Guid { a: ba }
+    }
+
     fn NewGuid() -> Guid {
-        Guid { hack:0 }
+        Guid { a:[0; 16] } // TODO
     }
 }
 
@@ -159,7 +163,7 @@ struct DbSettings {
 
 struct SegmentInfo {
     root : usize,
-    age : i32,
+    age : u32,
     blocks : Vec<PageBlock>
 }
 
@@ -531,8 +535,8 @@ impl PageBuilder {
         self.cur = 0;
     }
 
-    fn Write(&self, strm:&mut Write) {
-        strm.write_all(&*self.buf);
+    fn Write(&self, strm:&mut Write) -> io::Result<()> {
+        strm.write_all(&*self.buf)
     }
 
     fn PageSize(&self) -> usize {
@@ -627,6 +631,10 @@ struct PageReader {
 }
 
 impl PageReader {
+    fn new(pgsz : usize) -> PageReader { 
+        let mut ba = vec![0;pgsz].into_boxed_slice();
+        PageReader { cur:0, buf:ba } 
+    }
 
     pub fn Position(&self) -> usize {
         self.cur
@@ -644,7 +652,9 @@ impl PageReader {
         utils::ReadFully(strm, &mut self.buf)
     }
 
-    // TODO member this.Read(s:Stream, off, len) = utils.ReadFully(s, buf, off, len)
+    fn ReadPart(&mut self, strm:&mut Read, off: usize, len: usize) -> io::Result<usize> {
+        utils::ReadFully(strm, &mut self.buf[off .. len-off])
+    }
 
     fn Reset(&mut self) {
         self.cur = 0;
@@ -1089,9 +1099,9 @@ mod bt {
     use super::size_i32;
 
     pub fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite, 
-                                                            pageManager: &mut IPages, 
-                                                            source: I,
-                                                           ) -> io::Result<(Guid,usize)> where I:Iterator<Item=kvp>, SeekWrite : Seek+Write {
+                                                                pageManager: &mut IPages, 
+                                                                source: I,
+                                                               ) -> io::Result<(Guid,usize)> where I:Iterator<Item=kvp>, SeekWrite : Seek+Write {
 
         fn writeOverflow<SeekWrite>(startingBlock: PageBlock, 
                                     ba: &mut Read, 
@@ -1130,12 +1140,12 @@ mod bt {
             }
 
             fn writeRegularPages<SeekWrite>(max :usize, 
-                                 sofar :usize, 
-                                 pb : &mut PageBuilder, 
-                                 fs : &mut SeekWrite, 
-                                 ba : &mut Read, 
-                                 pageSize : usize
-                                 ) -> io::Result<(usize,usize,bool)> where SeekWrite : Seek+Write {
+                                            sofar :usize, 
+                                            pb : &mut PageBuilder, 
+                                            fs : &mut SeekWrite, 
+                                            ba : &mut Read, 
+                                            pageSize : usize
+                                           ) -> io::Result<(usize,usize,bool)> where SeekWrite : Seek+Write {
                 let mut i = 0;
                 loop {
                     if i < max {
@@ -1853,8 +1863,8 @@ struct HeaderData {
     currentState: Vec<Guid>,
     segments: HashMap<Guid,SegmentInfo>,
     headerOverflow: Option<PageBlock>,
-    changeCounter: i64,
-    mergeCounter: i64,
+    changeCounter: u64,
+    mergeCounter: u64,
 }
 
 struct PendingSegment {
@@ -1892,6 +1902,153 @@ impl PendingSegment {
         };
         (Guid::NewGuid(), &self.blockList, unused)
     }
+}
+
+mod Database {
+    use std::io;
+    use std::io::Read;
+    use std::io::Seek;
+    use std::io::SeekFrom;
+    use std::io::Error;
+    use std::io::ErrorKind;
+    use std::collections::HashMap;
+    use super::utils;
+    use super::SegmentInfo;
+    use super::Guid;
+    use super::PageReader;
+    use super::PageBlock;
+    use super::HeaderData;
+
+    const HEADER_SIZE_IN_BYTES: usize = 4096;
+
+    fn readHeader<R>(fs:&mut R) -> io::Result<(HeaderData,usize,usize)> where R : Read+Seek {
+        // TODO this func assumes we are at the beginning of the file?
+
+        fn read<R>(fs: &mut R) -> io::Result<PageReader> where R : Read {
+            let mut pr = PageReader::new(HEADER_SIZE_IN_BYTES);
+            let got = try!(pr.Read(fs));
+            if got < HEADER_SIZE_IN_BYTES {
+                Err(io::Error::new(ErrorKind::InvalidInput, "invalid header"))
+            } else {
+                Ok(pr)
+            }
+        }
+
+        fn parse<R>(pr: &mut PageReader, fs:&mut R) -> (HeaderData, usize) where R : Read+Seek {
+            fn readSegmentList(pr: &mut PageReader) -> (Vec<Guid>,HashMap<Guid,SegmentInfo>) {
+                fn readBlockList(prBlocks: &mut PageReader) -> Vec<PageBlock> {
+                    let count = prBlocks.GetVarint() as usize;
+                    let mut a = Vec::new();
+                    for i in 0 .. count {
+                        let firstPage = prBlocks.GetVarint() as usize;
+                        let countPages = prBlocks.GetVarint() as usize;
+                        // blocks are stored as firstPage/count rather than as
+                        // firstPage/lastPage, because the count will always be
+                        // smaller as a varint
+                        a.push(PageBlock::new(firstPage,firstPage + countPages - 1));
+                    }
+                    a
+                }
+
+                let count = pr.GetVarint() as usize;
+                let mut a = Vec::new(); // TODO capacity count
+                let mut m = HashMap::new(); // TODO capacity count
+                for i in 0 .. count {
+                    let mut b = [0;16];
+                    pr.GetIntoArray(&mut b);
+                    let g = Guid::new(b);
+                    a.push(g);
+                    let root = pr.GetVarint() as usize;
+                    let age = pr.GetVarint() as u32;
+                    let blocks = readBlockList(pr);
+                    let info = SegmentInfo {root:root,age:age,blocks:blocks};
+                    m.insert(g,info);
+                }
+                (a,m)
+            }
+
+            // --------
+
+            let pageSize = pr.GetInt32() as usize;
+            let changeCounter = pr.GetVarint();
+            let mergeCounter = pr.GetVarint();
+            let lenSegmentList = pr.GetVarint() as usize;
+
+            let overflowed = pr.GetByte();
+            let (state,segments,blk) = 
+                if overflowed != 0u8 {
+                    let lenChunk1 = pr.GetInt32() as usize;
+                    let lenChunk2 = lenSegmentList - lenChunk1;
+                    let firstPageChunk2 = pr.GetInt32() as usize;
+                    let extraPages = lenChunk2 / pageSize + if (lenChunk2 % pageSize) != 0 { 1 } else { 0 };
+                    let lastPageChunk2 = firstPageChunk2 + extraPages - 1;
+                    let mut pr2 = PageReader::new(lenSegmentList);
+                    // TODO chain?
+                    // copy from chunk1 into pr2
+                    pr2.ReadPart(fs, 0, lenChunk1);
+                    // now get chunk2 and copy it in as well
+                    utils::SeekPage(fs, pageSize, firstPageChunk2);
+                    pr2.ReadPart(fs, lenChunk1, lenChunk2);
+                    let (state,segments) = readSegmentList(&mut pr2);
+                    (state, segments, Some (PageBlock::new(firstPageChunk2, lastPageChunk2)))
+                } else {
+                    let (state,segments) = readSegmentList(pr);
+                    (state,segments,None)
+                };
+
+
+            let hd = 
+                HeaderData
+                {
+                    currentState:state,
+                    segments:segments,
+                    headerOverflow:blk,
+                    changeCounter:changeCounter,
+                    mergeCounter:mergeCounter,
+                };
+
+            (hd, pageSize)
+        }
+
+        fn calcNextPage(pageSize: usize, len: usize) -> usize {
+            let numPagesSoFar = if pageSize > len { 1 } else { len / pageSize };
+            numPagesSoFar + 1
+        }
+
+        fn seek_len<R>(fs: &mut R) -> io::Result<u64> where R : Seek {
+            let pos = try!(fs.seek(SeekFrom::Current(0)));
+            let len = try!(fs.seek(SeekFrom::End(0)));
+            let unused = try!(fs.seek(SeekFrom::Start(pos)));
+            Ok(len)
+        }
+
+        // --------
+
+        let len = try!(seek_len(fs));
+        if len > 0 {
+            fs.seek(SeekFrom::Start(0 as u64));
+            let mut pr = try!(read(fs));
+            let (h, pageSize) = parse(&mut pr, fs);
+            let nextAvailablePage = calcNextPage(pageSize, len as usize);
+            Ok((h, pageSize, nextAvailablePage))
+        } else {
+            //let defaultPageSize = settings.DefaultPageSize;
+            let defaultPageSize = 4096; // TODO
+            let h = 
+                HeaderData
+                {
+                    segments: HashMap::new(),
+                    currentState: Vec::new(),
+                    headerOverflow: None,
+                    changeCounter: 0,
+                    mergeCounter: 0,
+                };
+            let nextAvailablePage = calcNextPage(defaultPageSize, HEADER_SIZE_IN_BYTES);
+            Ok((h, defaultPageSize, nextAvailablePage))
+        }
+
+    }
+
 }
 
 //impl IPendingSegment for PendingSegment { }
@@ -2593,111 +2750,6 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
     let io = _io
     let settings = _settings
     let fsMine = io.OpenForWriting()
-
-    let HEADER_SIZE_IN_BYTES = 4096
-
-    let readHeader() =
-        let read() =
-            if fsMine.Length >= (HEADER_SIZE_IN_BYTES |> int64) then
-                let pr = PageReader(HEADER_SIZE_IN_BYTES)
-                pr.Read(fsMine)
-                Some pr
-            else
-                None
-
-        let parse (pr:PageReader) =
-            let readSegmentList (pr:PageReader) =
-                let readBlockList (prBlocks:PageReader) =
-                    let rec f more cur =
-                        if more > 0 then
-                            let firstPage = prBlocks.GetVarint() |> int
-                            let countPages = prBlocks.GetVarint() |> int
-                            // blocks are stored as firstPage/count rather than as
-                            // firstPage/lastPage, because the count will always be
-                            // smaller as a varint
-                            f (more-1) (PageBlock(firstPage,firstPage + countPages - 1) :: cur)
-                        else
-                            cur
-
-                    let count = prBlocks.GetVarint() |> int
-                    f count []
-
-                let count = pr.GetVarint() |> int
-                let a:Guid[] = Array.zeroCreate count
-                let fldr acc i = 
-                    let g = Guid(pr.GetArray(16))
-                    a.[i] <- g
-                    let root = pr.GetVarint() |> int
-                    let age = pr.GetVarint() |> int
-                    let blocks = readBlockList(pr)
-                    let info = {root=root;age=age;blocks=blocks}
-                    Map.add g info acc
-                let b = List.fold fldr Map.empty [0 .. count-1]
-                (List.ofArray a,b)
-
-            // --------
-
-            let pageSize = pr.GetInt32()
-            let changeCounter = pr.GetVarint()
-            let mergeCounter = pr.GetVarint()
-            let lenSegmentList = pr.GetVarint() |> int
-
-            let overflowed = pr.GetByte()
-            let (prSegmentList, blk) = 
-                if overflowed <> 0uy then
-                    let lenChunk1 = pr.GetInt32()
-                    let lenChunk2 = lenSegmentList - lenChunk1
-                    let firstPageChunk2 = pr.GetInt32()
-                    let extraPages = lenChunk2 / pageSize + if (lenChunk2 % pageSize) <> 0 then 1 else 0
-                    let lastPageChunk2 = firstPageChunk2 + extraPages - 1
-                    let pr2 = PageReader(lenSegmentList)
-                    // copy from chunk1 into pr2
-                    pr2.Read(fsMine, 0, lenChunk1)
-                    // now get chunk2 and copy it in as well
-                    utils.SeekPage(fsMine, pageSize, firstPageChunk2)
-                    pr2.Read(fsMine, lenChunk1, lenChunk2)
-                    (pr2, Some (PageBlock(firstPageChunk2, lastPageChunk2)))
-                else
-                    (pr, None)
-
-            let (state,segments) = readSegmentList(prSegmentList)
-
-            let hd = 
-                {
-                    currentState=state 
-                    segments=segments
-                    headerOverflow=blk
-                    changeCounter=changeCounter
-                    mergeCounter=mergeCounter
-                }
-
-            (hd, pageSize)
-
-        let calcNextPage pageSize (len:int64) =
-            let numPagesSoFar = if (int64 pageSize) > len then 1 else (int (len / (int64 pageSize)))
-            numPagesSoFar + 1
-
-        // --------
-
-        fsMine.Seek(0L, SeekOrigin.Begin) |> ignore
-        let hdr = read()
-        match hdr with
-            | Some pr ->
-                let (h, pageSize) = parse pr
-                let nextAvailablePage = calcNextPage pageSize fsMine.Length
-                (h, pageSize, nextAvailablePage)
-            | None ->
-                let defaultPageSize = settings.DefaultPageSize
-                let h = 
-                    {
-                        segments = Map.empty
-                        currentState = []
-                        headerOverflow = None
-                        changeCounter = 0L
-                        mergeCounter = 0L
-                    }
-                let nextAvailablePage = calcNextPage defaultPageSize (int64 HEADER_SIZE_IN_BYTES)
-                (h, defaultPageSize, nextAvailablePage)
 
     let (firstReadOfHeader,pageSize,firstAvailablePage) = readHeader()
 
