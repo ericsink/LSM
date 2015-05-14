@@ -203,10 +203,10 @@ mod utils {
     use std::io::Write;
     use std::io::SeekFrom;
 
-    pub fn SeekPage(strm:&mut Seek, pageSize:usize, pageNumber:usize) {
+    pub fn SeekPage(strm:&mut Seek, pageSize:usize, pageNumber:usize) -> io::Result<u64> {
         if 0==pageNumber { panic!("invalid page number") }
         let pos = (pageNumber - 1) * pageSize;
-        strm.seek(SeekFrom::Start(pos as u64));
+        strm.seek(SeekFrom::Start(pos as u64))
     }
 
     pub fn ReadFully(strm:&mut Read, buf: &mut [u8]) -> io::Result<usize> {
@@ -1028,23 +1028,23 @@ mod bt {
     use super::PageBlock;
 
     // page types
-    enum PageType {
-        LEAF_NODE = 1,
-        PARENT_NODE = 2,
-        OVERFLOW_NODE = 3,
+    mod PageType {
+        pub const LEAF_NODE: u8 = 1;
+        pub const PARENT_NODE: u8 = 2;
+        pub const OVERFLOW_NODE: u8 = 3;
     }
 
     // flags on values
-    enum ValueFlag {
-        FLAG_OVERFLOW = 1,
-        FLAG_TOMBSTONE = 2,
+    mod ValueFlag {
+        pub const FLAG_OVERFLOW: u8 = 1;
+        pub const FLAG_TOMBSTONE: u8 = 2;
     }
 
     // flags on pages
-    enum PageFlag {
-        FLAG_ROOT_NODE = 1,
-        FLAG_BOUNDARY_NODE = 2,
-        FLAG_ENDS_ON_BOUNDARY = 3,
+    mod PageFlag {
+        pub const FLAG_ROOT_NODE: u8 = 1;
+        pub const FLAG_BOUNDARY_NODE: u8 = 2;
+        pub const FLAG_ENDS_ON_BOUNDARY: u8 = 3;
     }
 
     struct pgitem {
@@ -1858,6 +1858,203 @@ mod bt {
         Ok((g,rootPage))
     }
 
+    use std::io::SeekFrom;
+    use std::io::Error;
+    use std::io::ErrorKind;
+    use std::fs::File;
+    use std::fs::OpenOptions;
+    use super::SegmentInfo;
+    use super::PageReader;
+    use std::cmp::min;
+    use super::read_i32_be;
+
+    struct myOverflowReadStream {
+        fs: File,
+        len: usize,
+        firstPage: usize,
+        buf: Box<[u8]>,
+        currentPage: usize,
+        sofarOverall: usize,
+        sofarThisPage: usize,
+        firstPageInBlock: usize,
+        offsetToLastPageInThisBlock: usize,
+        countRegularDataPagesInBlock: usize,
+        boundaryPageNumber: usize,
+        bytesOnThisPage: usize,
+        offsetOnThisPage: usize,
+    }
+        
+    impl myOverflowReadStream {
+        fn new(path: &str, pageSize: usize, _firstPage: usize, _len: usize) -> io::Result<myOverflowReadStream> {
+            let f = try!(OpenOptions::new()
+                    .read(true)
+                    .open(path));
+            let mut res = 
+                myOverflowReadStream {
+                    fs: f,
+                    len: _len,
+                    firstPage: _firstPage,
+                    buf: vec![0;pageSize].into_boxed_slice(),
+                    currentPage: _firstPage,
+                    sofarOverall: 0,
+                    sofarThisPage: 0,
+                    firstPageInBlock: 0,
+                    offsetToLastPageInThisBlock: 0, // add to firstPageInBlock to get the last one
+                    countRegularDataPagesInBlock: 0,
+                    boundaryPageNumber: 0,
+                    bytesOnThisPage: 0,
+                    offsetOnThisPage: 0,
+                };
+            try!(res.ReadFirstPage());
+            Ok(res)
+        }
+
+        // TODO consider supporting seek
+
+        fn ReadPage(&mut self) -> io::Result<()> {
+            try!(utils::SeekPage(&mut self.fs, self.buf.len(), self.currentPage));
+            try!(utils::ReadFully(&mut self.fs, &mut *self.buf));
+            // assert PageType is OVERFLOW
+            self.sofarThisPage = 0;
+            if self.currentPage == self.firstPageInBlock {
+                self.bytesOnThisPage = self.buf.len() - (2 + size_i32);
+                self.offsetOnThisPage = 2;
+            } else if self.currentPage == self.boundaryPageNumber {
+                self.bytesOnThisPage = self.buf.len() - size_i32;
+                self.offsetOnThisPage = 0;
+            } else {
+                // assert currentPage > firstPageInBlock
+                // assert currentPage < boundaryPageNumber OR boundaryPageNumber = 0
+                self.bytesOnThisPage = self.buf.len();
+                self.offsetOnThisPage = 0;
+            }
+            Ok(())
+        }
+
+        fn GetLastInt32(&self) -> usize {
+            let at = self.buf.len() - size_i32;
+            read_i32_be(&self.buf[at .. at+4]) as usize
+        }
+
+        fn PageType(&self) -> u8 {
+            self.buf[0]
+        }
+
+        fn CheckPageFlag(&self, f: u8) -> bool {
+            0 != (self.buf[1] & f)
+        }
+
+        fn ReadFirstPage(&mut self) -> io::Result<()> {
+            self.firstPageInBlock = self.currentPage;
+            try!(self.ReadPage());
+            if self.PageType() != (PageType::OVERFLOW_NODE as u8) {
+                try!(Err(io::Error::new(ErrorKind::InvalidInput, "first overflow page has invalid page type")));
+            }
+            if self.CheckPageFlag(PageFlag::FLAG_BOUNDARY_NODE) {
+                // first page landed on a boundary node
+                // lastInt32 is the next page number, which we'll fetch later
+                self.boundaryPageNumber = self.currentPage;
+                self.offsetToLastPageInThisBlock = 0;
+                self.countRegularDataPagesInBlock = 0;
+            } else {
+                self.offsetToLastPageInThisBlock = self.GetLastInt32();
+                if self.CheckPageFlag(PageFlag::FLAG_ENDS_ON_BOUNDARY) {
+                    self.boundaryPageNumber = self.currentPage + self.offsetToLastPageInThisBlock;
+                    self.countRegularDataPagesInBlock = self.offsetToLastPageInThisBlock - 1;
+                } else {
+                    self.boundaryPageNumber = 0;
+                    self.countRegularDataPagesInBlock = self.offsetToLastPageInThisBlock;
+                }
+            }
+            Ok(())
+        }
+
+        fn Read(&mut self, ba: &mut [u8], offset: usize, wanted: usize) -> io::Result<usize> {
+            if self.sofarOverall >= self.len {
+                Ok(0)
+            } else {
+                let mut direct = false;
+                if (self.sofarThisPage >= self.bytesOnThisPage) {
+                    if self.currentPage == self.boundaryPageNumber {
+                        self.currentPage = self.GetLastInt32();
+                        try!(self.ReadFirstPage());
+                    } else {
+                        // we need a new page.  and if it's a full data page,
+                        // and if wanted is big enough to take all of it, then
+                        // we want to read (at least) it directly into the
+                        // buffer provided by the caller.  we already know
+                        // this candidate page cannot be the first page in a
+                        // block.
+                        let maybeDataPage = self.currentPage + 1;
+                        let isDataPage = 
+                            if self.boundaryPageNumber > 0 {
+                                ((self.len - self.sofarOverall) >= self.buf.len()) && (self.countRegularDataPagesInBlock > 0) && (maybeDataPage > self.firstPageInBlock) && (maybeDataPage < self.boundaryPageNumber)
+                            } else {
+                                ((self.len - self.sofarOverall) >= self.buf.len()) && (self.countRegularDataPagesInBlock > 0) && (maybeDataPage > self.firstPageInBlock) && (maybeDataPage <= (self.firstPageInBlock + self.countRegularDataPagesInBlock))
+                            };
+
+                        if isDataPage && (wanted >= self.buf.len()) {
+                            // assert (currentPage + 1) > firstPageInBlock
+                            //
+                            // don't increment currentPage here because below, we will
+                            // calculate how many pages we actually want to do.
+                            direct = true;
+                            self.bytesOnThisPage = self.buf.len();
+                            self.sofarThisPage = 0;
+                            self.offsetOnThisPage = 0;
+                        } else {
+                            self.currentPage = self.currentPage + 1;
+                            try!(self.ReadPage());
+                        }
+                    }
+                }
+
+                if direct {
+                    // currentPage has not been incremented yet
+                    //
+                    // skip the buffer.  note, therefore, that the contents of the
+                    // buffer are "invalid" in that they do not correspond to currentPage
+                    //
+                    let numPagesWanted = wanted / self.buf.len();
+                    // assert countRegularDataPagesInBlock > 0
+                    let lastDataPageInThisBlock = self.firstPageInBlock + self.countRegularDataPagesInBlock;
+                    let theDataPage = self.currentPage + 1;
+                    let numPagesAvailable = 
+                        if self.boundaryPageNumber>0 { 
+                            self.boundaryPageNumber - theDataPage 
+                        } else {
+                            lastDataPageInThisBlock - theDataPage + 1
+                        };
+                    let numPagesToFetch = min(numPagesWanted, numPagesAvailable);
+                    let bytesToFetch = numPagesToFetch * self.buf.len();
+                    // assert bytesToFetch <= wanted
+
+                    try!(utils::SeekPage(&mut self.fs, self.buf.len(), theDataPage));
+                    try!(utils::ReadFully(&mut self.fs, &mut ba[offset .. offset + bytesToFetch]));
+                    self.sofarOverall = self.sofarOverall + bytesToFetch;
+                    self.currentPage = self.currentPage + numPagesToFetch;
+                    self.sofarThisPage = self.buf.len();
+                    Ok(bytesToFetch)
+                } else {
+                    let available = min(self.bytesOnThisPage - self.sofarThisPage, self.len - self.sofarOverall);
+                    let num = min(available, wanted);
+                    for i in 0 .. num {
+                        ba[offset+i] = self.buf[self.offsetOnThisPage + self.sofarThisPage + i];
+                    }
+                    self.sofarOverall = self.sofarOverall + num;
+                    self.sofarThisPage = self.sofarThisPage + num;
+                    Ok(num)
+                }
+            }
+        }
+    }
+
+    impl Read for myOverflowReadStream {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            let len = buf.len();
+            self.Read(buf, 0, len)
+        }
+    }
 }
 
 use std::collections::HashMap;
@@ -2343,158 +2540,6 @@ mod Database {
 /*
 
 module bt =
-
-    type private myOverflowReadStream(_fs:Stream, pageSize:int, _firstPage:int, _len:int) =
-        inherit Stream()
-        let fs = _fs
-        let len = _len
-        let firstPage = _firstPage
-        let buf:byte[] = Array.zeroCreate pageSize
-        let mutable currentPage = firstPage
-        let mutable sofarOverall = 0
-        let mutable sofarThisPage = 0
-        let mutable firstPageInBlock = 0
-        let mutable offsetToLastPageInThisBlock = 0 // add to firstPageInBlock to get the last one
-        let mutable countRegularDataPagesInBlock = 0       
-        let mutable boundaryPageNumber = 0
-        let mutable bytesOnThisPage = 0
-        let mutable offsetOnThisPage = 0
-
-        // TODO consider supporting seek
-
-        let ReadPage() = 
-            utils.SeekPage(fs, buf.Length, currentPage)
-            utils.ReadFully(fs, buf, 0, buf.Length)
-            // assert PageType is OVERFLOW
-            sofarThisPage <- 0
-            if currentPage = firstPageInBlock then
-                bytesOnThisPage <- buf.Length - (2 + sizeof<int32>)
-                offsetOnThisPage <- 2
-            else if currentPage = boundaryPageNumber then
-                bytesOnThisPage <- buf.Length - sizeof<int32>
-                offsetOnThisPage <- 0
-            else
-                // assert currentPage > firstPageInBlock
-                // assert currentPage < boundaryPageNumber OR boundaryPageNumber = 0
-                bytesOnThisPage <- buf.Length
-                offsetOnThisPage <- 0
-
-        let GetInt32At(at) :int =
-            let a0 = uint64 buf.[at+0]
-            let a1 = uint64 buf.[at+1]
-            let a2 = uint64 buf.[at+2]
-            let a3 = uint64 buf.[at+3]
-            let r = (a0 <<< 24) ||| (a1 <<< 16) ||| (a2 <<< 8) ||| (a3 <<< 0)
-            // assert r fits in a 32 bit signed int
-            int r
-
-        let GetLastInt32() = GetInt32At(buf.Length - sizeof<int32>)
-        let PageType() = (buf.[0])
-        let CheckPageFlag(f) = 0uy <> (buf.[1] &&& f)
-
-        let ReadFirstPage() =
-            firstPageInBlock <- currentPage
-            ReadPage()
-            if PageType() <> OVERFLOW_NODE then failwith "first overflow page has invalid page type"
-            if CheckPageFlag(FLAG_BOUNDARY_NODE) then
-                // first page landed on a boundary node
-                // lastInt32 is the next page number, which we'll fetch later
-                boundaryPageNumber <- currentPage
-                offsetToLastPageInThisBlock <- 0
-                countRegularDataPagesInBlock <- 0
-            else 
-                offsetToLastPageInThisBlock <- GetLastInt32()
-                if CheckPageFlag(FLAG_ENDS_ON_BOUNDARY) then
-                    boundaryPageNumber <- currentPage + offsetToLastPageInThisBlock
-                    countRegularDataPagesInBlock <- offsetToLastPageInThisBlock - 1
-                else
-                    boundaryPageNumber <- 0
-                    countRegularDataPagesInBlock <- offsetToLastPageInThisBlock
-
-        do ReadFirstPage()
-
-        override this.Length = int64 len
-        override this.CanRead = sofarOverall < len // TODO always return true?
-
-        override this.Read(ba,offset,wanted) =
-            if sofarOverall >= len then
-                0
-            else    
-                let mutable direct = false
-                if (sofarThisPage >= bytesOnThisPage) then
-                    if currentPage = boundaryPageNumber then
-                        currentPage <- GetLastInt32()
-                        ReadFirstPage()
-                    else
-                        // we need a new page.  and if it's a full data page,
-                        // and if wanted is big enough to take all of it, then
-                        // we want to read (at least) it directly into the
-                        // buffer provided by the caller.  we already know
-                        // this candidate page cannot be the first page in a
-                        // block.
-                        let maybeDataPage = currentPage + 1
-                        let isDataPage = 
-                            if boundaryPageNumber > 0 then
-                                ((len - sofarOverall) >= buf.Length) && (countRegularDataPagesInBlock > 0) && (maybeDataPage > firstPageInBlock) && (maybeDataPage < boundaryPageNumber)
-                            else
-                                ((len - sofarOverall) >= buf.Length) && (countRegularDataPagesInBlock > 0) && (maybeDataPage > firstPageInBlock) && (maybeDataPage <= (firstPageInBlock + countRegularDataPagesInBlock))
-
-                        if isDataPage && (wanted >= buf.Length) then
-                            // assert (currentPage + 1) > firstPageInBlock
-                            //
-                            // don't increment currentPage here because below, we will
-                            // calculate how many pages we actually want to do.
-                            direct <- true
-                            bytesOnThisPage <- buf.Length
-                            sofarThisPage <- 0
-                            offsetOnThisPage <- 0
-                        else
-                            currentPage <- currentPage + 1
-                            ReadPage()
-
-                if direct then
-                    // currentPage has not been incremented yet
-                    //
-                    // skip the buffer.  note, therefore, that the contents of the
-                    // buffer are "invalid" in that they do not correspond to currentPage
-                    //
-                    let numPagesWanted = wanted / buf.Length
-                    // assert countRegularDataPagesInBlock > 0
-                    let lastDataPageInThisBlock = firstPageInBlock + countRegularDataPagesInBlock 
-                    let theDataPage = currentPage + 1
-                    let numPagesAvailable = 
-                        if boundaryPageNumber>0 then 
-                            boundaryPageNumber - theDataPage 
-                        else 
-                            lastDataPageInThisBlock - theDataPage + 1
-                    let numPagesToFetch = Math.Min(numPagesWanted, numPagesAvailable)
-                    let bytesToFetch = numPagesToFetch * buf.Length
-                    // assert bytesToFetch <= wanted
-
-                    utils.SeekPage(fs, buf.Length, theDataPage)
-                    utils.ReadFully(fs, ba, offset, bytesToFetch)
-                    sofarOverall <- sofarOverall + bytesToFetch
-                    currentPage <- currentPage + numPagesToFetch
-                    sofarThisPage <- buf.Length
-                    bytesToFetch
-                else
-                    let available = Math.Min (bytesOnThisPage - sofarThisPage, len - sofarOverall)
-                    let num = Math.Min (available, wanted)
-                    System.Array.Copy (buf, offsetOnThisPage + sofarThisPage, ba, offset, num)
-                    sofarOverall <- sofarOverall + num
-                    sofarThisPage <- sofarThisPage + num
-                    num
-
-        override this.CanSeek = false
-        override this.Seek(_,_) = raise (NotSupportedException())
-        override this.Position
-            with get() = int64 sofarOverall
-            and set(v) = this.Seek(v, SeekOrigin.Begin) |> ignore
-
-        override this.CanWrite = false
-        override this.SetLength(_) = raise (NotSupportedException())
-        override this.Flush() = raise (NotSupportedException())
-        override this.Write(_,_,_) = raise (NotSupportedException())
 
     let private readOverflow len fs pageSize (firstPage:int) =
         let ostrm = new myOverflowReadStream(fs, pageSize, firstPage, len)
@@ -3536,4 +3581,5 @@ fn main() {
 // semicolons A ;, end-of-line comments
 // typing tetris
 // miss sprintf syntax
+// Read,Write,Seek traits so much better design than .NET streams
 //
