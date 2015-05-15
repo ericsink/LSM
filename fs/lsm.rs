@@ -92,6 +92,13 @@ enum SeekOp {
     SEEK_GE = 2,
 }
 
+fn seek_len<R>(fs: &mut R) -> io::Result<u64> where R : Seek {
+    let pos = try!(fs.seek(SeekFrom::Current(0)));
+    let len = try!(fs.seek(SeekFrom::End(0)));
+    let unused = try!(fs.seek(SeekFrom::Start(pos)));
+    Ok(len)
+}
+
 // TODO return Result
 trait ICursor : Drop {
     fn Seek(&mut self, k:&[u8], sop:SeekOp);
@@ -99,18 +106,19 @@ trait ICursor : Drop {
     fn Last(&mut self);
     fn Next(&mut self);
     fn Prev(&mut self);
+
     fn IsValid(&self) -> bool;
 
     // TODO we wish Key() could return a reference, but the lifetime
     // would need to be "until the next call", and Rust can't really
     // do that.
-    fn Key(&self) -> Box<[u8]>; 
+    fn Key(&self) -> Box<[u8]>;
 
     // TODO similarly with Value().  When the Blob is an array, we would
     // prefer to return a reference to the bytes in the page.
     fn Value(&self) -> Blob;
 
-    fn ValueLength(&self) -> i32; // because a negative length is a tombstone
+    fn ValueLength(&self) -> i32; // because a negative length is a tombstone TODO option
     fn KeyCompare(&self, k:&[u8]) -> i32;
 
     fn CountKeysForward(&mut self) -> u32 {
@@ -665,12 +673,12 @@ impl PageReader {
         self.cur = 0;
     }
 
-    fn Compare(&self, len:usize, other:&[u8]) ->i32 {
+    fn Compare(&self, len: usize, other: &[u8]) ->i32 {
         let slice = &self.buf[self.cur .. self.cur + len];
         bcmp::Compare(slice, other)
     }
 
-    fn CompareWithPrefix(&self, prefix:&[u8], len:usize, other:&[u8]) ->i32 {
+    fn CompareWithPrefix(&self, prefix: &[u8], len: usize, other: &[u8]) ->i32 {
         let slice = &self.buf[self.cur .. self.cur + len];
         bcmp::CompareWithPrefix(prefix, slice, other)
     }
@@ -728,20 +736,104 @@ impl PageReader {
         for i in 0 .. a.len() {
             a[i] = self.buf[self.cur + i];
         }
+        // TODO advance cur
     }
-
-    /*
-    fn GetArray(&mut self, len : usize) -> Box<[u8]> {
-        let at = self.cur;
-        let ba = &self.buf[at .. at + len];
-        self.cur = self.cur + len;
-        Box::new(*ba)
-    }
-    */
 
     fn GetVarint(&mut self) -> u64 {
         let (newCur, v) = Varint::read(&*self.buf, self.cur);
         self.cur = newCur;
+        v
+    }
+
+}
+
+struct PageBuffer {
+    buf : Box<[u8]>,
+}
+
+impl PageBuffer {
+    fn new(pgsz : usize) -> PageBuffer { 
+        let mut ba = vec![0;pgsz].into_boxed_slice();
+        PageBuffer { buf:ba } 
+    }
+
+    fn PageSize(&self) -> usize {
+        self.buf.len()
+    }
+
+    fn Read(&mut self, strm:&mut Read) -> io::Result<usize> {
+        utils::ReadFully(strm, &mut self.buf)
+    }
+
+    fn ReadPart(&mut self, strm:&mut Read, off: usize, len: usize) -> io::Result<usize> {
+        utils::ReadFully(strm, &mut self.buf[off .. len-off])
+    }
+
+    fn Compare(&self, cur: usize, len: usize, other: &[u8]) ->i32 {
+        let slice = &self.buf[cur .. cur + len];
+        bcmp::Compare(slice, other)
+    }
+
+    fn CompareWithPrefix(&self, cur: usize, prefix: &[u8], len: usize, other: &[u8]) ->i32 {
+        let slice = &self.buf[cur .. cur + len];
+        bcmp::CompareWithPrefix(prefix, slice, other)
+    }
+
+    fn PageType(&self) -> u8 {
+        self.buf[0]
+    }
+
+    fn GetByte(&self, cur: &mut usize) -> u8 {
+        let r = self.buf[*cur];
+        *cur = *cur + 1;
+        r
+    }
+
+    fn GetInt32(&self, cur: &mut usize) -> i32 {
+        let at = *cur;
+        let r = read_i32_be(&self.buf[at .. at+size_i32]);
+        *cur = *cur + size_i32;
+        r
+    }
+
+    fn GetInt32At(&self, at: usize) -> i32 {
+        read_i32_be(&self.buf[at .. at+size_i32])
+    }
+
+    fn CheckPageFlag(&self, f: u8) -> bool {
+        0 != (self.buf[1] & f)
+    }
+
+    fn GetSecondToLastInt32(&self) -> i32 {
+        let len = self.buf.len();
+        let at = len - 2 * size_i32;
+        self.GetInt32At(at)
+    }
+
+    fn GetLastInt32(&self) -> i32 {
+        let len = self.buf.len();
+        let at = len - 1 * size_i32;
+        self.GetInt32At(at)
+    }
+
+    fn GetInt16(&self, cur: &mut usize) -> i16 {
+        let at = *cur;
+        let r = read_i16_be(&self.buf[at .. at+size_i16]);
+        *cur = *cur + size_i16;
+        r
+    }
+
+    fn GetIntoArray(&self, cur: &mut usize,  a : &mut [u8]) {
+        // TODO copy slice
+        for i in 0 .. a.len() {
+            a[i] = self.buf[*cur + i];
+        }
+        *cur = *cur + a.len();
+    }
+
+    fn GetVarint(&self, cur: &mut usize) -> u64 {
+        let (newCur, v) = Varint::read(&*self.buf, *cur);
+        *cur = newCur;
         v
     }
 
@@ -1865,8 +1957,11 @@ mod bt {
     use std::fs::OpenOptions;
     use super::SegmentInfo;
     use super::PageReader;
+    use super::PageBuffer;
     use std::cmp::min;
     use super::read_i32_be;
+    use super::SeekOp;
+    use super::ICursor;
 
     struct myOverflowReadStream {
         fs: File,
@@ -2055,7 +2150,573 @@ mod bt {
             self.Read(buf, 0, len)
         }
     }
+
+    fn readOverflow(path: &str, pageSize: usize, firstPage: usize, buf: &mut [u8]) -> io::Result<usize> {
+        let mut ostrm = try!(myOverflowReadStream::new(path, pageSize, firstPage, buf.len()));
+        utils::ReadFully(&mut ostrm, buf)
+    }
+
+    struct myCursor {
+        path: String,
+        fs: File,
+        len: u64,
+        rootPage: usize,
+        pr: PageBuffer,
+        // TODO hook
+        currentPage: usize,
+        leafKeys: Vec<usize>,
+        countLeafKeys: usize, // only realloc leafKeys when it's too small, TODO could be u16?
+        previousLeaf: usize,
+        currentKey: i32, // TODO Option<usize>,
+        prefix: Option<Box<[u8]>>,
+        firstLeaf: usize,
+        lastLeaf: usize,
+    }
+
+    use super::seek_len;
+
+    impl myCursor {
+        fn new(path: &str, pageSize: usize, rootPage: usize) -> io::Result<myCursor> {
+            let mut f = try!(OpenOptions::new()
+                    .read(true)
+                    .open(path));
+            let len = try!(seek_len(&mut f));
+            let mut res = myCursor {
+                path: String::from_str(path),
+                fs: f,
+                len: len,
+                rootPage: rootPage,
+                pr: PageBuffer::new(pageSize),
+                currentPage: 0,
+                leafKeys: Vec::new(),
+                countLeafKeys: 0,
+                previousLeaf: 0,
+                currentKey: -1, // TODO None
+                prefix: None,
+                firstLeaf: 0, // temporary
+                lastLeaf: 0, // temporary
+            };
+            if ! try!(res.setCurrentPage(rootPage)) {
+                return Err(io::Error::new(ErrorKind::InvalidInput, "failed to read root page"));
+            }
+            if res.pr.PageType() == PageType::LEAF_NODE {
+                res.firstLeaf = rootPage;
+                res.lastLeaf = rootPage;
+            } else if res.pr.PageType() == PageType::PARENT_NODE {
+                if ! res.pr.CheckPageFlag(PageFlag::FLAG_ROOT_NODE) { 
+                    return Err(io::Error::new(ErrorKind::InvalidInput, "root page lacks flag"));
+                }
+                res.firstLeaf = res.pr.GetSecondToLastInt32() as usize;
+                res.lastLeaf = res.pr.GetLastInt32() as usize;
+            } else {
+                return Err(io::Error::new(ErrorKind::InvalidInput, "root page has invalid page type"));
+            }
+              
+            Ok(res)
+        }
+
+        fn resetLeaf(&mut self) {
+            self.countLeafKeys = 0;
+            self.previousLeaf = 0;
+            self.currentKey = -1; // TODO None;
+            self.prefix = None;
+        }
+
+        fn setCurrentPage(&mut self, pagenum:usize) -> io::Result<bool> {
+            // TODO consider passing a block list for the segment into this
+            // cursor so that the code here can detect if it tries to stray
+            // out of bounds.
+
+            // TODO if currentPage = pagenum already...
+            self.currentPage = pagenum;
+            self.resetLeaf();
+            if 0 == self.currentPage { 
+                Ok(false)
+            } else {
+                // refuse to go to a page beyond the end of the stream
+                // TODO is this the right place for this check?    
+                let pos = (self.currentPage - 1) as u64 * self.pr.PageSize() as u64;
+                if pos + self.pr.PageSize() as u64 <= self.len {
+                    utils::SeekPage(&mut self.fs, self.pr.PageSize(), self.currentPage);
+                    self.pr.Read(&mut self.fs);
+                    Ok(true)
+                } else {
+                    Ok(false)
+                }
+            }
+        }
+
+        fn nextInLeaf(&mut self) -> bool {
+            if ((self.currentKey+1) as usize) < self.countLeafKeys {
+                self.currentKey = self.currentKey + 1;
+                true
+            } else {
+                false
+            }
+        }
+
+        fn prevInLeaf(&mut self) -> bool {
+            if (self.currentKey > 0) {
+                self.currentKey = self.currentKey - 1;
+                true
+            } else {
+                false
+            }
+        }
+
+        fn skipKey(&self, cur: &mut usize) {
+            let kflag = self.pr.GetByte(cur);
+            let klen = self.pr.GetVarint(cur) as usize;
+            if 0 == (kflag & ValueFlag::FLAG_OVERFLOW) {
+                let prefixLen = match self.prefix {
+                    Some(ref a) => a.len(),
+                    None => 0
+                };
+                *cur = *cur + (klen - prefixLen);
+            } else {
+                *cur = *cur + size_i32;
+            }
+        }
+
+        fn skipValue(&self, cur: &mut usize) {
+            let vflag = self.pr.GetByte(cur);
+            if 0 != (vflag & ValueFlag::FLAG_TOMBSTONE) { 
+                ()
+            } else {
+                let vlen = self.pr.GetVarint(cur) as usize;
+                if 0 != (vflag & ValueFlag::FLAG_OVERFLOW) {
+                    *cur = *cur + size_i32;
+                }
+                else {
+                    *cur = *cur + vlen;
+                }
+            }
+        }
+
+        fn readLeaf(&mut self) {
+            self.resetLeaf();
+            let mut cur = 0;
+            if self.pr.GetByte(&mut cur) != PageType::LEAF_NODE {
+                panic!("leaf has invalid page type");
+            }
+            self.pr.GetByte(&mut cur);
+            self.previousLeaf = self.pr.GetInt32(&mut cur) as usize;
+            let prefixLen = self.pr.GetByte(&mut cur) as usize;
+            if prefixLen > 0 {
+                let mut a = vec![0;prefixLen].into_boxed_slice();
+                self.pr.GetIntoArray(&mut cur, &mut a);
+                self.prefix = Some(a);
+            } else {
+                self.prefix = None;
+            }
+            self.countLeafKeys = self.pr.GetInt16(&mut cur) as usize;
+            // assert countLeafKeys>0
+            while self.leafKeys.len() < self.countLeafKeys {
+                self.leafKeys.push(0);
+            }
+            for i in 0 .. self.countLeafKeys {
+                self.leafKeys[i] = cur;
+                self.skipKey(&mut cur);
+                self.skipValue(&mut cur);
+            }
+        }
+
+        fn keyInLeaf(&self, n: usize) -> io::Result<Box<[u8]>> { 
+            let mut cur = self.leafKeys[n];
+            let kflag = self.pr.GetByte(&mut cur);
+            let klen = self.pr.GetVarint(&mut cur) as usize;
+            // TODO consider alloc res array here, once for all cases below
+            if 0 == (kflag & ValueFlag::FLAG_OVERFLOW) {
+                match self.prefix {
+                    Some(ref a) => {
+                        let prefixLen = a.len();
+                        let mut res = vec![0;klen].into_boxed_slice();
+                        for i in 0 .. prefixLen {
+                            res[i] = a[i];
+                        }
+                        self.pr.GetIntoArray(&mut cur, &mut res[prefixLen .. klen]);
+                        Ok(res)
+                    },
+                    None => {
+                        let mut res = vec![0;klen].into_boxed_slice();
+                        self.pr.GetIntoArray(&mut cur, &mut res);
+                        Ok(res)
+                    },
+                }
+            } else {
+                let pagenum = self.pr.GetInt32(&mut cur) as usize;
+                let mut res = vec![0;klen].into_boxed_slice();
+                try!(readOverflow(&self.path, self.pr.PageSize(), pagenum, &mut res));
+                Ok(res)
+            }
+        }
+
+        fn compareKeyInLeaf(&self, n: usize, other: &[u8]) -> io::Result<i32> {
+            let mut cur = self.leafKeys[n];
+            let kflag = self.pr.GetByte(&mut cur);
+            let klen = self.pr.GetVarint(&mut cur) as usize;
+            if 0 == (kflag & ValueFlag::FLAG_OVERFLOW) {
+                let res = 
+                    match self.prefix {
+                        Some(ref a) => {
+                            self.pr.CompareWithPrefix(cur, a, klen, other)
+                        },
+                        None => {
+                            self.pr.Compare(cur, klen, other)
+                        },
+                    };
+                Ok(res)
+            } else {
+                // TODO this could be more efficient. we could compare the key
+                // in place in the overflow without fetching the entire thing.
+
+                // TODO overflowed keys are not prefixed.  should they be?
+                let pagenum = self.pr.GetInt32(&mut cur) as usize;
+                let mut k = vec![0;klen].into_boxed_slice();
+                try!(readOverflow(&self.path, self.pr.PageSize(), pagenum, &mut k));
+                let res = bcmp::Compare(&*k, other);
+                Ok(res)
+            }
+        }
+
+        // TODO I wish this func were not using signed integers
+        fn searchLeaf(&mut self, k: &[u8], min:i32, max:i32, sop:SeekOp, le: i32, ge: i32) -> io::Result<i32> {
+            if max < min {
+                match sop {
+                    SeekOp::SEEK_EQ => Ok(-1),
+                    SeekOp::SEEK_LE => Ok(le),
+                    SeekOp::SEEK_GE => Ok(ge),
+                }
+            } else {
+                let mid = (max + min) / 2;
+                // assert mid >= 0
+                let cmp = try!(self.compareKeyInLeaf(mid as usize, k));
+                if 0 == cmp {
+                    Ok(mid)
+                } else if cmp<0 {
+                    self.searchLeaf(k, (mid+1), max, sop, mid, ge)
+                } else {
+                    self.searchLeaf(k, min, (mid-1), sop, le, mid)
+                }
+            }
+        }
+
+        fn readParentPage(&mut self) -> io::Result<(Vec<usize>,Vec<Box<[u8]>>)> {
+            let mut cur = 0;
+            if self.pr.GetByte(&mut cur) != PageType::PARENT_NODE {
+                return Err(io::Error::new(ErrorKind::InvalidInput, "parent page has invalid page type"));
+            }
+            cur = cur + 1; // page flags
+            let count = self.pr.GetInt16(&mut cur);
+            let mut ptrs = Vec::new();
+            let mut keys = Vec::new();
+            for i in 0 .. count+1 {
+                ptrs.push(self.pr.GetVarint(&mut cur) as usize);
+            }
+            for i in 0 .. count {
+                let kflag = self.pr.GetByte(&mut cur);
+                let klen = self.pr.GetVarint(&mut cur) as usize;
+                if 0 == (kflag & ValueFlag::FLAG_OVERFLOW) {
+                    let mut a = vec![0;klen].into_boxed_slice();
+                    self.pr.GetIntoArray(&mut cur, &mut a);
+                    keys.push(a);
+                } else {
+                    let pagenum = self.pr.GetInt32(&mut cur) as usize;
+                    let mut k = vec![0;klen].into_boxed_slice();
+                    try!(readOverflow(&self.path, self.pr.PageSize(), pagenum, &mut k));
+                    keys.push(k);
+                }
+            }
+            Ok((ptrs,keys))
+        }
+
+        // this is used when moving forward through the leaf pages.
+        // we need to skip any overflows.  when moving backward,
+        // this is not necessary, because each leaf has a pointer to
+        // the leaf before it.
+        fn searchForwardForLeaf(&mut self) -> io::Result<bool> {
+            let pt = self.pr.PageType();
+            if pt == PageType::LEAF_NODE { 
+                Ok(true)
+            } else if pt == PageType::PARENT_NODE { 
+                // if we bump into a parent node, that means there are
+                // no more leaves.
+                Ok(false)
+            } else {
+                let lastInt32 = self.pr.GetLastInt32() as usize;
+                //
+                // an overflow page has a value in its LastInt32 which
+                // is one of two things.
+                //
+                // if it's a boundary node, it's the page number of the
+                // next page in the segment.
+                //
+                // otherwise, it's the number of pages to skip ahead.
+                // this skip might take us to whatever follows this
+                // overflow (which could be a leaf or a parent or
+                // another overflow), or it might just take us to a
+                // boundary page (in the case where the overflow didn't
+                // fit).  it doesn't matter.  we just skip ahead.
+                //
+                if self.pr.CheckPageFlag(PageFlag::FLAG_BOUNDARY_NODE) {
+                    if try!(self.setCurrentPage(lastInt32)) {
+                        self.searchForwardForLeaf()
+                    } else {
+                        Ok(false)
+                    }
+                } else {
+                    let lastPage = self.currentPage + lastInt32;
+                    let endsOnBoundary = self.pr.CheckPageFlag(PageFlag::FLAG_ENDS_ON_BOUNDARY);
+                    if endsOnBoundary {
+                        if try!(self.setCurrentPage(lastPage)) {
+                            let next = self.pr.GetLastInt32() as usize;
+                            if try!(self.setCurrentPage(next)) {
+                                self.searchForwardForLeaf()
+                            } else {
+                                Ok(false)
+                            }
+                        } else {
+                            Ok(false)
+                        }
+                    } else {
+                        if try!(self.setCurrentPage(lastPage + 1)) {
+                            self.searchForwardForLeaf()
+                        } else {
+                            Ok(false)
+                        }
+                    }
+                }
+            }
+        }
+
+        fn leafIsValid(&self) -> bool {
+            let ok = (!self.leafKeys.is_empty()) && (self.countLeafKeys > 0) && (self.currentKey >= 0) && (self.currentKey < (self.countLeafKeys as i32));
+            ok
+        }
+
+        fn search(&mut self, pg: usize, k: &[u8], sop:SeekOp) -> io::Result<()> {
+            if try!(self.setCurrentPage(pg)) {
+                if PageType::LEAF_NODE == self.pr.PageType() {
+                    self.readLeaf();
+                    let tmp_countLeafKeys = self.countLeafKeys;
+                    self.currentKey = try!(self.searchLeaf(k, 0, (tmp_countLeafKeys - 1) as i32, sop, -1, -1));
+                    if SeekOp::SEEK_EQ != sop {
+                        if ! self.leafIsValid() {
+                            // if LE or GE failed on a given page, we might need
+                            // to look at the next/prev leaf.
+                            if SeekOp::SEEK_GE == sop {
+                                let nextPage =
+                                    if self.pr.CheckPageFlag(PageFlag::FLAG_BOUNDARY_NODE) { self.pr.GetLastInt32() as usize }
+                                    else if self.currentPage == self.rootPage { 0 }
+                                    else { self.currentPage + 1 };
+                                if (try!(self.setCurrentPage(nextPage)) && try!(self.searchForwardForLeaf())) {
+                                    self.readLeaf();
+                                    self.currentKey = 0;
+                                }
+                            } else {
+                                let tmp_previousLeaf = self.previousLeaf;
+                                if 0 == self.previousLeaf {
+                                    self.resetLeaf();
+                                } else if try!(self.setCurrentPage(tmp_previousLeaf)) {
+                                    self.readLeaf();
+                                    self.currentKey = (self.countLeafKeys - 1) as i32;
+                                }
+                            }
+                        }
+                    }
+                } else if PageType::PARENT_NODE == self.pr.PageType() {
+                    let (ptrs,keys) = try!(self.readParentPage());
+                    let found = searchInParentPage(k, &ptrs, &keys, 0);
+                    if 0 == found {
+                        return self.search(ptrs[ptrs.len() - 1], k, sop);
+                    } else {
+                        return self.search(found, k, sop);
+                    }
+                }
+            }
+            Ok(())
+        }
+    }
+
+    // TODO it looks like a static function inside impl can't be recursive
+    fn searchInParentPage(k: &[u8], ptrs: &Vec<usize>, keys: &Vec<Box<[u8]>>, i: usize) -> usize {
+        // TODO linear search?  really?
+        if i < keys.len() {
+            let cmp = bcmp::Compare(k, &*keys[i]);
+            if cmp>0 {
+                searchInParentPage(k, ptrs, keys, i+1)
+            } else {
+                ptrs[i]
+            }
+        } else {
+            0
+        }
+    }
+
+    impl Drop for myCursor {
+        fn drop(&mut self) {
+            // TODO
+        }
+    }
+
+    impl ICursor for myCursor {
+        fn IsValid(&self) -> bool {
+            self.leafIsValid()
+        }
+
+        fn Seek(&mut self, k:&[u8], sop:SeekOp) {
+            let rootPage = self.rootPage;
+            self.search(rootPage, k, sop).unwrap()
+        }
+
+        fn Key(&self) -> Box<[u8]> {
+            let currentKey = self.currentKey as usize;
+            self.keyInLeaf(currentKey).unwrap()
+        }
+
+        fn Value(&self) -> Blob {
+            let currentKey = self.currentKey as usize;
+            let mut pos = self.leafKeys[currentKey];
+
+            self.skipKey(&mut pos);
+
+            let vflag = self.pr.GetByte(&mut pos);
+            if 0 != (vflag & ValueFlag::FLAG_TOMBSTONE) {
+                Blob::Tombstone
+            } else {
+                let vlen = self.pr.GetVarint(&mut pos) as usize;
+                if 0 != (vflag & ValueFlag::FLAG_OVERFLOW) {
+                    let pagenum = self.pr.GetInt32(&mut pos) as usize;
+                    let strm = myOverflowReadStream::new(&self.path, self.pr.PageSize(), pagenum, vlen).unwrap();
+                    Blob::Stream(box strm)
+                } else {
+                    let mut a = vec![0;vlen].into_boxed_slice();
+                    self.pr.GetIntoArray(&mut pos, &mut a);
+                    Blob::Array(a)
+                }
+            }
+        }
+
+        fn ValueLength(&self) -> i32 {
+            let mut cur = self.leafKeys[self.currentKey as usize];
+
+            self.skipKey(&mut cur);
+
+            let vflag = self.pr.GetByte(&mut cur);
+            if 0 != (vflag & ValueFlag::FLAG_TOMBSTONE) { -1 }
+            else {
+                let vlen = self.pr.GetVarint(&mut cur) as i32;
+                vlen
+            }
+        }
+
+        fn KeyCompare(&self, k:&[u8]) -> i32 {
+            let currentKey = self.currentKey as usize;
+            self.compareKeyInLeaf(currentKey, k).unwrap()
+        }
+
+        fn First(&mut self) {
+            let firstLeaf = self.firstLeaf;
+            if self.setCurrentPage(firstLeaf).unwrap() {
+                self.readLeaf();
+                self.currentKey = 0;
+            }
+        }
+
+        fn Last(&mut self) {
+            let lastLeaf = self.lastLeaf;
+            if self.setCurrentPage(lastLeaf).unwrap() {
+                self.readLeaf();
+                self.currentKey = self.countLeafKeys as i32 - 1;
+            }
+        }
+
+        fn Next(&mut self) {
+            if ! self.nextInLeaf() {
+                let nextPage =
+                    if self.pr.CheckPageFlag(PageFlag::FLAG_BOUNDARY_NODE) { self.pr.GetLastInt32() as usize }
+                    else if self.pr.PageType() == PageType::LEAF_NODE {
+                        if self.currentPage == self.rootPage { 0 }
+                        else { self.currentPage + 1 }
+                    } else { 0 }
+                ;
+                if self.setCurrentPage(nextPage).unwrap() && self.searchForwardForLeaf().unwrap() {
+                    self.readLeaf();
+                    self.currentKey = 0;
+                }
+            }
+        }
+
+        fn Prev(&mut self) {
+            if ! self.prevInLeaf() {
+                let previousLeaf = self.previousLeaf;
+                if 0 == previousLeaf {
+                    self.resetLeaf();
+                } else if self.setCurrentPage(previousLeaf).unwrap() {
+                    self.readLeaf();
+                    self.currentKey = self.countLeafKeys as i32 - 1;
+                }
+            }
+        }
+
+    }
 }
+
+/*
+[<AbstractClass;Sealed>]
+type BTreeSegment =
+    static member CreateFromSortedSequence(fs:Stream, pageManager:IPages, source:seq<kvp>) = 
+        bt.CreateFromSortedSequenceOfKeyValuePairs (fs, pageManager, source)
+
+    #if not
+    static member CreateFromSortedSequence(fs:Stream, pageManager:IPages, pairs:seq<byte[]*Stream>, mess:string) = 
+        let source = seq { for t in pairs do yield kvp(fst t,snd t) done }
+        bt.CreateFromSortedSequenceOfKeyValuePairs (fs, pageManager, source)
+    #endif
+
+    static member SortAndCreate(fs:Stream, pageManager:IPages, pairs:System.Collections.Generic.IDictionary<byte[],Stream>) =
+#if not
+        let keys:byte[][] = (Array.ofSeq pairs.Keys)
+        let sortfunc x y = bcmp.Compare x y
+        Array.sortInPlaceWith sortfunc keys
+        let sortedSeq = seq { for k in keys do yield kvp(k,pairs.[k]) done }
+#else
+        // TODO which is faster?  how does linq OrderBy implement sorting
+        // of a sequence?
+        // http://code.logos.com/blog/2010/04/a_truly_lazy_orderby_in_linq.html
+        let s1 = pairs.AsEnumerable()
+        let s2 = Seq.map (fun (x:System.Collections.Generic.KeyValuePair<byte[],Stream>) -> kvp(x.Key, if x.Value = null then Blob.Tombstone else x.Value |> Blob.Stream)) s1
+        let sortedSeq = s2.OrderBy((fun (x:kvp) -> x.Key), ByteComparer())
+#endif
+        bt.CreateFromSortedSequenceOfKeyValuePairs (fs, pageManager, sortedSeq)
+
+    static member SortAndCreate(fs:Stream, pageManager:IPages, pairs:System.Collections.Generic.IDictionary<byte[],Blob>) =
+#if not
+        let keys:byte[][] = (Array.ofSeq pairs.Keys)
+        let sortfunc x y = bcmp.Compare x y
+        Array.sortInPlaceWith sortfunc keys
+        let sortedSeq = seq { for k in keys do yield kvp(k,pairs.[k]) done }
+#else
+        // TODO which is faster?  how does linq OrderBy implement sorting
+        // of a sequence?
+        // http://code.logos.com/blog/2010/04/a_truly_lazy_orderby_in_linq.html
+        let s1 = pairs.AsEnumerable()
+        let sortedSeq = s1.OrderBy((fun (x:kvp) -> x.Key), ByteComparer())
+#endif
+        bt.CreateFromSortedSequenceOfKeyValuePairs (fs, pageManager, sortedSeq)
+
+    #if not
+    static member SortAndCreate(fs:Stream, pageManager:IPages, pairs:Map<byte[],Stream>) =
+        let keys:byte[][] = pairs |> Map.toSeq |> Seq.map fst |> Array.ofSeq
+        let sortfunc x y = bcmp.Compare x y
+        Array.sortInPlaceWith sortfunc keys
+        let sortedSeq = seq { for k in keys do yield kvp(k,pairs.[k]) done }
+        bt.CreateFromSortedSequenceOfKeyValuePairs (fs, pageManager, sortedSeq)
+    #endif
+
+    static member OpenCursor(fs, pageSize:int, rootPage:int, hook:Action<ICursor>) :ICursor =
+        bt.OpenCursor(fs,pageSize,rootPage,hook)
+*/
 
 use std::collections::HashMap;
 
@@ -2106,6 +2767,32 @@ impl PendingSegment {
     }
 }
 
+struct SimplePageManager {
+    pageSize : usize,
+    nextPage : usize,
+}
+
+impl IPages for SimplePageManager {
+    fn PageSize(&self) -> usize {
+        self.pageSize
+    }
+
+    fn Begin(&mut self) -> IPendingSegment {
+        IPendingSegment { unused : 0}
+    }
+
+    fn GetBlock(&mut self, token:&IPendingSegment) -> PageBlock {
+        let blk = PageBlock::new(self.nextPage, self.nextPage + 10 - 1);
+        self.nextPage = self.nextPage + 10;
+        blk
+    }
+
+    fn End(&mut self, token:IPendingSegment, page:usize) -> Guid {
+        Guid::NewGuid()
+    }
+
+}
+
 mod Database {
     use std::io;
     use std::io::Read;
@@ -2126,6 +2813,7 @@ mod Database {
     use super::PageBlock;
     use super::HeaderData;
     use super::DbSettings;
+    use super::seek_len;
 
     const HEADER_SIZE_IN_BYTES: usize = 4096;
 
@@ -2221,13 +2909,6 @@ mod Database {
         fn calcNextPage(pageSize: usize, len: usize) -> usize {
             let numPagesSoFar = if pageSize > len { 1 } else { len / pageSize };
             numPagesSoFar + 1
-        }
-
-        fn seek_len<R>(fs: &mut R) -> io::Result<u64> where R : Seek {
-            let pos = try!(fs.seek(SeekFrom::Current(0)));
-            let len = try!(fs.seek(SeekFrom::End(0)));
-            let unused = try!(fs.seek(SeekFrom::Start(pos)));
-            Ok(len)
         }
 
         // --------
@@ -2541,418 +3222,10 @@ mod Database {
 
 module bt =
 
-    let private readOverflow len fs pageSize (firstPage:int) =
-        let ostrm = new myOverflowReadStream(fs, pageSize, firstPage, len)
-        utils.ReadAll(ostrm)
-
     type private myCursor(_fs:Stream, pageSize:int, _rootPage:int, _hook:Action<ICursor>) =
-        let fs = _fs
-        let rootPage = _rootPage
-        let pr = PageReader(pageSize)
-        let hook = _hook
 
-        let mutable currentPage:int = 0
-        let mutable leafKeys:int[] = null
-        let mutable countLeafKeys = 0 // only realloc leafKeys when it's too small
-        let mutable previousLeaf:int = 0
-        let mutable currentKey = -1
-        let mutable prefix:byte[] = null
-
-        let resetLeaf() =
-            countLeafKeys <- 0
-            previousLeaf <- 0
-            currentKey <- -1
-            prefix <- null
-
-        let setCurrentPage (pagenum:int) = 
-            // TODO consider passing a block list for the segment into this
-            // cursor so that the code here can detect if it tries to stray
-            // out of bounds.
-
-            // TODO if currentPage = pagenum already...
-            currentPage <- pagenum
-            resetLeaf()
-            if 0 = currentPage then 
-                false
-            else
-                // refuse to go to a page beyond the end of the stream
-                // TODO is this the right place for this check?    
-                let pos = ((int64 currentPage) - 1L) * int64 pr.PageSize
-                if pos + int64 pr.PageSize <= fs.Length then
-                    utils.SeekPage(fs, pr.PageSize, currentPage)
-                    pr.Read(fs)
-                    true
-                else
-                    false
-
-        let getFirstAndLastLeaf() = 
-            if not (setCurrentPage rootPage) then failwith "failed to read root page"
-            if pr.PageType = LEAF_NODE then
-                (rootPage, rootPage)
-            else if pr.PageType = PARENT_NODE then
-                if not (pr.CheckPageFlag(FLAG_ROOT_NODE)) then failwith "root page lacks flag"
-                let first = pr.GetSecondToLastInt32()
-                let last = pr.GetLastInt32()
-                (first, last)
-            else failwith "root page has invalid page type"
-              
-        let (firstLeaf, lastLeaf) = getFirstAndLastLeaf()
-
-        let nextInLeaf() =
-            if (currentKey+1) < countLeafKeys then
-                currentKey <- currentKey + 1
-                true
-            else
-                false
-
-        let prevInLeaf() =
-            if (currentKey > 0) then
-                currentKey <- currentKey - 1
-                true
-            else
-                false
-
-        let skipKey() =
-            let kflag = pr.GetByte()
-            let klen = pr.GetVarint()
-            if 0uy = (kflag &&& FLAG_OVERFLOW) then
-                pr.Skip(int klen - if null=prefix then 0 else prefix.Length)
-            else
-                pr.Skip(sizeof<int32>)
-
-        let skipValue() =
-            let vflag = pr.GetByte()
-            if 0uy <> (vflag &&& FLAG_TOMBSTONE) then ()
-            else 
-                let vlen = pr.GetVarint()
-                if 0uy <> (vflag &&& FLAG_OVERFLOW) then pr.Skip(sizeof<int32>)
-                else pr.Skip(int vlen)
-
-        let readLeaf() =
-            resetLeaf()
-            pr.Reset()
-            if pr.GetByte() <> LEAF_NODE then failwith "leaf has invalid page type"
-            pr.GetByte() |> ignore
-            previousLeaf <- pr.GetInt32()
-            let prefixLen = pr.GetByte() |> int
-            if prefixLen > 0 then
-                prefix <- pr.GetArray(prefixLen)
-            else
-                prefix <- null
-            countLeafKeys <- pr.GetInt16() |> int
-            // only realloc leafKeys if it's too small
-            if leafKeys=null || leafKeys.Length<countLeafKeys then
-                leafKeys <- Array.zeroCreate countLeafKeys
-            for i in 0 .. (countLeafKeys-1) do
-                leafKeys.[i] <- pr.Position
-                skipKey()
-                skipValue()
-
-        let keyInLeaf n = 
-            pr.SetPosition(leafKeys.[n])
-            let kflag = pr.GetByte()
-            let klen = pr.GetVarint() |> int
-            if 0uy = (kflag &&& FLAG_OVERFLOW) then
-                if prefix <> null then
-                    let prefixLen = prefix.Length
-                    let res:byte[] = Array.zeroCreate klen
-                    System.Array.Copy(prefix, 0, res, 0, prefixLen)
-                    pr.GetIntoArray(res, prefixLen, klen - prefixLen)
-                    res
-                else
-                    pr.GetArray(klen) // TODO consider alloc here and use GetIntoArray
-            else
-                let pagenum = pr.GetInt32()
-                let k = readOverflow klen fs pr.PageSize pagenum
-                k
-
-        let compareKeyInLeaf n other = 
-            pr.SetPosition(leafKeys.[n])
-            let kflag = pr.GetByte()
-            let klen = pr.GetVarint() |> int
-            if 0uy = (kflag &&& FLAG_OVERFLOW) then
-                if prefix <> null then
-                    pr.CompareWithPrefix(prefix, klen, other)
-                else
-                    pr.Compare(klen, other)
-            else
-                // TODO this could be more efficient. we could compare the key
-                // in place in the overflow without fetching the entire thing.
-
-                // TODO overflowed keys are not prefixed.  should they be?
-                let pagenum = pr.GetInt32()
-                let k = readOverflow klen fs pr.PageSize pagenum
-                bcmp.Compare k other
-           
-        let rec searchLeaf k min max sop le ge = 
-            if max < min then
-                match sop with
-                | SeekOp.SEEK_EQ -> -1
-                | SeekOp.SEEK_LE -> le
-                | _ -> ge
-            else
-                let mid = (max + min) / 2
-                let cmp = compareKeyInLeaf mid k
-                if 0 = cmp then mid
-                else if cmp<0  then searchLeaf k (mid+1) max sop mid ge
-                else searchLeaf k min (mid-1) sop le mid
-
-        let readParentPage() =
-            pr.Reset()
-            if pr.GetByte() <> PARENT_NODE then failwith "parent page has invalid page type"
-            pr.Skip(1) // page flags
-            let count = pr.GetInt16()
-            let ptrs:int[] = Array.zeroCreate (int (count+1))
-            let keys:byte[][] = Array.zeroCreate (int count)
-            for i in 0 .. int count do
-                ptrs.[i] <-  pr.GetVarint() |> int
-            for i in 0 .. int (count-1) do
-                let kflag = pr.GetByte()
-                let klen = pr.GetVarint() |> int
-                if 0uy = (kflag &&& FLAG_OVERFLOW) then
-                    keys.[i] <- pr.GetArray(klen)
-                else
-                    let pagenum = pr.GetInt32()
-                    keys.[i] <- readOverflow klen fs pr.PageSize pagenum
-            (ptrs,keys)
-
-        // this is used when moving forward through the leaf pages.
-        // we need to skip any overflows.  when moving backward,
-        // this is not necessary, because each leaf has a pointer to
-        // the leaf before it.
-        let rec searchForwardForLeaf() = 
-            let pt = pr.PageType
-            if pt = LEAF_NODE then 
-                true
-            else if pt = PARENT_NODE then 
-                // if we bump into a parent node, that means there are
-                // no more leaves.
-                false
-            else
-                let lastInt32 = pr.GetLastInt32()
-                //
-                // an overflow page has a value in its LastInt32 which
-                // is one of two things.
-                //
-                // if it's a boundary node, it's the page number of the
-                // next page in the segment.
-                //
-                // otherwise, it's the number of pages to skip ahead.
-                // this skip might take us to whatever follows this
-                // overflow (which could be a leaf or a parent or
-                // another overflow), or it might just take us to a
-                // boundary page (in the case where the overflow didn't
-                // fit).  it doesn't matter.  we just skip ahead.
-                //
-                if pr.CheckPageFlag(FLAG_BOUNDARY_NODE) then
-                    if setCurrentPage (lastInt32) then
-                        searchForwardForLeaf()
-                    else
-                        false
-                else 
-                    let lastPage = currentPage + lastInt32
-                    let endsOnBoundary = pr.CheckPageFlag(FLAG_ENDS_ON_BOUNDARY)
-                    if endsOnBoundary then
-                        if setCurrentPage lastPage then
-                            let next = pr.GetLastInt32()
-                            if setCurrentPage (next) then
-                                searchForwardForLeaf()
-                            else
-                                false
-                        else
-                            false
-                    else
-                        if setCurrentPage (lastPage + 1) then
-                            searchForwardForLeaf()
-                        else
-                            false
-
-        let leafIsValid() =
-            let ok = (leafKeys <> null) && (countLeafKeys > 0) && (currentKey >= 0) && (currentKey < countLeafKeys)
-            ok
-
-        let rec searchInParentPage k (ptrs:int[]) (keys:byte[][]) (i:int) :int =
-            // TODO linear search?  really?
-            if i < keys.Length then
-                let cmp = bcmp.Compare k (keys.[int i])
-                if cmp>0 then
-                    searchInParentPage k ptrs keys (i+1)
-                else
-                    ptrs.[int i]
-            else 0
-
-        let rec search pg k sop =
-            if setCurrentPage pg then
-                if LEAF_NODE = pr.PageType then
-                    readLeaf()
-                    currentKey <- searchLeaf k 0 (countLeafKeys - 1) sop -1 -1
-                    if SeekOp.SEEK_EQ <> sop then
-                        if not (leafIsValid()) then
-                            // if LE or GE failed on a given page, we might need
-                            // to look at the next/prev leaf.
-                            if SeekOp.SEEK_GE = sop then
-                                let nextPage =
-                                    if pr.CheckPageFlag(FLAG_BOUNDARY_NODE) then pr.GetLastInt32()
-                                    else if currentPage = rootPage then 0
-                                    else currentPage + 1
-                                if (setCurrentPage (nextPage) && searchForwardForLeaf ()) then
-                                    readLeaf()
-                                    currentKey <- 0
-                            else
-                                if 0 = previousLeaf then
-                                    resetLeaf()
-                                else if setCurrentPage previousLeaf then
-                                    readLeaf()
-                                    currentKey <- countLeafKeys - 1
-                else if PARENT_NODE = pr.PageType then
-                    let (ptrs,keys) = readParentPage()
-                    let found = searchInParentPage k ptrs keys 0
-                    if 0 = found then
-                        search ptrs.[ptrs.Length - 1] k sop
-                    else
-                        search found k sop
-
-        let dispose itIsSafeToAlsoFreeManagedObjects this =
-            if itIsSafeToAlsoFreeManagedObjects then
-                if hook <> null then 
-                    let fsHook = FuncConvert.ToFSharpFunc hook
-                    fsHook(this)
-
-        override this.Finalize() =
-            dispose false this
-
-        interface ICursor with
-            member this.Dispose() =
-                dispose true this
-                GC.SuppressFinalize(this)
-
-            member this.IsValid() =
-                leafIsValid()
-
-            member this.Seek(k,sop) =
-                search rootPage k sop
-
-            member this.Key() =
-                keyInLeaf currentKey
-            
-            member this.Value() =
-                pr.SetPosition(leafKeys.[currentKey])
-
-                skipKey()
-
-                let vflag = pr.GetByte()
-                if 0uy <> (vflag &&& FLAG_TOMBSTONE) then Blob.Tombstone
-                else 
-                    let vlen = pr.GetVarint() |> int
-                    if 0uy <> (vflag &&& FLAG_OVERFLOW) then 
-                        let pagenum = pr.GetInt32()
-                        let strm = new myOverflowReadStream(fs, pr.PageSize, pagenum, vlen) :> Stream
-                        Blob.Stream strm
-                    else 
-                        let a = pr.GetArray (vlen)
-                        Blob.Array a
-
-            member this.ValueLength() =
-                pr.SetPosition(leafKeys.[currentKey])
-
-                skipKey()
-
-                let vflag = pr.GetByte()
-                if 0uy <> (vflag &&& FLAG_TOMBSTONE) then -1
-                else
-                    let vlen = pr.GetVarint() |> int
-                    vlen
-
-            member this.KeyCompare(k) =
-                compareKeyInLeaf currentKey k
-
-            member this.First() =
-                if setCurrentPage firstLeaf then
-                    readLeaf()
-                    currentKey <- 0
-
-            member this.Last() =
-                if setCurrentPage lastLeaf then
-                    readLeaf()
-                    currentKey <- countLeafKeys - 1
-
-            member this.Next() =
-                if not (nextInLeaf()) then
-                    let nextPage =
-                        if pr.CheckPageFlag(FLAG_BOUNDARY_NODE) then pr.GetLastInt32()
-                        else if pr.PageType = LEAF_NODE then
-                            if currentPage = rootPage then 0
-                            else currentPage + 1
-                        else 0
-                    if setCurrentPage (nextPage) && searchForwardForLeaf() then
-                        readLeaf()
-                        currentKey <- 0
-
-            member this.Prev() =
-                if not (prevInLeaf()) then
-                    if 0 = previousLeaf then
-                        resetLeaf()
-                    else if setCurrentPage previousLeaf then
-                        readLeaf()
-                        currentKey <- countLeafKeys - 1
-    
     let OpenCursor(fs, pageSize:int, rootPage:int, hook:Action<ICursor>) :ICursor =
         new myCursor(fs, pageSize, rootPage, hook) :> ICursor
-
-[<AbstractClass;Sealed>]
-type BTreeSegment =
-    static member CreateFromSortedSequence(fs:Stream, pageManager:IPages, source:seq<kvp>) = 
-        bt.CreateFromSortedSequenceOfKeyValuePairs (fs, pageManager, source)
-
-    #if not
-    static member CreateFromSortedSequence(fs:Stream, pageManager:IPages, pairs:seq<byte[]*Stream>, mess:string) = 
-        let source = seq { for t in pairs do yield kvp(fst t,snd t) done }
-        bt.CreateFromSortedSequenceOfKeyValuePairs (fs, pageManager, source)
-    #endif
-
-    static member SortAndCreate(fs:Stream, pageManager:IPages, pairs:System.Collections.Generic.IDictionary<byte[],Stream>) =
-#if not
-        let keys:byte[][] = (Array.ofSeq pairs.Keys)
-        let sortfunc x y = bcmp.Compare x y
-        Array.sortInPlaceWith sortfunc keys
-        let sortedSeq = seq { for k in keys do yield kvp(k,pairs.[k]) done }
-#else
-        // TODO which is faster?  how does linq OrderBy implement sorting
-        // of a sequence?
-        // http://code.logos.com/blog/2010/04/a_truly_lazy_orderby_in_linq.html
-        let s1 = pairs.AsEnumerable()
-        let s2 = Seq.map (fun (x:System.Collections.Generic.KeyValuePair<byte[],Stream>) -> kvp(x.Key, if x.Value = null then Blob.Tombstone else x.Value |> Blob.Stream)) s1
-        let sortedSeq = s2.OrderBy((fun (x:kvp) -> x.Key), ByteComparer())
-#endif
-        bt.CreateFromSortedSequenceOfKeyValuePairs (fs, pageManager, sortedSeq)
-
-    static member SortAndCreate(fs:Stream, pageManager:IPages, pairs:System.Collections.Generic.IDictionary<byte[],Blob>) =
-#if not
-        let keys:byte[][] = (Array.ofSeq pairs.Keys)
-        let sortfunc x y = bcmp.Compare x y
-        Array.sortInPlaceWith sortfunc keys
-        let sortedSeq = seq { for k in keys do yield kvp(k,pairs.[k]) done }
-#else
-        // TODO which is faster?  how does linq OrderBy implement sorting
-        // of a sequence?
-        // http://code.logos.com/blog/2010/04/a_truly_lazy_orderby_in_linq.html
-        let s1 = pairs.AsEnumerable()
-        let sortedSeq = s1.OrderBy((fun (x:kvp) -> x.Key), ByteComparer())
-#endif
-        bt.CreateFromSortedSequenceOfKeyValuePairs (fs, pageManager, sortedSeq)
-
-    #if not
-    static member SortAndCreate(fs:Stream, pageManager:IPages, pairs:Map<byte[],Stream>) =
-        let keys:byte[][] = pairs |> Map.toSeq |> Seq.map fst |> Array.ofSeq
-        let sortfunc x y = bcmp.Compare x y
-        Array.sortInPlaceWith sortfunc keys
-        let sortedSeq = seq { for k in keys do yield kvp(k,pairs.[k]) done }
-        bt.CreateFromSortedSequenceOfKeyValuePairs (fs, pageManager, sortedSeq)
-    #endif
-
-    static member OpenCursor(fs, pageSize:int, rootPage:int, hook:Action<ICursor>) :ICursor =
-        bt.OpenCursor(fs,pageSize,rootPage,hook)
-
 
 type Database(_io:IDatabaseFile, _settings:DbSettings) =
 
@@ -3524,32 +3797,6 @@ impl Iterator for foo {
     }
 }
 
-struct SimplePageManager {
-    pageSize : usize,
-    nextPage : usize,
-}
-
-impl IPages for SimplePageManager {
-    fn PageSize(&self) -> usize {
-        self.pageSize
-    }
-
-    fn Begin(&mut self) -> IPendingSegment {
-        IPendingSegment { unused : 0}
-    }
-
-    fn GetBlock(&mut self, token:&IPendingSegment) -> PageBlock {
-        let blk = PageBlock::new(self.nextPage, self.nextPage + 10 - 1);
-        self.nextPage = self.nextPage + 10;
-        blk
-    }
-
-    fn End(&mut self, token:IPendingSegment, page:usize) -> Guid {
-        Guid::NewGuid()
-    }
-
-}
-
 fn hack() -> io::Result<bool> {
     use std::fs::File;
 
@@ -3582,4 +3829,13 @@ fn main() {
 // typing tetris
 // miss sprintf syntax
 // Read,Write,Seek traits so much better design than .NET streams
+//
+//
+// casts.  are casts between i32 and usize safe?  are they checked?
+//
+// too much usize.  use a more specific, smaller unsigned type.
+//
+// why do usize and u64 require a cast?
+//
+// the write_i32_etc routines should all just use unsigned
 //
