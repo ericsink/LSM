@@ -37,9 +37,8 @@ pub struct kvp {
     Value : Blob,
 }
 
-// TODO make this a trait?
-pub struct IPendingSegment {
-    unused : i32
+pub struct PendingSegment {
+    blockList: Vec<PageBlock>
 }
 
 #[derive(Hash,PartialEq,Eq,Copy,Clone)]
@@ -80,9 +79,9 @@ impl Guid {
 // TODO return Result
 pub trait IPages {
     fn PageSize(&self) -> usize;
-    fn Begin(&mut self) -> IPendingSegment;
-    fn GetBlock(&mut self, token:&IPendingSegment) -> PageBlock;
-    fn End(&mut self, token:IPendingSegment, page:usize) -> Guid;
+    fn Begin(&mut self) -> PendingSegment;
+    fn GetBlock(&mut self, token:&mut PendingSegment) -> PageBlock;
+    fn End(&mut self, token:PendingSegment, page:usize) -> Guid;
 }
 
 #[derive(PartialEq,Copy,Clone)]
@@ -1188,7 +1187,7 @@ mod bt {
     use std::io;
     use std::io::Read;
     use std::io::Seek;
-    use super::IPendingSegment;
+    use super::PendingSegment;
     use super::Varint;
     use super::Blob;
     use super::bcmp;
@@ -1273,7 +1272,7 @@ mod bt {
                              pbOverflow: &mut PageBuilder,
                              pbFirstOverflow: &mut PageBuilder,
                              pageManager: &mut IPages,
-                             token: &IPendingSegment
+                             token: &mut PendingSegment
                              ) -> io::Result<(usize,PageBlock)> where SeekWrite : Seek+Write {
                 // each trip through this loop will write out one
                 // block, starting with the overflow first page,
@@ -1299,7 +1298,7 @@ mod bt {
                             // the first page landed on a boundary.
                             // we can just set the flag and write it now.
                             pbFirstOverflow.SetPageFlag(PageFlag::FLAG_BOUNDARY_NODE as u8);
-                            let blk = pageManager.GetBlock(token);
+                            let blk = pageManager.GetBlock(&mut *token);
                             pbFirstOverflow.SetLastInt32(blk.firstPage as i32);
                             pbFirstOverflow.Write(fs);
                             utils::SeekPage(fs, pageSize, blk.firstPage);
@@ -1366,7 +1365,7 @@ mod bt {
                                     } else {
                                         // write the boundary page
                                         let sofar = sofar + putBoundary;
-                                        let blk = pageManager.GetBlock(token);
+                                        let blk = pageManager.GetBlock(&mut *token);
                                         pbOverflow.SetLastInt32(blk.firstPage as i32);
                                         pbOverflow.Write(fs);
 
@@ -1393,11 +1392,11 @@ mod bt {
             }
 
             let pageSize = pageManager.PageSize();
-            let token = pageManager.Begin();
+            let mut token = pageManager.Begin();
             let mut pbFirstOverflow = PageBuilder::new(pageSize);
             let mut pbOverflow = PageBuilder::new(pageSize);
 
-            writeOneBlock(0, startingBlock, fs, ba, pageSize, &mut pbOverflow, &mut pbFirstOverflow, pageManager, &token)
+            writeOneBlock(0, startingBlock, fs, ba, pageSize, &mut pbOverflow, &mut pbFirstOverflow, pageManager, &mut token)
         }
 
         fn writeLeaves<I,SeekWrite>(leavesBlk:PageBlock,
@@ -1406,7 +1405,7 @@ mod bt {
                                     vbuf: &mut [u8],
                                     fs: &mut SeekWrite, 
                                     pb: &mut PageBuilder,
-                                    token: &IPendingSegment,
+                                    token: &mut PendingSegment,
                                     ) -> io::Result<(PageBlock,Vec<pgitem>,usize)> where I: Iterator<Item=kvp> , SeekWrite : Seek+Write {
             // 2 for the page type and flags
             // 4 for the prev page
@@ -1462,7 +1461,7 @@ mod bt {
                          fs: &mut SeekWrite, 
                          pageSize: usize,
                          pageManager: &mut IPages,
-                         token: &IPendingSegment,
+                         token: &mut PendingSegment,
                          ) where SeekWrite : Seek+Write { 
                 buildLeaf(st, pb);
                 let thisPageNumber = st.blk.firstPage;
@@ -1472,7 +1471,7 @@ mod bt {
                         PageBlock::new(thisPageNumber + 1, st.blk.lastPage)
                     } else if thisPageNumber == st.blk.lastPage {
                         pb.SetPageFlag(PageFlag::FLAG_BOUNDARY_NODE as u8);
-                        let newBlk = pageManager.GetBlock(token);
+                        let newBlk = pageManager.GetBlock(&mut *token);
                         pb.SetLastInt32(newBlk.firstPage as i32);
                         newBlk
                     } else {
@@ -1726,7 +1725,7 @@ mod bt {
                 let writeThisPage = (! st.keys.is_empty()) && (! fit);
 
                 if writeThisPage {
-                    writeLeaf(&mut st, false, pb, fs, pageSize, pageManager, token)
+                    writeLeaf(&mut st, false, pb, fs, pageSize, pageManager, &mut *token)
                 }
 
                 // TODO ignore prefixLen for overflowed keys?
@@ -1763,7 +1762,7 @@ mod bt {
 
             if !st.keys.is_empty() {
                 let isRootNode = st.leaves.is_empty();
-                writeLeaf(&mut st, isRootNode, pb, fs, pageSize, pageManager, token)
+                writeLeaf(&mut st, isRootNode, pb, fs, pageSize, pageManager, &mut *token)
             }
             Ok((st.blk,st.leaves,st.firstLeaf))
         }
@@ -1773,7 +1772,7 @@ mod bt {
                                        pageSize: usize,
                                        fs: &mut SeekWrite,
                                        pageManager: &mut IPages,
-                                       token: &IPendingSegment,
+                                       token: &mut PendingSegment,
                                        lastLeaf: usize,
                                        firstLeaf: usize,
                                        pb: &mut PageBuilder,
@@ -1832,7 +1831,7 @@ mod bt {
                                           fs: &mut SeekWrite,
                                           pageManager: &mut IPages,
                                           pageSize: usize,
-                                          token: &IPendingSegment,
+                                          token: &mut PendingSegment,
                                           firstLeaf: usize,
                                          ) where SeekWrite : Seek+Write {
                 let pagenum = pair.page;
@@ -1848,7 +1847,7 @@ mod bt {
                     } else {
                         if (st.blk.firstPage == st.blk.lastPage) {
                             pb.SetPageFlag(PageFlag::FLAG_BOUNDARY_NODE as u8);
-                            let newBlk = pageManager.GetBlock(token);
+                            let newBlk = pageManager.GetBlock(&mut *token);
                             pb.SetLastInt32(newBlk.firstPage as i32);
                             newBlk
                         } else {
@@ -1889,7 +1888,7 @@ mod bt {
 
                 if writeThisPage {
                     // assert sofar > 0
-                    writeParentPage(&mut st, &items, &overflows, pair, false, pb, lastLeaf, fs, pageManager, pageSize, token, firstLeaf);
+                    writeParentPage(&mut st, &items, &overflows, pair, false, pb, lastLeaf, fs, pageManager, pageSize, &mut *token, firstLeaf);
                 }
 
                 if st.sofar == 0 {
@@ -1909,20 +1908,19 @@ mod bt {
                 }
             }
             let isRootNode = st.nextGeneration.is_empty();
-            writeParentPage(&mut st, &items, &overflows, &children[children.len()-1], isRootNode, pb, lastLeaf, fs,
-            pageManager, pageSize, token, firstLeaf);
+            writeParentPage(&mut st, &items, &overflows, &children[children.len()-1], isRootNode, pb, lastLeaf, fs, pageManager, pageSize, &mut *token, firstLeaf);
             Ok((st.blk,st.nextGeneration))
         }
 
         // this is the body of Create
         let pageSize = pageManager.PageSize();
         let mut pb = PageBuilder::new(pageSize);
-        let token = pageManager.Begin();
-        let startingBlk = pageManager.GetBlock(&token);
+        let mut token = pageManager.Begin();
+        let startingBlk = pageManager.GetBlock(&mut token);
         utils::SeekPage(fs, pageSize, startingBlk.firstPage);
 
         let mut vbuf = vec![0;pageSize].into_boxed_slice();
-        let (blkAfterLeaves, leaves, firstLeaf) = try!(writeLeaves(startingBlk, pageManager, source, &mut vbuf, fs, &mut pb, &token));
+        let (blkAfterLeaves, leaves, firstLeaf) = try!(writeLeaves(startingBlk, pageManager, source, &mut vbuf, fs, &mut pb, &mut token));
 
         // all the leaves are written.
         // now write the parent pages.
@@ -1936,7 +1934,7 @@ mod bt {
             let mut blk = blkAfterLeaves;
             let mut children = leaves;
             loop {
-                let (newBlk,newChildren) = try!(writeParentNodes(blk, &children, pageSize, fs, pageManager, &token, lastLeaf, firstLeaf, &mut pb));
+                let (newBlk,newChildren) = try!(writeParentNodes(blk, &children, pageSize, fs, pageManager, &mut token, lastLeaf, firstLeaf, &mut pb));
                 blk = newBlk;
                 children = newChildren;
                 if children.len()==1 {
@@ -2730,67 +2728,9 @@ struct HeaderData {
     mergeCounter: u64,
 }
 
-struct PendingSegment {
-    blockList: Vec<PageBlock>
-}
-
-impl PendingSegment {
-    fn AddBlock(&mut self, b: PageBlock) {
-        let len = self.blockList.len();
-        if (! (self.blockList.is_empty())) && (b.firstPage == self.blockList[len-1].lastPage+1) {
-            // note that by consolidating blocks here, the segment info list will
-            // not have information about the fact that the two blocks were
-            // originally separate.  that's okay, since all we care about here is
-            // keeping track of which pages are used.  but the btree code itself
-            // is still treating the last page of the first block as a boundary
-            // page, even though its pointer to the next block goes to the very
-            // next page, because its page manager happened to give it a block
-            // which immediately follows the one it had.
-            self.blockList[len-1].lastPage = b.lastPage;
-        } else {
-            self.blockList.push(b);
-        }
-    }
-
-    fn End(&mut self, lastPage: usize) -> (Guid, &Vec<PageBlock>, Option<PageBlock>) {
-        let len = self.blockList.len();
-        let unused = {
-            let givenLastPage = self.blockList[len-1].lastPage;
-            if lastPage < givenLastPage {
-                self.blockList[len-1].lastPage = lastPage;
-                Some (PageBlock::new(lastPage+1, givenLastPage))
-            } else {
-                None
-            }
-        };
-        (Guid::NewGuid(), &self.blockList, unused)
-    }
-}
-
 struct SimplePageManager {
     pageSize : usize,
     nextPage : usize,
-}
-
-impl IPages for SimplePageManager {
-    fn PageSize(&self) -> usize {
-        self.pageSize
-    }
-
-    fn Begin(&mut self) -> IPendingSegment {
-        IPendingSegment { unused : 0}
-    }
-
-    fn GetBlock(&mut self, token:&IPendingSegment) -> PageBlock {
-        let blk = PageBlock::new(self.nextPage, self.nextPage + 10 - 1);
-        self.nextPage = self.nextPage + 10;
-        blk
-    }
-
-    fn End(&mut self, token:IPendingSegment, page:usize) -> Guid {
-        Guid::NewGuid()
-    }
-
 }
 
 mod Database {
@@ -2816,6 +2756,67 @@ mod Database {
     use super::seek_len;
 
     const HEADER_SIZE_IN_BYTES: usize = 4096;
+
+    impl PendingSegment {
+        fn new() -> PendingSegment {
+            PendingSegment {blockList: Vec::new()}
+        }
+
+        fn AddBlock(&mut self, b: PageBlock) {
+            let len = self.blockList.len();
+            if (! (self.blockList.is_empty())) && (b.firstPage == self.blockList[len-1].lastPage+1) {
+                // note that by consolidating blocks here, the segment info list will
+                // not have information about the fact that the two blocks were
+                // originally separate.  that's okay, since all we care about here is
+                // keeping track of which pages are used.  but the btree code itself
+                // is still treating the last page of the first block as a boundary
+                // page, even though its pointer to the next block goes to the very
+                // next page, because its page manager happened to give it a block
+                // which immediately follows the one it had.
+                self.blockList[len-1].lastPage = b.lastPage;
+            } else {
+                self.blockList.push(b);
+            }
+        }
+
+        fn End(mut self, lastPage: usize) -> (Guid, Vec<PageBlock>, Option<PageBlock>) {
+            let len = self.blockList.len();
+            let unused = {
+                let givenLastPage = self.blockList[len-1].lastPage;
+                if lastPage < givenLastPage {
+                    self.blockList[len-1].lastPage = lastPage;
+                    Some (PageBlock::new(lastPage+1, givenLastPage))
+                } else {
+                    None
+                }
+            };
+            // consume self return blockList
+            (Guid::NewGuid(), self.blockList, unused)
+        }
+    }
+
+    impl IPages for super::SimplePageManager {
+        fn PageSize(&self) -> usize {
+            self.pageSize
+        }
+
+        fn Begin(&mut self) -> PendingSegment {
+            PendingSegment::new()
+        }
+
+        fn GetBlock(&mut self, ps: &mut PendingSegment) -> PageBlock {
+            let blk = PageBlock::new(self.nextPage, self.nextPage + 10 - 1);
+            self.nextPage = self.nextPage + 10;
+            ps.AddBlock(blk);
+            blk
+        }
+
+        fn End(&mut self, ps:PendingSegment, lastPage:usize) -> Guid {
+            let (g,_,_) = ps.End(lastPage);
+            g
+        }
+
+    }
 
     fn readHeader<R>(fs:&mut R) -> io::Result<(HeaderData,usize,usize)> where R : Read+Seek {
         // TODO this func assumes we are at the beginning of the file?
@@ -3212,9 +3213,39 @@ mod Database {
 
     }
 
-}
+    use super::IPages;
+    use super::PendingSegment;
 
-//impl IPendingSegment for PendingSegment { }
+    impl IPages for db {
+        fn PageSize(&self) -> usize {
+            self.pageSize
+        }
+
+        fn Begin(&mut self) -> PendingSegment {
+            PendingSegment::new()
+        }
+
+        fn GetBlock(&mut self, ps:&mut PendingSegment) -> PageBlock {
+            let blk = self.getBlock(0); // specificSize=0 means we don't care how big of a block we get
+            ps.AddBlock(blk);
+            blk
+        }
+
+        fn End(&mut self, ps:PendingSegment, lastPage:usize) -> Guid {
+            let (g,blocks,unused) = ps.End(lastPage);
+            let info = SegmentInfo {age:0,blocks:blocks,root:lastPage};
+            self.segmentsInWaiting.insert(g,info);
+            //printfn "wrote %A: %A" g blocks
+            match unused {
+                Some(b) => self.addFreeBlocks(vec![b]),
+                None => ()
+            }
+            g
+        }
+
+    }
+
+}
 
 // ----------------------------------------------------------------
 
@@ -3270,36 +3301,6 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
             addFreeBlocks seg.blocks
 
     let critSectionSegmentsInWaiting = obj()
-
-    let pageManager = 
-        { new IPages with
-            member this.PageSize = pageSize
-
-            member this.Begin() = PendingSegment() :> IPendingSegment
-
-            // note that we assume that a single pending segment is going
-            // to be written by a single thread.  the concrete PendingSegment
-            // class above is not threadsafe.
-
-            member this.GetBlock(token) =
-                let ps = token :?> PendingSegment
-                let blk = getBlock 0 // specificSize=0 means we don't care how big of a block we get
-                ps.AddBlock(blk)
-                blk
-
-            member this.End(token, lastPage) =
-                let ps = token :?> PendingSegment
-                let (g,blocks,unused) = ps.End(lastPage)
-                let info = {age=(-1);blocks=blocks;root=lastPage}
-                lock critSectionSegmentsInWaiting (fun () -> 
-                    segmentsInWaiting <- Map.add g info segmentsInWaiting
-                )
-                //printfn "wrote %A: %A" g blocks
-                match unused with
-                | Some b -> addFreeBlocks [ b ]
-                | None -> ()
-                g
-        }
 
     let critSectionHeader = obj()
 
