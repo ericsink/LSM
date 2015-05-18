@@ -191,7 +191,7 @@ trait IDatabaseFile {
 
 pub struct DbSettings {
     AutoMergeEnabled : bool,
-    AutoMergeMinimumPages : i32,
+    AutoMergeMinimumPages : usize,
     DefaultPageSize : usize,
     PagesPerBlock : usize,
 }
@@ -471,42 +471,6 @@ mod Varint {
         }
     }
 }
-
-/*
-fn push_i32_be(v:& mut Vec<u8>, i:i32)
-{
-    v.push((i>>24) as u8);
-    v.push((i>>16) as u8);
-    v.push((i>>8) as u8);
-    v.push((i>>0) as u8);
-}
-
-fn push_i64_le(v:& mut Vec<u8>, i:i64)
-{
-    v.push((i>>0) as u8);
-    v.push((i>>8) as u8);
-    v.push((i>>16) as u8);
-    v.push((i>>24) as u8);
-    v.push((i>>32) as u8);
-    v.push((i>>40) as u8);
-    v.push((i>>48) as u8);
-    v.push((i>>56) as u8);
-}
-
-fn push_i32_le(v:& mut Vec<u8>, i:i32)
-{
-    v.push((i>>0) as u8);
-    v.push((i>>8) as u8);
-    v.push((i>>16) as u8);
-    v.push((i>>24) as u8);
-}
-
-fn push_cstring(v:& mut Vec<u8>, s:&String)
-{
-    v.push_all(s.as_bytes());
-    v.push(0 as u8);
-}
-*/
 
 fn write_i32_le(v:& mut [u8], i:i32)
 {
