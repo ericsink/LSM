@@ -166,7 +166,7 @@ trait IDatabaseFile {
     fn OpenForWriting() -> SeekRead;
 }
 
-struct DbSettings {
+pub struct DbSettings {
     AutoMergeEnabled : bool,
     AutoMergeMinimumPages : i32,
     DefaultPageSize : usize,
@@ -3008,7 +3008,7 @@ mod Database {
         blocks
     }
 
-    struct db {
+    pub struct db {
         path: String,
         pageSize: usize,
         settings: DbSettings,
@@ -3022,8 +3022,11 @@ mod Database {
         // TODO pendingMerges
     }
 
+    use super::kvp;
+    use super::bt;
+
     impl db {
-        fn new(path : &str, settings : DbSettings) -> io::Result<db> {
+        pub fn new(path : &str, settings : DbSettings) -> io::Result<db> {
 
             let mut f = try!(OpenOptions::new()
                     .read(true)
@@ -3289,7 +3292,7 @@ mod Database {
             Ok(box lc)
         }
 
-        fn commitSegments(&mut self, newGuids: Vec<Guid>) {
+        pub fn commitSegments(&mut self, newGuids: Vec<Guid>) {
             // TODO we could check to see if this guid is already in the list.
             // TODO we should disallow dupes in newGuids
 
@@ -3336,6 +3339,12 @@ mod Database {
             // note that we intentionally do not release the writeLock here.
             // you can change the segment list more than once while holding
             // the writeLock.  the writeLock gets released when you Dispose() it.
+        }
+
+        pub fn WriteSegmentFromSortedSequence<I>(&mut self, source: I) -> io::Result<Guid> where I:Iterator<Item=kvp> {
+            let mut fs = try!(self.OpenForWriting());
+            let (g,page) = try!(bt::CreateFromSortedSequenceOfKeyValuePairs(&mut fs, self, source));
+            Ok(g)
         }
 
     }
@@ -3813,22 +3822,12 @@ struct foo {
 
 impl Iterator for foo {
     type Item = kvp;
-    // TODO this doesn't actually generate the pairs in order
     fn next(& mut self) -> Option<kvp> {
         if self.i >= self.num {
             None
         }
         else {
-            fn create_array(n : usize) -> Box<[u8]> {
-                let mut kv = Vec::new();
-                for i in 0 .. n {
-                    kv.push(i as u8);
-                }
-                let k = kv.into_boxed_slice();
-                k
-            }
-
-            let k = format!("{}", self.i).into_bytes().into_boxed_slice();
+            let k = format!("{:08}", self.i).into_bytes().into_boxed_slice();
             let v = format!("{}", self.i * 2).into_bytes().into_boxed_slice();
             let r = kvp{Key:k, Value:Blob::Array(v)};
             self.i = self.i + 1;
@@ -3838,13 +3837,22 @@ impl Iterator for foo {
 }
 
 fn hack() -> io::Result<bool> {
-    use std::fs::File;
+    use Database::db;
 
-    let mut f = try!(File::create("data.bin"));
+    let DefaultSettings = 
+        DbSettings
+        {
+            AutoMergeEnabled : true,
+            AutoMergeMinimumPages : 4,
+            DefaultPageSize : 4096,
+            PagesPerBlock : 256,
+        };
+
+    let mut db = try!(db::new("data.bin", DefaultSettings));
 
     let src = foo {num:100, i:0};
-    let mut mgr = SimplePageManager {pageSize: 4096, nextPage: 1};
-    bt::CreateFromSortedSequenceOfKeyValuePairs(&mut f, &mut mgr, src);
+    let g = try!(db.WriteSegmentFromSortedSequence(src));
+    db.commitSegments(vec![g]);
 
     let res : io::Result<bool> = Ok(true);
     res
