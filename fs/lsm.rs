@@ -2037,7 +2037,7 @@ mod bt {
         leafKeys: Vec<usize>,
         countLeafKeys: u16, // only realloc leafKeys when it's too small
         previousLeaf: PageNum,
-        currentKey: i32, // TODO Option<u16>,
+        currentKey: Option<u16>,
         prefix: Option<Box<[u8]>>,
         firstLeaf: PageNum,
         lastLeaf: PageNum,
@@ -2061,7 +2061,7 @@ mod bt {
                 leafKeys: Vec::new(),
                 countLeafKeys: 0,
                 previousLeaf: 0,
-                currentKey: -1, // TODO None
+                currentKey: None,
                 prefix: None,
                 firstLeaf: 0, // temporary
                 lastLeaf: 0, // temporary
@@ -2088,7 +2088,7 @@ mod bt {
         fn resetLeaf(&mut self) {
             self.countLeafKeys = 0;
             self.previousLeaf = 0;
-            self.currentKey = -1; // TODO None;
+            self.currentKey = None;
             self.prefix = None;
         }
 
@@ -2117,20 +2117,34 @@ mod bt {
         }
 
         fn nextInLeaf(&mut self) -> bool {
-            if ((self.currentKey+1) as u16) < self.countLeafKeys {
-                self.currentKey = self.currentKey + 1;
-                true
-            } else {
-                false
+            match self.currentKey {
+                Some(cur) => {
+                    if (cur+1) < self.countLeafKeys {
+                        self.currentKey = Some(cur + 1);
+                        true
+                    } else {
+                        false
+                    }
+                },
+                None => {
+                    false
+                },
             }
         }
 
         fn prevInLeaf(&mut self) -> bool {
-            if (self.currentKey > 0) {
-                self.currentKey = self.currentKey - 1;
-                true
-            } else {
-                false
+            match self.currentKey {
+                Some(cur) => {
+                    if (cur > 0) {
+                        self.currentKey = Some(cur - 1);
+                        true
+                    } else {
+                        false
+                    }
+                },
+                None => {
+                    false
+                },
             }
         }
 
@@ -2191,8 +2205,8 @@ mod bt {
             }
         }
 
-        fn keyInLeaf(&self, n: usize) -> io::Result<Box<[u8]>> { 
-            let mut cur = self.leafKeys[n];
+        fn keyInLeaf(&self, n: u16) -> io::Result<Box<[u8]>> { 
+            let mut cur = self.leafKeys[n as usize];
             let kflag = self.pr.GetByte(&mut cur);
             let klen = self.pr.GetVarint(&mut cur) as usize;
             // TODO consider alloc res array here, once for all cases below
@@ -2221,8 +2235,8 @@ mod bt {
             }
         }
 
-        fn compareKeyInLeaf(&self, n: usize, other: &[u8]) -> io::Result<Ordering> {
-            let mut cur = self.leafKeys[n];
+        fn compareKeyInLeaf(&self, n: u16, other: &[u8]) -> io::Result<Ordering> {
+            let mut cur = self.leafKeys[n as usize];
             let kflag = self.pr.GetByte(&mut cur);
             let klen = self.pr.GetVarint(&mut cur) as usize;
             if 0 == (kflag & ValueFlag::FLAG_OVERFLOW) {
@@ -2249,21 +2263,20 @@ mod bt {
             }
         }
 
-        // TODO I wish this func were not using signed integers
-        fn searchLeaf(&mut self, k: &[u8], min:i32, max:i32, sop:SeekOp, le: i32, ge: i32) -> io::Result<i32> {
+        fn searchLeaf(&mut self, k: &[u8], min:u16, max:u16, sop:SeekOp, le: Option<u16>, ge: Option<u16>) -> io::Result<Option<u16>> {
             if max < min {
                 match sop {
-                    SeekOp::SEEK_EQ => Ok(-1),
+                    SeekOp::SEEK_EQ => Ok(None),
                     SeekOp::SEEK_LE => Ok(le),
                     SeekOp::SEEK_GE => Ok(ge),
                 }
             } else {
                 let mid = (max + min) / 2;
                 // assert mid >= 0
-                match try!(self.compareKeyInLeaf(mid as usize, k)){
-                    Ordering::Equal => Ok(mid),
-                    Ordering::Less => self.searchLeaf(k, (mid+1), max, sop, mid, ge),
-                    Ordering::Greater => self.searchLeaf(k, min, (mid-1), sop, le, mid),
+                match try!(self.compareKeyInLeaf(mid, k)){
+                    Ordering::Equal => Ok(Some(mid)),
+                    Ordering::Less => self.searchLeaf(k, (mid+1), max, sop, Some(mid), ge),
+                    Ordering::Greater => self.searchLeaf(k, min, (mid-1), sop, le, Some(mid)),
                 }
             }
         }
@@ -2357,7 +2370,7 @@ mod bt {
         }
 
         fn leafIsValid(&self) -> bool {
-            let ok = (!self.leafKeys.is_empty()) && (self.countLeafKeys > 0) && (self.currentKey >= 0) && (self.currentKey < (self.countLeafKeys as i32));
+            let ok = (!self.leafKeys.is_empty()) && (self.countLeafKeys > 0) && (self.currentKey.is_some()) && (self.currentKey.unwrap() < self.countLeafKeys);
             ok
         }
 
@@ -2366,7 +2379,7 @@ mod bt {
                 if PageType::LEAF_NODE == self.pr.PageType() {
                     self.readLeaf();
                     let tmp_countLeafKeys = self.countLeafKeys;
-                    self.currentKey = try!(self.searchLeaf(k, 0, (tmp_countLeafKeys - 1) as i32, sop, -1, -1));
+                    self.currentKey = try!(self.searchLeaf(k, 0, (tmp_countLeafKeys - 1), sop, None, None));
                     if SeekOp::SEEK_EQ != sop {
                         if ! self.leafIsValid() {
                             // if LE or GE failed on a given page, we might need
@@ -2378,7 +2391,7 @@ mod bt {
                                     else { self.currentPage + 1 };
                                 if (try!(self.setCurrentPage(nextPage)) && try!(self.searchForwardForLeaf())) {
                                     self.readLeaf();
-                                    self.currentKey = 0;
+                                    self.currentKey = Some(0);
                                 }
                             } else {
                                 let tmp_previousLeaf = self.previousLeaf;
@@ -2386,7 +2399,7 @@ mod bt {
                                     self.resetLeaf();
                                 } else if try!(self.setCurrentPage(tmp_previousLeaf)) {
                                     self.readLeaf();
-                                    self.currentKey = (self.countLeafKeys - 1) as i32;
+                                    self.currentKey = Some(self.countLeafKeys - 1);
                                 }
                             }
                         }
@@ -2438,13 +2451,13 @@ mod bt {
         }
 
         fn Key(&self) -> Box<[u8]> {
-            let currentKey = self.currentKey as usize;
+            let currentKey = self.currentKey.unwrap();
             self.keyInLeaf(currentKey).unwrap()
         }
 
         fn Value(&self) -> Blob {
-            let currentKey = self.currentKey as usize;
-            let mut pos = self.leafKeys[currentKey];
+            let currentKey = self.currentKey.unwrap();
+            let mut pos = self.leafKeys[currentKey as usize];
 
             self.skipKey(&mut pos);
 
@@ -2466,7 +2479,8 @@ mod bt {
         }
 
         fn ValueLength(&self) -> Option<usize> {
-            let mut cur = self.leafKeys[self.currentKey as usize];
+            let currentKey = self.currentKey.unwrap();
+            let mut cur = self.leafKeys[currentKey as usize];
 
             self.skipKey(&mut cur);
 
@@ -2480,7 +2494,7 @@ mod bt {
         }
 
         fn KeyCompare(&self, k:&[u8]) -> Ordering {
-            let currentKey = self.currentKey as usize;
+            let currentKey = self.currentKey.unwrap();
             self.compareKeyInLeaf(currentKey, k).unwrap()
         }
 
@@ -2488,7 +2502,7 @@ mod bt {
             let firstLeaf = self.firstLeaf;
             if self.setCurrentPage(firstLeaf).unwrap() {
                 self.readLeaf();
-                self.currentKey = 0;
+                self.currentKey = Some(0);
             }
         }
 
@@ -2496,7 +2510,7 @@ mod bt {
             let lastLeaf = self.lastLeaf;
             if self.setCurrentPage(lastLeaf).unwrap() {
                 self.readLeaf();
-                self.currentKey = self.countLeafKeys as i32 - 1;
+                self.currentKey = Some(self.countLeafKeys - 1);
             }
         }
 
@@ -2511,7 +2525,7 @@ mod bt {
                 ;
                 if self.setCurrentPage(nextPage).unwrap() && self.searchForwardForLeaf().unwrap() {
                     self.readLeaf();
-                    self.currentKey = 0;
+                    self.currentKey = Some(0);
                 }
             }
         }
@@ -2523,7 +2537,7 @@ mod bt {
                     self.resetLeaf();
                 } else if self.setCurrentPage(previousLeaf).unwrap() {
                     self.readLeaf();
-                    self.currentKey = self.countLeafKeys as i32 - 1;
+                    self.currentKey = Some(self.countLeafKeys - 1);
                 }
             }
         }
