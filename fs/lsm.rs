@@ -85,7 +85,7 @@ pub trait IPages {
 }
 
 #[derive(PartialEq,Copy,Clone)]
-enum SeekOp {
+pub enum SeekOp {
     SEEK_EQ = 0,
     SEEK_LE = 1,
     SEEK_GE = 2,
@@ -99,7 +99,7 @@ fn seek_len<R>(fs: &mut R) -> io::Result<u64> where R : Seek {
 }
 
 // TODO return Result
-trait ICursor : Drop {
+pub trait ICursor : Drop {
     fn Seek(&mut self, k:&[u8], sop:SeekOp);
     fn First(&mut self);
     fn Last(&mut self);
@@ -173,6 +173,7 @@ struct DbSettings {
     PagesPerBlock : usize,
 }
 
+#[derive(Clone)]
 struct SegmentInfo {
     root : usize,
     age : u32,
@@ -2658,6 +2659,12 @@ mod bt {
         }
 
     }
+
+    pub fn OpenCursor(path: &str, pageSize: usize, rootPage: usize) -> io::Result<Box<ICursor>> {
+        let csr = try!(myCursor::new(path, pageSize, rootPage));
+        Ok(box csr)
+    }
+
 }
 
 /*
@@ -2718,6 +2725,7 @@ type BTreeSegment =
 
 use std::collections::HashMap;
 
+#[derive(Clone)]
 struct HeaderData {
     // TODO currentState is an ordered copy of segments.Keys.  eliminate duplication?
     // or add assertions and tests to make sure they never get out of sync?
@@ -2754,6 +2762,9 @@ mod Database {
     use super::HeaderData;
     use super::DbSettings;
     use super::seek_len;
+    use super::ICursor;
+    use super::MultiCursor;
+    use super::LivingCursor;
 
     const HEADER_SIZE_IN_BYTES: usize = 4096;
 
@@ -3006,6 +3017,7 @@ mod Database {
         nextPage: usize,
         segmentsInWaiting: HashMap<Guid,SegmentInfo>,
         freeBlocks: Vec<PageBlock>,
+        // cursors: HashMap<Guid,Vec<Box<ICursor>>>,
         // TODO cursors
         // TODO pendingMerges
     }
@@ -3072,6 +3084,19 @@ mod Database {
                     headBlk
                 }
             }
+        }
+
+        fn OpenForWriting(&self) -> io::Result<File> {
+            OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(&self.path)
+        }
+
+        fn OpenForReading(&self) -> io::Result<File> {
+            OpenOptions::new()
+                    .read(true)
+                    .open(&self.path)
         }
 
         // this code should not be called in a release build.  it helps
@@ -3211,6 +3236,108 @@ mod Database {
             hdr.headerOverflow = headerOverflow
         }
 
+        fn getCursor(&self, segs: &HashMap<Guid,SegmentInfo>, g: Guid) -> io::Result<Box<ICursor>> {
+            let seg = segs.get(&g).unwrap();
+            let rootPage = seg.root;
+            let fs = self.OpenForReading();
+            /* TODO
+            let hook (csr:ICursor) =
+                fs.Close()
+                lock critSectionCursors (fun () -> 
+                    let cur = Map.find g cursors
+                    let removed = List.filter (fun x -> not (Object.ReferenceEquals(csr, x))) cur
+                    // if we are removing the last cursor for a segment, we do need to
+                    // remove that segment guid from the cursors map, not just leave
+                    // it there with an empty list.
+                    if List.isEmpty removed then
+                        cursors <- Map.remove g cursors
+                        match fnFree with
+                        | Some f -> f g seg
+                        | None -> ()
+                    else
+                        cursors <- Map.add g removed cursors
+                )
+                //printfn "done with cursor %O" g 
+            */
+            let csr = try!(super::bt::OpenCursor(&self.path, self.pageSize, rootPage));
+            // note that getCursor is (and must be) only called from within
+            // lock critSectionCursors
+            /* TODO
+            let cur = match Map.tryFind g cursors with
+                       | Some c -> c
+                       | None -> []
+            cursors <- Map.add g (csr :: cur) cursors
+            */
+            //printfn "added cursor %O: %A" g seg
+            Ok(csr)
+        }
+
+        pub fn OpenCursor(&mut self) -> io::Result<Box<ICursor>> {
+            // TODO this cursor needs to expose the changeCounter and segment list
+            // on which it is based. for optimistic writes. caller can grab a cursor,
+            // do their writes, then grab the writelock, and grab another cursor, then
+            // compare the two cursors to see if anything important changed.  if not,
+            // commit their writes.  if so, nevermind the written segments and start over.
+
+            // TODO we also need a way to open a cursor on segments in waiting
+            let mut clist = Vec::new();
+            for g in self.header.currentState.iter() {
+                clist.push(try!(self.getCursor(&self.header.segments, *g))); // TODO checkForGoneSegment
+            }
+            let mc = MultiCursor::Create(clist);
+            let lc = LivingCursor::Create(box mc);
+            Ok(box lc)
+        }
+
+        fn commitSegments(&mut self, newGuids: Vec<Guid>) {
+            // TODO we could check to see if this guid is already in the list.
+            // TODO we should disallow dupes in newGuids
+
+            // self.segmentsInWaiting must contain one seg for each guid in newGuids.
+            // we want those entries to move out and move into the header, currentState
+            // and segments.  This means taking ownership of those SegmentInfos.  But
+            // the others we want to leave.
+
+            // TODO these changes should probably be done to a clone of segmentsInWaiting
+
+            let mut newHeaderBeforeWriting = self.header.clone();
+            for g in newGuids.iter() {
+                match self.segmentsInWaiting.remove(&g) {
+                    Some(info) => {
+                        newHeaderBeforeWriting.segments.insert(*g,info);
+                    },
+                    None => {
+                        panic!();
+                    },
+                }
+            }
+
+            // TODO surely there's a better way to insert one vec into another?
+            // should probably just reverse the direction of currentState.
+            for i in 0 .. newGuids.len() {
+                let g = newGuids[i];
+                newHeaderBeforeWriting.currentState.insert(i, g);
+            }
+
+            newHeaderBeforeWriting.changeCounter = newHeaderBeforeWriting.changeCounter + 1;
+
+            self.writeHeader(&mut newHeaderBeforeWriting);
+            let oldHeaderOverflow = self.header.headerOverflow;
+            self.header = newHeaderBeforeWriting;
+
+            //printfn "after commit, currentState: %A" header.currentState
+            //printfn "after commit, segments: %A" header.segments
+            // all the segments we just committed can now be removed from
+            // the segments in waiting list
+            match oldHeaderOverflow {
+                Some(blk) => self.addFreeBlocks(vec![ blk ]),
+                None => ()
+            }
+            // note that we intentionally do not release the writeLock here.
+            // you can change the segment list more than once while holding
+            // the writeLock.  the writeLock gets released when you Dispose() it.
+        }
+
     }
 
     use super::IPages;
@@ -3262,37 +3389,6 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
 
     let critSectionCursors = obj()
     let mutable cursors:Map<Guid,ICursor list> = Map.empty
-
-    let getCursor segs g fnFree =
-        let seg = Map.find g segs
-        let rootPage = seg.root
-        let fs = io.OpenForReading()
-        let hook (csr:ICursor) =
-            fs.Close()
-            lock critSectionCursors (fun () -> 
-                let cur = Map.find g cursors
-                let removed = List.filter (fun x -> not (Object.ReferenceEquals(csr, x))) cur
-                // if we are removing the last cursor for a segment, we do need to
-                // remove that segment guid from the cursors map, not just leave
-                // it there with an empty list.
-                if List.isEmpty removed then
-                    cursors <- Map.remove g cursors
-                    match fnFree with
-                    | Some f -> f g seg
-                    | None -> ()
-                else
-                    cursors <- Map.add g removed cursors
-            )
-            //printfn "done with cursor %O" g 
-        let csr = BTreeSegment.OpenCursor(fs, pageSize, rootPage, Action<ICursor>(hook))
-        // note that getCursor is (and must be) only called from within
-        // lock critSectionCursors
-        let cur = match Map.tryFind g cursors with
-                   | Some c -> c
-                   | None -> []
-        cursors <- Map.add g (csr :: cur) cursors
-        //printfn "added cursor %O: %A" g seg
-        csr
 
     let checkForGoneSegment g seg =
         if not (Map.containsKey g header.segments) then
@@ -3432,48 +3528,6 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
         // note that we intentionally do not release the writeLock here.
         // you can change the segment list more than once while holding
         // the writeLock.  the writeLock gets released when you Dispose() it.
-
-    // only call this if you have the writeLock
-    let commitSegments (newGuids:seq<Guid>) fnHook =
-        // TODO we could check to see if this guid is already in the list.
-
-        let newGuidsAsSet = Seq.fold (fun acc g -> Set.add g acc) Set.empty newGuids
-
-        let mySegmentsInWaiting = Map.filter (fun g _ -> Set.contains g newGuidsAsSet) segmentsInWaiting
-        //printfn "committing: %A" mySegmentsInWaiting
-        let oldHeaderOverflow = lock critSectionHeader (fun () -> 
-            let newState = (List.ofSeq newGuids) @ header.currentState
-            let newSegments = Map.fold (fun acc g info -> Map.add g {info with age=0} acc) header.segments mySegmentsInWaiting
-            let newHeaderBeforeWriting = {
-                changeCounter=header.changeCounter + 1L
-                mergeCounter=header.mergeCounter
-                currentState=newState
-                segments=newSegments
-                headerOverflow=None
-                }
-            let newHeader = writeHeader newHeaderBeforeWriting
-            let oldHeaderOverflow = header.headerOverflow
-            header <- newHeader
-            oldHeaderOverflow
-        )
-        //printfn "after commit, currentState: %A" header.currentState
-        //printfn "after commit, segments: %A" header.segments
-        // all the segments we just committed can now be removed from
-        // the segments in waiting list
-        lock critSectionSegmentsInWaiting (fun () ->
-            let remainingSegmentsInWaiting = Map.filter (fun g _ -> Set.contains g newGuidsAsSet |> not) segmentsInWaiting
-            segmentsInWaiting <- remainingSegmentsInWaiting
-        )
-        match oldHeaderOverflow with
-        | Some blk -> addFreeBlocks [ PageBlock(blk.firstPage, blk.lastPage) ]
-        | None -> ()
-        // note that we intentionally do not release the writeLock here.
-        // you can change the segment list more than once while holding
-        // the writeLock.  the writeLock gets released when you Dispose() it.
-
-        match fnHook with
-        | Some f -> f()
-        | None -> ()
 
     let critSectionInTransaction = obj()
     let mutable inTransaction = false 
@@ -3703,21 +3757,6 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
                 addFreeBlocks blocksToBeFreed
             )
 
-        member this.OpenCursor() =
-            // TODO this cursor needs to expose the changeCounter and segment list
-            // on which it is based. for optimistic writes. caller can grab a cursor,
-            // do their writes, then grab the writelock, and grab another cursor, then
-            // compare the two cursors to see if anything important changed.  if not,
-            // commit their writes.  if so, nevermind the written segments and start over.
-
-            // TODO we also need a way to open a cursor on segments in waiting
-            let clist = lock critSectionCursors (fun () ->
-                let h = header
-                List.map (fun g -> getCursor h.segments g (Some checkForGoneSegment)) h.currentState
-            )
-            let mc = MultiCursor.Create clist
-            LivingCursor.Create mc
-
         member this.OpenSegmentCursor(g:Guid) =
             let csr = lock critSectionCursors (fun () ->
                 let h = header
@@ -3815,8 +3854,8 @@ fn main() {
     hack();
 }
 
-// derive debug is %A
-// [u8] is not on the heap.  it's like a primitive that is 7 bytes long.  it's a value type.
+// derive debug with :? is %A
+// [u8] is not on the heap.  it's like a primitive that is N bytes long.  it's a value type.
 // no each()
 // no exceptions.  use Result<>
 // no currying, no partial application
@@ -3830,7 +3869,8 @@ fn main() {
 // typing tetris
 // miss sprintf syntax
 // Read,Write,Seek traits so much better design than .NET streams
-//
+// lots more for loops. but they're usually safer.  iter.  not numeric bounds.  but sometimes.
+// the stricter the compiler, the more I like it.
 //
 // casts.  are casts between i32 and usize safe?  are they checked?
 //
