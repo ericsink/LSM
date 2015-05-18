@@ -2667,62 +2667,6 @@ mod bt {
 
 }
 
-/*
-[<AbstractClass;Sealed>]
-type BTreeSegment =
-    static member CreateFromSortedSequence(fs:Stream, pageManager:IPages, source:seq<kvp>) = 
-        bt.CreateFromSortedSequenceOfKeyValuePairs (fs, pageManager, source)
-
-    #if not
-    static member CreateFromSortedSequence(fs:Stream, pageManager:IPages, pairs:seq<byte[]*Stream>, mess:string) = 
-        let source = seq { for t in pairs do yield kvp(fst t,snd t) done }
-        bt.CreateFromSortedSequenceOfKeyValuePairs (fs, pageManager, source)
-    #endif
-
-    static member SortAndCreate(fs:Stream, pageManager:IPages, pairs:System.Collections.Generic.IDictionary<byte[],Stream>) =
-#if not
-        let keys:byte[][] = (Array.ofSeq pairs.Keys)
-        let sortfunc x y = bcmp.Compare x y
-        Array.sortInPlaceWith sortfunc keys
-        let sortedSeq = seq { for k in keys do yield kvp(k,pairs.[k]) done }
-#else
-        // TODO which is faster?  how does linq OrderBy implement sorting
-        // of a sequence?
-        // http://code.logos.com/blog/2010/04/a_truly_lazy_orderby_in_linq.html
-        let s1 = pairs.AsEnumerable()
-        let s2 = Seq.map (fun (x:System.Collections.Generic.KeyValuePair<byte[],Stream>) -> kvp(x.Key, if x.Value = null then Blob.Tombstone else x.Value |> Blob.Stream)) s1
-        let sortedSeq = s2.OrderBy((fun (x:kvp) -> x.Key), ByteComparer())
-#endif
-        bt.CreateFromSortedSequenceOfKeyValuePairs (fs, pageManager, sortedSeq)
-
-    static member SortAndCreate(fs:Stream, pageManager:IPages, pairs:System.Collections.Generic.IDictionary<byte[],Blob>) =
-#if not
-        let keys:byte[][] = (Array.ofSeq pairs.Keys)
-        let sortfunc x y = bcmp.Compare x y
-        Array.sortInPlaceWith sortfunc keys
-        let sortedSeq = seq { for k in keys do yield kvp(k,pairs.[k]) done }
-#else
-        // TODO which is faster?  how does linq OrderBy implement sorting
-        // of a sequence?
-        // http://code.logos.com/blog/2010/04/a_truly_lazy_orderby_in_linq.html
-        let s1 = pairs.AsEnumerable()
-        let sortedSeq = s1.OrderBy((fun (x:kvp) -> x.Key), ByteComparer())
-#endif
-        bt.CreateFromSortedSequenceOfKeyValuePairs (fs, pageManager, sortedSeq)
-
-    #if not
-    static member SortAndCreate(fs:Stream, pageManager:IPages, pairs:Map<byte[],Stream>) =
-        let keys:byte[][] = pairs |> Map.toSeq |> Seq.map fst |> Array.ofSeq
-        let sortfunc x y = bcmp.Compare x y
-        Array.sortInPlaceWith sortfunc keys
-        let sortedSeq = seq { for k in keys do yield kvp(k,pairs.[k]) done }
-        bt.CreateFromSortedSequenceOfKeyValuePairs (fs, pageManager, sortedSeq)
-    #endif
-
-    static member OpenCursor(fs, pageSize:int, rootPage:int, hook:Action<ICursor>) :ICursor =
-        bt.OpenCursor(fs,pageSize,rootPage,hook)
-*/
-
 use std::collections::HashMap;
 
 #[derive(Clone)]
@@ -3387,17 +3331,7 @@ mod Database {
 
 /*
 
-module bt =
-
-    type private myCursor(_fs:Stream, pageSize:int, _rootPage:int, _hook:Action<ICursor>) =
-
-    let OpenCursor(fs, pageSize:int, rootPage:int, hook:Action<ICursor>) :ICursor =
-        new myCursor(fs, pageSize, rootPage, hook) :> ICursor
-
 type Database(_io:IDatabaseFile, _settings:DbSettings) =
-
-    let critSectionCursors = obj()
-    let mutable cursors:Map<Guid,ICursor list> = Map.empty
 
     let checkForGoneSegment g seg =
         if not (Map.containsKey g header.segments) then
@@ -3405,18 +3339,12 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
             //printfn "cursor done, segment %O is gone: %A" g seg
             addFreeBlocks seg.blocks
 
-    let critSectionSegmentsInWaiting = obj()
-
-    let critSectionHeader = obj()
-
-    let critSectionMerging = obj()
     // this keeps track of which segments are currently involved in a merge.
     // a segment can only be in one merge at a time.  in effect, this is a list
     // of merge locks for segments.  segments should be removed from this set
     // after the merge has been committed.
     let mutable merging = Set.empty
 
-    let critSectionPendingMerges = obj()
     // this keeps track of merges which have been written but not
     // yet committed.
     let mutable pendingMerges:Map<Guid,Guid list> = Map.empty
@@ -3538,7 +3466,6 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
         // you can change the segment list more than once while holding
         // the writeLock.  the writeLock gets released when you Dispose() it.
 
-    let critSectionInTransaction = obj()
     let mutable inTransaction = false 
     let mutable waiting = Deque.empty
 
@@ -3700,17 +3627,6 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
 
             fsMine.Close()
 
-    static member DefaultSettings = 
-        {
-            AutoMergeEnabled = true
-            AutoMergeMinimumPages = 4
-            DefaultPageSize = 4096
-            PagesPerBlock = 256
-        }
-
-    new(_io:IDatabaseFile) =
-        new Database(_io, Database.DefaultSettings)
-
     override this.Finalize() =
         dispose false
 
@@ -3724,21 +3640,6 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
             // pooling and reusing read streams.  similar issues
             // for background writes as well.
             GC.SuppressFinalize(this)
-
-        member this.WriteSegmentFromSortedSequence(pairs:seq<kvp>) =
-            use fs = io.OpenForWriting()
-            let (g,_) = BTreeSegment.CreateFromSortedSequence(fs, pageManager, pairs)
-            g
-
-        member this.WriteSegment(pairs:System.Collections.Generic.IDictionary<byte[],Stream>) =
-            use fs = io.OpenForWriting()
-            let (g,_) = BTreeSegment.SortAndCreate(fs, pageManager, pairs)
-            g
-
-        member this.WriteSegment(pairs:System.Collections.Generic.IDictionary<byte[],Blob>) =
-            use fs = io.OpenForWriting()
-            let (g,_) = BTreeSegment.SortAndCreate(fs, pageManager, pairs)
-            g
 
         member this.Merge(level:int, howMany:int, all:bool) =
             let maybe = getPossibleMerge level howMany all
@@ -3815,12 +3716,12 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
             segs <- []
 */
 
-struct foo {
+struct GenerateNumbers {
     num : usize,
     i : usize,
 }
 
-impl Iterator for foo {
+impl Iterator for GenerateNumbers {
     type Item = kvp;
     fn next(& mut self) -> Option<kvp> {
         if self.i >= self.num {
@@ -3850,7 +3751,7 @@ fn hack() -> io::Result<bool> {
 
     let mut db = try!(db::new("data.bin", DefaultSettings));
 
-    let src = foo {num:100, i:0};
+    let src = GenerateNumbers {num:100, i:0};
     let g = try!(db.WriteSegmentFromSortedSequence(src));
     db.commitSegments(vec![g]);
 
