@@ -22,6 +22,7 @@ use std::io::Seek;
 use std::io::Read;
 use std::io::Write;
 use std::io::SeekFrom;
+use std::cmp::Ordering;
 
 const size_i32 :usize = 4; // TODO
 const size_i16 :usize = 2; // TODO
@@ -151,7 +152,7 @@ pub trait ICursor : Drop {
     fn Value(&self) -> Blob;
 
     fn ValueLength(&self) -> i32; // because a negative length is a tombstone TODO option
-    fn KeyCompare(&self, k:&[u8]) -> i32;
+    fn KeyCompare(&self, k:&[u8]) -> Ordering;
 
     fn CountKeysForward(&mut self) -> u32 {
         let mut i = 0;
@@ -259,47 +260,42 @@ mod utils {
 }
 
 mod bcmp {
-    // TODO should use Enum std::cmp::Ordering
-    pub fn Compare (x:&[u8], y:&[u8]) -> i32 {
+    use std::cmp::Ordering;
+    use std::cmp::min;
+
+    // TODO can we just x.cmp(y) ?
+    pub fn Compare (x:&[u8], y:&[u8]) -> Ordering {
         let xlen = x.len();
         let ylen = y.len();
-        let len = if xlen<ylen { xlen } else { ylen };
-        let mut i = 0;
-        while i<len {
-            let c = (x[i] as i32) - (y[i] as i32);
-            if c != 0 {
+        let len = min(xlen, ylen);
+        for i in 0 .. len {
+            let c = x[i].cmp(&y[i]);
+            if c != Ordering::Equal {
                 return c;
             }
-            else {
-                i = i + 1;
-            }
         }
-        (xlen - ylen) as i32
+        return xlen.cmp(&ylen);
     }
 
-    // TODO should use Enum std::cmp::Ordering
-    pub fn CompareWithPrefix (prefix:&[u8], x:&[u8], y:&[u8]) -> i32 {
+    pub fn CompareWithPrefix (prefix:&[u8], x:&[u8], y:&[u8]) -> Ordering {
         let plen = prefix.len();
         let xlen = x.len();
         let ylen = y.len();
-        let len = if xlen<ylen { xlen } else { ylen };
+        let len = min(xlen, ylen);
         let mut i = 0;
-        while i<len {
+        for i in 0 .. len {
             let xval = 
                 if i<plen {
                     prefix[i]
                 } else {
                     x[i - plen]
                 };
-            let c = (xval as i32) - (y[i] as i32);
-            if c != 0 {
+            let c = xval.cmp(&y[i]);
+            if c != Ordering::Equal {
                 return c;
             }
-            else {
-                i = i + 1;
-            }
         }
-        (xlen - ylen) as i32
+        return xlen.cmp(&ylen);
     }
 
     pub fn PrefixMatch (x:&[u8], y:&[u8], max:usize) -> usize {
@@ -684,12 +680,12 @@ impl PageBuffer {
         utils::ReadFully(strm, &mut self.buf[off .. len-off])
     }
 
-    fn Compare(&self, cur: usize, len: usize, other: &[u8]) ->i32 {
+    fn Compare(&self, cur: usize, len: usize, other: &[u8]) -> Ordering {
         let slice = &self.buf[cur .. cur + len];
         bcmp::Compare(slice, other)
     }
 
-    fn CompareWithPrefix(&self, cur: usize, prefix: &[u8], len: usize, other: &[u8]) ->i32 {
+    fn CompareWithPrefix(&self, cur: usize, prefix: &[u8], len: usize, other: &[u8]) -> Ordering {
         let slice = &self.buf[cur .. cur + len];
         bcmp::CompareWithPrefix(prefix, slice, other)
     }
@@ -768,7 +764,7 @@ struct MultiCursor {
 }
 
 impl MultiCursor {
-    fn find(&self, compare_func : &Fn(&ICursor,&ICursor) -> i32) -> Option<usize> {
+    fn find(&self, compare_func : &Fn(&ICursor,&ICursor) -> Ordering) -> Option<usize> {
         if self.subcursors.is_empty() {
             None
         } else {
@@ -780,7 +776,7 @@ impl MultiCursor {
                             let x = &self.subcursors[i];
                             let y = &self.subcursors[winning];
                             let c = compare_func(&**x,&**y);
-                            if c<0 {
+                            if c==Ordering::Less {
                                 res = Some(i)
                             }
                         },
@@ -854,7 +850,7 @@ impl ICursor for MultiCursor {
         }
     }
 
-    fn KeyCompare(&self, k:&[u8]) -> i32 {
+    fn KeyCompare(&self, k:&[u8]) -> Ordering {
         match self.cur {
             Some(icur) => self.subcursors[icur].KeyCompare(k),
             None => panic!()
@@ -884,7 +880,7 @@ impl ICursor for MultiCursor {
                     if (self.dir != Direction::FORWARD) && (icur != j) { 
                         (*csr).Seek (&*k, SeekOp::SEEK_GE); 
                     }
-                    if csr.IsValid() && (0 == csr.KeyCompare(&*k)) { 
+                    if csr.IsValid() && (Ordering::Equal == csr.KeyCompare(&*k)) { 
                         csr.Next(); 
                     }
                 }
@@ -904,7 +900,7 @@ impl ICursor for MultiCursor {
                     if (self.dir != Direction::BACKWARD) && (icur != j) { 
                         (*csr).Seek (&*k, SeekOp::SEEK_LE); 
                     }
-                    if csr.IsValid() && (0 == csr.KeyCompare(&*k)) { 
+                    if csr.IsValid() && (Ordering::Equal == csr.KeyCompare(&*k)) { 
                         csr.Prev(); 
                     }
                 }
@@ -921,7 +917,7 @@ impl ICursor for MultiCursor {
         let mut found = false;
         for j in 0 .. self.subcursors.len() {
             self.subcursors[j].Seek(k,sop);
-            if self.cur.is_none() && self.subcursors[j].IsValid() && ( (SeekOp::SEEK_EQ == sop) || (0 == self.subcursors[j].KeyCompare (k)) ) { 
+            if self.cur.is_none() && self.subcursors[j].IsValid() && ( (SeekOp::SEEK_EQ == sop) || (Ordering::Equal == self.subcursors[j].KeyCompare (k)) ) { 
                 self.cur = Some(j);
                 found = true;
                 break;
@@ -1004,7 +1000,7 @@ impl ICursor for LivingCursor {
         self.chain.IsValid() && self.chain.ValueLength() >= 0
     }
 
-    fn KeyCompare(&self, k:&[u8]) -> i32 {
+    fn KeyCompare(&self, k:&[u8]) -> Ordering {
         self.chain.KeyCompare(k)
     }
 
@@ -2273,7 +2269,7 @@ mod bt {
             }
         }
 
-        fn compareKeyInLeaf(&self, n: usize, other: &[u8]) -> io::Result<i32> {
+        fn compareKeyInLeaf(&self, n: usize, other: &[u8]) -> io::Result<Ordering> {
             let mut cur = self.leafKeys[n];
             let kflag = self.pr.GetByte(&mut cur);
             let klen = self.pr.GetVarint(&mut cur) as usize;
@@ -2312,13 +2308,10 @@ mod bt {
             } else {
                 let mid = (max + min) / 2;
                 // assert mid >= 0
-                let cmp = try!(self.compareKeyInLeaf(mid as usize, k));
-                if 0 == cmp {
-                    Ok(mid)
-                } else if cmp<0 {
-                    self.searchLeaf(k, (mid+1), max, sop, mid, ge)
-                } else {
-                    self.searchLeaf(k, min, (mid-1), sop, le, mid)
+                match try!(self.compareKeyInLeaf(mid as usize, k)){
+                    Ordering::Equal => Ok(mid),
+                    Ordering::Less => self.searchLeaf(k, (mid+1), max, sop, mid, ge),
+                    Ordering::Greater => self.searchLeaf(k, min, (mid-1), sop, le, mid),
                 }
             }
         }
@@ -2465,7 +2458,7 @@ mod bt {
         // TODO linear search?  really?
         if i < keys.len() {
             let cmp = bcmp::Compare(k, &*keys[i]);
-            if cmp>0 {
+            if cmp==Ordering::Greater {
                 searchInParentPage(k, ptrs, keys, i+1)
             } else {
                 ptrs[i]
@@ -2481,6 +2474,7 @@ mod bt {
         }
     }
 
+    use std::cmp::Ordering;
     impl ICursor for myCursor {
         fn IsValid(&self) -> bool {
             self.leafIsValid()
@@ -2532,7 +2526,7 @@ mod bt {
             }
         }
 
-        fn KeyCompare(&self, k:&[u8]) -> i32 {
+        fn KeyCompare(&self, k:&[u8]) -> Ordering {
             let currentKey = self.currentKey as usize;
             self.compareKeyInLeaf(currentKey, k).unwrap()
         }
