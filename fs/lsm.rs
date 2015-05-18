@@ -24,8 +24,8 @@ use std::io::Write;
 use std::io::SeekFrom;
 use std::cmp::Ordering;
 
-const size_i32 :usize = 4; // TODO
-const size_i16 :usize = 2; // TODO
+const size_32 :usize = 4; // TODO
+const size_16 :usize = 2; // TODO
 
 pub enum Blob {
     Stream(Box<Read>),
@@ -151,7 +151,7 @@ pub trait ICursor : Drop {
     // prefer to return a reference to the bytes in the page.
     fn Value(&self) -> Blob;
 
-    fn ValueLength(&self) -> i32; // because a negative length is a tombstone TODO option
+    fn ValueLength(&self) -> Option<u32>; // tombstone is None
     fn KeyCompare(&self, k:&[u8]) -> Ordering;
 
     fn CountKeysForward(&mut self) -> u32 {
@@ -622,34 +622,34 @@ impl PageBuilder {
     // TODO should be u32
     fn PutInt32(&mut self, ov:i32) {
         let at = self.cur;
-        write_i32_be(&mut self.buf[at .. at+size_i32], ov);
-        self.cur = self.cur + size_i32;
+        write_i32_be(&mut self.buf[at .. at+size_32], ov);
+        self.cur = self.cur + size_32;
     }
 
     // TODO should be u32
     fn SetSecondToLastInt32(&mut self, page:i32) {
         let len = self.buf.len();
-        let at = len - 2 * size_i32;
+        let at = len - 2 * size_32;
         if self.cur > at { panic!("SetSecondToLastInt32 is squashing data"); }
-        write_i32_be(&mut self.buf[at .. at+size_i32], page);
+        write_i32_be(&mut self.buf[at .. at+size_32], page);
     }
 
     // TODO should be u32
     fn SetLastInt32(&mut self, page:i32) {
         let len = self.buf.len();
-        let at = len - 1 * size_i32;
+        let at = len - 1 * size_32;
         if self.cur > at { panic!("SetLastInt32 is squashing data"); }
-        write_i32_be(&mut self.buf[at .. at+size_i32], page);
+        write_i32_be(&mut self.buf[at .. at+size_32], page);
     }
 
     fn PutInt16(&mut self, ov:i16) {
         let at = self.cur;
-        write_i16_be(&mut self.buf[at .. at+size_i16], ov);
-        self.cur = self.cur + size_i16;
+        write_i16_be(&mut self.buf[at .. at+size_16], ov);
+        self.cur = self.cur + size_16;
     }
 
     fn PutInt16At(&mut self, at:usize, ov:i16) {
-        write_i16_be(&mut self.buf[at .. at+size_i16], ov);
+        write_i16_be(&mut self.buf[at .. at+size_16], ov);
     }
 
     fn PutVarint(&mut self, ov:u64) {
@@ -702,13 +702,13 @@ impl PageBuffer {
 
     fn GetInt32(&self, cur: &mut usize) -> i32 {
         let at = *cur;
-        let r = read_i32_be(&self.buf[at .. at+size_i32]);
-        *cur = *cur + size_i32;
+        let r = read_i32_be(&self.buf[at .. at+size_32]);
+        *cur = *cur + size_32;
         r
     }
 
     fn GetInt32At(&self, at: usize) -> i32 {
-        read_i32_be(&self.buf[at .. at+size_i32])
+        read_i32_be(&self.buf[at .. at+size_32])
     }
 
     fn CheckPageFlag(&self, f: u8) -> bool {
@@ -717,20 +717,20 @@ impl PageBuffer {
 
     fn GetSecondToLastInt32(&self) -> i32 {
         let len = self.buf.len();
-        let at = len - 2 * size_i32;
+        let at = len - 2 * size_32;
         self.GetInt32At(at)
     }
 
     fn GetLastInt32(&self) -> i32 {
         let len = self.buf.len();
-        let at = len - 1 * size_i32;
+        let at = len - 1 * size_32;
         self.GetInt32At(at)
     }
 
     fn GetInt16(&self, cur: &mut usize) -> i16 {
         let at = *cur;
-        let r = read_i16_be(&self.buf[at .. at+size_i16]);
-        *cur = *cur + size_i16;
+        let r = read_i16_be(&self.buf[at .. at+size_16]);
+        *cur = *cur + size_16;
         r
     }
 
@@ -864,7 +864,7 @@ impl ICursor for MultiCursor {
         }
     }
 
-    fn ValueLength(&self) -> i32 {
+    fn ValueLength(&self) -> Option<u32> {
         match self.cur {
             Some(icur) => self.subcursors[icur].ValueLength(),
             None => panic!()
@@ -950,13 +950,13 @@ struct LivingCursor {
 
 impl LivingCursor {
     fn skipTombstonesForward(&mut self) {
-        while self.chain.IsValid() && self.chain.ValueLength()<0 {
+        while self.chain.IsValid() && self.chain.ValueLength().is_none() {
             self.chain.Next();
         }
     }
 
     fn skipTombstonesBackward(&mut self) {
-        while self.chain.IsValid() && self.chain.ValueLength()<0 {
+        while self.chain.IsValid() && self.chain.ValueLength().is_none() {
             self.chain.Prev();
         }
     }
@@ -992,12 +992,12 @@ impl ICursor for LivingCursor {
         self.chain.Value()
     }
 
-    fn ValueLength(&self) -> i32 {
+    fn ValueLength(&self) -> Option<u32> {
         self.chain.ValueLength()
     }
 
     fn IsValid(&self) -> bool {
-        self.chain.IsValid() && self.chain.ValueLength() >= 0
+        self.chain.IsValid() && self.chain.ValueLength().is_some()
     }
 
     fn KeyCompare(&self, k:&[u8]) -> Ordering {
@@ -1106,7 +1106,7 @@ mod bt {
     use super::Blob;
     use super::bcmp;
     use super::Guid;
-    use super::size_i32;
+    use super::size_32;
 
     pub fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite, 
                                                                 pageManager: &mut IPages, 
@@ -1122,7 +1122,7 @@ mod bt {
                 pbFirstOverflow.Reset();
                 pbFirstOverflow.PutByte(PageType::OVERFLOW_NODE as u8);
                 pbFirstOverflow.PutByte(0u8); // starts 0, may be changed later
-                let room = (pageSize - (2 + size_i32));
+                let room = (pageSize - (2 + size_32));
                 // something will be put in lastInt32 later
                 match pbFirstOverflow.PutStream2(ba, room) {
                     Ok(put) => Ok((put, put<room)),
@@ -1141,7 +1141,7 @@ mod bt {
 
             fn buildBoundaryPage(ba:&mut Read, pbOverflow : &mut PageBuilder, pageSize : usize) -> io::Result<(usize,bool)> {
                 pbOverflow.Reset();
-                let room = (pageSize - size_i32);
+                let room = (pageSize - size_32);
                 // something will be put in lastInt32 before the page is written
                 match pbOverflow.PutStream2(ba, room) {
                     Ok(put) => Ok((put, put<room)),
@@ -1706,7 +1706,7 @@ mod bt {
 
             fn calcAvailable(currentSize: usize, couldBeRoot: bool, pageSize: usize) -> usize {
                 let basicSize = pageSize - currentSize;
-                let allowanceForRootNode = if couldBeRoot { size_i32 } else { 0 }; // first/last Leaf, lastInt32 already
+                let allowanceForRootNode = if couldBeRoot { size_32 } else { 0 }; // first/last Leaf, lastInt32 already
                 basicSize - allowanceForRootNode
             }
 
@@ -1798,7 +1798,7 @@ mod bt {
 
                 let neededEitherWay = 1 + Varint::SpaceNeededFor(pair.key.len() as u64) + Varint::SpaceNeededFor(pagenum as u64);
                 let neededForInline = neededEitherWay + pair.key.len();
-                let neededForOverflow = neededEitherWay + size_i32;
+                let neededForOverflow = neededEitherWay + size_32;
                 let couldBeRoot = st.nextGeneration.is_empty();
 
                 let available = calcAvailable(st.sofar, couldBeRoot, pageSize);
@@ -1930,10 +1930,10 @@ mod bt {
             // assert PageType is OVERFLOW
             self.sofarThisPage = 0;
             if self.currentPage == self.firstPageInBlock {
-                self.bytesOnThisPage = self.buf.len() - (2 + size_i32);
+                self.bytesOnThisPage = self.buf.len() - (2 + size_32);
                 self.offsetOnThisPage = 2;
             } else if self.currentPage == self.boundaryPageNumber {
-                self.bytesOnThisPage = self.buf.len() - size_i32;
+                self.bytesOnThisPage = self.buf.len() - size_32;
                 self.offsetOnThisPage = 0;
             } else {
                 // assert currentPage > firstPageInBlock
@@ -1945,7 +1945,7 @@ mod bt {
         }
 
         fn GetLastInt32(&self) -> usize {
-            let at = self.buf.len() - size_i32;
+            let at = self.buf.len() - size_32;
             read_i32_be(&self.buf[at .. at+4]) as usize
         }
 
@@ -2192,7 +2192,7 @@ mod bt {
                 };
                 *cur = *cur + (klen - prefixLen);
             } else {
-                *cur = *cur + size_i32;
+                *cur = *cur + size_32;
             }
         }
 
@@ -2203,7 +2203,7 @@ mod bt {
             } else {
                 let vlen = self.pr.GetVarint(cur) as usize;
                 if 0 != (vflag & ValueFlag::FLAG_OVERFLOW) {
-                    *cur = *cur + size_i32;
+                    *cur = *cur + size_32;
                 }
                 else {
                     *cur = *cur + vlen;
@@ -2513,16 +2513,17 @@ mod bt {
             }
         }
 
-        fn ValueLength(&self) -> i32 {
+        fn ValueLength(&self) -> Option<u32> {
             let mut cur = self.leafKeys[self.currentKey as usize];
 
             self.skipKey(&mut cur);
 
             let vflag = self.pr.GetByte(&mut cur);
-            if 0 != (vflag & ValueFlag::FLAG_TOMBSTONE) { -1 }
-            else {
-                let vlen = self.pr.GetVarint(&mut cur) as i32;
-                vlen
+            if 0 != (vflag & ValueFlag::FLAG_TOMBSTONE) { 
+                None
+            } else {
+                let vlen = self.pr.GetVarint(&mut cur) as u32;
+                Some(vlen)
             }
         }
 
