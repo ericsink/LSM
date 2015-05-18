@@ -259,6 +259,7 @@ mod utils {
 }
 
 mod bcmp {
+    // TODO should use Enum std::cmp::Ordering
     pub fn Compare (x:&[u8], y:&[u8]) -> i32 {
         let xlen = x.len();
         let ylen = y.len();
@@ -276,6 +277,7 @@ mod bcmp {
         (xlen - ylen) as i32
     }
 
+    // TODO should use Enum std::cmp::Ordering
     pub fn CompareWithPrefix (prefix:&[u8], x:&[u8], y:&[u8]) -> i32 {
         let plen = prefix.len();
         let xlen = x.len();
@@ -656,115 +658,6 @@ impl PageBuilder {
 
     fn PutVarint(&mut self, ov:u64) {
         self.cur = Varint::write(&mut *self.buf, self.cur, ov);
-    }
-
-}
-
-struct PageReader {
-    cur : usize,
-    buf : Box<[u8]>,
-}
-
-impl PageReader {
-    fn new(pgsz : usize) -> PageReader { 
-        let mut ba = vec![0;pgsz].into_boxed_slice();
-        PageReader { cur:0, buf:ba } 
-    }
-
-    pub fn Position(&self) -> usize {
-        self.cur
-    }
-
-    fn PageSize(&self) -> usize {
-        self.buf.len()
-    }
-
-    fn SetPosition(&mut self, x:usize) {
-        self.cur = x;
-    }
-
-    fn Read(&mut self, strm:&mut Read) -> io::Result<usize> {
-        utils::ReadFully(strm, &mut self.buf)
-    }
-
-    fn ReadPart(&mut self, strm:&mut Read, off: usize, len: usize) -> io::Result<usize> {
-        utils::ReadFully(strm, &mut self.buf[off .. len-off])
-    }
-
-    fn Reset(&mut self) {
-        self.cur = 0;
-    }
-
-    fn Compare(&self, len: usize, other: &[u8]) ->i32 {
-        let slice = &self.buf[self.cur .. self.cur + len];
-        bcmp::Compare(slice, other)
-    }
-
-    fn CompareWithPrefix(&self, prefix: &[u8], len: usize, other: &[u8]) ->i32 {
-        let slice = &self.buf[self.cur .. self.cur + len];
-        bcmp::CompareWithPrefix(prefix, slice, other)
-    }
-
-    fn PageType(&self) -> u8 {
-        self.buf[0]
-    }
-
-    fn Skip(&mut self, len:usize) {
-        self.cur = self.cur + len;
-    }
-
-    fn GetByte(&mut self) -> u8 {
-        let r = self.buf[self.cur];
-        self.cur = self.cur + 1;
-        r
-    }
-
-    fn GetInt32(&mut self) -> i32 {
-        let at = self.cur;
-        let r = read_i32_be(&self.buf[at .. at+size_i32]);
-        self.cur = self.cur + size_i32;
-        r
-    }
-
-    fn GetInt32At(&self, at:usize) -> i32 {
-        read_i32_be(&self.buf[at .. at+size_i32])
-    }
-
-    fn CheckPageFlag(&self, f:u8) -> bool {
-        0 != (self.buf[1] & f)
-    }
-
-    fn GetSecondToLastInt32(&self) -> i32 {
-        let len = self.buf.len();
-        let at = len - 2 * size_i32;
-        self.GetInt32At(at)
-    }
-
-    fn GetLastInt32(&self) -> i32 {
-        let len = self.buf.len();
-        let at = len - 1 * size_i32;
-        self.GetInt32At(at)
-    }
-
-    fn GetInt16(&mut self) -> i16 {
-        let at = self.cur;
-        let r = read_i16_be(&self.buf[at .. at+size_i16]);
-        self.cur = self.cur + size_i16;
-        r
-    }
-
-    fn GetIntoArray(&self, a : &mut [u8]) {
-        // TODO copy slice
-        for i in 0 .. a.len() {
-            a[i] = self.buf[self.cur + i];
-        }
-        // TODO advance cur
-    }
-
-    fn GetVarint(&mut self) -> u64 {
-        let (newCur, v) = Varint::read(&*self.buf, self.cur);
-        self.cur = newCur;
-        v
     }
 
 }
@@ -1986,7 +1879,6 @@ mod bt {
     use std::fs::File;
     use std::fs::OpenOptions;
     use super::SegmentInfo;
-    use super::PageReader;
     use super::PageBuffer;
     use std::cmp::min;
     use super::read_i32_be;
@@ -2730,7 +2622,7 @@ mod Database {
     use super::utils;
     use super::SegmentInfo;
     use super::Guid;
-    use super::PageReader;
+    use super::PageBuffer;
     use super::PageBuilder;
     use super::Varint;
     use super::PageBlock;
@@ -2807,8 +2699,8 @@ mod Database {
     fn readHeader<R>(fs:&mut R) -> io::Result<(HeaderData,usize,usize)> where R : Read+Seek {
         // TODO this func assumes we are at the beginning of the file?
 
-        fn read<R>(fs: &mut R) -> io::Result<PageReader> where R : Read {
-            let mut pr = PageReader::new(HEADER_SIZE_IN_BYTES);
+        fn read<R>(fs: &mut R) -> io::Result<PageBuffer> where R : Read {
+            let mut pr = PageBuffer::new(HEADER_SIZE_IN_BYTES);
             let got = try!(pr.Read(fs));
             if got < HEADER_SIZE_IN_BYTES {
                 Err(io::Error::new(ErrorKind::InvalidInput, "invalid header"))
@@ -2817,14 +2709,14 @@ mod Database {
             }
         }
 
-        fn parse<R>(pr: &mut PageReader, fs:&mut R) -> (HeaderData, usize) where R : Read+Seek {
-            fn readSegmentList(pr: &mut PageReader) -> (Vec<Guid>,HashMap<Guid,SegmentInfo>) {
-                fn readBlockList(prBlocks: &mut PageReader) -> Vec<PageBlock> {
-                    let count = prBlocks.GetVarint() as usize;
+        fn parse<R>(pr: &PageBuffer, cur: &mut usize, fs: &mut R) -> (HeaderData, usize) where R : Read+Seek {
+            fn readSegmentList(pr: &PageBuffer, cur: &mut usize) -> (Vec<Guid>,HashMap<Guid,SegmentInfo>) {
+                fn readBlockList(prBlocks: &PageBuffer, cur: &mut usize) -> Vec<PageBlock> {
+                    let count = prBlocks.GetVarint(cur) as usize;
                     let mut a = Vec::new();
                     for i in 0 .. count {
-                        let firstPage = prBlocks.GetVarint() as usize;
-                        let countPages = prBlocks.GetVarint() as usize;
+                        let firstPage = prBlocks.GetVarint(cur) as usize;
+                        let countPages = prBlocks.GetVarint(cur) as usize;
                         // blocks are stored as firstPage/count rather than as
                         // firstPage/lastPage, because the count will always be
                         // smaller as a varint
@@ -2833,17 +2725,17 @@ mod Database {
                     a
                 }
 
-                let count = pr.GetVarint() as usize;
+                let count = pr.GetVarint(cur) as usize;
                 let mut a = Vec::new(); // TODO capacity count
                 let mut m = HashMap::new(); // TODO capacity count
                 for i in 0 .. count {
                     let mut b = [0;16];
-                    pr.GetIntoArray(&mut b);
+                    pr.GetIntoArray(cur, &mut b);
                     let g = Guid::new(b);
                     a.push(g);
-                    let root = pr.GetVarint() as usize;
-                    let age = pr.GetVarint() as u32;
-                    let blocks = readBlockList(pr);
+                    let root = pr.GetVarint(cur) as usize;
+                    let age = pr.GetVarint(cur) as u32;
+                    let blocks = readBlockList(pr, cur);
                     let info = SegmentInfo {root:root,age:age,blocks:blocks};
                     m.insert(g,info);
                 }
@@ -2852,30 +2744,31 @@ mod Database {
 
             // --------
 
-            let pageSize = pr.GetInt32() as usize;
-            let changeCounter = pr.GetVarint();
-            let mergeCounter = pr.GetVarint();
-            let lenSegmentList = pr.GetVarint() as usize;
+            let pageSize = pr.GetInt32(cur) as usize;
+            let changeCounter = pr.GetVarint(cur);
+            let mergeCounter = pr.GetVarint(cur);
+            let lenSegmentList = pr.GetVarint(cur) as usize;
 
-            let overflowed = pr.GetByte();
+            let overflowed = pr.GetByte(cur);
             let (state,segments,blk) = 
                 if overflowed != 0u8 {
-                    let lenChunk1 = pr.GetInt32() as usize;
+                    let lenChunk1 = pr.GetInt32(cur) as usize;
                     let lenChunk2 = lenSegmentList - lenChunk1;
-                    let firstPageChunk2 = pr.GetInt32() as usize;
+                    let firstPageChunk2 = pr.GetInt32(cur) as usize;
                     let extraPages = lenChunk2 / pageSize + if (lenChunk2 % pageSize) != 0 { 1 } else { 0 };
                     let lastPageChunk2 = firstPageChunk2 + extraPages - 1;
-                    let mut pr2 = PageReader::new(lenSegmentList);
+                    let mut pr2 = PageBuffer::new(lenSegmentList);
                     // TODO chain?
                     // copy from chunk1 into pr2
                     pr2.ReadPart(fs, 0, lenChunk1);
                     // now get chunk2 and copy it in as well
                     utils::SeekPage(fs, pageSize, firstPageChunk2);
                     pr2.ReadPart(fs, lenChunk1, lenChunk2);
-                    let (state,segments) = readSegmentList(&mut pr2);
+                    let mut cur2 = 0;
+                    let (state,segments) = readSegmentList(&pr2, &mut cur2);
                     (state, segments, Some (PageBlock::new(firstPageChunk2, lastPageChunk2)))
                 } else {
-                    let (state,segments) = readSegmentList(pr);
+                    let (state,segments) = readSegmentList(pr, cur);
                     (state,segments,None)
                 };
 
@@ -2903,8 +2796,9 @@ mod Database {
         let len = try!(seek_len(fs));
         if len > 0 {
             fs.seek(SeekFrom::Start(0 as u64));
-            let mut pr = try!(read(fs));
-            let (h, pageSize) = parse(&mut pr, fs);
+            let pr = try!(read(fs));
+            let mut cur = 0;
+            let (h, pageSize) = parse(&pr, &mut cur, fs);
             let nextAvailablePage = calcNextPage(pageSize, len as usize);
             Ok((h, pageSize, nextAvailablePage))
         } else {
