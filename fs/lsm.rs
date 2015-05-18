@@ -67,8 +67,18 @@ impl Guid {
         Guid { a: ba }
     }
 
+    fn bytes() -> io::Result<[u8;16]> {
+        use std::fs::OpenOptions;
+        let mut f = try!(OpenOptions::new()
+                .read(true)
+                .open("/dev/urandom"));
+        let mut ba = [0;16];
+        utils::ReadFully(&mut f, &mut ba);
+        Ok(ba)
+    }
+
     fn NewGuid() -> Guid {
-        Guid { a:[0; 16] } // TODO
+        Guid { a:Guid::bytes().unwrap() } // TODO kinda silly.  use the uuid crate.
     }
 
     fn ToByteArray(&self) -> [u8;16] {
@@ -96,6 +106,29 @@ fn seek_len<R>(fs: &mut R) -> io::Result<u64> where R : Seek {
     let len = try!(fs.seek(SeekFrom::End(0)));
     let unused = try!(fs.seek(SeekFrom::Start(pos)));
     Ok(len)
+}
+
+pub struct CursorIterator {
+    csr: Box<ICursor>,
+}
+
+impl CursorIterator {
+    pub fn new(it: Box<ICursor>) -> CursorIterator {
+        CursorIterator { csr: it }
+    }
+}
+
+impl Iterator for CursorIterator {
+    type Item = kvp;
+    fn next(& mut self) -> Option<kvp> {
+        if self.csr.IsValid() {
+            let res = Some(kvp{Key:self.csr.Key(), Value:self.csr.Value()});
+            self.csr.Next();
+            res
+        } else {
+            return None;
+        }
+    }
 }
 
 // TODO return Result
@@ -138,17 +171,6 @@ pub trait ICursor : Drop {
             self.Prev();
         }
         i
-    }
-}
-
-impl Iterator for ICursor {
-    type Item = kvp;
-    fn next(& mut self) -> Option<kvp> {
-        if self.IsValid() {
-            return Some(kvp{Key:self.Key(), Value:self.Value()})
-        } else {
-            return None;
-        }
     }
 }
 
@@ -859,17 +881,19 @@ impl MultiCursor {
         } else {
             let mut res = None::<usize>;
             for i in 0 .. self.subcursors.len() {
-                match res {
-                    Some(winning) => {
-                        let x = &self.subcursors[i];
-                        let y = &self.subcursors[winning];
-                        let c = compare_func(&**x,&**y);
-                        if c<0 {
+                if self.subcursors[i].IsValid() {
+                    match res {
+                        Some(winning) => {
+                            let x = &self.subcursors[i];
+                            let y = &self.subcursors[winning];
+                            let c = compare_func(&**x,&**y);
+                            if c<0 {
+                                res = Some(i)
+                            }
+                        },
+                        None => {
                             res = Some(i)
                         }
-                    },
-                    None => {
-                        res = Some(i)
                     }
                 }
             }
@@ -1720,9 +1744,16 @@ mod bt {
                     } else {
                         st.sofarLeaf
                     };
-                let available = pageSize - (sofar + LEAF_PAGE_OVERHEAD + 1 + newPrefixLen);
-                let needed = kLocNeed(&k, &kloc, newPrefixLen) + vLocNeed(&vloc);
-                let fit = (available >= needed);
+                let fit = {
+                    let needed = kLocNeed(&k, &kloc, newPrefixLen) + vLocNeed(&vloc);
+                    let used = (sofar + LEAF_PAGE_OVERHEAD + 1 + newPrefixLen);
+                    if pageSize > used {
+                        let available = pageSize - used;
+                        (available >= needed)
+                    } else {
+                        false
+                    }
+                };
                 let writeThisPage = (! st.keys.is_empty()) && (! fit);
 
                 if writeThisPage {
@@ -2968,6 +2999,7 @@ mod Database {
 
     use super::kvp;
     use super::bt;
+    use super::CursorIterator;
 
     impl db {
         pub fn new(path : &str, settings : DbSettings) -> io::Result<db> {
@@ -3288,6 +3320,21 @@ mod Database {
         pub fn WriteSegmentFromSortedSequence<I>(&mut self, source: I) -> io::Result<Guid> where I:Iterator<Item=kvp> {
             let mut fs = try!(self.OpenForWriting());
             let (g,page) = try!(bt::CreateFromSortedSequenceOfKeyValuePairs(&mut fs, self, source));
+            Ok(g)
+        }
+
+        pub fn merge(&mut self, segs:Vec<Guid>) -> io::Result<Guid> {
+            // TODO this is silly if segs has only one item in it
+            //printfn "merge getting cursors: %A" segs
+            let mut clist = Vec::new();
+            for g in segs.iter() {
+                clist.push(try!(self.getCursor(&self.header.segments, *g))); // TODO checkForGoneSegment
+            }
+            let mut mc = MultiCursor::Create(clist);
+            let mut fs = try!(self.OpenForWriting());
+            mc.First();
+            let (g,page) = try!(bt::CreateFromSortedSequenceOfKeyValuePairs(&mut fs, self, CursorIterator::new(box mc)));
+            //printfn "merged %A to get %A" segs g
             Ok(g)
         }
 
@@ -3717,21 +3764,22 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
 */
 
 struct GenerateNumbers {
-    num : usize,
-    i : usize,
+    cur : usize,
+    end : usize,
+    step : usize,
 }
 
 impl Iterator for GenerateNumbers {
     type Item = kvp;
     fn next(& mut self) -> Option<kvp> {
-        if self.i >= self.num {
+        if self.cur > self.end {
             None
         }
         else {
-            let k = format!("{:08}", self.i).into_bytes().into_boxed_slice();
-            let v = format!("{}", self.i * 2).into_bytes().into_boxed_slice();
+            let k = format!("{:08}", self.cur).into_bytes().into_boxed_slice();
+            let v = format!("{}", self.cur * 2).into_bytes().into_boxed_slice();
             let r = kvp{Key:k, Value:Blob::Array(v)};
-            self.i = self.i + 1;
+            self.cur = self.cur + self.step;
             Some(r)
         }
     }
@@ -3751,9 +3799,11 @@ fn hack() -> io::Result<bool> {
 
     let mut db = try!(db::new("data.bin", DefaultSettings));
 
-    let src = GenerateNumbers {num:100, i:0};
-    let g = try!(db.WriteSegmentFromSortedSequence(src));
-    db.commitSegments(vec![g]);
+    let g1 = try!(db.WriteSegmentFromSortedSequence(GenerateNumbers {cur: 0, end: 10000, step: 1}));
+    let g2 = try!(db.WriteSegmentFromSortedSequence(GenerateNumbers {cur: 20000, end: 30000, step: 2}));
+    db.commitSegments(vec![g1, g2]);
+    //let g3 = try!(db.merge(vec![g1, g2]));
+    //db.commitSegments(vec![g3]);
 
     let res : io::Result<bool> = Ok(true);
     res
