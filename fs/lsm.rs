@@ -514,7 +514,7 @@ struct PageBuilder {
 impl PageBuilder {
     fn new(pgsz : usize) -> PageBuilder { 
         let mut ba = vec![0;pgsz as usize].into_boxed_slice();
-        PageBuilder { cur:0, buf:ba } 
+        PageBuilder { cur: 0, buf:ba } 
     }
 
     fn Reset(&mut self) {
@@ -709,7 +709,7 @@ enum Direction {
 
 struct MultiCursor { 
     subcursors : Box<[Box<ICursor>]>, 
-    cur : Option<usize>, // TODO max number of subcursors?  u8 is probably enough.
+    cur : Option<usize>, // TODO max number of subcursors?  u8 is probably enough. but array indexing is supposed to be usize.
     dir : Direction,
 }
 
@@ -752,7 +752,7 @@ impl MultiCursor {
 
     fn Create(subs: Vec<Box<ICursor>>) -> MultiCursor {
         let s = subs.into_boxed_slice();
-        MultiCursor { subcursors: s, cur : None, dir : Direction::WANDERING }
+        MultiCursor { subcursors: s, cur: None, dir: Direction::WANDERING }
     }
 
 }
@@ -760,7 +760,6 @@ impl MultiCursor {
 impl Drop for MultiCursor {
     fn drop(&mut self) {
         // TODO
-        println!("Dropping!");
     }
 }
 
@@ -919,7 +918,6 @@ impl LivingCursor {
 impl Drop for LivingCursor {
     fn drop(&mut self) {
         // TODO
-        println!("Dropping!");
     }
 }
 
@@ -983,20 +981,17 @@ mod bt {
     use super::PageBlock;
     use super::PageNum;
 
-    // page types
     mod PageType {
         pub const LEAF_NODE: u8 = 1;
         pub const PARENT_NODE: u8 = 2;
         pub const OVERFLOW_NODE: u8 = 3;
     }
 
-    // flags on values
     mod ValueFlag {
         pub const FLAG_OVERFLOW: u8 = 1;
         pub const FLAG_TOMBSTONE: u8 = 2;
     }
 
-    // flags on pages
     mod PageFlag {
         pub const FLAG_ROOT_NODE: u8 = 1;
         pub const FLAG_BOUNDARY_NODE: u8 = 2;
@@ -1006,7 +1001,6 @@ mod bt {
     struct pgitem {
         page : PageNum,
         key : Box<[u8]>, // TODO reference instead of box?
-        // TODO constructor impl ?
     }
 
     struct ParentState {
@@ -1410,18 +1404,18 @@ mod bt {
                 vLocNeed(&lp.vLoc)
             }
 
-            fn defaultPrefixLen (k:&[u8]) -> usize {
+            fn defaultPrefixLen(k:&[u8]) -> usize {
                 // TODO max prefix.  relative to page size?  must fit in byte.
                 if k.len() > 255 { 255 } else { k.len() }
             }
 
             // this is the body of writeLeaves
             let mut st = LeafState {
-                sofarLeaf:0,
-                firstLeaf:0,
-                prevLeaf:0,
+                sofarLeaf: 0,
+                firstLeaf: 0,
+                prevLeaf: 0,
                 keys:Vec::new(),
-                prefixLen:0,
+                prefixLen: 0,
                 leaves:Vec::new(),
                 blk:leavesBlk,
                 };
@@ -1739,7 +1733,7 @@ mod bt {
             }
 
             // this is the body of writeParentNodes
-            let mut st = ParentState {nextGeneration:Vec::new(),sofar:0,blk:startingBlk,};
+            let mut st = ParentState {nextGeneration:Vec::new(),sofar: 0,blk:startingBlk,};
             let mut items = Vec::new();
             let mut overflows = HashMap::new();
             for i in 0 .. children.len()-1 {
@@ -3216,7 +3210,7 @@ mod Database {
 
         fn End(&mut self, ps:PendingSegment, lastPage: PageNum) -> Guid {
             let (g,blocks,unused) = ps.End(lastPage);
-            let info = SegmentInfo {age:0,blocks:blocks,root:lastPage};
+            let info = SegmentInfo {age: 0,blocks:blocks,root:lastPage};
             self.segmentsInWaiting.insert(g,info);
             //printfn "wrote %A: %A" g blocks
             match unused {
@@ -3687,7 +3681,7 @@ fn main() {
 // lots more for loops. but they're usually safer.  iter.  not numeric bounds.  but sometimes.
 // the stricter the compiler, the more I like it.
 //
-// casts.  are casts between i32 and usize safe?  are they checked?
+// casts are never checked for overflow.  :-(
 //
 // too much usize.  use a more specific, smaller unsigned type.
 //
