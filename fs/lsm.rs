@@ -28,8 +28,14 @@ const size_32: usize = 4; // TODO
 const size_16: usize = 2; // TODO
 
 pub type PageNum = u32;
-//type PageSize = u32; // TODO could probably be 16 bits
+// type PageSize = u32; // TODO could probably be 16 bits
 // TODO also perhaps the type representing size of a value, u32
+// size of a value should NOT be usize.
+
+// TODO there is code which assumes that PageNum is u32.
+// but that's the nature of the file format.  the type alias
+// isn't so much so that we can change it, but rather, to make
+// reading the code easier.
 
 pub enum Blob {
     Stream(Box<Read>),
@@ -165,14 +171,6 @@ trait IWriteLock : Drop {
     fn CommitMerge(&Guid);
 }
 
-trait SeekRead : Seek + Read {
-}
-
-trait IDatabaseFile {
-    fn OpenForReading() -> SeekRead;
-    fn OpenForWriting() -> SeekRead;
-}
-
 pub struct DbSettings {
     AutoMergeEnabled : bool,
     AutoMergeMinimumPages : PageNum,
@@ -187,6 +185,7 @@ struct SegmentInfo {
     blocks : Vec<PageBlock>
 }
 
+// TODO this trait probably isn't needed
 trait IDatabase : Drop {
     fn WriteSegmentFromSortedSequence(q:Iterator<Item=kvp>) -> Guid;
     //fn WriteSegment : System.Collections.Generic.IDictionary<byte[],Stream> -> Guid;
@@ -855,11 +854,11 @@ impl ICursor for MultiCursor {
                         csr.Prev(); 
                     }
                 }
+                self.cur = self.findMax();
+                self.dir = Direction::BACKWARD;
             },
             None => panic!()
         }
-        self.cur = self.findMax();
-        self.dir = Direction::BACKWARD;
     }
 
     fn Seek(&mut self, k:&[u8], sop:SeekOp) {
@@ -1070,6 +1069,7 @@ mod bt {
                                     pageManager: &mut IPages, 
                                     fs: &mut SeekWrite
                                    ) -> io::Result<(usize,PageBlock)> where SeekWrite : Seek+Write {
+
             fn buildFirstPage(ba:&mut Read, pbFirstOverflow : &mut PageBuilder, pgsz: usize) -> io::Result<(usize,bool)> {
                 pbFirstOverflow.Reset();
                 pbFirstOverflow.PutByte(PageType::OVERFLOW_NODE as u8);
@@ -1131,15 +1131,15 @@ mod bt {
 
             // TODO misnamed
             fn writeOneBlock<SeekWrite>(param_sofar: usize, 
-                             param_firstBlk: PageBlock,
-                             fs: &mut SeekWrite, 
-                             ba: &mut Read, 
-                             pgsz: usize,
-                             pbOverflow: &mut PageBuilder,
-                             pbFirstOverflow: &mut PageBuilder,
-                             pageManager: &mut IPages,
-                             token: &mut PendingSegment
-                             ) -> io::Result<(usize,PageBlock)> where SeekWrite : Seek+Write {
+                                        param_firstBlk: PageBlock,
+                                        fs: &mut SeekWrite, 
+                                        ba: &mut Read, 
+                                        pgsz: usize,
+                                        pbOverflow: &mut PageBuilder,
+                                        pbFirstOverflow: &mut PageBuilder,
+                                        pageManager: &mut IPages,
+                                        token: &mut PendingSegment
+                                       ) -> io::Result<(usize,PageBlock)> where SeekWrite : Seek+Write {
                 // each trip through this loop will write out one
                 // block, starting with the overflow first page,
                 // followed by zero-or-more "regular" overflow pages,
@@ -1322,13 +1322,13 @@ mod bt {
             }
 
             fn writeLeaf<SeekWrite>(st: &mut LeafState, 
-                         isRootPage: bool, 
-                         pb: &mut PageBuilder, 
-                         fs: &mut SeekWrite, 
-                         pgsz: usize,
-                         pageManager: &mut IPages,
-                         token: &mut PendingSegment,
-                         ) where SeekWrite : Seek+Write { 
+                                    isRootPage: bool, 
+                                    pb: &mut PageBuilder, 
+                                    fs: &mut SeekWrite, 
+                                    pgsz: usize,
+                                    pageManager: &mut IPages,
+                                    token: &mut PendingSegment,
+                                   ) where SeekWrite : Seek+Write { 
                 buildLeaf(st, pb);
                 let thisPageNumber = st.blk.firstPage;
                 let firstLeaf = if st.leaves.is_empty() { thisPageNumber } else { st.firstLeaf };
@@ -1416,7 +1416,6 @@ mod bt {
             }
 
             // this is the body of writeLeaves
-            //let source = seq { csr.First(); while csr.IsValid() do yield (csr.Key(), csr.Value()); csr.Next(); done }
             let mut st = LeafState {
                 sofarLeaf:0,
                 firstLeaf:0,
@@ -1562,7 +1561,7 @@ mod bt {
                 // or not.  note that it is possible to overflow these and then have them not
                 // fit into the current leaf and end up landing in the next leaf.
 
-                st.blk=blkAfterValue;
+                st.blk = blkAfterValue;
 
                 // TODO ignore prefixLen for overflowed keys?
                 let newPrefixLen = 
@@ -1575,7 +1574,6 @@ mod bt {
                     if newPrefixLen < st.prefixLen {
                         // the prefixLen would change with the addition of this key,
                         // so we need to recalc sofar
-                        // TODO is it a problem that we're doing this without List.rev ?
                         let mut sum = 0;
                         for lp in &st.keys {
                             sum = sum + leafPairSize(newPrefixLen, lp);
@@ -1612,7 +1610,6 @@ mod bt {
                     if newPrefixLen < st.prefixLen {
                         // the prefixLen will change with the addition of this key,
                         // so we need to recalc sofar
-                        // TODO is it a problem that we're doing this without List.rev ?
                         let mut sum = 0;
                         for lp in &st.keys {
                             sum = sum + leafPairSize(newPrefixLen, lp);
@@ -1659,6 +1656,7 @@ mod bt {
             fn calcAvailable(currentSize: usize, couldBeRoot: bool, pgsz: usize) -> usize {
                 let basicSize = pgsz - currentSize;
                 let allowanceForRootNode = if couldBeRoot { size_32 } else { 0 }; // first/last Leaf, lastInt32 already
+                // TODO can this overflow?
                 basicSize - allowanceForRootNode
             }
 
@@ -1850,17 +1848,17 @@ mod bt {
     }
         
     impl myOverflowReadStream {
-        fn new(path: &str, pgsz: usize, _firstPage: PageNum, _len: usize) -> io::Result<myOverflowReadStream> {
+        fn new(path: &str, pgsz: usize, firstPage: PageNum, len: usize) -> io::Result<myOverflowReadStream> {
             let f = try!(OpenOptions::new()
                     .read(true)
                     .open(path));
             let mut res = 
                 myOverflowReadStream {
                     fs: f,
-                    len: _len,
-                    firstPage: _firstPage,
+                    len: len,
+                    firstPage: firstPage,
                     buf: vec![0;pgsz].into_boxed_slice(),
-                    currentPage: _firstPage,
+                    currentPage: firstPage,
                     sofarOverall: 0,
                     sofarThisPage: 0,
                     firstPageInBlock: 0,
@@ -2035,9 +2033,8 @@ mod bt {
         // TODO hook
         currentPage: PageNum,
         leafKeys: Vec<usize>,
-        countLeafKeys: u16, // only realloc leafKeys when it's too small
         previousLeaf: PageNum,
-        currentKey: Option<u16>,
+        currentKey: Option<usize>,
         prefix: Option<Box<[u8]>>,
         firstLeaf: PageNum,
         lastLeaf: PageNum,
@@ -2059,7 +2056,6 @@ mod bt {
                 pr: PageBuffer::new(pgsz),
                 currentPage: 0,
                 leafKeys: Vec::new(),
-                countLeafKeys: 0,
                 previousLeaf: 0,
                 currentKey: None,
                 prefix: None,
@@ -2086,7 +2082,7 @@ mod bt {
         }
 
         fn resetLeaf(&mut self) {
-            self.countLeafKeys = 0;
+            self.leafKeys.clear();
             self.previousLeaf = 0;
             self.currentKey = None;
             self.prefix = None;
@@ -2119,7 +2115,7 @@ mod bt {
         fn nextInLeaf(&mut self) -> bool {
             match self.currentKey {
                 Some(cur) => {
-                    if (cur+1) < self.countLeafKeys {
+                    if (cur+1) < self.leafKeys.len() {
                         self.currentKey = Some(cur + 1);
                         true
                     } else {
@@ -2193,19 +2189,20 @@ mod bt {
             } else {
                 self.prefix = None;
             }
-            self.countLeafKeys = self.pr.GetInt16(&mut cur);
+            let countLeafKeys = self.pr.GetInt16(&mut cur) as usize;
             // assert countLeafKeys>0
-            while self.leafKeys.len() < (self.countLeafKeys as usize) {
+            self.leafKeys.truncate(countLeafKeys);
+            while self.leafKeys.len() < countLeafKeys {
                 self.leafKeys.push(0);
             }
-            for i in 0 .. self.countLeafKeys {
-                self.leafKeys[i as usize] = cur;
+            for i in 0 .. countLeafKeys {
+                self.leafKeys[i] = cur;
                 self.skipKey(&mut cur);
                 self.skipValue(&mut cur);
             }
         }
 
-        fn keyInLeaf(&self, n: u16) -> io::Result<Box<[u8]>> { 
+        fn keyInLeaf(&self, n: usize) -> io::Result<Box<[u8]>> { 
             let mut cur = self.leafKeys[n as usize];
             let kflag = self.pr.GetByte(&mut cur);
             let klen = self.pr.GetVarint(&mut cur) as usize;
@@ -2235,7 +2232,7 @@ mod bt {
             }
         }
 
-        fn compareKeyInLeaf(&self, n: u16, other: &[u8]) -> io::Result<Ordering> {
+        fn compareKeyInLeaf(&self, n: usize, other: &[u8]) -> io::Result<Ordering> {
             let mut cur = self.leafKeys[n as usize];
             let kflag = self.pr.GetByte(&mut cur);
             let klen = self.pr.GetVarint(&mut cur) as usize;
@@ -2263,7 +2260,7 @@ mod bt {
             }
         }
 
-        fn searchLeaf(&mut self, k: &[u8], min:u16, max:u16, sop:SeekOp, le: Option<u16>, ge: Option<u16>) -> io::Result<Option<u16>> {
+        fn searchLeaf(&mut self, k: &[u8], min:usize, max:usize, sop:SeekOp, le: Option<usize>, ge: Option<usize>) -> io::Result<Option<usize>> {
             if max < min {
                 match sop {
                     SeekOp::SEEK_EQ => Ok(None),
@@ -2370,7 +2367,7 @@ mod bt {
         }
 
         fn leafIsValid(&self) -> bool {
-            let ok = (!self.leafKeys.is_empty()) && (self.countLeafKeys > 0) && (self.currentKey.is_some()) && (self.currentKey.unwrap() < self.countLeafKeys);
+            let ok = (!self.leafKeys.is_empty()) && (self.currentKey.is_some()) && (self.currentKey.unwrap() as usize) < self.leafKeys.len();
             ok
         }
 
@@ -2378,7 +2375,7 @@ mod bt {
             if try!(self.setCurrentPage(pg)) {
                 if PageType::LEAF_NODE == self.pr.PageType() {
                     self.readLeaf();
-                    let tmp_countLeafKeys = self.countLeafKeys;
+                    let tmp_countLeafKeys = self.leafKeys.len();
                     self.currentKey = try!(self.searchLeaf(k, 0, (tmp_countLeafKeys - 1), sop, None, None));
                     if SeekOp::SEEK_EQ != sop {
                         if ! self.leafIsValid() {
@@ -2399,7 +2396,7 @@ mod bt {
                                     self.resetLeaf();
                                 } else if try!(self.setCurrentPage(tmp_previousLeaf)) {
                                     self.readLeaf();
-                                    self.currentKey = Some(self.countLeafKeys - 1);
+                                    self.currentKey = Some(self.leafKeys.len() - 1);
                                 }
                             }
                         }
@@ -2510,7 +2507,7 @@ mod bt {
             let lastLeaf = self.lastLeaf;
             if self.setCurrentPage(lastLeaf).unwrap() {
                 self.readLeaf();
-                self.currentKey = Some(self.countLeafKeys - 1);
+                self.currentKey = Some(self.leafKeys.len() - 1);
             }
         }
 
@@ -2537,7 +2534,7 @@ mod bt {
                     self.resetLeaf();
                 } else if self.setCurrentPage(previousLeaf).unwrap() {
                     self.readLeaf();
-                    self.currentKey = Some(self.countLeafKeys - 1);
+                    self.currentKey = Some(self.leafKeys.len() - 1);
                 }
             }
         }
