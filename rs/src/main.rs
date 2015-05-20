@@ -14,6 +14,7 @@
     limitations under the License.
 */
 
+#![feature(core)]
 #![feature(collections)]
 #![feature(box_syntax)]
 #![feature(convert)]
@@ -195,7 +196,10 @@ pub struct DbSettings {
 struct SegmentInfo {
     root : PageNum,
     age : u32,
-    blocks : Vec<PageBlock> // TODO does this grow?  shouldn't it be a boxed array?
+    // TODO does this grow?  shouldn't it be a boxed array?
+    // yes, but then derive clone complains.
+    // ideally we could just stop cloning this struct.
+    blocks : Vec<PageBlock> 
 }
 
 // TODO this trait probably isn't needed
@@ -260,7 +264,6 @@ mod bcmp {
     use std::cmp::Ordering;
     use std::cmp::min;
 
-    // TODO can we just x.cmp(y) ?
     pub fn Compare (x:&[u8], y:&[u8]) -> Ordering {
         let xlen = x.len();
         let ylen = y.len();
@@ -271,6 +274,12 @@ mod bcmp {
                 return c;
             }
         }
+        /*
+        let c = x[0 .. len].cmp(&y[0 .. len]);
+        if c != Ordering::Equal {
+            return c;
+        }
+        */
         return xlen.cmp(&ylen);
     }
 
@@ -306,6 +315,7 @@ mod bcmp {
         i
     }
 
+    // TODO rm
     fn StartsWith (x: &[u8], y: &[u8], max: usize) -> bool {
         if x.len() < y.len() {
             false
@@ -1582,11 +1592,7 @@ mod bt {
                     if newPrefixLen < st.prefixLen {
                         // the prefixLen would change with the addition of this key,
                         // so we need to recalc sofar
-                        let mut sum = 0;
-                        for lp in &st.keys {
-                            sum = sum + leafPairSize(newPrefixLen, lp);
-                        }
-                        // TODO iter sum?
+                        let sum = st.keys.iter().map(|lp| leafPairSize(newPrefixLen, lp)).sum();;
                         sum
                     } else {
                         st.sofarLeaf
@@ -3098,9 +3104,9 @@ mod Database {
         fn getCursor(&self, segs: &HashMap<Guid,SegmentInfo>, g: Guid) -> io::Result<Box<ICursor>> {
             let seg = segs.get(&g).unwrap();
             let rootPage = seg.root;
-            let fs = self.OpenForReading();
             /* TODO
             let hook (csr:ICursor) =
+                let fs = self.OpenForReading();
                 fs.Close()
                 lock critSectionCursors (fun () -> 
                     let cur = Map.find g cursors
@@ -3184,7 +3190,7 @@ mod Database {
             self.header = newHeader;
             for g in newGuids.iter() {
                 match self.segmentsInWaiting.remove(&g) {
-                    Some(info) => {
+                    Some(_) => {
                     },
                     None => {
                         panic!();
@@ -3208,7 +3214,7 @@ mod Database {
 
         pub fn WriteSegmentFromSortedSequence<I>(&mut self, source: I) -> io::Result<Guid> where I:Iterator<Item=kvp> {
             let mut fs = try!(self.OpenForWriting());
-            let (g,page) = try!(bt::CreateFromSortedSequenceOfKeyValuePairs(&mut fs, self, source));
+            let (g,_) = try!(bt::CreateFromSortedSequenceOfKeyValuePairs(&mut fs, self, source));
             Ok(g)
         }
 
@@ -3228,7 +3234,7 @@ mod Database {
             let mut mc = MultiCursor::Create(clist);
             let mut fs = try!(self.OpenForWriting());
             mc.First();
-            let (g,page) = try!(bt::CreateFromSortedSequenceOfKeyValuePairs(&mut fs, self, CursorIterator::new(box mc)));
+            let (g,_) = try!(bt::CreateFromSortedSequenceOfKeyValuePairs(&mut fs, self, CursorIterator::new(box mc)));
             //printfn "merged %A to get %A" segs g
             self.pendingMerges.insert(g, segs);
             Ok(g)
@@ -3651,11 +3657,11 @@ fn hack() -> io::Result<bool> {
         println!("{:?}", g);
         a.push(g);
     }
-    db.commitSegments(a.clone());
+    try!(db.commitSegments(a.clone()));
     println!("{}", "committed");
     let g3 = try!(db.merge(a));
     println!("{}", "merged");
-    db.commitMerge(g3);
+    try!(db.commitMerge(g3));
 
     let res : io::Result<bool> = Ok(true);
     res
