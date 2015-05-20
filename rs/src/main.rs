@@ -18,6 +18,10 @@
 #![feature(box_syntax)]
 #![feature(convert)]
 
+// TODO turn the following warnings back on later
+#![allow(non_snake_case)]
+#![allow(non_camel_case_types)]
+
 use std::io;
 use std::io::Seek;
 use std::io::Read;
@@ -69,6 +73,9 @@ impl PageBlock {
     }
 }
 
+// TODO we need to switch away from using a Guid to identify
+// a segment.  use a u64.
+
 #[derive(Hash,PartialEq,Eq,Copy,Clone,Debug)]
 pub struct Guid {
     a : [u8; 16]
@@ -85,7 +92,7 @@ impl Guid {
                 .read(true)
                 .open("/dev/urandom"));
         let mut ba = [0;16];
-        utils::ReadFully(&mut f, &mut ba);
+        try!(utils::ReadFully(&mut f, &mut ba));
         Ok(ba)
     }
 
@@ -113,10 +120,14 @@ pub enum SeekOp {
     SEEK_GE = 2,
 }
 
+// this code was ported from F# which assumes that any Stream
+// that supports Seek also can give you its Length.  That method
+// isn't part of the Seek trait, but this implementation should
+// suffice.
 fn seek_len<R>(fs: &mut R) -> io::Result<u64> where R : Seek {
     let pos = try!(fs.seek(SeekFrom::Current(0)));
     let len = try!(fs.seek(SeekFrom::End(0)));
-    let unused = try!(fs.seek(SeekFrom::Start(pos)));
+    let _ = try!(fs.seek(SeekFrom::Start(pos)));
     Ok(len)
 }
 
@@ -155,7 +166,8 @@ pub trait ICursor : Drop {
 
     // TODO we wish Key() could return a reference, but the lifetime
     // would need to be "until the next call", and Rust can't really
-    // do that.
+    // do that.  or at least, that model isn't compatible with Rust
+    // iterators.  look for rust community discussions on "streaming iterators".
     fn Key(&self) -> Box<[u8]>;
 
     // TODO similarly with Value().  When the Blob is an array, we would
@@ -267,7 +279,6 @@ mod bcmp {
         let xlen = x.len();
         let ylen = y.len();
         let len = min(xlen, ylen);
-        let mut i = 0;
         for i in 0 .. len {
             let xval = 
                 if i<plen {
@@ -330,12 +341,12 @@ mod Varint {
             (cur+1, a0)
         } else if a0 <= 248u64 {
             let a1 = buf[cur+1] as u64;
-            let r = (240u64 + 256u64 * (a0 - 241u64) + a1);
+            let r = 240u64 + 256u64 * (a0 - 241u64) + a1;
             (cur+2, r)
         } else if a0 == 249u64 {
             let a1 = buf[cur+1] as u64;
             let a2 = buf[cur+2] as u64;
-            let r = (2288u64 + 256u64 * a1 + a2);
+            let r = 2288u64 + 256u64 * a1 + a2;
             (cur+3, r)
         } else if a0 == 250u64 {
             let a1 = buf[cur+1] as u64;
@@ -514,7 +525,7 @@ struct PageBuilder {
 
 impl PageBuilder {
     fn new(pgsz : usize) -> PageBuilder { 
-        let mut ba = vec![0;pgsz as usize].into_boxed_slice();
+        let ba = vec![0;pgsz as usize].into_boxed_slice();
         PageBuilder { cur: 0, buf:ba } 
     }
 
@@ -599,6 +610,7 @@ impl PageBuilder {
         self.cur = self.cur + size_16;
     }
 
+    // TODO rm
     fn PutInt16At(&mut self, at: usize, ov: u16) {
         write_u16_be(&mut self.buf[at .. at+size_16], ov);
     }
@@ -615,7 +627,7 @@ struct PageBuffer {
 
 impl PageBuffer {
     fn new(pgsz: usize) -> PageBuffer { 
-        let mut ba = vec![0;pgsz as usize].into_boxed_slice();
+        let ba = vec![0;pgsz as usize].into_boxed_slice();
         PageBuffer { buf:ba } 
     }
 
@@ -1067,9 +1079,9 @@ mod bt {
 
             fn buildFirstPage(ba:&mut Read, pbFirstOverflow : &mut PageBuilder, pgsz: usize) -> io::Result<(usize,bool)> {
                 pbFirstOverflow.Reset();
-                pbFirstOverflow.PutByte(PageType::OVERFLOW_NODE as u8);
+                pbFirstOverflow.PutByte(PageType::OVERFLOW_NODE);
                 pbFirstOverflow.PutByte(0u8); // starts 0, may be changed later
-                let room = (pgsz - (2 + size_32));
+                let room = pgsz - (2 + size_32);
                 // something will be put in lastInt32 later
                 match pbFirstOverflow.PutStream2(ba, room) {
                     Ok(put) => Ok((put, put<room)),
@@ -1088,7 +1100,7 @@ mod bt {
 
             fn buildBoundaryPage(ba:&mut Read, pbOverflow : &mut PageBuilder, pgsz: usize) -> io::Result<(usize,bool)> {
                 pbOverflow.Reset();
-                let room = (pgsz - size_32);
+                let room = pgsz - size_32;
                 // something will be put in lastInt32 before the page is written
                 match pbOverflow.PutStream2(ba, room) {
                     Ok(put) => Ok((put, put<room)),
@@ -1111,7 +1123,7 @@ mod bt {
                             return Ok((i, sofar, true));
                         } else {
                             let sofar = sofar + put;
-                            pb.Write(fs);
+                            try!(pb.Write(fs));
                             if finished {
                                 return Ok((i+1, sofar, true));
                             } else {
@@ -1158,11 +1170,11 @@ mod bt {
                         if firstBlk.firstPage == firstBlk.lastPage {
                             // the first page landed on a boundary.
                             // we can just set the flag and write it now.
-                            pbFirstOverflow.SetPageFlag(PageFlag::FLAG_BOUNDARY_NODE as u8);
+                            pbFirstOverflow.SetPageFlag(PageFlag::FLAG_BOUNDARY_NODE);
                             let blk = pageManager.GetBlock(&mut *token);
                             pbFirstOverflow.SetLastInt32(blk.firstPage);
-                            pbFirstOverflow.Write(fs);
-                            utils::SeekPage(fs, pgsz, blk.firstPage);
+                            try!(pbFirstOverflow.Write(fs));
+                            try!(utils::SeekPage(fs, pgsz, blk.firstPage));
                             if !finished {
                                 loop_sofar = sofar;
                                 loop_firstBlk = blk;
@@ -1170,11 +1182,11 @@ mod bt {
                                 return Ok((sofar, blk));
                             }
                         } else {
-                            let firstRegularPageNumber = (firstBlk.firstPage + 1);
+                            let firstRegularPageNumber = firstBlk.firstPage + 1;
                             if finished {
                                 // the first page is also the last one
                                 pbFirstOverflow.SetLastInt32(0); // offset to last used page in this block, which is this one
-                                pbFirstOverflow.Write(fs);
+                                try!(pbFirstOverflow.Write(fs));
                                 return Ok((sofar, PageBlock::new(firstRegularPageNumber,firstBlk.lastPage)));
                             } else {
                                 // we need to write more pages,
@@ -1182,7 +1194,7 @@ mod bt {
                                 // or the end of the stream, 
                                 // whichever comes first
 
-                                utils::SeekPage(fs, pgsz, firstRegularPageNumber);
+                                try!(utils::SeekPage(fs, pgsz, firstRegularPageNumber));
 
                                 // availableBeforeBoundary is the number of pages until the boundary,
                                 // NOT counting the boundary page, and the first page in the block
@@ -1200,11 +1212,11 @@ mod bt {
                                 if finished {
                                     // go back and fix the first page
                                     pbFirstOverflow.SetLastInt32(numRegularPages);
-                                    utils::SeekPage(fs, pgsz, firstBlk.firstPage);
-                                    pbFirstOverflow.Write(fs);
+                                    try!(utils::SeekPage(fs, pgsz, firstBlk.firstPage));
+                                    try!(pbFirstOverflow.Write(fs));
                                     // now reset to the next page in the block
                                     let blk = PageBlock::new(firstRegularPageNumber + numRegularPages, firstBlk.lastPage);
-                                    utils::SeekPage(fs, pgsz, blk.firstPage);
+                                    try!(utils::SeekPage(fs, pgsz, blk.firstPage));
                                     return Ok((sofar,blk));
                                 } else {
                                     // we need to write out a regular page except with a
@@ -1216,28 +1228,28 @@ mod bt {
                                     if putBoundary==0 {
                                         // go back and fix the first page
                                         pbFirstOverflow.SetLastInt32(numRegularPages);
-                                        utils::SeekPage(fs, pgsz, firstBlk.firstPage);
-                                        pbFirstOverflow.Write(fs);
+                                        try!(utils::SeekPage(fs, pgsz, firstBlk.firstPage));
+                                        try!(pbFirstOverflow.Write(fs));
 
                                         // now reset to the next page in the block
                                         let blk = PageBlock::new(firstRegularPageNumber + numRegularPages, firstBlk.lastPage);
-                                        utils::SeekPage(fs, pgsz, firstBlk.lastPage);
+                                        try!(utils::SeekPage(fs, pgsz, firstBlk.lastPage));
                                         return Ok((sofar,blk));
                                     } else {
                                         // write the boundary page
                                         let sofar = sofar + putBoundary;
                                         let blk = pageManager.GetBlock(&mut *token);
                                         pbOverflow.SetLastInt32(blk.firstPage);
-                                        pbOverflow.Write(fs);
+                                        try!(pbOverflow.Write(fs));
 
                                         // go back and fix the first page
-                                        pbFirstOverflow.SetPageFlag(PageFlag::FLAG_ENDS_ON_BOUNDARY as u8);
+                                        pbFirstOverflow.SetPageFlag(PageFlag::FLAG_ENDS_ON_BOUNDARY);
                                         pbFirstOverflow.SetLastInt32(numRegularPages + 1);
-                                        utils::SeekPage(fs, pgsz, firstBlk.firstPage);
-                                        pbFirstOverflow.Write(fs);
+                                        try!(utils::SeekPage(fs, pgsz, firstBlk.firstPage));
+                                        try!(pbFirstOverflow.Write(fs));
 
                                         // now reset to the first page in the next block
-                                        utils::SeekPage(fs, pgsz, blk.firstPage);
+                                        try!(utils::SeekPage(fs, pgsz, blk.firstPage));
                                         if finished {
                                             loop_sofar = sofar;
                                             loop_firstBlk = blk;
@@ -1276,7 +1288,7 @@ mod bt {
 
             fn buildLeaf(st: &LeafState, pb: &mut PageBuilder) {
                 pb.Reset();
-                pb.PutByte(PageType::LEAF_NODE as u8);
+                pb.PutByte(PageType::LEAF_NODE);
                 pb.PutByte(0u8); // flags
                 pb.PutInt32 (st.prevLeaf); // prev page num.
                 // TODO prefixLen is one byte.  should it be two?
@@ -1293,14 +1305,14 @@ mod bt {
                             pb.PutArray(&lp.key[st.prefixLen .. lp.key.len()]);
                         },
                         KeyLocation::Overflow(kpage) => {
-                            pb.PutByte(ValueFlag::FLAG_OVERFLOW as u8);
+                            pb.PutByte(ValueFlag::FLAG_OVERFLOW);
                             pb.PutVarint(lp.key.len() as u64);
                             pb.PutInt32(kpage);
                         },
                     }
                     match lp.vLoc {
                         ValueLocation::Tombstone => {
-                            pb.PutByte(ValueFlag::FLAG_TOMBSTONE as u8);
+                            pb.PutByte(ValueFlag::FLAG_TOMBSTONE);
                         },
                         ValueLocation::Buffer (ref vbuf) => {
                             pb.PutByte(0u8);
@@ -1308,7 +1320,7 @@ mod bt {
                             pb.PutArray(&vbuf);
                         },
                         ValueLocation::Overflowed (vlen,vpage) => {
-                            pb.PutByte(ValueFlag::FLAG_OVERFLOW as u8);
+                            pb.PutByte(ValueFlag::FLAG_OVERFLOW);
                             pb.PutVarint(vlen as u64);
                             pb.PutInt32(vpage);
                         },
@@ -1323,7 +1335,7 @@ mod bt {
                                     pgsz: usize,
                                     pageManager: &mut IPages,
                                     token: &mut PendingSegment,
-                                   ) where SeekWrite : Seek+Write { 
+                                   ) -> io::Result<()> where SeekWrite : Seek+Write { 
                 buildLeaf(st, pb);
                 let thisPageNumber = st.blk.firstPage;
                 let firstLeaf = if st.leaves.is_empty() { thisPageNumber } else { st.firstLeaf };
@@ -1331,16 +1343,16 @@ mod bt {
                     if isRootPage {
                         PageBlock::new(thisPageNumber + 1, st.blk.lastPage)
                     } else if thisPageNumber == st.blk.lastPage {
-                        pb.SetPageFlag(PageFlag::FLAG_BOUNDARY_NODE as u8);
+                        pb.SetPageFlag(PageFlag::FLAG_BOUNDARY_NODE);
                         let newBlk = pageManager.GetBlock(&mut *token);
                         pb.SetLastInt32(newBlk.firstPage);
                         newBlk
                     } else {
                         PageBlock::new(thisPageNumber + 1, st.blk.lastPage)
                     };
-                pb.Write(fs);
+                try!(pb.Write(fs));
                 if nextBlk.firstPage != (thisPageNumber+1) {
-                    utils::SeekPage(fs, pgsz, nextBlk.firstPage);
+                    try!(utils::SeekPage(fs, pgsz, nextBlk.firstPage));
                 }
                 // TODO isn't there a better way to copy a slice?
                 let mut ba = Vec::new();
@@ -1353,10 +1365,11 @@ mod bt {
                 st.prefixLen = 0;
                 st.firstLeaf = firstLeaf;
                 st.blk = nextBlk;
+                Ok(())
             }
 
             // TODO can the overflow page number become a varint?
-            const neededForOverflowPageNumber: usize = 4;
+            const NEEDED_FOR_OVERFLOW_PAGE_NUMBER: usize = 4;
 
             // the max limit of an inline key is when that key is the only
             // one in the leaf, and its value is overflowed.
@@ -1370,7 +1383,7 @@ mod bt {
                 - Varint::SpaceNeededFor(pgsz as u64) // approx worst case inline key len
                 - 1 // value flags
                 - 9 // worst case varint value len
-                - neededForOverflowPageNumber; // overflowed value page
+                - NEEDED_FOR_OVERFLOW_PAGE_NUMBER; // overflowed value page
 
             fn kLocNeed(k: &[u8], kloc: &KeyLocation, prefixLen: usize) -> usize {
                 let klen = k.len();
@@ -1379,7 +1392,7 @@ mod bt {
                         1 + Varint::SpaceNeededFor(klen as u64) + klen - prefixLen
                     },
                     KeyLocation::Overflow(_) => {
-                        1 + Varint::SpaceNeededFor(klen as u64) + neededForOverflowPageNumber
+                        1 + Varint::SpaceNeededFor(klen as u64) + NEEDED_FOR_OVERFLOW_PAGE_NUMBER
                     },
                 }
             }
@@ -1394,7 +1407,7 @@ mod bt {
                         1 + Varint::SpaceNeededFor(vlen as u64) + vlen
                     },
                     ValueLocation::Overflowed(vlen,_) => {
-                        1 + Varint::SpaceNeededFor(vlen as u64) + neededForOverflowPageNumber
+                        1 + Varint::SpaceNeededFor(vlen as u64) + NEEDED_FOR_OVERFLOW_PAGE_NUMBER
                     },
                 }
             }
@@ -1580,7 +1593,7 @@ mod bt {
                     };
                 let fit = {
                     let needed = kLocNeed(&k, &kloc, newPrefixLen) + vLocNeed(&vloc);
-                    let used = (sofar + LEAF_PAGE_OVERHEAD + 1 + newPrefixLen);
+                    let used = sofar + LEAF_PAGE_OVERHEAD + 1 + newPrefixLen;
                     if pgsz > used {
                         let available = pgsz - used;
                         (available >= needed)
@@ -1591,7 +1604,7 @@ mod bt {
                 let writeThisPage = (! st.keys.is_empty()) && (! fit);
 
                 if writeThisPage {
-                    writeLeaf(&mut st, false, pb, fs, pgsz, pageManager, &mut *token)
+                    try!(writeLeaf(&mut st, false, pb, fs, pgsz, pageManager, &mut *token));
                 }
 
                 // TODO ignore prefixLen for overflowed keys?
@@ -1627,7 +1640,7 @@ mod bt {
 
             if !st.keys.is_empty() {
                 let isRootNode = st.leaves.is_empty();
-                writeLeaf(&mut st, isRootNode, pb, fs, pgsz, pageManager, &mut *token)
+                try!(writeLeaf(&mut st, isRootNode, pb, fs, pgsz, pageManager, &mut *token));
             }
             Ok((st.blk,st.leaves,st.firstLeaf))
         }
@@ -1651,7 +1664,7 @@ mod bt {
             fn calcAvailable(currentSize: usize, couldBeRoot: bool, pgsz: usize) -> usize {
                 let basicSize = pgsz - currentSize;
                 let allowanceForRootNode = if couldBeRoot { size_32 } else { 0 }; // first/last Leaf, lastInt32 already
-                // TODO can this overflow?
+                // TODO can this cause integer overflow?
                 basicSize - allowanceForRootNode
             }
 
@@ -1661,7 +1674,7 @@ mod bt {
                                pb : &mut PageBuilder,
                               ) {
                 pb.Reset();
-                pb.PutByte(PageType::PARENT_NODE as u8);
+                pb.PutByte(PageType::PARENT_NODE);
                 pb.PutByte(0u8);
                 pb.PutInt16(items.len() as u16);
                 // store all the ptrs, n+1 of them
@@ -1674,7 +1687,7 @@ mod bt {
                     let x = &items[i];
                     match overflows.get(&i) {
                         Some(pg) => {
-                            pb.PutByte(ValueFlag::FLAG_OVERFLOW as u8);
+                            pb.PutByte(ValueFlag::FLAG_OVERFLOW);
                             pb.PutVarint(x.key.len() as u64);
                             pb.PutInt32(*pg as PageNum);
                         },
@@ -1699,20 +1712,20 @@ mod bt {
                                           pgsz: usize,
                                           token: &mut PendingSegment,
                                           firstLeaf: PageNum,
-                                         ) where SeekWrite : Seek+Write {
+                                         ) -> io::Result<()> where SeekWrite : Seek+Write {
                 let pgnum = pair.page;
                 // assert st.sofar > 0
                 let thisPageNumber = st.blk.firstPage;
                 buildParentPage(items, pgnum, &overflows, pb);
                 let nextBlk =
                     if isRootNode {
-                        pb.SetPageFlag(PageFlag::FLAG_ROOT_NODE as u8);
+                        pb.SetPageFlag(PageFlag::FLAG_ROOT_NODE);
                         pb.SetSecondToLastInt32(firstLeaf);
                         pb.SetLastInt32(lastLeaf);
                         PageBlock::new(thisPageNumber+1,st.blk.lastPage)
                     } else {
-                        if (st.blk.firstPage == st.blk.lastPage) {
-                            pb.SetPageFlag(PageFlag::FLAG_BOUNDARY_NODE as u8);
+                        if st.blk.firstPage == st.blk.lastPage {
+                            pb.SetPageFlag(PageFlag::FLAG_BOUNDARY_NODE);
                             let newBlk = pageManager.GetBlock(&mut *token);
                             pb.SetLastInt32(newBlk.firstPage);
                             newBlk
@@ -1720,9 +1733,9 @@ mod bt {
                             PageBlock::new(thisPageNumber+1,st.blk.lastPage)
                         }
                     };
-                pb.Write(fs);
+                try!(pb.Write(fs));
                 if nextBlk.firstPage != (thisPageNumber+1) {
-                    utils::SeekPage(fs, pgsz, nextBlk.firstPage);
+                    try!(utils::SeekPage(fs, pgsz, nextBlk.firstPage));
                 }
                 st.sofar = 0;
                 st.blk = nextBlk;
@@ -1731,6 +1744,7 @@ mod bt {
                 ba.push_all(&pair.key);
                 let pg = pgitem {page:thisPageNumber, key:ba.into_boxed_slice()};
                 st.nextGeneration.push(pg);
+                Ok(())
             }
 
             // this is the body of writeParentNodes
@@ -1747,14 +1761,14 @@ mod bt {
                 let couldBeRoot = st.nextGeneration.is_empty();
 
                 let available = calcAvailable(st.sofar, couldBeRoot, pgsz);
-                let fitsInline = (available >= neededForInline);
-                let wouldFitInlineOnNextPage = ((pgsz - PARENT_PAGE_OVERHEAD) >= neededForInline);
-                let fitsOverflow = (available >= neededForOverflow);
+                let fitsInline = available >= neededForInline;
+                let wouldFitInlineOnNextPage = (pgsz - PARENT_PAGE_OVERHEAD) >= neededForInline;
+                let fitsOverflow = available >= neededForOverflow;
                 let writeThisPage = (! fitsInline) && (wouldFitInlineOnNextPage || (! fitsOverflow));
 
                 if writeThisPage {
                     // assert sofar > 0
-                    writeParentPage(&mut st, &items, &overflows, pair, false, pb, lastLeaf, fs, pageManager, pgsz, &mut *token, firstLeaf);
+                    try!(writeParentPage(&mut st, &items, &overflows, pair, false, pb, lastLeaf, fs, pageManager, pgsz, &mut *token, firstLeaf));
                 }
 
                 if st.sofar == 0 {
@@ -1774,7 +1788,7 @@ mod bt {
                 }
             }
             let isRootNode = st.nextGeneration.is_empty();
-            writeParentPage(&mut st, &items, &overflows, &children[children.len()-1], isRootNode, pb, lastLeaf, fs, pageManager, pgsz, &mut *token, firstLeaf);
+            try!(writeParentPage(&mut st, &items, &overflows, &children[children.len()-1], isRootNode, pb, lastLeaf, fs, pageManager, pgsz, &mut *token, firstLeaf));
             Ok((st.blk,st.nextGeneration))
         }
 
@@ -1783,7 +1797,7 @@ mod bt {
         let mut pb = PageBuilder::new(pgsz);
         let mut token = pageManager.Begin();
         let startingBlk = pageManager.GetBlock(&mut token);
-        utils::SeekPage(fs, pgsz, startingBlk.firstPage);
+        try!(utils::SeekPage(fs, pgsz, startingBlk.firstPage));
 
         let mut vbuf = vec![0;pgsz].into_boxed_slice();
         let (blkAfterLeaves, leaves, firstLeaf) = try!(writeLeaves(startingBlk, pageManager, source, &mut vbuf, fs, &mut pb, &mut token));
@@ -1905,7 +1919,7 @@ mod bt {
         fn ReadFirstPage(&mut self) -> io::Result<()> {
             self.firstPageInBlock = self.currentPage;
             try!(self.ReadPage());
-            if self.PageType() != (PageType::OVERFLOW_NODE as u8) {
+            if self.PageType() != (PageType::OVERFLOW_NODE) {
                 try!(Err(io::Error::new(ErrorKind::InvalidInput, "first overflow page has invalid page type")));
             }
             if self.CheckPageFlag(PageFlag::FLAG_BOUNDARY_NODE) {
@@ -1932,7 +1946,7 @@ mod bt {
                 Ok(0)
             } else {
                 let mut direct = false;
-                if (self.sofarThisPage >= self.bytesOnThisPage) {
+                if self.sofarThisPage >= self.bytesOnThisPage {
                     if self.currentPage == self.boundaryPageNumber {
                         self.currentPage = self.GetLastInt32();
                         try!(self.ReadFirstPage());
@@ -2098,8 +2112,8 @@ mod bt {
                 // TODO is this the right place for this check?    
                 let pos = (self.currentPage - 1) as u64 * self.pr.PageSize() as u64;
                 if pos + self.pr.PageSize() as u64 <= self.len {
-                    utils::SeekPage(&mut self.fs, self.pr.PageSize(), self.currentPage);
-                    self.pr.Read(&mut self.fs);
+                    try!(utils::SeekPage(&mut self.fs, self.pr.PageSize(), self.currentPage));
+                    try!(self.pr.Read(&mut self.fs));
                     Ok(true)
                 } else {
                     Ok(false)
@@ -2126,7 +2140,7 @@ mod bt {
         fn prevInLeaf(&mut self) -> bool {
             match self.currentKey {
                 Some(cur) => {
-                    if (cur > 0) {
+                    if cur > 0 {
                         self.currentKey = Some(cur - 1);
                         true
                     } else {
@@ -2292,10 +2306,10 @@ mod bt {
             let count = self.pr.GetInt16(&mut cur);
             let mut ptrs = Vec::new();
             let mut keys = Vec::new();
-            for i in 0 .. count+1 {
+            for _ in 0 .. count+1 {
                 ptrs.push(self.pr.GetVarint(&mut cur) as PageNum);
             }
-            for i in 0 .. count {
+            for _ in 0 .. count {
                 let kflag = self.pr.GetByte(&mut cur);
                 let klen = self.pr.GetVarint(&mut cur) as usize;
                 if 0 == (kflag & ValueFlag::FLAG_OVERFLOW) {
@@ -2391,7 +2405,7 @@ mod bt {
                                     if self.pr.CheckPageFlag(PageFlag::FLAG_BOUNDARY_NODE) { self.pr.GetLastInt32() as PageNum }
                                     else if self.currentPage == self.rootPage { 0 }
                                     else { self.currentPage + 1 };
-                                if (try!(self.setCurrentPage(nextPage)) && try!(self.searchForwardForLeaf())) {
+                                if try!(self.setCurrentPage(nextPage)) && try!(self.searchForwardForLeaf()) {
                                     self.readLeaf();
                                     self.currentKey = Some(0);
                                 }
@@ -2564,6 +2578,7 @@ struct HeaderData {
     headerOverflow: Option<PageBlock>,
     changeCounter: u64,
     mergeCounter: u64,
+    // TODO next segment id/num
 }
 
 struct SimplePageManager {
@@ -2577,7 +2592,6 @@ mod Database {
     use std::io::Seek;
     use std::io::SeekFrom;
     use std::io::Write;
-    use std::io::Error;
     use std::io::ErrorKind;
     use std::fs::File;
     use std::fs::OpenOptions;
@@ -2663,6 +2677,7 @@ mod Database {
 
     fn readHeader<R>(fs:&mut R) -> io::Result<(HeaderData,usize,PageNum)> where R : Read+Seek {
         // TODO this func assumes we are at the beginning of the file?
+        // should the seek happen here instead of in the caller?
 
         fn read<R>(fs: &mut R) -> io::Result<PageBuffer> where R : Read {
             let mut pr = PageBuffer::new(HEADER_SIZE_IN_BYTES);
@@ -2674,12 +2689,12 @@ mod Database {
             }
         }
 
-        fn parse<R>(pr: &PageBuffer, cur: &mut usize, fs: &mut R) -> (HeaderData, usize) where R : Read+Seek {
+        fn parse<R>(pr: &PageBuffer, cur: &mut usize, fs: &mut R) -> io::Result<(HeaderData, usize)> where R : Read+Seek {
             fn readSegmentList(pr: &PageBuffer, cur: &mut usize) -> (Vec<Guid>,HashMap<Guid,SegmentInfo>) {
                 fn readBlockList(prBlocks: &PageBuffer, cur: &mut usize) -> Vec<PageBlock> {
                     let count = prBlocks.GetVarint(cur) as usize;
                     let mut a = Vec::new();
-                    for i in 0 .. count {
+                    for _ in 0 .. count {
                         let firstPage = prBlocks.GetVarint(cur) as PageNum;
                         let countPages = prBlocks.GetVarint(cur) as PageNum;
                         // blocks are stored as firstPage/count rather than as
@@ -2693,7 +2708,7 @@ mod Database {
                 let count = pr.GetVarint(cur) as usize;
                 let mut a = Vec::new(); // TODO capacity count
                 let mut m = HashMap::new(); // TODO capacity count
-                for i in 0 .. count {
+                for _ in 0 .. count {
                     let mut b = [0;16];
                     pr.GetIntoArray(cur, &mut b);
                     let g = Guid::new(b);
@@ -2726,10 +2741,10 @@ mod Database {
                     let mut pr2 = PageBuffer::new(lenSegmentList);
                     // TODO chain?
                     // copy from chunk1 into pr2
-                    pr2.ReadPart(fs, 0, lenChunk1);
+                    try!(pr2.ReadPart(fs, 0, lenChunk1));
                     // now get chunk2 and copy it in as well
-                    utils::SeekPage(fs, pgsz, firstPageChunk2);
-                    pr2.ReadPart(fs, lenChunk1, lenChunk2);
+                    try!(utils::SeekPage(fs, pgsz, firstPageChunk2));
+                    try!(pr2.ReadPart(fs, lenChunk1, lenChunk2));
                     let mut cur2 = 0;
                     let (state,segments) = readSegmentList(&pr2, &mut cur2);
                     (state, segments, Some (PageBlock::new(firstPageChunk2, lastPageChunk2)))
@@ -2749,7 +2764,7 @@ mod Database {
                     mergeCounter:mergeCounter,
                 };
 
-            (hd, pgsz)
+            Ok((hd, pgsz))
         }
 
         fn calcNextPage(pgsz: usize, len: usize) -> PageNum {
@@ -2761,10 +2776,10 @@ mod Database {
 
         let len = try!(seek_len(fs));
         if len > 0 {
-            fs.seek(SeekFrom::Start(0 as u64));
+            try!(fs.seek(SeekFrom::Start(0 as u64)));
             let pr = try!(read(fs));
             let mut cur = 0;
-            let (h, pgsz) = parse(&pr, &mut cur, fs);
+            let (h, pgsz) = try!(parse(&pr, &mut cur, fs));
             let nextAvailablePage = calcNextPage(pgsz, len as usize);
             Ok((h, pgsz, nextAvailablePage))
         } else {
@@ -2953,8 +2968,8 @@ mod Database {
                     .open(&self.path));
             for b in blocks {
                 for x in b.firstPage .. b.lastPage+1 {
-                    utils::SeekPage(&mut fs, self.pgsz, x);
-                    fs.write(&bad);
+                    try!(utils::SeekPage(&mut fs, self.pgsz, x));
+                    try!(fs.write(&bad));
                 }
             }
             Ok(())
@@ -3054,7 +3069,7 @@ mod Database {
             pb.PutVarint(buf.len() as u64);
 
             let headerOverflow =
-                if (pb.Available() >= (buf.len() + 1)) {
+                if pb.Available() >= (buf.len() + 1) {
                     pb.PutByte(0u8);
                     pb.PutArray(buf);
                     None
@@ -3065,8 +3080,8 @@ mod Database {
                     let extraPages = extra / self.pgsz + if (extra % self.pgsz) != 0 { 1 } else { 0 };
                     //printfn "extra pages: %d" extraPages
                     let blk = self.getBlock(extraPages as PageNum);
-                    utils::SeekPage(&mut self.fsMine, self.pgsz, blk.firstPage);
-                    self.fsMine.write(&buf[fits .. buf.len()]);
+                    try!(utils::SeekPage(&mut self.fsMine, self.pgsz, blk.firstPage));
+                    try!(self.fsMine.write(&buf[fits .. buf.len()]));
                     pb.PutInt32(fits as u32);
                     pb.PutInt32(blk.firstPage);
                     pb.PutArray(&buf[0 .. fits]);
@@ -3198,22 +3213,30 @@ mod Database {
         }
 
         pub fn merge(&mut self, segs:Vec<Guid>) -> io::Result<Guid> {
+            // TODO don't allow this to happen if the any of the segs
+            // are already involved in a merge.
             // TODO this is silly if segs has only one item in it
             //printfn "merge getting cursors: %A" segs
             let mut clist = Vec::new();
+            // TODO these should probably be for g in &segs
             for g in segs.iter() {
                 clist.push(try!(self.getCursor(&self.header.segments, *g))); // TODO checkForGoneSegment
+            }
+            for g in segs.iter() {
+                self.merging.insert(*g);
             }
             let mut mc = MultiCursor::Create(clist);
             let mut fs = try!(self.OpenForWriting());
             mc.First();
-            // TODO put all the segs into self.merging
             let (g,page) = try!(bt::CreateFromSortedSequenceOfKeyValuePairs(&mut fs, self, CursorIterator::new(box mc)));
             //printfn "merged %A to get %A" segs g
             self.pendingMerges.insert(g, segs);
             Ok(g)
         }
 
+        // TODO maybe commitSegments and commitMerge should be the same function.
+        // just check to see if the segment being committed is a merge.  if so,
+        // do the extra paperwork.
         pub fn commitMerge(&mut self, newGuid:Guid) -> io::Result<()> {
             // TODO we could check to see if this guid is already in the list.
 
@@ -3230,7 +3253,7 @@ mod Database {
             let segmentsBeingReplaced : HashMap<Guid,SegmentInfo> = self.header.segments
                 .clone()
                 .into_iter()
-                .filter(|&(ref g,ref info)| oldGuidsAsSet.contains(&g))
+                .filter(|&(ref g, _)| oldGuidsAsSet.contains(&g))
                 .collect();
 
             let ndxFirstOld = self.header.currentState.iter().position(|&g| g == lstOld[0]).unwrap();
@@ -3332,133 +3355,6 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
             // this segment no longer exists
             //printfn "cursor done, segment %O is gone: %A" g seg
             addFreeBlocks seg.blocks
-
-    // this keeps track of which segments are currently involved in a merge.
-    // a segment can only be in one merge at a time.  in effect, this is a list
-    // of merge locks for segments.  segments should be removed from this set
-    // after the merge has been committed.
-    let mutable merging = Set.empty
-
-    // this keeps track of merges which have been written but not
-    // yet committed.
-    let mutable pendingMerges:Map<Guid,Guid list> = Map.empty
-
-    let tryMerge segs =
-        let requestMerge () =
-            lock critSectionMerging (fun () ->
-                let want = Set.ofSeq segs
-                let already = Set.intersect want merging
-                if Set.isEmpty already then
-                    merging <- Set.union merging want
-                    true
-                else
-                    false
-            )
-
-        let merge () = 
-            // TODO this is silly if segs has only one item in it
-            //printfn "merge getting cursors: %A" segs
-            let clist = lock critSectionCursors (fun () ->
-                let h = header
-                List.map (fun g -> getCursor h.segments g (Some checkForGoneSegment)) segs
-            )
-            use mc = MultiCursor.Create clist
-            let pairs = CursorUtils.ToSortedSequenceOfKeyValuePairs mc
-            use fs = io.OpenForWriting()
-            let (g,_) = BTreeSegment.CreateFromSortedSequence(fs, pageManager, pairs)
-            //printfn "merged %A to get %A" segs g
-            g
-
-        let storePendingMerge g =
-            lock critSectionPendingMerges (fun () ->
-                pendingMerges <- Map.add g segs pendingMerges
-                // TODO assert segs are in merging set?
-            )
-
-        if requestMerge () then
-            //printfn "requestMerge Some"
-            let later() = 
-                //printfn "inside later"
-                let g = merge ()
-                storePendingMerge g
-                g
-            Some later
-        else
-            //printfn "requestMerge None"
-            None
-
-    let removePendingMerge g =
-        let doneMerge segs =
-            lock critSectionMerging (fun () ->
-                let removing = Set.ofSeq segs
-                // TODO assert is subset?
-                merging <- Set.difference merging removing
-            )
-
-        let segs = Map.find g pendingMerges
-        doneMerge segs
-        lock critSectionPendingMerges (fun () ->
-            pendingMerges <- Map.remove g pendingMerges
-        )
-
-    // only call this if you have the writeLock
-    let commitMerge (newGuid:Guid) =
-        // TODO we could check to see if this guid is already in the list.
-
-        let lstOld = Map.find newGuid pendingMerges
-        let countOld = List.length lstOld                                         
-        let oldGuidsAsSet = List.fold (fun acc g -> Set.add g acc) Set.empty lstOld
-        let lstAges = List.map (fun g -> (Map.find g header.segments).age) lstOld
-        let age = 1 + List.max lstAges
-
-        let segmentsBeingReplaced = Set.fold (fun acc g -> Map.add g (Map.find g header.segments) acc ) Map.empty oldGuidsAsSet
-
-        let oldHeaderOverflow = lock critSectionHeader (fun () -> 
-            let ndxFirstOld = List.findIndex (fun g -> g=List.head lstOld) header.currentState
-            let subListOld = List.skip ndxFirstOld header.currentState |> List.take countOld
-            // if the next line fails, it probably means that somebody tried to merge a set
-            // of segments that are not contiguous in currentState.
-            if lstOld <> subListOld then failwith (sprintf "segments not found: lstOld = %A  currentState = %A" lstOld header.currentState)
-            let before = List.take ndxFirstOld header.currentState
-            let after = List.skip (ndxFirstOld + countOld) header.currentState
-            let newState = before @ (newGuid :: after)
-            let segmentsWithoutOld = Map.filter (fun g _ -> not (Set.contains g oldGuidsAsSet)) header.segments
-            let newSegmentInfo = Map.find newGuid segmentsInWaiting
-            let newSegments = Map.add newGuid {newSegmentInfo with age=age} segmentsWithoutOld
-            let newHeaderBeforeWriting = {
-                changeCounter=header.changeCounter
-                mergeCounter=header.mergeCounter + 1L
-                currentState=newState 
-                segments=newSegments
-                headerOverflow=None
-                }
-            let newHeader = writeHeader newHeaderBeforeWriting
-            let oldHeaderOverflow = header.headerOverflow
-            header <- newHeader
-            oldHeaderOverflow
-        )
-        removePendingMerge newGuid
-        // the segment we just committed can now be removed from
-        // the segments in waiting list
-        lock critSectionSegmentsInWaiting (fun () ->
-            segmentsInWaiting <- Map.remove newGuid segmentsInWaiting
-        )
-        //printfn "segmentsBeingReplaced: %A" segmentsBeingReplaced
-        // don't free blocks from any segment which still has a cursor
-        lock critSectionCursors (fun () -> 
-            let segmentsToBeFreed = Map.filter (fun g _ -> not (Map.containsKey g cursors)) segmentsBeingReplaced
-            //printfn "oldGuidsAsSet: %A" oldGuidsAsSet
-            let blocksToBeFreed = Seq.fold (fun acc info -> info.blocks @ acc) List.empty (Map.values segmentsToBeFreed)
-            match oldHeaderOverflow with
-            | Some blk ->
-                let blocksToBeFreed = PageBlock(blk.firstPage, blk.lastPage) :: blocksToBeFreed
-                addFreeBlocks blocksToBeFreed
-            | None ->
-                addFreeBlocks blocksToBeFreed
-        )
-        // note that we intentionally do not release the writeLock here.
-        // you can change the segment list more than once while holding
-        // the writeLock.  the writeLock gets released when you Dispose() it.
 
     let mutable inTransaction = false 
     let mutable waiting = Deque.empty
@@ -3710,6 +3606,9 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
             segs <- []
 */
 
+// TODO move this stuff out into a test/hack program so that this can be
+// a lib crate.
+
 struct GenerateNumbers {
     cur : usize,
     end : usize,
@@ -3797,6 +3696,7 @@ fn main() {
 // rust is unique.  f# is an ML on .NET.  feels kind of hybrid.
 // considering the CLR has better support for value types than its peers, fs doesn't use them as much as it could
 // try! vs SG_ERROR_CHECK
+// currently avoiding Rc,Arc,Cell,RefCell until I need them.
 //
 // too much usize.  use a more specific, smaller unsigned type.
 //
