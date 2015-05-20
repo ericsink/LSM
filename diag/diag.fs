@@ -66,11 +66,40 @@ module diag =
             printfn "%s" k
             csr.Next()
 
+    let gen dbFile =
+        let settings = {
+            Database.DefaultSettings with
+                AutoMergeEnabled = false
+            }
+        let f = dbf(dbFile)
+        use db = new Database(f, settings) :> IDatabase
+
+        let a = ResizeArray<_>()
+        for i in 0 .. 10-1 do
+            let sortedSeq = seq { for n in (i * 100000) .. (i+1) .. (i+1) * 100000 do yield kvp(System.Text.Encoding.UTF8.GetBytes(n.ToString("00000000")),Blob.Array(System.Text.Encoding.UTF8.GetBytes((n*2).ToString()))) done }
+            let g = db.WriteSegmentFromSortedSequence(sortedSeq);
+            a.Add(g)
+            printfn "%A" g
+
+        async {
+            use! tx = db.RequestWriteLock()
+            tx.CommitSegments (a.ToArray())
+        } |> Async.RunSynchronously
+
+        let mrg = db.Merge(0, 4, true)
+        printfn "%A" mrg
+        async {
+            let! res = mrg.Value
+            ignore res
+        } |> Async.RunSynchronously
+
     [<EntryPoint>]
     let main argv = 
         let dbFile = argv.[0]
         let op = argv.[1]
         match op with
+        | "gen" -> 
+            gen dbFile
         | "list_segments" -> 
             list_segments dbFile
         | "list_all_keys" -> 

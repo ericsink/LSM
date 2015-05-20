@@ -69,7 +69,7 @@ impl PageBlock {
     }
 }
 
-#[derive(Hash,PartialEq,Eq,Copy,Clone)]
+#[derive(Hash,PartialEq,Eq,Copy,Clone,Debug)]
 pub struct Guid {
     a : [u8; 16]
 }
@@ -3746,11 +3746,16 @@ fn hack() -> io::Result<bool> {
 
     let mut db = try!(db::new("data.bin", DefaultSettings));
 
-    let g1 = try!(db.WriteSegmentFromSortedSequence(GenerateNumbers {cur: 0, end: 10000, step: 1}));
-    let g2 = try!(db.WriteSegmentFromSortedSequence(GenerateNumbers {cur: 20000, end: 30000, step: 2}));
-    db.commitSegments(vec![g1, g2]);
-    let a = vec![g1, g2];
+    let mut a = Vec::new();
+    for i in 0 .. 10 {
+        let g = try!(db.WriteSegmentFromSortedSequence(GenerateNumbers {cur: i * 100000, end: (i+1) * 100000, step: i+1}));
+        println!("{:?}", g);
+        a.push(g);
+    }
+    db.commitSegments(a.clone());
+    println!("{}", "committed");
     let g3 = try!(db.merge(a));
+    println!("{}", "merged");
     db.commitMerge(g3);
 
     let res : io::Result<bool> = Ok(true);
@@ -3778,6 +3783,7 @@ fn main() {
 // Read,Write,Seek traits so much better design than .NET streams
 // lots more for loops. but they're usually safer.  iter.  not numeric bounds.  but sometimes.
 // the stricter the compiler, the more I like it.
+// utf8 is nice, instead of .net
 //
 // casts are never checked for overflow.  :-(
 //
