@@ -3766,6 +3766,7 @@ fn main() {
     hack();
 }
 
+// awkward comparison.  apples/oranges.  unfair.  wrong lens.  etc.
 // derive debug with :? is %A
 // [u8] is not on the heap.  it's like a primitive that is N bytes long.  it's a value type.
 // no each()
@@ -3775,6 +3776,7 @@ fn main() {
 // strings are utf8, no converting things
 // seriously miss full type inference
 // weird that it's safe to use unsigned
+// porting from fs is probably not a way to get good rust code
 // don't avoid mutability.  in rust, it's safe, and avoiding it is painful.
 // braces vim %
 // semicolons A ;, end-of-line comments
@@ -3783,9 +3785,18 @@ fn main() {
 // Read,Write,Seek traits so much better design than .NET streams
 // lots more for loops. but they're usually safer.  iter.  not numeric bounds.  but sometimes.
 // the stricter the compiler, the more I like it.
-// utf8 is nice, instead of .net
-//
+// correlation of idiomatic and perf
+// optimizer makes a HUGE difference.
+// integer overflow checks not that expensive
+// type inference:  do I have the item or a reference to it?
+// ducking all concurrency issues for now.  perf impact.
+// vim mode SO much faster
+// rs is definitely more verbose and cluttered than fs
+// fs more productive
 // casts are never checked for overflow.  :-(
+// rust is unique.  f# is an ML on .NET.  feels kind of hybrid.
+// considering the CLR has better support for value types than its peers, fs doesn't use them as much as it could
+// try! vs SG_ERROR_CHECK
 //
 // too much usize.  use a more specific, smaller unsigned type.
 //
