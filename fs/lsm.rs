@@ -16,6 +16,7 @@
 
 #![feature(collections)]
 #![feature(box_syntax)]
+#![feature(convert)]
 
 use std::io;
 use std::io::Seek;
@@ -182,7 +183,7 @@ pub struct DbSettings {
 struct SegmentInfo {
     root : PageNum,
     age : u32,
-    blocks : Vec<PageBlock>
+    blocks : Vec<PageBlock> // TODO does this grow?  shouldn't it be a boxed array?
 }
 
 // TODO this trait probably isn't needed
@@ -2267,7 +2268,17 @@ mod bt {
                 match try!(self.compareKeyInLeaf(mid, k)){
                     Ordering::Equal => Ok(Some(mid)),
                     Ordering::Less => self.searchLeaf(k, (mid+1), max, sop, Some(mid), ge),
-                    Ordering::Greater => self.searchLeaf(k, min, (mid-1), sop, le, Some(mid)),
+                    Ordering::Greater => 
+                        // catch underflow
+                        if mid==0 { 
+                            match sop {
+                                SeekOp::SEEK_EQ => Ok(None),
+                                SeekOp::SEEK_LE => Ok(le),
+                                SeekOp::SEEK_GE => Ok(Some(mid)),
+                            }
+                        } else { 
+                            self.searchLeaf(k, min, (mid-1), sop, le, Some(mid))
+                        },
                 }
             }
         }
@@ -2397,7 +2408,7 @@ mod bt {
                     }
                 } else if PageType::PARENT_NODE == self.pr.PageType() {
                     let (ptrs,keys) = try!(self.readParentPage());
-                    let found = searchInParentPage(k, &ptrs, &keys, 0);
+                    let found = Self::searchInParentPage(k, &ptrs, &keys, 0);
                     if 0 == found {
                         return self.search(ptrs[ptrs.len() - 1], k, sop);
                     } else {
@@ -2407,21 +2418,21 @@ mod bt {
             }
             Ok(())
         }
-    }
 
-    // TODO it looks like a static function inside impl can't be recursive
-    fn searchInParentPage(k: &[u8], ptrs: &Vec<PageNum>, keys: &Vec<Box<[u8]>>, i: usize) -> PageNum {
-        // TODO linear search?  really?
-        if i < keys.len() {
-            let cmp = bcmp::Compare(k, &*keys[i]);
-            if cmp==Ordering::Greater {
-                searchInParentPage(k, ptrs, keys, i+1)
+        fn searchInParentPage(k: &[u8], ptrs: &Vec<PageNum>, keys: &Vec<Box<[u8]>>, i: usize) -> PageNum {
+            // TODO linear search?  really?
+            if i < keys.len() {
+                let cmp = bcmp::Compare(k, &*keys[i]);
+                if cmp==Ordering::Greater {
+                    Self::searchInParentPage(k, ptrs, keys, i+1)
+                } else {
+                    ptrs[i]
+                }
             } else {
-                ptrs[i]
+                0
             }
-        } else {
-            0
         }
+
     }
 
     impl Drop for myCursor {
@@ -2571,6 +2582,7 @@ mod Database {
     use std::fs::File;
     use std::fs::OpenOptions;
     use std::collections::HashMap;
+    use std::collections::HashSet;
     use super::utils;
     use super::SegmentInfo;
     use super::Guid;
@@ -2840,9 +2852,9 @@ mod Database {
         nextPage: PageNum,
         segmentsInWaiting: HashMap<Guid,SegmentInfo>,
         freeBlocks: Vec<PageBlock>,
-        // cursors: HashMap<Guid,Vec<Box<ICursor>>>,
-        // TODO cursors
-        // TODO pendingMerges
+        merging: HashSet<Guid>,
+        pendingMerges: HashMap<Guid,Vec<Guid>>,
+        // TODO cursors: HashMap<Guid,Vec<Box<ICursor>>>,
     }
 
     use super::kvp;
@@ -2875,6 +2887,8 @@ mod Database {
                 nextPage: firstAvailablePage,
                 segmentsInWaiting: segmentsInWaiting,
                 freeBlocks: freeBlocks,
+                merging: HashSet::new(),
+                pendingMerges: HashMap::new(),
             };
             Ok(res)
         }
@@ -2980,7 +2994,7 @@ mod Database {
         // each pair is startBlock,countBlocks
         // all in varints
 
-        fn writeHeader(&mut self, hdr:&mut HeaderData) {
+        fn writeHeader(&mut self, hdr:&mut HeaderData) -> io::Result<()> {
             fn spaceNeededForSegmentInfo(info: &SegmentInfo) -> usize {
                 let mut a = 0;
                 for t in info.blocks.iter() {
@@ -3059,10 +3073,11 @@ mod Database {
                     Some(blk)
                 };
 
-            self.fsMine.seek(SeekFrom::Start(0));
-            pb.Write(&mut self.fsMine);
-            self.fsMine.flush();
-            hdr.headerOverflow = headerOverflow
+            try!(self.fsMine.seek(SeekFrom::Start(0)));
+            try!(pb.Write(&mut self.fsMine));
+            try!(self.fsMine.flush());
+            hdr.headerOverflow = headerOverflow;
+            Ok(())
         }
 
         fn getCursor(&self, segs: &HashMap<Guid,SegmentInfo>, g: Guid) -> io::Result<Box<ICursor>> {
@@ -3118,7 +3133,7 @@ mod Database {
             Ok(box lc)
         }
 
-        pub fn commitSegments(&mut self, newGuids: Vec<Guid>) {
+        pub fn commitSegments(&mut self, newGuids: Vec<Guid>) -> io::Result<()> {
             // TODO we could check to see if this guid is already in the list.
             // TODO we should disallow dupes in newGuids
 
@@ -3127,13 +3142,11 @@ mod Database {
             // and segments.  This means taking ownership of those SegmentInfos.  But
             // the others we want to leave.
 
-            // TODO these changes should probably be done to a clone of segmentsInWaiting
-
-            let mut newHeaderBeforeWriting = self.header.clone();
+            let mut newHeader = self.header.clone();
             for g in newGuids.iter() {
-                match self.segmentsInWaiting.remove(&g) {
+                match self.segmentsInWaiting.get(&g) {
                     Some(info) => {
-                        newHeaderBeforeWriting.segments.insert(*g,info);
+                        newHeader.segments.insert(*g,info.clone());
                     },
                     None => {
                         panic!();
@@ -3145,14 +3158,24 @@ mod Database {
             // should probably just reverse the direction of currentState.
             for i in 0 .. newGuids.len() {
                 let g = newGuids[i];
-                newHeaderBeforeWriting.currentState.insert(i, g);
+                newHeader.currentState.insert(i, g);
             }
 
-            newHeaderBeforeWriting.changeCounter = newHeaderBeforeWriting.changeCounter + 1;
+            newHeader.changeCounter = newHeader.changeCounter + 1;
+            newHeader.headerOverflow = None;
 
-            self.writeHeader(&mut newHeaderBeforeWriting);
+            try!(self.writeHeader(&mut newHeader));
             let oldHeaderOverflow = self.header.headerOverflow;
-            self.header = newHeaderBeforeWriting;
+            self.header = newHeader;
+            for g in newGuids.iter() {
+                match self.segmentsInWaiting.remove(&g) {
+                    Some(info) => {
+                    },
+                    None => {
+                        panic!();
+                    },
+                }
+            }
 
             //printfn "after commit, currentState: %A" header.currentState
             //printfn "after commit, segments: %A" header.segments
@@ -3165,6 +3188,7 @@ mod Database {
             // note that we intentionally do not release the writeLock here.
             // you can change the segment list more than once while holding
             // the writeLock.  the writeLock gets released when you Dispose() it.
+            Ok(())
         }
 
         pub fn WriteSegmentFromSortedSequence<I>(&mut self, source: I) -> io::Result<Guid> where I:Iterator<Item=kvp> {
@@ -3183,9 +3207,82 @@ mod Database {
             let mut mc = MultiCursor::Create(clist);
             let mut fs = try!(self.OpenForWriting());
             mc.First();
+            // TODO put all the segs into self.merging
             let (g,page) = try!(bt::CreateFromSortedSequenceOfKeyValuePairs(&mut fs, self, CursorIterator::new(box mc)));
             //printfn "merged %A to get %A" segs g
+            self.pendingMerges.insert(g, segs);
             Ok(g)
+        }
+
+        pub fn commitMerge(&mut self, newGuid:Guid) -> io::Result<()> {
+            // TODO we could check to see if this guid is already in the list.
+
+            let lstOld = self.pendingMerges.get(&newGuid).unwrap().clone();
+            let countOld = lstOld.len();
+            let oldGuidsAsSet : HashSet<Guid> = lstOld.iter().map(|g| *g).collect();
+            let age = {
+                let lstAges : Vec<u32> = lstOld.iter().map(|g| self.header.segments.get(g).unwrap().age).collect();
+                lstAges.iter().max().unwrap() + 1
+            };
+
+            // TODO the following looks expensive.  we just want the SegmentInfo for
+            // each segment being replaced.
+            let segmentsBeingReplaced : HashMap<Guid,SegmentInfo> = self.header.segments
+                .clone()
+                .into_iter()
+                .filter(|&(ref g,ref info)| oldGuidsAsSet.contains(&g))
+                .collect();
+
+            let ndxFirstOld = self.header.currentState.iter().position(|&g| g == lstOld[0]).unwrap();
+            // if the next line fails, it probably means that somebody tried to merge a set
+            // of segments that are not contiguous in currentState.
+            if lstOld.as_slice() != &self.header.currentState.as_slice()[ndxFirstOld .. ndxFirstOld+countOld] {
+                panic!("segments not found");
+            }
+
+            let mut newHeader = self.header.clone();
+
+            for _ in &lstOld {
+                newHeader.currentState.remove(ndxFirstOld);
+            }
+            newHeader.currentState.insert(ndxFirstOld, newGuid);
+
+            let mut newSegmentInfo = self.segmentsInWaiting.get(&newGuid).unwrap().clone();
+            newSegmentInfo.age = age;
+
+            for g in &oldGuidsAsSet {
+                newHeader.segments.remove(g);
+            }
+            newHeader.segments.insert(newGuid, newSegmentInfo);
+            newHeader.mergeCounter = newHeader.mergeCounter + 1;
+            newHeader.headerOverflow = None;
+            try!(self.writeHeader(&mut newHeader));
+            let oldHeaderOverflow = self.header.headerOverflow;
+            self.header = newHeader;
+
+            self.segmentsInWaiting.remove(&newGuid);
+
+            self.pendingMerges.remove(&newGuid);
+            for g in lstOld {
+                self.merging.remove(&g);
+            }
+
+            // TODO don't free anything that has a cursor
+            let segmentsToBeFreed = segmentsBeingReplaced;
+            let mut blocksToBeFreed = Vec::new();
+            for info in segmentsToBeFreed.values() {
+                blocksToBeFreed.push_all(&info.blocks);
+            }
+            match oldHeaderOverflow {
+                Some(blk) => blocksToBeFreed.push(blk),
+                None => (),
+            }
+            self.addFreeBlocks(blocksToBeFreed);
+
+            // note that we intentionally do not release the writeLock here.
+            // you can change the segment list more than once while holding
+            // the writeLock.  the writeLock gets released when you Dispose() it.
+            Ok(())
         }
 
     }
@@ -3652,8 +3749,9 @@ fn hack() -> io::Result<bool> {
     let g1 = try!(db.WriteSegmentFromSortedSequence(GenerateNumbers {cur: 0, end: 10000, step: 1}));
     let g2 = try!(db.WriteSegmentFromSortedSequence(GenerateNumbers {cur: 20000, end: 30000, step: 2}));
     db.commitSegments(vec![g1, g2]);
-    //let g3 = try!(db.merge(vec![g1, g2]));
-    //db.commitSegments(vec![g3]);
+    let a = vec![g1, g2];
+    let g3 = try!(db.merge(a));
+    db.commitMerge(g3);
 
     let res : io::Result<bool> = Ok(true);
     res
