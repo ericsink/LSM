@@ -273,28 +273,15 @@ mod bcmp {
     use std::cmp::Ordering;
     use std::cmp::min;
 
-    pub fn Compare (x:&[u8], y:&[u8]) -> Ordering {
-        let xlen = x.len();
-        let ylen = y.len();
-        let len = min(xlen, ylen);
-        for i in 0 .. len {
-            let c = x[i].cmp(&y[i]);
-            if c != Ordering::Equal {
-                return c;
-            }
-        }
-        /*
-        let c = x[0 .. len].cmp(&y[0 .. len]);
-        if c != Ordering::Equal {
-            return c;
-        }
-        */
-        return xlen.cmp(&ylen);
+    // TODO get rid of this function.  regular cmp() is apparently lexicographic.
+    pub fn Compare(x:&[u8], y:&[u8]) -> Ordering {
+        x.cmp(y)
     }
 
-    pub fn CompareWithPrefix (prefix:&[u8], x:&[u8], y:&[u8]) -> Ordering {
+    pub fn CompareWithPrefix(prefix:&[u8], x:&[u8], y:&[u8]) -> Ordering {
+        assert!(prefix.len() > 0);
         let plen = prefix.len();
-        let xlen = x.len();
+        let xlen = x.len() + plen;
         let ylen = y.len();
         let len = min(xlen, ylen);
         for i in 0 .. len {
@@ -312,11 +299,9 @@ mod bcmp {
         return xlen.cmp(&ylen);
     }
 
-    pub fn PrefixMatch (x: &[u8], y: &[u8], max: usize) -> usize {
-        let xlen = x.len();
-        let ylen = y.len();
-        let len = if xlen<ylen { xlen } else { ylen };
-        let lim = if len<max { len } else { max };
+    pub fn PrefixMatch(x: &[u8], y: &[u8], max: usize) -> usize {
+        let len = min(x.len(), y.len());
+        let lim = min(len, max);
         let mut i = 0;
         while i<lim && x[i]==y[i] {
             i = i + 1;
@@ -325,7 +310,7 @@ mod bcmp {
     }
 
     // TODO rm
-    fn StartsWith (x: &[u8], y: &[u8], max: usize) -> bool {
+    fn StartsWith(x: &[u8], y: &[u8], max: usize) -> bool {
         if x.len() < y.len() {
             false
         } else {
@@ -668,7 +653,7 @@ impl PageBuffer {
     }
 
     fn CompareWithPrefix(&self, cur: usize, prefix: &[u8], len: usize, other: &[u8]) -> Ordering {
-        let slice = &self.buf[cur .. cur + len];
+        let slice = &self.buf[cur .. cur + len - prefix.len()];
         bcmp::CompareWithPrefix(prefix, slice, other)
     }
 
