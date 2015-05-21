@@ -82,31 +82,6 @@ fn ReadValue(b: lsm::Blob) -> std::io::Result<Box<[u8]>> {
 }
 
 #[test]
-fn hack() {
-    fn f() -> std::io::Result<bool> {
-        let mut db = try!(lsm::Database::db::new(&tempfile("hack"), lsm::DefaultSettings));
-
-        const NUM : usize = 10000;
-
-        let mut a = Vec::new();
-        for i in 0 .. 10 {
-            let g = try!(db.WriteSegmentFromSortedSequence(lsm::GenerateNumbers {cur: i * NUM, end: (i+1) * NUM, step: i+1}));
-            println!("{:?}", g);
-            a.push(g);
-        }
-        try!(db.commitSegments(a.clone()));
-        println!("{}", "committed");
-        let g3 = try!(db.merge(a));
-        println!("{}", "merged");
-        try!(db.commitMerge(g3));
-
-        let res : std::io::Result<bool> = Ok(true);
-        res
-    }
-    assert!(f().is_ok());
-}
-
-#[test]
 fn empty_cursor() {
     fn f() -> std::io::Result<()> {
         let mut db = try!(lsm::Database::db::new(&tempfile("empty_cursor"), lsm::DefaultSettings));
