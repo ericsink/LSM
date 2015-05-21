@@ -192,6 +192,15 @@ pub struct DbSettings {
     pub PagesPerBlock : PageNum,
 }
 
+pub const DefaultSettings : DbSettings = 
+    DbSettings
+    {
+        AutoMergeEnabled : true,
+        AutoMergeMinimumPages : 4,
+        DefaultPageSize : 4096,
+        PagesPerBlock : 256,
+    };
+
 #[derive(Clone)]
 struct SegmentInfo {
     root : PageNum,
@@ -227,7 +236,7 @@ trait IDatabase : Drop {
     // fn BackgroundMergeJobs : unit->Async<Guid list> list // TODO have Auto in the name of this?
 }
 
-mod utils {
+pub mod utils {
     use std::io;
     use std::io::Seek;
     use std::io::Read;
@@ -731,6 +740,8 @@ enum Direction {
 }
 
 struct MultiCursor { 
+    // TODO we could insist that all subcursors are instances of myCursor.
+    // no actual need for dynamic dispatch here.
     subcursors : Box<[Box<ICursor>]>, 
     cur : Option<usize>, // TODO max number of subcursors?  u8 is probably enough. but array indexing is supposed to be usize.
     dir : Direction,
@@ -917,6 +928,8 @@ impl ICursor for MultiCursor {
 }
 
 struct LivingCursor { 
+    // TODO we could insist that the chain/subcursor is a multicursor.
+    // no actual need for dynamic dispatch here.
     chain : Box<ICursor>
 }
 
@@ -3612,9 +3625,6 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
             segs <- []
 */
 
-// TODO move this stuff out into a test/hack program so that this can be
-// a lib crate.
-
 #[cfg(test)]
 mod tests {
     #[test]
@@ -3676,6 +3686,7 @@ impl Iterator for GenerateNumbers {
 // considering the CLR has better support for value types than its peers, fs doesn't use them as much as it could
 // try! vs SG_ERROR_CHECK
 // currently avoiding Rc,Arc,Cell,RefCell until I need them.
+// test harness is quite cool
 //
 // too much usize.  use a more specific, smaller unsigned type.
 //
