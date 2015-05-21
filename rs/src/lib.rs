@@ -274,10 +274,12 @@ mod bcmp {
     use std::cmp::min;
 
     // TODO get rid of this function.  regular cmp() is apparently lexicographic.
+    #[inline(always)]
     pub fn Compare(x:&[u8], y:&[u8]) -> Ordering {
         x.cmp(y)
     }
 
+    #[inline(always)]
     pub fn CompareWithPrefix(prefix:&[u8], x:&[u8], y:&[u8]) -> Ordering {
         assert!(prefix.len() > 0);
         if y.len() <= prefix.len() {
@@ -331,139 +333,148 @@ mod Varint {
         else { 9 }
     }
 
-    // TODO maybe just mut cur
-    pub fn read(buf: &[u8], cur: usize) -> (usize, u64) {
-        let a0 = buf[cur] as u64;
+    pub fn read(buf: &[u8], cur: &mut usize) -> u64 {
+        let c = *cur;
+        let a0 = buf[c] as u64;
         if a0 <= 240u64 { 
-            (cur+1, a0)
+            *cur = *cur + 1;
+            a0
         } else if a0 <= 248u64 {
-            let a1 = buf[cur+1] as u64;
+            let a1 = buf[c+1] as u64;
             let r = 240u64 + 256u64 * (a0 - 241u64) + a1;
-            (cur+2, r)
+            *cur = *cur + 2;
+            r
         } else if a0 == 249u64 {
-            let a1 = buf[cur+1] as u64;
-            let a2 = buf[cur+2] as u64;
+            let a1 = buf[c+1] as u64;
+            let a2 = buf[c+2] as u64;
             let r = 2288u64 + 256u64 * a1 + a2;
-            (cur+3, r)
+            *cur = *cur + 3;
+            r
         } else if a0 == 250u64 {
-            let a1 = buf[cur+1] as u64;
-            let a2 = buf[cur+2] as u64;
-            let a3 = buf[cur+3] as u64;
+            let a1 = buf[c+1] as u64;
+            let a2 = buf[c+2] as u64;
+            let a3 = buf[c+3] as u64;
             let r = (a1<<16) | (a2<<8) | a3;
-            (cur+4, r)
+            *cur = *cur + 4;
+            r
         } else if a0 == 251u64 {
-            let a1 = buf[cur+1] as u64;
-            let a2 = buf[cur+2] as u64;
-            let a3 = buf[cur+3] as u64;
-            let a4 = buf[cur+4] as u64;
+            let a1 = buf[c+1] as u64;
+            let a2 = buf[c+2] as u64;
+            let a3 = buf[c+3] as u64;
+            let a4 = buf[c+4] as u64;
             let r = (a1<<24) | (a2<<16) | (a3<<8) | a4;
-            (cur+5, r)
+            *cur = *cur + 5;
+            r
         } else if a0 == 252u64 {
-            let a1 = buf[cur+1] as u64;
-            let a2 = buf[cur+2] as u64;
-            let a3 = buf[cur+3] as u64;
-            let a4 = buf[cur+4] as u64;
-            let a5 = buf[cur+5] as u64;
+            let a1 = buf[c+1] as u64;
+            let a2 = buf[c+2] as u64;
+            let a3 = buf[c+3] as u64;
+            let a4 = buf[c+4] as u64;
+            let a5 = buf[c+5] as u64;
             let r = (a1<<32) | (a2<<24) | (a3<<16) | (a4<<8) | a5;
-            (cur+6, r)
+            *cur = *cur + 6;
+            r
         } else if a0 == 253u64 {
-            let a1 = buf[cur+1] as u64;
-            let a2 = buf[cur+2] as u64;
-            let a3 = buf[cur+3] as u64;
-            let a4 = buf[cur+4] as u64;
-            let a5 = buf[cur+5] as u64;
-            let a6 = buf[cur+6] as u64;
+            let a1 = buf[c+1] as u64;
+            let a2 = buf[c+2] as u64;
+            let a3 = buf[c+3] as u64;
+            let a4 = buf[c+4] as u64;
+            let a5 = buf[c+5] as u64;
+            let a6 = buf[c+6] as u64;
             let r = (a1<<40) | (a2<<32) | (a3<<24) | (a4<<16) | (a5<<8) | a6;
-            (cur+7, r)
+            *cur = *cur + 7;
+            r
         } else if a0 == 254u64 {
-            let a1 = buf[cur+1] as u64;
-            let a2 = buf[cur+2] as u64;
-            let a3 = buf[cur+3] as u64;
-            let a4 = buf[cur+4] as u64;
-            let a5 = buf[cur+5] as u64;
-            let a6 = buf[cur+6] as u64;
-            let a7 = buf[cur+7] as u64;
+            let a1 = buf[c+1] as u64;
+            let a2 = buf[c+2] as u64;
+            let a3 = buf[c+3] as u64;
+            let a4 = buf[c+4] as u64;
+            let a5 = buf[c+5] as u64;
+            let a6 = buf[c+6] as u64;
+            let a7 = buf[c+7] as u64;
             let r = (a1<<48) | (a2<<40) | (a3<<32) | (a4<<24) | (a5<<16) | (a6<<8) | a7;
-            (cur+8, r)
+            *cur = *cur + 8;
+            r
         } else {
-            let a1 = buf[cur+1] as u64;
-            let a2 = buf[cur+2] as u64;
-            let a3 = buf[cur+3] as u64;
-            let a4 = buf[cur+4] as u64;
-            let a5 = buf[cur+5] as u64;
-            let a6 = buf[cur+6] as u64;
-            let a7 = buf[cur+7] as u64;
-            let a8 = buf[cur+8] as u64;
+            let a1 = buf[c+1] as u64;
+            let a2 = buf[c+2] as u64;
+            let a3 = buf[c+3] as u64;
+            let a4 = buf[c+4] as u64;
+            let a5 = buf[c+5] as u64;
+            let a6 = buf[c+6] as u64;
+            let a7 = buf[c+7] as u64;
+            let a8 = buf[c+8] as u64;
             let r = (a1<<56) | (a2<<48) | (a3<<40) | (a4<<32) | (a5<<24) | (a6<<16) | (a7<<8) | a8;
-            (cur+9, r)
+            *cur = *cur + 9;
+            r
         }
     }
 
-    // TODO maybe just mut cur
-    pub fn write(buf: &mut [u8], cur: usize, v: u64) -> usize {
+    pub fn write(buf: &mut [u8], cur: &mut usize, v: u64) {
+        let c = *cur;
         if v<=240u64 { 
-            buf[cur] = v as u8;
-            cur + 1
+            buf[c] = v as u8;
+            *cur = *cur + 1;
         } else if v<=2287u64 { 
-            buf[cur] = ((v - 240u64) / 256u64 + 241u64) as u8;
-            buf[cur+1] = ((v - 240u64) % 256u64) as u8;
-            cur + 2
+            buf[c] = ((v - 240u64) / 256u64 + 241u64) as u8;
+            buf[c+1] = ((v - 240u64) % 256u64) as u8;
+            *cur = *cur + 2;
         } else if v<=67823u64 { 
-            buf[cur] = 249u8;
-            buf[cur+1] = ((v - 2288u64) / 256u64) as u8;
-            buf[cur+2] = ((v - 2288u64) % 256u64) as u8;
-            cur + 3
+            buf[c] = 249u8;
+            buf[c+1] = ((v - 2288u64) / 256u64) as u8;
+            buf[c+2] = ((v - 2288u64) % 256u64) as u8;
+            *cur = *cur + 3;
         } else if v<=16777215u64 { 
-            buf[cur] = 250u8;
-            buf[cur+1] = (v >> 16) as u8;
-            buf[cur+2] = (v >>  8) as u8;
-            buf[cur+3] = (v >>  0) as u8;
-            cur + 4
+            buf[c] = 250u8;
+            buf[c+1] = (v >> 16) as u8;
+            buf[c+2] = (v >>  8) as u8;
+            buf[c+3] = (v >>  0) as u8;
+            *cur = *cur + 4;
         } else if v<=4294967295u64 { 
-            buf[cur] = 251u8;
-            buf[cur+1] = (v >> 24) as u8;
-            buf[cur+2] = (v >> 16) as u8;
-            buf[cur+3] = (v >>  8) as u8;
-            buf[cur+4] = (v >>  0) as u8;
-            cur + 5
+            buf[c] = 251u8;
+            buf[c+1] = (v >> 24) as u8;
+            buf[c+2] = (v >> 16) as u8;
+            buf[c+3] = (v >>  8) as u8;
+            buf[c+4] = (v >>  0) as u8;
+            *cur = *cur + 5;
         } else if v<=1099511627775u64 { 
-            buf[cur] = 252u8;
-            buf[cur+1] = (v >> 32) as u8;
-            buf[cur+2] = (v >> 24) as u8;
-            buf[cur+3] = (v >> 16) as u8;
-            buf[cur+4] = (v >>  8) as u8;
-            buf[cur+5] = (v >>  0) as u8;
-            cur + 6
+            buf[c] = 252u8;
+            buf[c+1] = (v >> 32) as u8;
+            buf[c+2] = (v >> 24) as u8;
+            buf[c+3] = (v >> 16) as u8;
+            buf[c+4] = (v >>  8) as u8;
+            buf[c+5] = (v >>  0) as u8;
+            *cur = *cur + 6;
         } else if v<=281474976710655u64 { 
-            buf[cur] = 253u8;
-            buf[cur+1] = (v >> 40) as u8;
-            buf[cur+2] = (v >> 32) as u8;
-            buf[cur+3] = (v >> 24) as u8;
-            buf[cur+4] = (v >> 16) as u8;
-            buf[cur+5] = (v >>  8) as u8;
-            buf[cur+6] = (v >>  0) as u8;
-            cur + 7
+            buf[c] = 253u8;
+            buf[c+1] = (v >> 40) as u8;
+            buf[c+2] = (v >> 32) as u8;
+            buf[c+3] = (v >> 24) as u8;
+            buf[c+4] = (v >> 16) as u8;
+            buf[c+5] = (v >>  8) as u8;
+            buf[c+6] = (v >>  0) as u8;
+            *cur = *cur + 7;
         } else if v<=72057594037927935u64 { 
-            buf[cur] = 254u8;
-            buf[cur+1] = (v >> 48) as u8;
-            buf[cur+2] = (v >> 40) as u8;
-            buf[cur+3] = (v >> 32) as u8;
-            buf[cur+4] = (v >> 24) as u8;
-            buf[cur+5] = (v >> 16) as u8;
-            buf[cur+6] = (v >>  8) as u8;
-            buf[cur+7] = (v >>  0) as u8;
-            cur + 8
+            buf[c] = 254u8;
+            buf[c+1] = (v >> 48) as u8;
+            buf[c+2] = (v >> 40) as u8;
+            buf[c+3] = (v >> 32) as u8;
+            buf[c+4] = (v >> 24) as u8;
+            buf[c+5] = (v >> 16) as u8;
+            buf[c+6] = (v >>  8) as u8;
+            buf[c+7] = (v >>  0) as u8;
+            *cur = *cur + 8;
         } else {
-            buf[cur] = 255u8;
-            buf[cur+1] = (v >> 56) as u8;
-            buf[cur+2] = (v >> 48) as u8;
-            buf[cur+3] = (v >> 40) as u8;
-            buf[cur+4] = (v >> 32) as u8;
-            buf[cur+5] = (v >> 24) as u8;
-            buf[cur+6] = (v >> 16) as u8;
-            buf[cur+7] = (v >>  8) as u8;
-            buf[cur+8] = (v >>  0) as u8;
-            cur + 9
+            buf[c] = 255u8;
+            buf[c+1] = (v >> 56) as u8;
+            buf[c+2] = (v >> 48) as u8;
+            buf[c+3] = (v >> 40) as u8;
+            buf[c+4] = (v >> 32) as u8;
+            buf[c+5] = (v >> 24) as u8;
+            buf[c+6] = (v >> 16) as u8;
+            buf[c+7] = (v >>  8) as u8;
+            buf[c+8] = (v >>  0) as u8;
+            *cur = *cur + 9;
         }
     }
 }
@@ -613,11 +624,12 @@ impl PageBuilder {
     }
 
     fn PutVarint(&mut self, ov: u64) {
-        self.cur = Varint::write(&mut *self.buf, self.cur, ov);
+        Varint::write(&mut *self.buf, &mut self.cur, ov);
     }
 
 }
 
+// TODO this struct should just go away.  just use the buf.
 struct PageBuffer {
     buf : Box<[u8]>,
 }
@@ -703,9 +715,7 @@ impl PageBuffer {
     }
 
     fn GetVarint(&self, cur: &mut usize) -> u64 {
-        let (newCur, v) = Varint::read(&*self.buf, *cur);
-        *cur = newCur;
-        v
+        Varint::read(&*self.buf, cur)
     }
 
 }
