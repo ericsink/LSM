@@ -3231,6 +3231,26 @@ pub mod Database {
             Ok(g)
         }
 
+        pub fn WriteSegment(&mut self, pairs: HashMap<Box<[u8]>,Box<[u8]>>) -> io::Result<Guid> {
+            use super::bcmp;
+            use super::Blob;
+
+            let mut a : Vec<(Box<[u8]>,Box<[u8]>)> = pairs.into_iter().collect();
+
+            a.sort_by(|a,b| {
+                let (ref ka,_) = *a;
+                let (ref kb,_) = *b;
+                bcmp::Compare(&ka,&kb)
+            });
+            let source = a.into_iter().map(|t| {
+                let (k,v) = t;
+                kvp {Key:k, Value:Blob::Array(v)}
+            });
+            let mut fs = try!(self.OpenForWriting());
+            let (g,_) = try!(bt::CreateFromSortedSequenceOfKeyValuePairs(&mut fs, self, source));
+            Ok(g)
+        }
+
         pub fn merge(&mut self, segs:Vec<Guid>) -> io::Result<Guid> {
             // TODO don't allow this to happen if the any of the segs
             // are already involved in a merge.
