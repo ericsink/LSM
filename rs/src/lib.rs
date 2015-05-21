@@ -1138,13 +1138,14 @@ mod bt {
                                             pgsz: usize
                                            ) -> io::Result<(PageNum,usize,bool)> where SeekWrite : Seek+Write {
                 let mut i = 0;
+                let mut sofar = sofar;
                 loop {
                     if i < max {
                         let (put, finished) = try!(buildRegularPage(ba, pb, pgsz));
                         if put==0 {
                             return Ok((i, sofar, true));
                         } else {
-                            let sofar = sofar + put;
+                            sofar = sofar + put;
                             try!(pb.Write(fs));
                             if finished {
                                 return Ok((i+1, sofar, true));

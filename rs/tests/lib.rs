@@ -407,6 +407,25 @@ fn delete_not_there() {
 }
 
 #[test]
+fn delete_nothing_there() {
+    fn f() -> std::io::Result<()> {
+        let mut db = try!(lsm::Database::db::new(&tempfile("delete_nothing_there"), lsm::DefaultSettings));
+
+        let mut t2 = std::collections::HashMap::new();
+        insert_pair_string_blob(&mut t2, "e", lsm::Blob::Tombstone);
+        let g2 = try!(db.WriteSegment2(t2));
+        try!(db.commitSegments(vec![g2]));
+
+        let mut csr = try!(db.OpenCursor());
+        assert_eq!(0, count_keys_forward(&mut *csr));
+        assert_eq!(0, count_keys_backward(&mut *csr));
+
+        Ok(())
+    }
+    assert!(f().is_ok());
+}
+
+#[test]
 fn simple_tombstone() {
     fn f(del: &str) -> std::io::Result<()> {
         let mut db = try!(lsm::Database::db::new(&tempfile("simple_tombstone"), lsm::DefaultSettings));
@@ -434,5 +453,56 @@ fn simple_tombstone() {
     assert!(f("b").is_ok());
     assert!(f("c").is_ok());
     assert!(f("d").is_ok());
+}
+
+#[test]
+fn many_segments() {
+    fn f() -> std::io::Result<bool> {
+        let mut db = try!(lsm::Database::db::new(&tempfile("many_segments"), lsm::DefaultSettings));
+
+        const NUM : usize = 5000;
+        const EACH : usize = 10;
+
+        let mut a = Vec::new();
+        for i in 0 .. NUM {
+            let g = try!(db.WriteSegmentFromSortedSequence(lsm::GenerateNumbers {cur: i * EACH, end: (i+1) * EACH, step: 1}));
+            a.push(g);
+        }
+        try!(db.commitSegments(a.clone()));
+
+        let res : std::io::Result<bool> = Ok(true);
+        res
+    }
+    assert!(f().is_ok());
+}
+
+#[test]
+fn one_blob() {
+    fn f() -> std::io::Result<()> {
+        let mut db = try!(lsm::Database::db::new(&tempfile("one_blob"), lsm::DefaultSettings));
+
+        const LEN : usize = 100000;
+
+        let mut v = Vec::new();
+        for i in 0 .. LEN {
+            v.push(i as u8);
+        }
+        assert_eq!(LEN, v.len());
+        let mut t2 = std::collections::HashMap::new();
+        insert_pair_string_blob(&mut t2, "e", lsm::Blob::Array(v.into_boxed_slice()));
+        let g2 = try!(db.WriteSegment2(t2));
+        try!(db.commitSegments(vec![g2]));
+
+        let mut csr = try!(db.OpenCursor());
+        assert_eq!(1, count_keys_forward(&mut *csr));
+        assert_eq!(1, count_keys_backward(&mut *csr));
+
+        csr.First();
+        assert!(csr.IsValid());
+        assert_eq!(LEN, csr.ValueLength().unwrap());
+
+        Ok(())
+    }
+    assert!(f().is_ok());
 }
 
