@@ -716,3 +716,106 @@ fn overwrite() {
     assert!(f().is_ok());
 }
 
+#[test]
+fn blobs_of_many_sizes() {
+    fn f() -> std::io::Result<()> {
+        let settings = lsm::DbSettings {
+                DefaultPageSize : 256,
+                PagesPerBlock : 4,
+                .. lsm::DefaultSettings
+            };
+        let mut db = try!(lsm::Database::db::new(&tempfile("blobs_of_many_sizes"), settings));
+        // TODO why doesn't Box<[u8]> support clone?
+        // for now, we have a function to generate the pile we need, and we call it twice
+        fn gen() -> std::collections::HashMap<Box<[u8]>,Box<[u8]>> {
+            let mut t1 = std::collections::HashMap::new();
+            for i in 200 .. 1500 {
+                let k = format!("{}", i);
+                let mut v = String::new();
+                for j in 0 .. i {
+                    let s = format!("{}", j);
+                    v.push_str(&s);
+                }
+                insert_pair_string_string(&mut t1, &k, &v);
+            }
+            t1
+        }
+        let g1 = try!(db.WriteSegment(gen()));
+        try!(db.commitSegments(vec![g1]));
+        let mut csr = try!(db.OpenCursor());
+        let t1 = gen(); // generate another copy
+        for (k,v) in t1 {
+            csr.Seek(&k, lsm::SeekOp::SEEK_EQ);
+            assert!(csr.IsValid());
+            assert_eq!(v.len(), csr.ValueLength().unwrap());
+            assert_eq!(v, ReadValue(csr.Value()).unwrap());
+        }
+        Ok(())
+    }
+    assert!(f().is_ok());
+}
+
+#[test]
+fn write_then_read() {
+    fn f() -> std::io::Result<()> {
+        fn write(name: &str) -> std::io::Result<()> {
+            let mut db = try!(lsm::Database::db::new(&name, lsm::DefaultSettings));
+            let mut d = std::collections::HashMap::new();
+            for i in 1 .. 100 {
+                let s = format!("{}", i);
+                insert_pair_string_string(&mut d, &s, &s);
+            }
+            let g = try!(db.WriteSegment(d));
+            try!(db.commitSegments(vec![g]));
+            let mut d = std::collections::HashMap::new();
+            insert_pair_string_blob(&mut d, "73", lsm::Blob::Tombstone);
+            let g = try!(db.WriteSegment2(d));
+            try!(db.commitSegments(vec![g]));
+            Ok(())
+        }
+
+        fn read(name: &str) -> std::io::Result<()> {
+            let mut db = try!(lsm::Database::db::new(&name, lsm::DefaultSettings));
+            let mut csr = try!(db.OpenCursor());
+            csr.Seek(&format!("{}", 42).into_bytes().into_boxed_slice(), lsm::SeekOp::SEEK_EQ);
+            assert!(csr.IsValid());
+            csr.Next();
+            assert_eq!("43", from_utf8(csr.Key()));
+            csr.Seek(&format!("{}", 73).into_bytes().into_boxed_slice(), lsm::SeekOp::SEEK_EQ);
+            assert!(!csr.IsValid());
+            csr.Seek(&format!("{}", 73).into_bytes().into_boxed_slice(), lsm::SeekOp::SEEK_LE);
+            assert!(csr.IsValid());
+            assert_eq!("72", from_utf8(csr.Key()));
+            csr.Next();
+            assert!(csr.IsValid());
+            assert_eq!("74", from_utf8(csr.Key()));
+            Ok(())
+        }
+
+        let name = tempfile("write_then_read");
+        try!(write(&name));
+        try!(read(&name));
+        Ok(())
+    }
+    assert!(f().is_ok());
+}
+
+#[test]
+fn prefix_compression() {
+    fn f() -> std::io::Result<()> {
+        let mut db = try!(lsm::Database::db::new(&tempfile("prefix_compression"), lsm::DefaultSettings));
+        let mut d = std::collections::HashMap::new();
+        for i in 1 .. 10000 {
+            let s = format!("{}", i);
+            insert_pair_string_string(&mut d, &("prefix_compression".to_string() + &s), &s);
+        }
+        let g = try!(db.WriteSegment(d));
+        try!(db.commitSegments(vec![g]));
+        let mut csr = try!(db.OpenCursor());
+        csr.First();
+        assert!(csr.IsValid());
+        Ok(())
+    }
+    assert!(f().is_ok());
+}
+
