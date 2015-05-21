@@ -186,10 +186,10 @@ trait IWriteLock : Drop {
 }
 
 pub struct DbSettings {
-    AutoMergeEnabled : bool,
-    AutoMergeMinimumPages : PageNum,
-    DefaultPageSize : usize,
-    PagesPerBlock : PageNum,
+    pub AutoMergeEnabled : bool,
+    pub AutoMergeMinimumPages : PageNum,
+    pub DefaultPageSize : usize,
+    pub PagesPerBlock : PageNum,
 }
 
 #[derive(Clone)]
@@ -2592,7 +2592,7 @@ struct SimplePageManager {
     nextPage : PageNum,
 }
 
-mod Database {
+pub mod Database {
     use std::io;
     use std::io::Read;
     use std::io::Seek;
@@ -3615,10 +3615,17 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
 // TODO move this stuff out into a test/hack program so that this can be
 // a lib crate.
 
-struct GenerateNumbers {
-    cur : usize,
-    end : usize,
-    step : usize,
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn it_works() {
+    }
+}
+
+pub struct GenerateNumbers {
+    pub cur : usize,
+    pub end : usize,
+    pub step : usize,
 }
 
 impl Iterator for GenerateNumbers {
@@ -3635,40 +3642,6 @@ impl Iterator for GenerateNumbers {
             Some(r)
         }
     }
-}
-
-fn hack() -> io::Result<bool> {
-    use Database::db;
-
-    let DefaultSettings = 
-        DbSettings
-        {
-            AutoMergeEnabled : true,
-            AutoMergeMinimumPages : 4,
-            DefaultPageSize : 4096,
-            PagesPerBlock : 256,
-        };
-
-    let mut db = try!(db::new("data.bin", DefaultSettings));
-
-    let mut a = Vec::new();
-    for i in 0 .. 10 {
-        let g = try!(db.WriteSegmentFromSortedSequence(GenerateNumbers {cur: i * 100000, end: (i+1) * 100000, step: i+1}));
-        println!("{:?}", g);
-        a.push(g);
-    }
-    try!(db.commitSegments(a.clone()));
-    println!("{}", "committed");
-    let g3 = try!(db.merge(a));
-    println!("{}", "merged");
-    try!(db.commitMerge(g3));
-
-    let res : io::Result<bool> = Ok(true);
-    res
-}
-
-fn main() {
-    hack();
 }
 
 // awkward comparison.  apples/oranges.  unfair.  wrong lens.  etc.
