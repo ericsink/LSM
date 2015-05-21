@@ -39,7 +39,7 @@ fn bunch(b: &mut test::Bencher) {
         //println!("running");
         let mut db = try!(lsm::Database::db::new(&tempfile("bunch"), lsm::DefaultSettings));
 
-        const NUM : usize = 1000;
+        const NUM : usize = 10000;
 
         let mut a = Vec::new();
         for i in 0 .. 10 {
