@@ -196,4 +196,108 @@ fn lexographic() {
     assert!(f().is_ok());
 }
 
+#[test]
+fn seek_cur() {
+    fn f() -> std::io::Result<()> {
+        let mut db = try!(lsm::Database::db::new(&tempfile("seek_cur"), lsm::DefaultSettings));
+        let mut t1 = std::collections::HashMap::new();
+        for i in 0 .. 100 {
+            let sk = format!("{:03}", i);
+            let sv = format!("{}", i);
+            insert_string_pair(&mut t1, &sk, &sv);
+        }
+        let mut t2 = std::collections::HashMap::new();
+        for i in 0 .. 1000 {
+            let sk = format!("{:05}", i);
+            let sv = format!("{}", i);
+            insert_string_pair(&mut t2, &sk, &sv);
+        }
+        let g1 = try!(db.WriteSegment(t1));
+        let g2 = try!(db.WriteSegment(t2));
+        try!(db.commitSegments(vec![g1]));
+        try!(db.commitSegments(vec![g2]));
+        let mut csr = try!(db.OpenCursor());
+        csr.Seek(&to_utf8("00001"), lsm::SeekOp::SEEK_EQ);;
+        assert!(csr.IsValid());
+        Ok(())
+    }
+    assert!(f().is_ok());
+}
+
+#[test]
+fn weird() {
+    fn f() -> std::io::Result<()> {
+        let mut db = try!(lsm::Database::db::new(&tempfile("weird"), lsm::DefaultSettings));
+        let mut t1 = std::collections::HashMap::new();
+        for i in 0 .. 100 {
+            let sk = format!("{:03}", i);
+            let sv = format!("{}", i);
+            insert_string_pair(&mut t1, &sk, &sv);
+        }
+        let mut t2 = std::collections::HashMap::new();
+        for i in 0 .. 1000 {
+            let sk = format!("{:05}", i);
+            let sv = format!("{}", i);
+            insert_string_pair(&mut t2, &sk, &sv);
+        }
+        let g1 = try!(db.WriteSegment(t1));
+        let g2 = try!(db.WriteSegment(t2));
+        try!(db.commitSegments(vec![g1]));
+        try!(db.commitSegments(vec![g2]));
+        let mut csr = try!(db.OpenCursor());
+        csr.First();
+        for _ in 0 .. 100 {
+            csr.Next();
+            assert!(csr.IsValid());
+        }
+        for _ in 0 .. 50 {
+            csr.Prev();
+            assert!(csr.IsValid());
+        }
+        for _ in 0 .. 100 {
+            csr.Next();
+            assert!(csr.IsValid());
+            csr.Next();
+            assert!(csr.IsValid());
+            csr.Prev();
+            assert!(csr.IsValid());
+        }
+        println!("{:?}", csr.Key());
+        for _ in 0 .. 50 {
+            let k = csr.Key();
+            println!("{:?}", k);
+            csr.Seek(&k, lsm::SeekOp::SEEK_EQ);;
+            assert!(csr.IsValid());
+            csr.Next();
+            assert!(csr.IsValid());
+        }
+        for _ in 0 .. 50 {
+            let k = csr.Key();
+            csr.Seek(&k, lsm::SeekOp::SEEK_EQ);;
+            assert!(csr.IsValid());
+            csr.Prev();
+            assert!(csr.IsValid());
+        }
+        for _ in 0 .. 50 {
+            let k = csr.Key();
+            csr.Seek(&k, lsm::SeekOp::SEEK_LE);;
+            assert!(csr.IsValid());
+            csr.Prev();
+            assert!(csr.IsValid());
+        }
+        for _ in 0 .. 50 {
+            let k = csr.Key();
+            csr.Seek(&k, lsm::SeekOp::SEEK_GE);;
+            assert!(csr.IsValid());
+            csr.Next();
+            assert!(csr.IsValid());
+        }
+        // got the following value from the debugger.
+        // just want to make sure that it doesn't change
+        // and all combos give the same answer.
+        assert_eq!(from_utf8(csr.Key()), "00148");
+        Ok(())
+    }
+    assert!(f().is_ok());
+}
 

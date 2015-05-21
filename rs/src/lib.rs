@@ -897,16 +897,14 @@ impl ICursor for MultiCursor {
     fn Seek(&mut self, k:&[u8], sop:SeekOp) {
         self.cur = None;
         self.dir = Direction::WANDERING;
-        let mut found = false;
         for j in 0 .. self.subcursors.len() {
             self.subcursors[j].Seek(k,sop);
-            if self.cur.is_none() && self.subcursors[j].IsValid() && ( (SeekOp::SEEK_EQ == sop) || (Ordering::Equal == self.subcursors[j].KeyCompare (k)) ) { 
+            if self.subcursors[j].IsValid() && ( (SeekOp::SEEK_EQ == sop) || (Ordering::Equal == self.subcursors[j].KeyCompare(k)) ) { 
                 self.cur = Some(j);
-                found = true;
                 break;
             }
         }
-        if !found {
+        if self.cur.is_none() {
             match sop {
                 SeekOp::SEEK_GE => {
                     self.cur = self.findMin();
@@ -1034,6 +1032,7 @@ mod bt {
         pub const FLAG_ENDS_ON_BOUNDARY: u8 = 3;
     }
 
+    #[derive(Debug)]
     struct pgitem {
         page : PageNum,
         key : Box<[u8]>, // TODO reference instead of box?
@@ -1379,7 +1378,7 @@ mod bt {
                 }
                 // TODO isn't there a better way to copy a slice?
                 let mut ba = Vec::new();
-                ba.push_all(&st.keys[0].key);
+                ba.push_all(&st.keys[st.keys.len()-1].key);
                 let pg = pgitem {page:thisPageNumber, key:ba.into_boxed_slice()};
                 st.leaves.push(pg);
                 st.sofarLeaf = 0;
@@ -1637,11 +1636,7 @@ mod bt {
                     if newPrefixLen < st.prefixLen {
                         // the prefixLen will change with the addition of this key,
                         // so we need to recalc sofar
-                        let mut sum = 0;
-                        for lp in &st.keys {
-                            sum = sum + leafPairSize(newPrefixLen, lp);
-                        }
-                        // TODO iter sum?
+                        let sum = st.keys.iter().map(|lp| leafPairSize(newPrefixLen, lp)).sum();;
                         sum
                     } else {
                         st.sofarLeaf
@@ -2441,28 +2436,27 @@ mod bt {
                     }
                 } else if PageType::PARENT_NODE == self.pr.PageType() {
                     let (ptrs,keys) = try!(self.readParentPage());
-                    let found = Self::searchInParentPage(k, &ptrs, &keys, 0);
-                    if 0 == found {
-                        return self.search(ptrs[ptrs.len() - 1], k, sop);
-                    } else {
-                        return self.search(found, k, sop);
+                    match Self::searchInParentPage(k, &ptrs, &keys, 0) {
+                        Some(found) => return self.search(found, k, sop),
+                        None => return self.search(ptrs[ptrs.len() - 1], k, sop),
                     }
                 }
             }
             Ok(())
         }
 
-        fn searchInParentPage(k: &[u8], ptrs: &Vec<PageNum>, keys: &Vec<Box<[u8]>>, i: usize) -> PageNum {
+        fn searchInParentPage(k: &[u8], ptrs: &Vec<PageNum>, keys: &Vec<Box<[u8]>>, i: usize) -> Option<PageNum> {
             // TODO linear search?  really?
+            // TODO this doesn't need to be recursive
             if i < keys.len() {
                 let cmp = bcmp::Compare(k, &*keys[i]);
                 if cmp==Ordering::Greater {
                     Self::searchInParentPage(k, ptrs, keys, i+1)
                 } else {
-                    ptrs[i]
+                    Some(ptrs[i])
                 }
             } else {
-                0
+                None
             }
         }
 
