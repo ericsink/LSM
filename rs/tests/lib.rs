@@ -41,8 +41,32 @@ fn from_utf8(a: Box<[u8]>) -> String {
     k
 }
 
-fn insert_string_pair(d: &mut std::collections::HashMap<Box<[u8]>,Box<[u8]>>, k:&str, v:&str) {
+fn insert_pair_string_string(d: &mut std::collections::HashMap<Box<[u8]>,Box<[u8]>>, k:&str, v:&str) {
     d.insert(to_utf8(k), to_utf8(v));
+}
+
+fn insert_pair_string_blob(d: &mut std::collections::HashMap<Box<[u8]>,lsm::Blob>, k:&str, v:lsm::Blob) {
+    d.insert(to_utf8(k), v);
+}
+
+fn count_keys_forward(csr: &mut lsm::ICursor) -> usize {
+    let mut r = 0;
+    csr.First();
+    while csr.IsValid() {
+        r = r + 1;
+        csr.Next();
+    }
+    r
+}
+
+fn count_keys_backward(csr: &mut lsm::ICursor) -> usize {
+    let mut r = 0;
+    csr.Last();
+    while csr.IsValid() {
+        r = r + 1;
+        csr.Prev();
+    }
+    r
 }
 
 #[test]
@@ -154,9 +178,9 @@ fn lexographic() {
     fn f() -> std::io::Result<()> {
         let mut db = try!(lsm::Database::db::new(&tempfile("lexicographic"), lsm::DefaultSettings));
         let mut d = std::collections::HashMap::new();
-        insert_string_pair(&mut d, "8", "");
-        insert_string_pair(&mut d, "10", "");
-        insert_string_pair(&mut d, "20", "");
+        insert_pair_string_string(&mut d, "8", "");
+        insert_pair_string_string(&mut d, "10", "");
+        insert_pair_string_string(&mut d, "20", "");
         let g = try!(db.WriteSegment(d));
         try!(db.commitSegments(vec![g]));
         let mut csr = try!(db.OpenCursor());
@@ -204,13 +228,13 @@ fn seek_cur() {
         for i in 0 .. 100 {
             let sk = format!("{:03}", i);
             let sv = format!("{}", i);
-            insert_string_pair(&mut t1, &sk, &sv);
+            insert_pair_string_string(&mut t1, &sk, &sv);
         }
         let mut t2 = std::collections::HashMap::new();
         for i in 0 .. 1000 {
             let sk = format!("{:05}", i);
             let sv = format!("{}", i);
-            insert_string_pair(&mut t2, &sk, &sv);
+            insert_pair_string_string(&mut t2, &sk, &sv);
         }
         let g1 = try!(db.WriteSegment(t1));
         let g2 = try!(db.WriteSegment(t2));
@@ -232,13 +256,13 @@ fn weird() {
         for i in 0 .. 100 {
             let sk = format!("{:03}", i);
             let sv = format!("{}", i);
-            insert_string_pair(&mut t1, &sk, &sv);
+            insert_pair_string_string(&mut t1, &sk, &sv);
         }
         let mut t2 = std::collections::HashMap::new();
         for i in 0 .. 1000 {
             let sk = format!("{:05}", i);
             let sv = format!("{}", i);
-            insert_string_pair(&mut t2, &sk, &sv);
+            insert_pair_string_string(&mut t2, &sk, &sv);
         }
         let g1 = try!(db.WriteSegment(t1));
         let g2 = try!(db.WriteSegment(t2));
@@ -299,5 +323,116 @@ fn weird() {
         Ok(())
     }
     assert!(f().is_ok());
+}
+
+#[test]
+fn no_le_ge_multicursor() {
+    fn f() -> std::io::Result<()> {
+        let mut db = try!(lsm::Database::db::new(&tempfile("no_le_ge_multicursor"), lsm::DefaultSettings));
+
+        let mut t1 = std::collections::HashMap::new();
+        insert_pair_string_string(&mut t1, "c", "3");
+        insert_pair_string_string(&mut t1, "g", "7");
+        let g1 = try!(db.WriteSegment(t1));
+        try!(db.commitSegments(vec![g1]));
+
+        let mut t2 = std::collections::HashMap::new();
+        insert_pair_string_string(&mut t2, "e", "5");
+        let g2 = try!(db.WriteSegment(t2));
+        try!(db.commitSegments(vec![g2]));
+
+        let mut csr = try!(db.OpenCursor());
+
+        csr.Seek(&to_utf8("a"), lsm::SeekOp::SEEK_LE);;
+        assert!(!csr.IsValid());
+
+        csr.Seek(&to_utf8("d"), lsm::SeekOp::SEEK_LE);;
+        assert!(csr.IsValid());
+
+        csr.Seek(&to_utf8("f"), lsm::SeekOp::SEEK_GE);;
+        assert!(csr.IsValid());
+
+        csr.Seek(&to_utf8("h"), lsm::SeekOp::SEEK_GE);;
+        assert!(!csr.IsValid());
+
+        Ok(())
+    }
+    assert!(f().is_ok());
+}
+
+#[test]
+fn empty_val() {
+    fn f() -> std::io::Result<()> {
+        let mut db = try!(lsm::Database::db::new(&tempfile("empty_val"), lsm::DefaultSettings));
+
+        let mut t1 = std::collections::HashMap::new();
+        insert_pair_string_string(&mut t1, "_", "");
+        let g1 = try!(db.WriteSegment(t1));
+        try!(db.commitSegments(vec![g1]));
+        let mut csr = try!(db.OpenCursor());
+        csr.Seek(&to_utf8("_"), lsm::SeekOp::SEEK_EQ);;
+        assert!(csr.IsValid());
+        assert_eq!(0, csr.ValueLength().unwrap());
+
+        Ok(())
+    }
+    assert!(f().is_ok());
+}
+
+#[test]
+fn delete_not_there() {
+    fn f() -> std::io::Result<()> {
+        let mut db = try!(lsm::Database::db::new(&tempfile("delete_not_there"), lsm::DefaultSettings));
+
+        let mut t1 = std::collections::HashMap::new();
+        insert_pair_string_string(&mut t1, "a", "1");
+        insert_pair_string_string(&mut t1, "b", "2");
+        insert_pair_string_string(&mut t1, "c", "3");
+        insert_pair_string_string(&mut t1, "d", "4");
+        let g1 = try!(db.WriteSegment(t1));
+        try!(db.commitSegments(vec![g1]));
+
+        let mut t2 = std::collections::HashMap::new();
+        insert_pair_string_blob(&mut t2, "e", lsm::Blob::Tombstone);
+        let g2 = try!(db.WriteSegment2(t2));
+        try!(db.commitSegments(vec![g2]));
+
+        let mut csr = try!(db.OpenCursor());
+        assert_eq!(4, count_keys_forward(&mut *csr));
+        assert_eq!(4, count_keys_backward(&mut *csr));
+
+        Ok(())
+    }
+    assert!(f().is_ok());
+}
+
+#[test]
+fn simple_tombstone() {
+    fn f(del: &str) -> std::io::Result<()> {
+        let mut db = try!(lsm::Database::db::new(&tempfile("simple_tombstone"), lsm::DefaultSettings));
+
+        let mut t1 = std::collections::HashMap::new();
+        insert_pair_string_string(&mut t1, "a", "1");
+        insert_pair_string_string(&mut t1, "b", "2");
+        insert_pair_string_string(&mut t1, "c", "3");
+        insert_pair_string_string(&mut t1, "d", "4");
+        let g1 = try!(db.WriteSegment(t1));
+        try!(db.commitSegments(vec![g1]));
+
+        let mut t2 = std::collections::HashMap::new();
+        insert_pair_string_blob(&mut t2, del, lsm::Blob::Tombstone);
+        let g2 = try!(db.WriteSegment2(t2));
+        try!(db.commitSegments(vec![g2]));
+
+        let mut csr = try!(db.OpenCursor());
+        assert_eq!(3, count_keys_forward(&mut *csr));
+        assert_eq!(3, count_keys_backward(&mut *csr));
+
+        Ok(())
+    }
+    assert!(f("a").is_ok());
+    assert!(f("b").is_ok());
+    assert!(f("c").is_ok());
+    assert!(f("d").is_ok());
 }
 
