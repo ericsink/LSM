@@ -280,23 +280,16 @@ mod bcmp {
 
     pub fn CompareWithPrefix(prefix:&[u8], x:&[u8], y:&[u8]) -> Ordering {
         assert!(prefix.len() > 0);
-        let plen = prefix.len();
-        let xlen = x.len() + plen;
-        let ylen = y.len();
-        let len = min(xlen, ylen);
-        for i in 0 .. len {
-            let xval = 
-                if i<plen {
-                    prefix[i]
-                } else {
-                    x[i - plen]
-                };
-            let c = xval.cmp(&y[i]);
+        if y.len() <= prefix.len() {
+            prefix.cmp(y)
+        } else {
+            let c = prefix.cmp(&y[0 .. prefix.len()]);
             if c != Ordering::Equal {
-                return c;
+                c
+            } else {
+                x.cmp(&y[prefix.len() .. y.len()])
             }
         }
-        return xlen.cmp(&ylen);
     }
 
     pub fn PrefixMatch(x: &[u8], y: &[u8], max: usize) -> usize {
