@@ -500,6 +500,17 @@ fn one_blob() {
         csr.First();
         assert!(csr.IsValid());
         assert_eq!(LEN, csr.ValueLength().unwrap());
+        let mut q = csr.Value();
+
+        match q {
+            lsm::Blob::Tombstone => assert!(false),
+            lsm::Blob::Array(ref a) => assert_eq!(LEN, a.len()),
+            lsm::Blob::Stream(ref mut r) => {
+                let mut a = Vec::new();
+                try!(r.read_to_end(&mut a));
+                assert_eq!(LEN, a.len());
+            },
+        }
 
         Ok(())
     }

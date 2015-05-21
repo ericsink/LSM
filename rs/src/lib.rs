@@ -2013,7 +2013,15 @@ mod bt {
                             lastDataPageInThisBlock - theDataPage + 1
                         };
                     let numPagesToFetch = min(numPagesWanted, numPagesAvailable) as PageNum;
-                    let bytesToFetch = (numPagesToFetch as usize) * self.buf.len();
+                    let bytesToFetch = {
+                        let bytesToFetch = (numPagesToFetch as usize) * self.buf.len();
+                        let available = self.len - self.sofarOverall;
+                        if bytesToFetch > available {
+                            available
+                        } else {
+                            bytesToFetch
+                        }
+                    };
                     // assert bytesToFetch <= wanted
 
                     try!(utils::SeekPage(&mut self.fs, self.buf.len(), theDataPage));
@@ -2039,7 +2047,11 @@ mod bt {
     impl Read for myOverflowReadStream {
         fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
             let len = buf.len();
-            self.Read(buf, 0, len)
+            let r = self.Read(buf, 0, len);
+            println!("want: {:?}", len);
+            println!("read: {:?}", r);
+            println!("sofarOverall: {:?}", self.sofarOverall);
+            r
         }
     }
 

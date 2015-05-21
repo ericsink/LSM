@@ -1609,7 +1609,10 @@ module bt =
                         else 
                             lastDataPageInThisBlock - theDataPage + 1
                     let numPagesToFetch = Math.Min(numPagesWanted, numPagesAvailable)
-                    let bytesToFetch = numPagesToFetch * buf.Length
+                    let bytesToFetch = 
+                        let bytesToFetch = numPagesToFetch * buf.Length
+                        let available = len - sofarOverall
+                        if bytesToFetch > available then available else bytesToFetch
                     // assert bytesToFetch <= wanted
 
                     utils.SeekPage(fs, buf.Length, theDataPage)
