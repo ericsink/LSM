@@ -728,15 +728,13 @@ enum Direction {
 }
 
 struct MultiCursor { 
-    // TODO we could insist that all subcursors are instances of myCursor.
-    // no actual need for dynamic dispatch here.
-    subcursors : Box<[Box<ICursor>]>, 
+    subcursors : Box<[bt::myCursor]>, 
     cur : Option<usize>, // TODO max number of subcursors?  u8 is probably enough. but array indexing is supposed to be usize.
     dir : Direction,
 }
 
 impl MultiCursor {
-    fn find(&self, compare_func : &Fn(&ICursor,&ICursor) -> Ordering) -> Option<usize> {
+    fn find(&self, compare_func : &Fn(&bt::myCursor,&bt::myCursor) -> Ordering) -> Option<usize> {
         if self.subcursors.is_empty() {
             None
         } else {
@@ -747,7 +745,7 @@ impl MultiCursor {
                         Some(winning) => {
                             let x = &self.subcursors[i];
                             let y = &self.subcursors[winning];
-                            let c = compare_func(&**x,&**y);
+                            let c = compare_func(&*x,&*y);
                             if c==Ordering::Less {
                                 res = Some(i)
                             }
@@ -763,16 +761,16 @@ impl MultiCursor {
     }
 
     fn findMin(&self) -> Option<usize> {
-        let compare_func = |a:&ICursor,b:&ICursor| a.KeyCompare(&*b.Key());
+        let compare_func = |a:&bt::myCursor,b:&bt::myCursor| a.KeyCompare(&*b.Key());
         self.find(&compare_func)
     }
 
     fn findMax(&self) -> Option<usize> {
-        let compare_func = |a:&ICursor,b:&ICursor| b.KeyCompare(&*a.Key());
+        let compare_func = |a:&bt::myCursor,b:&bt::myCursor| b.KeyCompare(&*a.Key());
         self.find(&compare_func)
     }
 
-    fn Create(subs: Vec<Box<ICursor>>) -> MultiCursor {
+    fn Create(subs: Vec<bt::myCursor>) -> MultiCursor {
         let s = subs.into_boxed_slice();
         MultiCursor { subcursors: s, cur: None, dir: Direction::WANDERING }
     }
@@ -914,9 +912,7 @@ impl ICursor for MultiCursor {
 }
 
 struct LivingCursor { 
-    // TODO we could insist that the chain/subcursor is a multicursor.
-    // no actual need for dynamic dispatch here.
-    chain : Box<ICursor>
+    chain : MultiCursor
 }
 
 impl LivingCursor {
@@ -932,7 +928,7 @@ impl LivingCursor {
         }
     }
 
-    pub fn Create(ch : Box<ICursor>) -> LivingCursor {
+    pub fn Create(ch : MultiCursor) -> LivingCursor {
         LivingCursor { chain : ch }
     }
 }
@@ -2048,7 +2044,8 @@ mod bt {
         utils::ReadFully(&mut ostrm, buf)
     }
 
-    struct myCursor {
+    // TODO not pub.  rename this too.
+    pub struct myCursor {
         path: String,
         fs: File,
         len: u64,
@@ -2574,9 +2571,9 @@ mod bt {
 
     }
 
-    pub fn OpenCursor(path: &str, pgsz: usize, rootPage: PageNum) -> io::Result<Box<ICursor>> {
+    pub fn OpenCursor(path: &str, pgsz: usize, rootPage: PageNum) -> io::Result<myCursor> {
         let csr = try!(myCursor::new(path, pgsz, rootPage));
-        Ok(box csr)
+        Ok(csr)
     }
 
 }
@@ -3110,7 +3107,7 @@ pub mod Database {
             Ok(())
         }
 
-        fn getCursor(&self, segs: &HashMap<Guid,SegmentInfo>, g: Guid) -> io::Result<Box<ICursor>> {
+        fn getCursor(&self, segs: &HashMap<Guid,SegmentInfo>, g: Guid) -> io::Result<bt::myCursor> {
             let seg = segs.get(&g).unwrap();
             let rootPage = seg.root;
             /* TODO
@@ -3159,7 +3156,7 @@ pub mod Database {
                 clist.push(try!(self.getCursor(&self.header.segments, *g))); // TODO checkForGoneSegment
             }
             let mc = MultiCursor::Create(clist);
-            let lc = LivingCursor::Create(box mc);
+            let lc = LivingCursor::Create(mc);
             Ok(box lc)
         }
 

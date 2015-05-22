@@ -39,3 +39,5 @@ why do usize and u64 require a cast?
 cargo bench is very cool.
 wish I could control the units (always ns) are get them to display with commas or something
 
+move everything into the same module.  myCursor should not be public.
+
