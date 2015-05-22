@@ -32,10 +32,10 @@ fn tempfile(base: &str) -> String {
 
 #[test]
 #[ignore]
-fn profile() {
+fn time_me() {
     fn f() -> std::io::Result<bool> {
         //println!("running");
-        let mut db = try!(lsm::Database::db::new(&tempfile("profile"), lsm::DefaultSettings));
+        let mut db = try!(lsm::Database::db::new(&tempfile("time_me"), lsm::DefaultSettings));
 
         const NUM : usize = 100000;
 
