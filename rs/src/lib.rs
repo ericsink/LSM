@@ -55,6 +55,8 @@ pub enum Blob {
     Tombstone,
 }
 
+// kvp is the struct used to provide key-value pairs downward,
+// for storage into the database.
 pub struct kvp {
     Key : Box<[u8]>,
     Value : Blob,
@@ -1018,9 +1020,13 @@ mod PageFlag {
 }
 
 #[derive(Debug)]
+// this struct is used to remember pages we have written.
+// for each page, we need to remember a key, and it needs
+// to be in a box because the original copy is gone and
+// the page has been written out to disk.
 struct pgitem {
     page : PageNum,
-    key : Box<[u8]>, // TODO reference instead of box?
+    key : Box<[u8]>,
 }
 
 struct ParentState {
@@ -1032,18 +1038,27 @@ struct ParentState {
 // TODO gratuitously different names of the items in these
 // two unions
 
+// this enum keeps track of what happened to a key as we
+// processed it.  either we determined that it will fit
+// inline or we wrote it as an overflow.
 enum KeyLocation {
     Inline,
-    Overflow(PageNum),
+    Overflowed(PageNum),
 }
 
+// this enum keeps track of what happened to a value as we
+// processed it.  it might have already been overflowed.  if
+// it's going to fit in the page, we still have the data
+// buffer.
 enum ValueLocation {
     Tombstone,
-    Buffer(Box<[u8]>), // TODO reference instead of box?
+    // when this is a Buffer, this gets ownership of kvp.Value
+    Buffer(Box<[u8]>),
     Overflowed(usize,PageNum),
 }
 
 struct LeafPair {
+    // key gets ownership of kvp.Key
     key : Box<[u8]>,
     kLoc : KeyLocation,
     vLoc : ValueLocation,
@@ -1051,7 +1066,7 @@ struct LeafPair {
 
 struct LeafState {
     sofarLeaf : usize,
-    keys : Vec<Box<LeafPair>>,
+    keys_in_this_leaf : Vec<LeafPair>,
     prevLeaf : PageNum,
     prefixLen : usize,
     firstLeaf : PageNum,
@@ -1289,17 +1304,21 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
             // TODO prefixLen is one byte.  should it be two?
             pb.PutByte(st.prefixLen as u8);
             if st.prefixLen > 0 {
-                pb.PutArray(&st.keys[0].key[0 .. st.prefixLen]);
+                pb.PutArray(&st.keys_in_this_leaf[0].key[0 .. st.prefixLen]);
             }
-            pb.PutInt16 (st.keys.len() as u16);
-            for lp in &st.keys {
+            // TODO should we support more than 64k keys in a leaf?
+            // either way, overflow-check this cast.
+            pb.PutInt16 (st.keys_in_this_leaf.len() as u16);
+            // TODO this loop could take ownership of each LeafPair as long it
+            // passes the last one back to the caller.
+            for lp in &st.keys_in_this_leaf {
                 match lp.kLoc {
                     KeyLocation::Inline => {
                         pb.PutByte(0u8); // flags
                         pb.PutVarint(lp.key.len() as u64);
                         pb.PutArray(&lp.key[st.prefixLen .. lp.key.len()]);
                     },
-                    KeyLocation::Overflow(kpage) => {
+                    KeyLocation::Overflowed(kpage) => {
                         pb.PutByte(ValueFlag::FLAG_OVERFLOW);
                         pb.PutVarint(lp.key.len() as u64);
                         pb.PutInt32(kpage);
@@ -1351,11 +1370,12 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
             }
             // TODO isn't there a better way to copy a slice?
             let mut ba = Vec::new();
-            ba.push_all(&st.keys[st.keys.len()-1].key);
+            ba.push_all(&st.keys_in_this_leaf[st.keys_in_this_leaf.len()-1].key);
+            // TODO we just want ownership of the last key, without copying it.
             let pg = pgitem {page:thisPageNumber, key:ba.into_boxed_slice()};
             st.leaves.push(pg);
             st.sofarLeaf = 0;
-            st.keys = Vec::new();
+            st.keys_in_this_leaf.clear();
             st.prevLeaf = thisPageNumber;
             st.prefixLen = 0;
             st.firstLeaf = firstLeaf;
@@ -1386,7 +1406,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
                 KeyLocation::Inline => {
                     1 + Varint::SpaceNeededFor(klen as u64) + klen - prefixLen
                 },
-                KeyLocation::Overflow(_) => {
+                KeyLocation::Overflowed(_) => {
                     1 + Varint::SpaceNeededFor(klen as u64) + NEEDED_FOR_OVERFLOW_PAGE_NUMBER
                 },
             }
@@ -1423,7 +1443,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
             sofarLeaf: 0,
             firstLeaf: 0,
             prevLeaf: 0,
-            keys:Vec::new(),
+            keys_in_this_leaf:Vec::new(),
             prefixLen: 0,
             leaves:Vec::new(),
             blk:leavesBlk,
@@ -1431,7 +1451,6 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
 
         for mut pair in source {
             let k = pair.Key;
-            // assert k <> null
             // but pair.Value might be null (a tombstone)
 
             // TODO is it possible for this to conclude that the key must be overflowed
@@ -1443,7 +1462,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
                 } else {
                     let vPage = st.blk.firstPage;
                     let (_,newBlk) = try!(writeOverflow(st.blk, &mut &*k, pageManager, fs));
-                    (newBlk, KeyLocation::Overflow(vPage))
+                    (newBlk, KeyLocation::Overflowed(vPage))
                 };
 
             // the max limit of an inline value is when the key is inline
@@ -1490,6 +1509,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
                                     },
                                     Blob::Array(a) => {
                                         if a.len() == 0 {
+                                            // TODO maybe we need ValueLocation::Empty
                                             (blkAfterKey, ValueLocation::Buffer(a))
                                         } else {
                                             let valuePage = blkAfterKey.firstPage;
@@ -1505,6 +1525,9 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
                                         (blkAfterKey, ValueLocation::Tombstone)
                                     },
                                     Blob::Stream(ref mut strm) => {
+                                        // not sure reusing vbuf is worth it.  maybe we should just
+                                        // alloc here.  ownership will get passed into the
+                                        // ValueLocation when it fits.
                                         let vread = try!(utils::ReadFully(&mut *strm, &mut vbuf[0 .. maxValueInline+1]));
                                         let vbuf = &vbuf[0 .. vread];
                                         if vread < maxValueInline {
@@ -1525,8 +1548,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
                                             (blkAfterKey, ValueLocation::Buffer(a))
                                         } else {
                                             let valuePage = blkAfterKey.firstPage;
-                                            let strm = a; // TODO need a Read for this
-                                            let (len,newBlk) = try!(writeOverflow(blkAfterKey, &mut &*strm, pageManager, fs));
+                                            let (len,newBlk) = try!(writeOverflow(blkAfterKey, &mut &*a, pageManager, fs));
                                             (newBlk, ValueLocation::Overflowed(len,valuePage))
                                         }
                                     },
@@ -1534,7 +1556,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
                             }
                          },
 
-                         KeyLocation::Overflow(_) => {
+                         KeyLocation::Overflowed(_) => {
                             match pair.Value {
                                 Blob::Tombstone => {
                                     (blkAfterKey, ValueLocation::Tombstone)
@@ -1549,8 +1571,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
                                         (blkAfterKey, ValueLocation::Buffer(a))
                                     } else {
                                         let valuePage = blkAfterKey.firstPage;
-                                        let strm = a; // TODO need a Read for this
-                                        let (len,newBlk) = try!(writeOverflow(blkAfterKey, &mut &*strm, pageManager, fs));
+                                        let (len,newBlk) = try!(writeOverflow(blkAfterKey, &mut &*a, pageManager, fs));
                                         (newBlk, ValueLocation::Overflowed(len,valuePage))
                                     }
                                 }
@@ -1568,16 +1589,16 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
 
             // TODO ignore prefixLen for overflowed keys?
             let newPrefixLen = 
-                if st.keys.len()==0 {
+                if st.keys_in_this_leaf.is_empty() {
                     defaultPrefixLen(&k)
                 } else {
-                    bcmp::PrefixMatch(&*st.keys[0].key, &k, st.prefixLen)
+                    bcmp::PrefixMatch(&*st.keys_in_this_leaf[0].key, &k, st.prefixLen)
                 };
             let sofar = 
                 if newPrefixLen < st.prefixLen {
                     // the prefixLen would change with the addition of this key,
                     // so we need to recalc sofar
-                    let sum = st.keys.iter().map(|lp| leafPairSize(newPrefixLen, lp)).sum();;
+                    let sum = st.keys_in_this_leaf.iter().map(|lp| leafPairSize(newPrefixLen, lp)).sum();;
                     sum
                 } else {
                     st.sofarLeaf
@@ -1592,7 +1613,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
                     false
                 }
             };
-            let writeThisPage = (! st.keys.is_empty()) && (! fit);
+            let writeThisPage = (! st.keys_in_this_leaf.is_empty()) && (! fit);
 
             if writeThisPage {
                 try!(writeLeaf(&mut st, false, pb, fs, pgsz, pageManager, &mut *token));
@@ -1600,20 +1621,22 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
 
             // TODO ignore prefixLen for overflowed keys?
             let newPrefixLen = 
-                if st.keys.is_empty() {
+                if st.keys_in_this_leaf.is_empty() {
                     defaultPrefixLen(&k)
                 } else {
-                    bcmp::PrefixMatch(&*st.keys[0].key, &k, st.prefixLen)
+                    bcmp::PrefixMatch(&*st.keys_in_this_leaf[0].key, &k, st.prefixLen)
                 };
             let sofar = 
                 if newPrefixLen < st.prefixLen {
                     // the prefixLen will change with the addition of this key,
                     // so we need to recalc sofar
-                    let sum = st.keys.iter().map(|lp| leafPairSize(newPrefixLen, lp)).sum();;
+                    let sum = st.keys_in_this_leaf.iter().map(|lp| leafPairSize(newPrefixLen, lp)).sum();;
                     sum
                 } else {
                     st.sofarLeaf
                 };
+            // note that the LeafPair struct gets ownership of the key provided
+            // from above.
             let lp = LeafPair {
                         key:k,
                         kLoc:kloc,
@@ -1621,11 +1644,11 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
                         };
 
             st.sofarLeaf=sofar + leafPairSize(newPrefixLen, &lp);
-            st.keys.push(box lp);
+            st.keys_in_this_leaf.push(lp);
             st.prefixLen=newPrefixLen;
         }
 
-        if !st.keys.is_empty() {
+        if !st.keys_in_this_leaf.is_empty() {
             let isRootNode = st.leaves.is_empty();
             try!(writeLeaf(&mut st, isRootNode, pb, fs, pgsz, pageManager, &mut *token));
         }
@@ -1726,6 +1749,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
             }
             st.sofar = 0;
             st.blk = nextBlk;
+            // TODO can't we just take ownership of the pair pgitem
             // TODO isn't there a better way to copy a slice?
             let mut ba = Vec::new();
             ba.push_all(&pair.key);
@@ -1755,6 +1779,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
 
             if writeThisPage {
                 // assert sofar > 0
+                // TODO we want ownership of pair here so we can transfer it down
                 try!(writeParentPage(&mut st, &items, &overflows, pair, false, pb, lastLeaf, fs, pageManager, pgsz, &mut *token, firstLeaf));
             }
 
@@ -1775,6 +1800,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
             }
         }
         let isRootNode = st.nextGeneration.is_empty();
+        // TODO we want ownership of pair here so we can transfer it down
         try!(writeParentPage(&mut st, &items, &overflows, &children[children.len()-1], isRootNode, pb, lastLeaf, fs, pageManager, pgsz, &mut *token, firstLeaf));
         Ok((st.blk,st.nextGeneration))
     }
@@ -1786,7 +1812,8 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
     let startingBlk = pageManager.GetBlock(&mut token);
     try!(utils::SeekPage(fs, pgsz, startingBlk.firstPage));
 
-    let mut vbuf = vec![0;pgsz].into_boxed_slice();
+    // TODO this is a buffer just for the purpose of being reused
+    let mut vbuf = vec![0;pgsz].into_boxed_slice(); 
     let (blkAfterLeaves, leaves, firstLeaf) = try!(writeLeaves(startingBlk, pageManager, source, &mut vbuf, fs, &mut pb, &mut token));
 
     // all the leaves are written.
@@ -1818,7 +1845,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
 struct myOverflowReadStream {
     fs: File,
     len: usize, // same type as ValueLength(), max len of a single value
-    firstPage: PageNum,
+    firstPage: PageNum, // will be needed for Seek
     buf: Box<[u8]>,
     currentPage: PageNum,
     sofarOverall: usize,
@@ -3076,8 +3103,7 @@ impl db {
         Ok(csr)
     }
 
-    // TODO don't box this
-    pub fn OpenCursor(&mut self) -> io::Result<Box<LivingCursor>> {
+    pub fn OpenCursor(&mut self) -> io::Result<LivingCursor> {
         // TODO this cursor needs to expose the changeCounter and segment list
         // on which it is based. for optimistic writes. caller can grab a cursor,
         // do their writes, then grab the writelock, and grab another cursor, then
@@ -3091,7 +3117,7 @@ impl db {
         }
         let mc = MultiCursor::Create(clist);
         let lc = LivingCursor::Create(mc);
-        Ok(box lc)
+        Ok(lc)
     }
 
     pub fn commitSegments(&mut self, newGuids: Vec<Guid>) -> io::Result<()> {

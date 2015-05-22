@@ -387,8 +387,8 @@ fn delete_not_there() {
         try!(db.commitSegments(vec![g2]));
 
         let mut csr = try!(db.OpenCursor());
-        assert_eq!(4, count_keys_forward(&mut *csr));
-        assert_eq!(4, count_keys_backward(&mut *csr));
+        assert_eq!(4, count_keys_forward(&mut csr));
+        assert_eq!(4, count_keys_backward(&mut csr));
 
         Ok(())
     }
@@ -406,8 +406,8 @@ fn delete_nothing_there() {
         try!(db.commitSegments(vec![g2]));
 
         let mut csr = try!(db.OpenCursor());
-        assert_eq!(0, count_keys_forward(&mut *csr));
-        assert_eq!(0, count_keys_backward(&mut *csr));
+        assert_eq!(0, count_keys_forward(&mut csr));
+        assert_eq!(0, count_keys_backward(&mut csr));
 
         Ok(())
     }
@@ -433,8 +433,8 @@ fn simple_tombstone() {
         try!(db.commitSegments(vec![g2]));
 
         let mut csr = try!(db.OpenCursor());
-        assert_eq!(3, count_keys_forward(&mut *csr));
-        assert_eq!(3, count_keys_backward(&mut *csr));
+        assert_eq!(3, count_keys_forward(&mut csr));
+        assert_eq!(3, count_keys_backward(&mut csr));
 
         Ok(())
     }
@@ -483,8 +483,8 @@ fn one_blob() {
         try!(db.commitSegments(vec![g2]));
 
         let mut csr = try!(db.OpenCursor());
-        assert_eq!(1, count_keys_forward(&mut *csr));
-        assert_eq!(1, count_keys_backward(&mut *csr));
+        assert_eq!(1, count_keys_forward(&mut csr));
+        assert_eq!(1, count_keys_backward(&mut csr));
 
         csr.First();
         assert!(csr.IsValid());
@@ -587,8 +587,8 @@ fn seek_ge_le() {
         let g = try!(db.WriteSegment(t1));
         try!(db.commitSegments(vec![g]));
         let mut csr = try!(db.OpenCursor());
-        assert_eq!(13, count_keys_forward(&mut *csr));
-        assert_eq!(13, count_keys_backward(&mut *csr));
+        assert_eq!(13, count_keys_forward(&mut csr));
+        assert_eq!(13, count_keys_backward(&mut csr));
 
         csr.Seek(&to_utf8("n"), lsm::SeekOp::SEEK_EQ);
         assert!(!csr.IsValid());
@@ -641,8 +641,8 @@ fn tombstone() {
         lc.Next();
         assert!(!lc.IsValid());
 
-        assert_eq!(3, count_keys_forward(&mut *lc));
-        assert_eq!(3, count_keys_backward(&mut *lc));
+        assert_eq!(3, count_keys_forward(&mut lc));
+        assert_eq!(3, count_keys_backward(&mut lc));
 
         lc.Seek(&to_utf8("b"), lsm::SeekOp::SEEK_EQ);
         assert!(!lc.IsValid());
