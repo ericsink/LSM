@@ -1304,18 +1304,17 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
             if st.prefixLen > 0 {
                 pb.PutArray(&st.keys_in_this_leaf[0].key[0 .. st.prefixLen]);
             }
+            let count_keys_in_this_leaf = st.keys_in_this_leaf.len();
             // TODO should we support more than 64k keys in a leaf?
             // either way, overflow-check this cast.
-            pb.PutInt16 (st.keys_in_this_leaf.len() as u16);
-            // TODO this loop could take ownership of each LeafPair as long it
-            // passes the last one back to the caller.
-            let mut last = None;
-            for lp in st.keys_in_this_leaf.drain(..) {
+            pb.PutInt16 (count_keys_in_this_leaf as u16);
+
+            fn f(pb: &mut PageBuilder, prefixLen: usize, lp: &LeafPair) {
                 match lp.kLoc {
                     KeyLocation::Inline => {
                         pb.PutByte(0u8); // flags
                         pb.PutVarint(lp.key.len() as u64);
-                        pb.PutArray(&lp.key[st.prefixLen .. lp.key.len()]);
+                        pb.PutArray(&lp.key[prefixLen .. lp.key.len()]);
                     },
                     KeyLocation::Overflowed(kpage) => {
                         pb.PutByte(ValueFlag::FLAG_OVERFLOW);
@@ -1338,9 +1337,19 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
                         pb.PutInt32(vpage);
                     },
                 }
-                last = Some(lp)
             }
-            last.unwrap().key
+
+            // deal with all the keys except the last one
+            for lp in st.keys_in_this_leaf.drain(0 .. count_keys_in_this_leaf-1) {
+                f(pb, st.prefixLen, &lp);
+            }
+            assert!(st.keys_in_this_leaf.len() == 1);
+
+            let lp = st.keys_in_this_leaf.remove(0); 
+            assert!(st.keys_in_this_leaf.len() == 0);
+
+            f(pb, st.prefixLen, &lp);
+            lp.key
         }
 
         fn writeLeaf<SeekWrite>(st: &mut LeafState, 
@@ -1653,7 +1662,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
     }
 
     fn writeParentNodes<SeekWrite>(startingBlk: PageBlock, 
-                                   children: &[pgitem],
+                                   children: &mut Vec<pgitem>,
                                    pgsz: usize,
                                    fs: &mut SeekWrite,
                                    pageManager: &mut IPages,
@@ -1825,7 +1834,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
         let mut blk = blkAfterLeaves;
         let mut children = leaves;
         loop {
-            let (newBlk,newChildren) = try!(writeParentNodes(blk, &children, pgsz, fs, pageManager, &mut token, lastLeaf, firstLeaf, &mut pb));
+            let (newBlk,newChildren) = try!(writeParentNodes(blk, &mut children, pgsz, fs, pageManager, &mut token, lastLeaf, firstLeaf, &mut pb));
             blk = newBlk;
             children = newChildren;
             if children.len()==1 {
