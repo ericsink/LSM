@@ -735,7 +735,7 @@ enum Direction {
 }
 
 struct MultiCursor { 
-    subcursors : Box<[myCursor]>, 
+    subcursors : Box<[SegmentCursor]>, 
     cur : Option<usize>, 
     // TODO max number of subcursors?  u8 is probably enough. 
     // but array indexing is supposed to be usize.
@@ -743,7 +743,7 @@ struct MultiCursor {
 }
 
 impl MultiCursor {
-    fn find(&self, compare_func : &Fn(&myCursor,&myCursor) -> Ordering) -> Option<usize> {
+    fn find(&self, compare_func : &Fn(&SegmentCursor,&SegmentCursor) -> Ordering) -> Option<usize> {
         if self.subcursors.is_empty() {
             None
         } else {
@@ -770,16 +770,16 @@ impl MultiCursor {
     }
 
     fn findMin(&self) -> Option<usize> {
-        let compare_func = |a: &myCursor,b: &myCursor| a.KeyCompare(&*b.Key());
+        let compare_func = |a: &SegmentCursor,b: &SegmentCursor| a.KeyCompare(&*b.Key());
         self.find(&compare_func)
     }
 
     fn findMax(&self) -> Option<usize> {
-        let compare_func = |a: &myCursor,b: &myCursor| b.KeyCompare(&*a.Key());
+        let compare_func = |a: &SegmentCursor,b: &SegmentCursor| b.KeyCompare(&*a.Key());
         self.find(&compare_func)
     }
 
-    fn Create(subs: Vec<myCursor>) -> MultiCursor {
+    fn Create(subs: Vec<SegmentCursor>) -> MultiCursor {
         let s = subs.into_boxed_slice();
         MultiCursor { subcursors: s, cur: None, dir: Direction::WANDERING }
     }
@@ -2020,7 +2020,7 @@ fn readOverflow(path: &str, pgsz: usize, firstPage: PageNum, buf: &mut [u8]) -> 
     utils::ReadFully(&mut ostrm, buf)
 }
 
-struct myCursor {
+struct SegmentCursor {
     path: String,
     fs: File,
     len: u64,
@@ -2036,13 +2036,13 @@ struct myCursor {
     lastLeaf: PageNum,
 }
 
-impl myCursor {
-    fn new(path: &str, pgsz: usize, rootPage: PageNum) -> io::Result<myCursor> {
+impl SegmentCursor {
+    fn new(path: &str, pgsz: usize, rootPage: PageNum) -> io::Result<SegmentCursor> {
         let mut f = try!(OpenOptions::new()
                 .read(true)
                 .open(path));
         let len = try!(seek_len(&mut f));
-        let mut res = myCursor {
+        let mut res = SegmentCursor {
             path: String::from_str(path),
             fs: f,
             len: len,
@@ -2433,13 +2433,13 @@ impl myCursor {
 
 }
 
-impl Drop for myCursor {
+impl Drop for SegmentCursor {
     fn drop(&mut self) {
         // TODO
     }
 }
 
-impl ICursor for myCursor {
+impl ICursor for SegmentCursor {
     fn IsValid(&self) -> bool {
         self.leafIsValid()
     }
@@ -2543,8 +2543,8 @@ impl ICursor for myCursor {
 
 }
 
-fn OpenCursor(path: &str, pgsz: usize, rootPage: PageNum) -> io::Result<myCursor> {
-    let csr = try!(myCursor::new(path, pgsz, rootPage));
+fn OpenCursor(path: &str, pgsz: usize, rootPage: PageNum) -> io::Result<SegmentCursor> {
+    let csr = try!(SegmentCursor::new(path, pgsz, rootPage));
     Ok(csr)
 }
 
@@ -3045,7 +3045,7 @@ impl db {
         Ok(())
     }
 
-    fn getCursor(&self, segs: &HashMap<Guid,SegmentInfo>, g: Guid) -> io::Result<myCursor> {
+    fn getCursor(&self, segs: &HashMap<Guid,SegmentInfo>, g: Guid) -> io::Result<SegmentCursor> {
         let seg = segs.get(&g).unwrap();
         let rootPage = seg.root;
         /* TODO
