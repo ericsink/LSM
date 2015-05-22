@@ -18,6 +18,7 @@
 #![feature(collections)]
 #![feature(box_syntax)]
 #![feature(convert)]
+#![feature(collections_drain)]
 
 // TODO turn the following warnings back on later
 #![allow(non_snake_case)]
@@ -1296,7 +1297,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
         // 4 for lastInt32 (which isn't in pb.Available)
         let LEAF_PAGE_OVERHEAD = 2 + 4 + 2 + 4;
 
-        fn buildLeaf(st: &LeafState, pb: &mut PageBuilder) {
+        fn buildLeaf(st: &mut LeafState, pb: &mut PageBuilder) -> Box<[u8]> {
             pb.Reset();
             pb.PutByte(PageType::LEAF_NODE);
             pb.PutByte(0u8); // flags
@@ -1311,7 +1312,8 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
             pb.PutInt16 (st.keys_in_this_leaf.len() as u16);
             // TODO this loop could take ownership of each LeafPair as long it
             // passes the last one back to the caller.
-            for lp in &st.keys_in_this_leaf {
+            let mut last = None;
+            for lp in st.keys_in_this_leaf.drain(..) {
                 match lp.kLoc {
                     KeyLocation::Inline => {
                         pb.PutByte(0u8); // flags
@@ -1339,7 +1341,9 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
                         pb.PutInt32(vpage);
                     },
                 }
+                last = Some(lp)
             }
+            last.unwrap().key
         }
 
         fn writeLeaf<SeekWrite>(st: &mut LeafState, 
@@ -1350,7 +1354,8 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
                                 pageManager: &mut IPages,
                                 token: &mut PendingSegment,
                                ) -> io::Result<()> where SeekWrite : Seek+Write { 
-            buildLeaf(st, pb);
+            let last_key = buildLeaf(st, pb);
+            assert!(st.keys_in_this_leaf.len() == 0);
             let thisPageNumber = st.blk.firstPage;
             let firstLeaf = if st.leaves.is_empty() { thisPageNumber } else { st.firstLeaf };
             let nextBlk = 
@@ -1368,14 +1373,9 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
             if nextBlk.firstPage != (thisPageNumber+1) {
                 try!(utils::SeekPage(fs, pgsz, nextBlk.firstPage));
             }
-            // TODO isn't there a better way to copy a slice?
-            let mut ba = Vec::new();
-            ba.push_all(&st.keys_in_this_leaf[st.keys_in_this_leaf.len()-1].key);
-            // TODO we just want ownership of the last key, without copying it.
-            let pg = pgitem {page:thisPageNumber, key:ba.into_boxed_slice()};
+            let pg = pgitem {page:thisPageNumber, key:last_key};
             st.leaves.push(pg);
             st.sofarLeaf = 0;
-            st.keys_in_this_leaf.clear();
             st.prevLeaf = thisPageNumber;
             st.prefixLen = 0;
             st.firstLeaf = firstLeaf;
