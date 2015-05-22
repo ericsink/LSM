@@ -41,3 +41,35 @@ wish I could control the units (always ns) are get them to display with commas o
 
 move everything into the same module.  myCursor should not be public.
 
+concurrency
+list of cursors
+want to be able to write multiple segments simultaneously.
+but access to the header and to housekeeping structures must be safe.
+
+streaming iterators
+
+database trait
+
+Just make LivingCursor the actual return?  get rid of dynamic dispatch?
+
+segment id, would be nice to make it u64
+
+same for pgnum but then storage is wasteful,
+want to store as a varint, but then space in the page calculations are
+more complicated.
+
+varint in a separate crate?
+
+better way to copy a slice?
+
+does IPages need Result?
+
+ICursor definitely needs Result
+
+reduce malloc
+
+expect instead of unwrap
+
+prefixlen > 255
+
+
