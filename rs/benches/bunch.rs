@@ -37,7 +37,7 @@ fn tempfile(base: &str) -> String {
 fn bunch(b: &mut test::Bencher) {
     fn f() -> std::io::Result<bool> {
         //println!("running");
-        let mut db = try!(lsm::Database::db::new(&tempfile("bunch"), lsm::DefaultSettings));
+        let mut db = try!(lsm::db::new(&tempfile("bunch"), lsm::DefaultSettings));
 
         const NUM : usize = 10000;
 

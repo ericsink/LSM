@@ -29,6 +29,12 @@ use std::io::Read;
 use std::io::Write;
 use std::io::SeekFrom;
 use std::cmp::Ordering;
+use std::io::ErrorKind;
+use std::fs::File;
+use std::fs::OpenOptions;
+use std::collections::HashMap;
+use std::collections::HashSet;
+
 
 const size_32: usize = 4; // TODO
 const size_16: usize = 2; // TODO
@@ -54,12 +60,12 @@ pub struct kvp {
     Value : Blob,
 }
 
-pub struct PendingSegment {
+struct PendingSegment {
     blockList: Vec<PageBlock>
 }
 
 #[derive(Hash,PartialEq,Eq,Copy,Clone)]
-pub struct PageBlock {
+struct PageBlock {
     firstPage: PageNum,
     lastPage: PageNum,
 }
@@ -107,7 +113,7 @@ impl Guid {
 }
 
 // TODO return Result
-pub trait IPages {
+trait IPages {
     fn PageSize(&self) -> usize;
     fn Begin(&mut self) -> PendingSegment;
     fn GetBlock(&mut self, token: &mut PendingSegment) -> PageBlock;
@@ -132,12 +138,12 @@ fn seek_len<R>(fs: &mut R) -> io::Result<u64> where R : Seek {
     Ok(len)
 }
 
-pub struct CursorIterator {
+struct CursorIterator {
     csr: Box<ICursor>,
 }
 
 impl CursorIterator {
-    pub fn new(it: Box<ICursor>) -> CursorIterator {
+    fn new(it: Box<ICursor>) -> CursorIterator {
         CursorIterator { csr: it }
     }
 }
@@ -728,13 +734,13 @@ enum Direction {
 }
 
 struct MultiCursor { 
-    subcursors : Box<[bt::myCursor]>, 
+    subcursors : Box<[myCursor]>, 
     cur : Option<usize>, // TODO max number of subcursors?  u8 is probably enough. but array indexing is supposed to be usize.
     dir : Direction,
 }
 
 impl MultiCursor {
-    fn find(&self, compare_func : &Fn(&bt::myCursor,&bt::myCursor) -> Ordering) -> Option<usize> {
+    fn find(&self, compare_func : &Fn(&myCursor,&myCursor) -> Ordering) -> Option<usize> {
         if self.subcursors.is_empty() {
             None
         } else {
@@ -761,16 +767,16 @@ impl MultiCursor {
     }
 
     fn findMin(&self) -> Option<usize> {
-        let compare_func = |a:&bt::myCursor,b:&bt::myCursor| a.KeyCompare(&*b.Key());
+        let compare_func = |a:&myCursor,b:&myCursor| a.KeyCompare(&*b.Key());
         self.find(&compare_func)
     }
 
     fn findMax(&self) -> Option<usize> {
-        let compare_func = |a:&bt::myCursor,b:&bt::myCursor| b.KeyCompare(&*a.Key());
+        let compare_func = |a:&myCursor,b:&myCursor| b.KeyCompare(&*a.Key());
         self.find(&compare_func)
     }
 
-    fn Create(subs: Vec<bt::myCursor>) -> MultiCursor {
+    fn Create(subs: Vec<myCursor>) -> MultiCursor {
         let s = subs.into_boxed_slice();
         MultiCursor { subcursors: s, cur: None, dir: Direction::WANDERING }
     }
@@ -928,7 +934,7 @@ impl LivingCursor {
         }
     }
 
-    pub fn Create(ch : MultiCursor) -> LivingCursor {
+    fn Create(ch : MultiCursor) -> LivingCursor {
         LivingCursor { chain : ch }
     }
 }
@@ -991,14 +997,6 @@ impl ICursor for LivingCursor {
 
 }
 
-mod bt {
-
-    use std::io::Write;
-    use std::collections::HashMap;
-
-    use super::PageBlock;
-    use super::PageNum;
-
     mod PageType {
         pub const LEAF_NODE: u8 = 1;
         pub const PARENT_NODE: u8 = 2;
@@ -1058,21 +1056,7 @@ mod bt {
         blk : PageBlock,
     }
 
-    use super::utils;
-    use super::IPages;
-    use super::kvp;
-    use super::PageBuilder;
-    use std::io;
-    use std::io::Read;
-    use std::io::Seek;
-    use super::PendingSegment;
-    use super::Varint;
-    use super::Blob;
-    use super::bcmp;
-    use super::Guid;
-    use super::size_32;
-
-    pub fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite, 
+    fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite, 
                                                                 pageManager: &mut IPages, 
                                                                 source: I,
                                                                ) -> io::Result<(Guid,PageNum)> where I:Iterator<Item=kvp>, SeekWrite : Seek+Write {
@@ -1827,18 +1811,6 @@ mod bt {
         Ok((g,rootPage))
     }
 
-    use std::io::SeekFrom;
-    use std::io::Error;
-    use std::io::ErrorKind;
-    use std::fs::File;
-    use std::fs::OpenOptions;
-    use super::SegmentInfo;
-    use super::PageBuffer;
-    use std::cmp::min;
-    use super::read_u32_be;
-    use super::SeekOp;
-    use super::ICursor;
-
     struct myOverflowReadStream {
         fs: File,
         len: usize, // same type as ValueLength(), max len of a single value
@@ -1996,7 +1968,7 @@ mod bt {
                         } else {
                             lastDataPageInThisBlock - theDataPage + 1
                         };
-                    let numPagesToFetch = min(numPagesWanted, numPagesAvailable) as PageNum;
+                    let numPagesToFetch = std::cmp::min(numPagesWanted, numPagesAvailable) as PageNum;
                     let bytesToFetch = {
                         let bytesToFetch = (numPagesToFetch as usize) * self.buf.len();
                         let available = self.len - self.sofarOverall;
@@ -2015,8 +1987,8 @@ mod bt {
                     self.sofarThisPage = self.buf.len();
                     Ok(bytesToFetch)
                 } else {
-                    let available = min(self.bytesOnThisPage - self.sofarThisPage, self.len - self.sofarOverall);
-                    let num = min(available, wanted);
+                    let available = std::cmp::min(self.bytesOnThisPage - self.sofarThisPage, self.len - self.sofarOverall);
+                    let num = std::cmp::min(available, wanted);
                     for i in 0 .. num {
                         ba[offset+i] = self.buf[self.offsetOnThisPage + self.sofarThisPage + i];
                     }
@@ -2044,8 +2016,7 @@ mod bt {
         utils::ReadFully(&mut ostrm, buf)
     }
 
-    // TODO not pub.  rename this too.
-    pub struct myCursor {
+    struct myCursor {
         path: String,
         fs: File,
         len: u64,
@@ -2060,8 +2031,6 @@ mod bt {
         firstLeaf: PageNum,
         lastLeaf: PageNum,
     }
-
-    use super::seek_len;
 
     impl myCursor {
         fn new(path: &str, pgsz: usize, rootPage: PageNum) -> io::Result<myCursor> {
@@ -2466,7 +2435,6 @@ mod bt {
         }
     }
 
-    use std::cmp::Ordering;
     impl ICursor for myCursor {
         fn IsValid(&self) -> bool {
             self.leafIsValid()
@@ -2571,14 +2539,10 @@ mod bt {
 
     }
 
-    pub fn OpenCursor(path: &str, pgsz: usize, rootPage: PageNum) -> io::Result<myCursor> {
+    fn OpenCursor(path: &str, pgsz: usize, rootPage: PageNum) -> io::Result<myCursor> {
         let csr = try!(myCursor::new(path, pgsz, rootPage));
         Ok(csr)
     }
-
-}
-
-use std::collections::HashMap;
 
 #[derive(Clone)]
 struct HeaderData {
@@ -2596,32 +2560,6 @@ struct SimplePageManager {
     pgsz : usize,
     nextPage : PageNum,
 }
-
-pub mod Database {
-    use std::io;
-    use std::io::Read;
-    use std::io::Seek;
-    use std::io::SeekFrom;
-    use std::io::Write;
-    use std::io::ErrorKind;
-    use std::fs::File;
-    use std::fs::OpenOptions;
-    use std::collections::HashMap;
-    use std::collections::HashSet;
-    use super::utils;
-    use super::SegmentInfo;
-    use super::Guid;
-    use super::PageBuffer;
-    use super::PageBuilder;
-    use super::Varint;
-    use super::PageBlock;
-    use super::HeaderData;
-    use super::DbSettings;
-    use super::seek_len;
-    use super::ICursor;
-    use super::MultiCursor;
-    use super::LivingCursor;
-    use super::PageNum;
 
     const HEADER_SIZE_IN_BYTES: usize = 4096;
 
@@ -2663,7 +2601,7 @@ pub mod Database {
         }
     }
 
-    impl IPages for super::SimplePageManager {
+    impl IPages for SimplePageManager {
         fn PageSize(&self) -> usize {
             self.pgsz
         }
@@ -2869,6 +2807,7 @@ pub mod Database {
         blocks
     }
 
+    // TODO rename this
     pub struct db {
         path: String,
         pgsz: usize,
@@ -2882,11 +2821,6 @@ pub mod Database {
         pendingMerges: HashMap<Guid,Vec<Guid>>,
         // TODO cursors: HashMap<Guid,Vec<Box<ICursor>>>,
     }
-
-    use super::kvp;
-    use super::bt;
-    use super::CursorIterator;
-    use super::Blob;
 
     impl db {
         pub fn new(path : &str, settings : DbSettings) -> io::Result<db> {
@@ -3107,7 +3041,7 @@ pub mod Database {
             Ok(())
         }
 
-        fn getCursor(&self, segs: &HashMap<Guid,SegmentInfo>, g: Guid) -> io::Result<bt::myCursor> {
+        fn getCursor(&self, segs: &HashMap<Guid,SegmentInfo>, g: Guid) -> io::Result<myCursor> {
             let seg = segs.get(&g).unwrap();
             let rootPage = seg.root;
             /* TODO
@@ -3130,7 +3064,7 @@ pub mod Database {
                 )
                 //printfn "done with cursor %O" g 
             */
-            let csr = try!(super::bt::OpenCursor(&self.path, self.pgsz, rootPage));
+            let csr = try!(OpenCursor(&self.path, self.pgsz, rootPage));
             // note that getCursor is (and must be) only called from within
             // lock critSectionCursors
             /* TODO
@@ -3221,14 +3155,12 @@ pub mod Database {
         // TODO bad fn name
         pub fn WriteSegmentFromSortedSequence<I>(&mut self, source: I) -> io::Result<Guid> where I:Iterator<Item=kvp> {
             let mut fs = try!(self.OpenForWriting());
-            let (g,_) = try!(bt::CreateFromSortedSequenceOfKeyValuePairs(&mut fs, self, source));
+            let (g,_) = try!(CreateFromSortedSequenceOfKeyValuePairs(&mut fs, self, source));
             Ok(g)
         }
 
         // TODO bad fn name
         pub fn WriteSegment(&mut self, pairs: HashMap<Box<[u8]>,Box<[u8]>>) -> io::Result<Guid> {
-            use super::bcmp;
-
             let mut a : Vec<(Box<[u8]>,Box<[u8]>)> = pairs.into_iter().collect();
 
             a.sort_by(|a,b| {
@@ -3241,14 +3173,12 @@ pub mod Database {
                 kvp {Key:k, Value:Blob::Array(v)}
             });
             let mut fs = try!(self.OpenForWriting());
-            let (g,_) = try!(bt::CreateFromSortedSequenceOfKeyValuePairs(&mut fs, self, source));
+            let (g,_) = try!(CreateFromSortedSequenceOfKeyValuePairs(&mut fs, self, source));
             Ok(g)
         }
 
         // TODO bad fn name
         pub fn WriteSegment2(&mut self, pairs: HashMap<Box<[u8]>,Blob>) -> io::Result<Guid> {
-            use super::bcmp;
-
             let mut a : Vec<(Box<[u8]>,Blob)> = pairs.into_iter().collect();
 
             a.sort_by(|a,b| {
@@ -3261,7 +3191,7 @@ pub mod Database {
                 kvp {Key:k, Value:v}
             });
             let mut fs = try!(self.OpenForWriting());
-            let (g,_) = try!(bt::CreateFromSortedSequenceOfKeyValuePairs(&mut fs, self, source));
+            let (g,_) = try!(CreateFromSortedSequenceOfKeyValuePairs(&mut fs, self, source));
             Ok(g)
         }
 
@@ -3281,7 +3211,7 @@ pub mod Database {
             let mut mc = MultiCursor::Create(clist);
             let mut fs = try!(self.OpenForWriting());
             mc.First();
-            let (g,_) = try!(bt::CreateFromSortedSequenceOfKeyValuePairs(&mut fs, self, CursorIterator::new(box mc)));
+            let (g,_) = try!(CreateFromSortedSequenceOfKeyValuePairs(&mut fs, self, CursorIterator::new(box mc)));
             //printfn "merged %A to get %A" segs g
             self.pendingMerges.insert(g, segs);
             Ok(g)
@@ -3363,9 +3293,6 @@ pub mod Database {
 
     }
 
-    use super::IPages;
-    use super::PendingSegment;
-
     impl IPages for db {
         fn PageSize(&self) -> usize {
             self.pgsz
@@ -3394,8 +3321,6 @@ pub mod Database {
         }
 
     }
-
-}
 
 // ----------------------------------------------------------------
 
