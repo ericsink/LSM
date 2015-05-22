@@ -93,7 +93,7 @@ impl Guid {
         Guid { a: ba }
     }
 
-    fn bytes() -> io::Result<[u8;16]> {
+    fn bytes() -> io::Result<[u8; 16]> {
         use std::fs::OpenOptions;
         let mut f = try!(OpenOptions::new()
                 .read(true)
@@ -107,7 +107,7 @@ impl Guid {
         Guid { a:Guid::bytes().unwrap() } // TODO kinda silly.  use the uuid crate.
     }
 
-    fn ToByteArray(&self) -> [u8;16] {
+    fn ToByteArray(&self) -> [u8; 16] {
         self.a
     }
 }
@@ -997,256 +997,255 @@ impl ICursor for LivingCursor {
 
 }
 
-    mod PageType {
-        pub const LEAF_NODE: u8 = 1;
-        pub const PARENT_NODE: u8 = 2;
-        pub const OVERFLOW_NODE: u8 = 3;
-    }
+mod PageType {
+    pub const LEAF_NODE: u8 = 1;
+    pub const PARENT_NODE: u8 = 2;
+    pub const OVERFLOW_NODE: u8 = 3;
+}
 
-    mod ValueFlag {
-        pub const FLAG_OVERFLOW: u8 = 1;
-        pub const FLAG_TOMBSTONE: u8 = 2;
-    }
+mod ValueFlag {
+    pub const FLAG_OVERFLOW: u8 = 1;
+    pub const FLAG_TOMBSTONE: u8 = 2;
+}
 
-    mod PageFlag {
-        pub const FLAG_ROOT_NODE: u8 = 1;
-        pub const FLAG_BOUNDARY_NODE: u8 = 2;
-        pub const FLAG_ENDS_ON_BOUNDARY: u8 = 3;
-    }
+mod PageFlag {
+    pub const FLAG_ROOT_NODE: u8 = 1;
+    pub const FLAG_BOUNDARY_NODE: u8 = 2;
+    pub const FLAG_ENDS_ON_BOUNDARY: u8 = 3;
+}
 
-    #[derive(Debug)]
-    struct pgitem {
-        page : PageNum,
-        key : Box<[u8]>, // TODO reference instead of box?
-    }
+#[derive(Debug)]
+struct pgitem {
+    page : PageNum,
+    key : Box<[u8]>, // TODO reference instead of box?
+}
 
-    struct ParentState {
-        sofar : usize,
-        nextGeneration : Vec<pgitem>,
-        blk : PageBlock,
-    }
+struct ParentState {
+    sofar : usize,
+    nextGeneration : Vec<pgitem>,
+    blk : PageBlock,
+}
 
-    // TODO gratuitously different names of the items in these
-    // two unions
+// TODO gratuitously different names of the items in these
+// two unions
 
-    enum KeyLocation {
-        Inline,
-        Overflow(PageNum),
-    }
+enum KeyLocation {
+    Inline,
+    Overflow(PageNum),
+}
 
-    enum ValueLocation {
-        Tombstone,
-        Buffer(Box<[u8]>), // TODO reference instead of box?
-        Overflowed(usize,PageNum),
-    }
+enum ValueLocation {
+    Tombstone,
+    Buffer(Box<[u8]>), // TODO reference instead of box?
+    Overflowed(usize,PageNum),
+}
 
-    struct LeafPair {
-        key : Box<[u8]>,
-        kLoc : KeyLocation,
-        vLoc : ValueLocation,
-    }
+struct LeafPair {
+    key : Box<[u8]>,
+    kLoc : KeyLocation,
+    vLoc : ValueLocation,
+}
 
-    struct LeafState {
-        sofarLeaf : usize,
-        keys : Vec<Box<LeafPair>>,
-        prevLeaf : PageNum,
-        prefixLen : usize,
-        firstLeaf : PageNum,
-        leaves : Vec<pgitem>,
-        blk : PageBlock,
-    }
+struct LeafState {
+    sofarLeaf : usize,
+    keys : Vec<Box<LeafPair>>,
+    prevLeaf : PageNum,
+    prefixLen : usize,
+    firstLeaf : PageNum,
+    leaves : Vec<pgitem>,
+    blk : PageBlock,
+}
 
-    fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite, 
-                                                                pageManager: &mut IPages, 
-                                                                source: I,
-                                                               ) -> io::Result<(Guid,PageNum)> where I:Iterator<Item=kvp>, SeekWrite : Seek+Write {
+fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite, 
+                                                            pageManager: &mut IPages, 
+                                                            source: I,
+                                                           ) -> io::Result<(Guid,PageNum)> where I:Iterator<Item=kvp>, SeekWrite : Seek+Write {
 
-        fn writeOverflow<SeekWrite>(startingBlock: PageBlock, 
-                                    ba: &mut Read, 
-                                    pageManager: &mut IPages, 
-                                    fs: &mut SeekWrite
-                                   ) -> io::Result<(usize,PageBlock)> where SeekWrite : Seek+Write {
+    fn writeOverflow<SeekWrite>(startingBlock: PageBlock, 
+                                ba: &mut Read, 
+                                pageManager: &mut IPages, 
+                                fs: &mut SeekWrite
+                               ) -> io::Result<(usize,PageBlock)> where SeekWrite : Seek+Write {
 
-            fn buildFirstPage(ba:&mut Read, pbFirstOverflow : &mut PageBuilder, pgsz: usize) -> io::Result<(usize,bool)> {
-                pbFirstOverflow.Reset();
-                pbFirstOverflow.PutByte(PageType::OVERFLOW_NODE);
-                pbFirstOverflow.PutByte(0u8); // starts 0, may be changed later
-                let room = pgsz - (2 + size_32);
-                // something will be put in lastInt32 later
-                match pbFirstOverflow.PutStream2(ba, room) {
-                    Ok(put) => Ok((put, put<room)),
-                    Err(e) => Err(e),
-                }
-            };
-
-            fn buildRegularPage(ba:&mut Read, pbOverflow : &mut PageBuilder, pgsz: usize) -> io::Result<(usize,bool)> {
-                pbOverflow.Reset();
-                let room = pgsz;
-                match pbOverflow.PutStream2(ba, room) {
-                    Ok(put) => Ok((put, put<room)),
-                    Err(e) => Err(e),
-                }
-            };
-
-            fn buildBoundaryPage(ba:&mut Read, pbOverflow : &mut PageBuilder, pgsz: usize) -> io::Result<(usize,bool)> {
-                pbOverflow.Reset();
-                let room = pgsz - size_32;
-                // something will be put in lastInt32 before the page is written
-                match pbOverflow.PutStream2(ba, room) {
-                    Ok(put) => Ok((put, put<room)),
-                    Err(e) => Err(e),
-                }
+        fn buildFirstPage(ba:&mut Read, pbFirstOverflow : &mut PageBuilder, pgsz: usize) -> io::Result<(usize,bool)> {
+            pbFirstOverflow.Reset();
+            pbFirstOverflow.PutByte(PageType::OVERFLOW_NODE);
+            pbFirstOverflow.PutByte(0u8); // starts 0, may be changed later
+            let room = pgsz - (2 + size_32);
+            // something will be put in lastInt32 later
+            match pbFirstOverflow.PutStream2(ba, room) {
+                Ok(put) => Ok((put, put<room)),
+                Err(e) => Err(e),
             }
+        };
 
-            fn writeRegularPages<SeekWrite>(max: PageNum, 
-                                            sofar: usize, 
-                                            pb: &mut PageBuilder, 
-                                            fs: &mut SeekWrite, 
-                                            ba: &mut Read, 
-                                            pgsz: usize
-                                           ) -> io::Result<(PageNum,usize,bool)> where SeekWrite : Seek+Write {
-                let mut i = 0;
-                let mut sofar = sofar;
-                loop {
-                    if i < max {
-                        let (put, finished) = try!(buildRegularPage(ba, pb, pgsz));
-                        if put==0 {
-                            return Ok((i, sofar, true));
-                        } else {
-                            sofar = sofar + put;
-                            try!(pb.Write(fs));
-                            if finished {
-                                return Ok((i+1, sofar, true));
-                            } else {
-                                i = i + 1;
-                            }
-                        }
-                    } else {
-                        return Ok((i, sofar, false));
-                    }
-                }
+        fn buildRegularPage(ba:&mut Read, pbOverflow : &mut PageBuilder, pgsz: usize) -> io::Result<(usize,bool)> {
+            pbOverflow.Reset();
+            let room = pgsz;
+            match pbOverflow.PutStream2(ba, room) {
+                Ok(put) => Ok((put, put<room)),
+                Err(e) => Err(e),
             }
+        };
 
-            // TODO misnamed
-            fn writeOneBlock<SeekWrite>(param_sofar: usize, 
-                                        param_firstBlk: PageBlock,
+        fn buildBoundaryPage(ba:&mut Read, pbOverflow : &mut PageBuilder, pgsz: usize) -> io::Result<(usize,bool)> {
+            pbOverflow.Reset();
+            let room = pgsz - size_32;
+            // something will be put in lastInt32 before the page is written
+            match pbOverflow.PutStream2(ba, room) {
+                Ok(put) => Ok((put, put<room)),
+                Err(e) => Err(e),
+            }
+        }
+
+        fn writeRegularPages<SeekWrite>(max: PageNum, 
+                                        sofar: usize, 
+                                        pb: &mut PageBuilder, 
                                         fs: &mut SeekWrite, 
                                         ba: &mut Read, 
-                                        pgsz: usize,
-                                        pbOverflow: &mut PageBuilder,
-                                        pbFirstOverflow: &mut PageBuilder,
-                                        pageManager: &mut IPages,
-                                        token: &mut PendingSegment
-                                       ) -> io::Result<(usize,PageBlock)> where SeekWrite : Seek+Write {
-                // each trip through this loop will write out one
-                // block, starting with the overflow first page,
-                // followed by zero-or-more "regular" overflow pages,
-                // which have no header.  we'll stop at the block boundary,
-                // either because we land there or because the whole overflow
-                // won't fit and we have to continue into the next block.
-                // the boundary page will be like a regular overflow page,
-                // headerless, but it is four bytes smaller.
-                let mut loop_sofar = param_sofar;
-                let mut loop_firstBlk = param_firstBlk;
-                loop {
-                    let sofar = loop_sofar;
-                    let firstBlk = loop_firstBlk;
-                    let (putFirst,finished) = try!(buildFirstPage (ba, pbFirstOverflow, pgsz));
-                    if putFirst==0 { 
-                        return Ok((sofar, firstBlk));
+                                        pgsz: usize
+                                       ) -> io::Result<(PageNum,usize,bool)> where SeekWrite : Seek+Write {
+            let mut i = 0;
+            let mut sofar = sofar;
+            loop {
+                if i < max {
+                    let (put, finished) = try!(buildRegularPage(ba, pb, pgsz));
+                    if put==0 {
+                        return Ok((i, sofar, true));
                     } else {
-                        // note that we haven't written the first page yet.  we may have to fix
-                        // a couple of things before it gets written out.
-                        let sofar = sofar + putFirst;
-                        if firstBlk.firstPage == firstBlk.lastPage {
-                            // the first page landed on a boundary.
-                            // we can just set the flag and write it now.
-                            pbFirstOverflow.SetPageFlag(PageFlag::FLAG_BOUNDARY_NODE);
-                            let blk = pageManager.GetBlock(&mut *token);
-                            pbFirstOverflow.SetLastInt32(blk.firstPage);
-                            try!(pbFirstOverflow.Write(fs));
-                            try!(utils::SeekPage(fs, pgsz, blk.firstPage));
-                            if !finished {
-                                loop_sofar = sofar;
-                                loop_firstBlk = blk;
-                            } else {
-                                return Ok((sofar, blk));
-                            }
+                        sofar = sofar + put;
+                        try!(pb.Write(fs));
+                        if finished {
+                            return Ok((i+1, sofar, true));
                         } else {
-                            let firstRegularPageNumber = firstBlk.firstPage + 1;
+                            i = i + 1;
+                        }
+                    }
+                } else {
+                    return Ok((i, sofar, false));
+                }
+            }
+        }
+
+        // TODO misnamed
+        fn writeOneBlock<SeekWrite>(param_sofar: usize, 
+                                    param_firstBlk: PageBlock,
+                                    fs: &mut SeekWrite, 
+                                    ba: &mut Read, 
+                                    pgsz: usize,
+                                    pbOverflow: &mut PageBuilder,
+                                    pbFirstOverflow: &mut PageBuilder,
+                                    pageManager: &mut IPages,
+                                    token: &mut PendingSegment
+                                   ) -> io::Result<(usize,PageBlock)> where SeekWrite : Seek+Write {
+            // each trip through this loop will write out one
+            // block, starting with the overflow first page,
+            // followed by zero-or-more "regular" overflow pages,
+            // which have no header.  we'll stop at the block boundary,
+            // either because we land there or because the whole overflow
+            // won't fit and we have to continue into the next block.
+            // the boundary page will be like a regular overflow page,
+            // headerless, but it is four bytes smaller.
+            let mut loop_sofar = param_sofar;
+            let mut loop_firstBlk = param_firstBlk;
+            loop {
+                let sofar = loop_sofar;
+                let firstBlk = loop_firstBlk;
+                let (putFirst,finished) = try!(buildFirstPage (ba, pbFirstOverflow, pgsz));
+                if putFirst==0 { 
+                    return Ok((sofar, firstBlk));
+                } else {
+                    // note that we haven't written the first page yet.  we may have to fix
+                    // a couple of things before it gets written out.
+                    let sofar = sofar + putFirst;
+                    if firstBlk.firstPage == firstBlk.lastPage {
+                        // the first page landed on a boundary.
+                        // we can just set the flag and write it now.
+                        pbFirstOverflow.SetPageFlag(PageFlag::FLAG_BOUNDARY_NODE);
+                        let blk = pageManager.GetBlock(&mut *token);
+                        pbFirstOverflow.SetLastInt32(blk.firstPage);
+                        try!(pbFirstOverflow.Write(fs));
+                        try!(utils::SeekPage(fs, pgsz, blk.firstPage));
+                        if !finished {
+                            loop_sofar = sofar;
+                            loop_firstBlk = blk;
+                        } else {
+                            return Ok((sofar, blk));
+                        }
+                    } else {
+                        let firstRegularPageNumber = firstBlk.firstPage + 1;
+                        if finished {
+                            // the first page is also the last one
+                            pbFirstOverflow.SetLastInt32(0); // offset to last used page in this block, which is this one
+                            try!(pbFirstOverflow.Write(fs));
+                            return Ok((sofar, PageBlock::new(firstRegularPageNumber,firstBlk.lastPage)));
+                        } else {
+                            // we need to write more pages,
+                            // until the end of the block,
+                            // or the end of the stream, 
+                            // whichever comes first
+
+                            try!(utils::SeekPage(fs, pgsz, firstRegularPageNumber));
+
+                            // availableBeforeBoundary is the number of pages until the boundary,
+                            // NOT counting the boundary page, and the first page in the block
+                            // has already been accounted for, so we're just talking about data pages.
+                            let availableBeforeBoundary = 
+                                if firstBlk.lastPage > 0 
+                                    { (firstBlk.lastPage - firstRegularPageNumber) }
+                                else 
+                                    { PageNum::max_value() }
+                                ;
+
+                            let (numRegularPages, sofar, finished) = 
+                                try!(writeRegularPages(availableBeforeBoundary, sofar, pbOverflow, fs, ba, pgsz));
+
                             if finished {
-                                // the first page is also the last one
-                                pbFirstOverflow.SetLastInt32(0); // offset to last used page in this block, which is this one
+                                // go back and fix the first page
+                                pbFirstOverflow.SetLastInt32(numRegularPages);
+                                try!(utils::SeekPage(fs, pgsz, firstBlk.firstPage));
                                 try!(pbFirstOverflow.Write(fs));
-                                return Ok((sofar, PageBlock::new(firstRegularPageNumber,firstBlk.lastPage)));
+                                // now reset to the next page in the block
+                                let blk = PageBlock::new(firstRegularPageNumber + numRegularPages, firstBlk.lastPage);
+                                try!(utils::SeekPage(fs, pgsz, blk.firstPage));
+                                return Ok((sofar,blk));
                             } else {
-                                // we need to write more pages,
-                                // until the end of the block,
-                                // or the end of the stream, 
-                                // whichever comes first
+                                // we need to write out a regular page except with a
+                                // boundary pointer in it.  and we need to set
+                                // FLAG_ENDS_ON_BOUNDARY on the first
+                                // overflow page in this block.
 
-                                try!(utils::SeekPage(fs, pgsz, firstRegularPageNumber));
-
-                                // availableBeforeBoundary is the number of pages until the boundary,
-                                // NOT counting the boundary page, and the first page in the block
-                                // has already been accounted for, so we're just talking about data pages.
-                                let availableBeforeBoundary = 
-                                    if firstBlk.lastPage > 0 
-                                        { (firstBlk.lastPage - firstRegularPageNumber) }
-                                    else 
-                                        { PageNum::max_value() }
-                                    ;
-
-                                let (numRegularPages, sofar, finished) = 
-                                    try!(writeRegularPages(availableBeforeBoundary, sofar, pbOverflow, fs, ba, pgsz));
-
-                                if finished {
+                                let (putBoundary,finished) = try!(buildBoundaryPage (ba, pbOverflow, pgsz));
+                                if putBoundary==0 {
                                     // go back and fix the first page
                                     pbFirstOverflow.SetLastInt32(numRegularPages);
                                     try!(utils::SeekPage(fs, pgsz, firstBlk.firstPage));
                                     try!(pbFirstOverflow.Write(fs));
+
                                     // now reset to the next page in the block
                                     let blk = PageBlock::new(firstRegularPageNumber + numRegularPages, firstBlk.lastPage);
-                                    try!(utils::SeekPage(fs, pgsz, blk.firstPage));
+                                    try!(utils::SeekPage(fs, pgsz, firstBlk.lastPage));
                                     return Ok((sofar,blk));
                                 } else {
-                                    // we need to write out a regular page except with a
-                                    // boundary pointer in it.  and we need to set
-                                    // FLAG_ENDS_ON_BOUNDARY on the first
-                                    // overflow page in this block.
+                                    // write the boundary page
+                                    let sofar = sofar + putBoundary;
+                                    let blk = pageManager.GetBlock(&mut *token);
+                                    pbOverflow.SetLastInt32(blk.firstPage);
+                                    try!(pbOverflow.Write(fs));
 
-                                    let (putBoundary,finished) = try!(buildBoundaryPage (ba, pbOverflow, pgsz));
-                                    if putBoundary==0 {
-                                        // go back and fix the first page
-                                        pbFirstOverflow.SetLastInt32(numRegularPages);
-                                        try!(utils::SeekPage(fs, pgsz, firstBlk.firstPage));
-                                        try!(pbFirstOverflow.Write(fs));
+                                    // go back and fix the first page
+                                    pbFirstOverflow.SetPageFlag(PageFlag::FLAG_ENDS_ON_BOUNDARY);
+                                    pbFirstOverflow.SetLastInt32(numRegularPages + 1);
+                                    try!(utils::SeekPage(fs, pgsz, firstBlk.firstPage));
+                                    try!(pbFirstOverflow.Write(fs));
 
-                                        // now reset to the next page in the block
-                                        let blk = PageBlock::new(firstRegularPageNumber + numRegularPages, firstBlk.lastPage);
-                                        try!(utils::SeekPage(fs, pgsz, firstBlk.lastPage));
-                                        return Ok((sofar,blk));
+                                    // now reset to the first page in the next block
+                                    try!(utils::SeekPage(fs, pgsz, blk.firstPage));
+                                    if finished {
+                                        loop_sofar = sofar;
+                                        loop_firstBlk = blk;
                                     } else {
-                                        // write the boundary page
-                                        let sofar = sofar + putBoundary;
-                                        let blk = pageManager.GetBlock(&mut *token);
-                                        pbOverflow.SetLastInt32(blk.firstPage);
-                                        try!(pbOverflow.Write(fs));
-
-                                        // go back and fix the first page
-                                        pbFirstOverflow.SetPageFlag(PageFlag::FLAG_ENDS_ON_BOUNDARY);
-                                        pbFirstOverflow.SetLastInt32(numRegularPages + 1);
-                                        try!(utils::SeekPage(fs, pgsz, firstBlk.firstPage));
-                                        try!(pbFirstOverflow.Write(fs));
-
-                                        // now reset to the first page in the next block
-                                        try!(utils::SeekPage(fs, pgsz, blk.firstPage));
-                                        if finished {
-                                            loop_sofar = sofar;
-                                            loop_firstBlk = blk;
-                                        } else {
-                                            return Ok((sofar,blk));
-                                        }
+                                        return Ok((sofar,blk));
                                     }
                                 }
                             }
@@ -1254,283 +1253,228 @@ impl ICursor for LivingCursor {
                     }
                 }
             }
-
-            let pgsz = pageManager.PageSize();
-            let mut token = pageManager.Begin();
-            let mut pbFirstOverflow = PageBuilder::new(pgsz);
-            let mut pbOverflow = PageBuilder::new(pgsz);
-
-            writeOneBlock(0, startingBlock, fs, ba, pgsz, &mut pbOverflow, &mut pbFirstOverflow, pageManager, &mut token)
         }
 
-        fn writeLeaves<I,SeekWrite>(leavesBlk:PageBlock,
-                                    pageManager: &mut IPages,
-                                    source: I,
-                                    vbuf: &mut [u8],
-                                    fs: &mut SeekWrite, 
-                                    pb: &mut PageBuilder,
-                                    token: &mut PendingSegment,
-                                    ) -> io::Result<(PageBlock,Vec<pgitem>,PageNum)> where I: Iterator<Item=kvp> , SeekWrite : Seek+Write {
-            // 2 for the page type and flags
-            // 4 for the prev page
-            // 2 for the stored count
-            // 4 for lastInt32 (which isn't in pb.Available)
-            let LEAF_PAGE_OVERHEAD = 2 + 4 + 2 + 4;
+        let pgsz = pageManager.PageSize();
+        let mut token = pageManager.Begin();
+        let mut pbFirstOverflow = PageBuilder::new(pgsz);
+        let mut pbOverflow = PageBuilder::new(pgsz);
 
-            fn buildLeaf(st: &LeafState, pb: &mut PageBuilder) {
-                pb.Reset();
-                pb.PutByte(PageType::LEAF_NODE);
-                pb.PutByte(0u8); // flags
-                pb.PutInt32 (st.prevLeaf); // prev page num.
-                // TODO prefixLen is one byte.  should it be two?
-                pb.PutByte(st.prefixLen as u8);
-                if st.prefixLen > 0 {
-                    pb.PutArray(&st.keys[0].key[0 .. st.prefixLen]);
+        writeOneBlock(0, startingBlock, fs, ba, pgsz, &mut pbOverflow, &mut pbFirstOverflow, pageManager, &mut token)
+    }
+
+    fn writeLeaves<I,SeekWrite>(leavesBlk:PageBlock,
+                                pageManager: &mut IPages,
+                                source: I,
+                                vbuf: &mut [u8],
+                                fs: &mut SeekWrite, 
+                                pb: &mut PageBuilder,
+                                token: &mut PendingSegment,
+                                ) -> io::Result<(PageBlock,Vec<pgitem>,PageNum)> where I: Iterator<Item=kvp> , SeekWrite : Seek+Write {
+        // 2 for the page type and flags
+        // 4 for the prev page
+        // 2 for the stored count
+        // 4 for lastInt32 (which isn't in pb.Available)
+        let LEAF_PAGE_OVERHEAD = 2 + 4 + 2 + 4;
+
+        fn buildLeaf(st: &LeafState, pb: &mut PageBuilder) {
+            pb.Reset();
+            pb.PutByte(PageType::LEAF_NODE);
+            pb.PutByte(0u8); // flags
+            pb.PutInt32 (st.prevLeaf); // prev page num.
+            // TODO prefixLen is one byte.  should it be two?
+            pb.PutByte(st.prefixLen as u8);
+            if st.prefixLen > 0 {
+                pb.PutArray(&st.keys[0].key[0 .. st.prefixLen]);
+            }
+            pb.PutInt16 (st.keys.len() as u16);
+            for lp in &st.keys {
+                match lp.kLoc {
+                    KeyLocation::Inline => {
+                        pb.PutByte(0u8); // flags
+                        pb.PutVarint(lp.key.len() as u64);
+                        pb.PutArray(&lp.key[st.prefixLen .. lp.key.len()]);
+                    },
+                    KeyLocation::Overflow(kpage) => {
+                        pb.PutByte(ValueFlag::FLAG_OVERFLOW);
+                        pb.PutVarint(lp.key.len() as u64);
+                        pb.PutInt32(kpage);
+                    },
                 }
-                pb.PutInt16 (st.keys.len() as u16);
-                for lp in &st.keys {
-                    match lp.kLoc {
-                        KeyLocation::Inline => {
-                            pb.PutByte(0u8); // flags
-                            pb.PutVarint(lp.key.len() as u64);
-                            pb.PutArray(&lp.key[st.prefixLen .. lp.key.len()]);
-                        },
-                        KeyLocation::Overflow(kpage) => {
-                            pb.PutByte(ValueFlag::FLAG_OVERFLOW);
-                            pb.PutVarint(lp.key.len() as u64);
-                            pb.PutInt32(kpage);
-                        },
-                    }
-                    match lp.vLoc {
-                        ValueLocation::Tombstone => {
-                            pb.PutByte(ValueFlag::FLAG_TOMBSTONE);
-                        },
-                        ValueLocation::Buffer (ref vbuf) => {
-                            pb.PutByte(0u8);
-                            pb.PutVarint(vbuf.len() as u64);
-                            pb.PutArray(&vbuf);
-                        },
-                        ValueLocation::Overflowed (vlen,vpage) => {
-                            pb.PutByte(ValueFlag::FLAG_OVERFLOW);
-                            pb.PutVarint(vlen as u64);
-                            pb.PutInt32(vpage);
-                        },
-                    }
+                match lp.vLoc {
+                    ValueLocation::Tombstone => {
+                        pb.PutByte(ValueFlag::FLAG_TOMBSTONE);
+                    },
+                    ValueLocation::Buffer (ref vbuf) => {
+                        pb.PutByte(0u8);
+                        pb.PutVarint(vbuf.len() as u64);
+                        pb.PutArray(&vbuf);
+                    },
+                    ValueLocation::Overflowed (vlen,vpage) => {
+                        pb.PutByte(ValueFlag::FLAG_OVERFLOW);
+                        pb.PutVarint(vlen as u64);
+                        pb.PutInt32(vpage);
+                    },
                 }
             }
+        }
 
-            fn writeLeaf<SeekWrite>(st: &mut LeafState, 
-                                    isRootPage: bool, 
-                                    pb: &mut PageBuilder, 
-                                    fs: &mut SeekWrite, 
-                                    pgsz: usize,
-                                    pageManager: &mut IPages,
-                                    token: &mut PendingSegment,
-                                   ) -> io::Result<()> where SeekWrite : Seek+Write { 
-                buildLeaf(st, pb);
-                let thisPageNumber = st.blk.firstPage;
-                let firstLeaf = if st.leaves.is_empty() { thisPageNumber } else { st.firstLeaf };
-                let nextBlk = 
-                    if isRootPage {
-                        PageBlock::new(thisPageNumber + 1, st.blk.lastPage)
-                    } else if thisPageNumber == st.blk.lastPage {
-                        pb.SetPageFlag(PageFlag::FLAG_BOUNDARY_NODE);
-                        let newBlk = pageManager.GetBlock(&mut *token);
-                        pb.SetLastInt32(newBlk.firstPage);
-                        newBlk
-                    } else {
-                        PageBlock::new(thisPageNumber + 1, st.blk.lastPage)
-                    };
-                try!(pb.Write(fs));
-                if nextBlk.firstPage != (thisPageNumber+1) {
-                    try!(utils::SeekPage(fs, pgsz, nextBlk.firstPage));
-                }
-                // TODO isn't there a better way to copy a slice?
-                let mut ba = Vec::new();
-                ba.push_all(&st.keys[st.keys.len()-1].key);
-                let pg = pgitem {page:thisPageNumber, key:ba.into_boxed_slice()};
-                st.leaves.push(pg);
-                st.sofarLeaf = 0;
-                st.keys = Vec::new();
-                st.prevLeaf = thisPageNumber;
-                st.prefixLen = 0;
-                st.firstLeaf = firstLeaf;
-                st.blk = nextBlk;
-                Ok(())
+        fn writeLeaf<SeekWrite>(st: &mut LeafState, 
+                                isRootPage: bool, 
+                                pb: &mut PageBuilder, 
+                                fs: &mut SeekWrite, 
+                                pgsz: usize,
+                                pageManager: &mut IPages,
+                                token: &mut PendingSegment,
+                               ) -> io::Result<()> where SeekWrite : Seek+Write { 
+            buildLeaf(st, pb);
+            let thisPageNumber = st.blk.firstPage;
+            let firstLeaf = if st.leaves.is_empty() { thisPageNumber } else { st.firstLeaf };
+            let nextBlk = 
+                if isRootPage {
+                    PageBlock::new(thisPageNumber + 1, st.blk.lastPage)
+                } else if thisPageNumber == st.blk.lastPage {
+                    pb.SetPageFlag(PageFlag::FLAG_BOUNDARY_NODE);
+                    let newBlk = pageManager.GetBlock(&mut *token);
+                    pb.SetLastInt32(newBlk.firstPage);
+                    newBlk
+                } else {
+                    PageBlock::new(thisPageNumber + 1, st.blk.lastPage)
+                };
+            try!(pb.Write(fs));
+            if nextBlk.firstPage != (thisPageNumber+1) {
+                try!(utils::SeekPage(fs, pgsz, nextBlk.firstPage));
             }
+            // TODO isn't there a better way to copy a slice?
+            let mut ba = Vec::new();
+            ba.push_all(&st.keys[st.keys.len()-1].key);
+            let pg = pgitem {page:thisPageNumber, key:ba.into_boxed_slice()};
+            st.leaves.push(pg);
+            st.sofarLeaf = 0;
+            st.keys = Vec::new();
+            st.prevLeaf = thisPageNumber;
+            st.prefixLen = 0;
+            st.firstLeaf = firstLeaf;
+            st.blk = nextBlk;
+            Ok(())
+        }
 
-            // TODO can the overflow page number become a varint?
-            const NEEDED_FOR_OVERFLOW_PAGE_NUMBER: usize = 4;
+        // TODO can the overflow page number become a varint?
+        const NEEDED_FOR_OVERFLOW_PAGE_NUMBER: usize = 4;
 
-            // the max limit of an inline key is when that key is the only
-            // one in the leaf, and its value is overflowed.
+        // the max limit of an inline key is when that key is the only
+        // one in the leaf, and its value is overflowed.
 
-            let pgsz = pageManager.PageSize();
-            let maxKeyInline = 
+        let pgsz = pageManager.PageSize();
+        let maxKeyInline = 
+            pgsz 
+            - LEAF_PAGE_OVERHEAD 
+            - 1 // prefixLen
+            - 1 // key flags
+            - Varint::SpaceNeededFor(pgsz as u64) // approx worst case inline key len
+            - 1 // value flags
+            - 9 // worst case varint value len
+            - NEEDED_FOR_OVERFLOW_PAGE_NUMBER; // overflowed value page
+
+        fn kLocNeed(k: &[u8], kloc: &KeyLocation, prefixLen: usize) -> usize {
+            let klen = k.len();
+            match *kloc {
+                KeyLocation::Inline => {
+                    1 + Varint::SpaceNeededFor(klen as u64) + klen - prefixLen
+                },
+                KeyLocation::Overflow(_) => {
+                    1 + Varint::SpaceNeededFor(klen as u64) + NEEDED_FOR_OVERFLOW_PAGE_NUMBER
+                },
+            }
+        }
+
+        fn vLocNeed (vloc: &ValueLocation) -> usize {
+            match *vloc {
+                ValueLocation::Tombstone => {
+                    1
+                },
+                ValueLocation::Buffer(ref vbuf) => {
+                    let vlen = vbuf.len();
+                    1 + Varint::SpaceNeededFor(vlen as u64) + vlen
+                },
+                ValueLocation::Overflowed(vlen,_) => {
+                    1 + Varint::SpaceNeededFor(vlen as u64) + NEEDED_FOR_OVERFLOW_PAGE_NUMBER
+                },
+            }
+        }
+
+        fn leafPairSize(prefixLen: usize, lp: &LeafPair) -> usize {
+            kLocNeed(&lp.key, &lp.kLoc, prefixLen)
+            +
+            vLocNeed(&lp.vLoc)
+        }
+
+        fn defaultPrefixLen(k:&[u8]) -> usize {
+            // TODO max prefix.  relative to page size?  must fit in byte.
+            if k.len() > 255 { 255 } else { k.len() }
+        }
+
+        // this is the body of writeLeaves
+        let mut st = LeafState {
+            sofarLeaf: 0,
+            firstLeaf: 0,
+            prevLeaf: 0,
+            keys:Vec::new(),
+            prefixLen: 0,
+            leaves:Vec::new(),
+            blk:leavesBlk,
+            };
+
+        for mut pair in source {
+            let k = pair.Key;
+            // assert k <> null
+            // but pair.Value might be null (a tombstone)
+
+            // TODO is it possible for this to conclude that the key must be overflowed
+            // when it would actually fit because of prefixing?
+
+            let (blkAfterKey,kloc) = 
+                if k.len() <= maxKeyInline {
+                    (st.blk, KeyLocation::Inline)
+                } else {
+                    let vPage = st.blk.firstPage;
+                    let (_,newBlk) = try!(writeOverflow(st.blk, &mut &*k, pageManager, fs));
+                    (newBlk, KeyLocation::Overflow(vPage))
+                };
+
+            // the max limit of an inline value is when the key is inline
+            // on a new page.
+
+            let availableOnNewPageAfterKey = 
                 pgsz 
                 - LEAF_PAGE_OVERHEAD 
                 - 1 // prefixLen
                 - 1 // key flags
-                - Varint::SpaceNeededFor(pgsz as u64) // approx worst case inline key len
+                - Varint::SpaceNeededFor(k.len() as u64)
+                - k.len() 
                 - 1 // value flags
-                - 9 // worst case varint value len
-                - NEEDED_FOR_OVERFLOW_PAGE_NUMBER; // overflowed value page
+                ;
 
-            fn kLocNeed(k: &[u8], kloc: &KeyLocation, prefixLen: usize) -> usize {
-                let klen = k.len();
-                match *kloc {
-                    KeyLocation::Inline => {
-                        1 + Varint::SpaceNeededFor(klen as u64) + klen - prefixLen
-                    },
-                    KeyLocation::Overflow(_) => {
-                        1 + Varint::SpaceNeededFor(klen as u64) + NEEDED_FOR_OVERFLOW_PAGE_NUMBER
-                    },
-                }
-            }
+            // availableOnNewPageAfterKey needs to accomodate the value and its length as a varint.
+            // it might already be <=0 because of the key length
 
-            fn vLocNeed (vloc: &ValueLocation) -> usize {
-                match *vloc {
-                    ValueLocation::Tombstone => {
-                        1
-                    },
-                    ValueLocation::Buffer(ref vbuf) => {
-                        let vlen = vbuf.len();
-                        1 + Varint::SpaceNeededFor(vlen as u64) + vlen
-                    },
-                    ValueLocation::Overflowed(vlen,_) => {
-                        1 + Varint::SpaceNeededFor(vlen as u64) + NEEDED_FOR_OVERFLOW_PAGE_NUMBER
-                    },
-                }
-            }
-
-            fn leafPairSize(prefixLen: usize, lp: &LeafPair) -> usize {
-                kLocNeed(&lp.key, &lp.kLoc, prefixLen)
-                +
-                vLocNeed(&lp.vLoc)
-            }
-
-            fn defaultPrefixLen(k:&[u8]) -> usize {
-                // TODO max prefix.  relative to page size?  must fit in byte.
-                if k.len() > 255 { 255 } else { k.len() }
-            }
-
-            // this is the body of writeLeaves
-            let mut st = LeafState {
-                sofarLeaf: 0,
-                firstLeaf: 0,
-                prevLeaf: 0,
-                keys:Vec::new(),
-                prefixLen: 0,
-                leaves:Vec::new(),
-                blk:leavesBlk,
+            let maxValueInline = 
+                if availableOnNewPageAfterKey > 0 {
+                    let neededForVarintLen = Varint::SpaceNeededFor(availableOnNewPageAfterKey as u64);
+                    let avail2 = availableOnNewPageAfterKey - neededForVarintLen;
+                    if avail2 > 0 { avail2 } else { 0 }
+                } else {
+                    0
                 };
 
-            for mut pair in source {
-                let k = pair.Key;
-                // assert k <> null
-                // but pair.Value might be null (a tombstone)
-
-                // TODO is it possible for this to conclude that the key must be overflowed
-                // when it would actually fit because of prefixing?
-
-                let (blkAfterKey,kloc) = 
-                    if k.len() <= maxKeyInline {
-                        (st.blk, KeyLocation::Inline)
-                    } else {
-                        let vPage = st.blk.firstPage;
-                        let (_,newBlk) = try!(writeOverflow(st.blk, &mut &*k, pageManager, fs));
-                        (newBlk, KeyLocation::Overflow(vPage))
-                    };
-
-                // the max limit of an inline value is when the key is inline
-                // on a new page.
-
-                let availableOnNewPageAfterKey = 
-                    pgsz 
-                    - LEAF_PAGE_OVERHEAD 
-                    - 1 // prefixLen
-                    - 1 // key flags
-                    - Varint::SpaceNeededFor(k.len() as u64)
-                    - k.len() 
-                    - 1 // value flags
-                    ;
-
-                // availableOnNewPageAfterKey needs to accomodate the value and its length as a varint.
-                // it might already be <=0 because of the key length
-
-                let maxValueInline = 
-                    if availableOnNewPageAfterKey > 0 {
-                        let neededForVarintLen = Varint::SpaceNeededFor(availableOnNewPageAfterKey as u64);
-                        let avail2 = availableOnNewPageAfterKey - neededForVarintLen;
-                        if avail2 > 0 { avail2 } else { 0 }
-                    } else {
-                        0
-                    };
-
-                let (blkAfterValue, vloc) = 
-                    match pair.Value {
-                        Blob::Tombstone => {
-                            (blkAfterKey, ValueLocation::Tombstone)
-                        },
-                        _ => match kloc {
-                             KeyLocation::Inline => {
-                                if maxValueInline == 0 {
-                                    match pair.Value {
-                                        Blob::Tombstone => {
-                                            (blkAfterKey, ValueLocation::Tombstone)
-                                        },
-                                        Blob::Stream(ref mut strm) => {
-                                            let valuePage = blkAfterKey.firstPage;
-                                            let (len,newBlk) = try!(writeOverflow(blkAfterKey, &mut *strm, pageManager, fs));
-                                            (newBlk, ValueLocation::Overflowed(len,valuePage))
-                                        },
-                                        Blob::Array(a) => {
-                                            if a.len() == 0 {
-                                                (blkAfterKey, ValueLocation::Buffer(a))
-                                            } else {
-                                                let valuePage = blkAfterKey.firstPage;
-                                                let strm = a; // TODO need a Read for this
-                                                let (len,newBlk) = try!(writeOverflow(blkAfterKey, &mut &*strm, pageManager, fs));
-                                                (newBlk, ValueLocation::Overflowed(len,valuePage))
-                                            }
-                                        },
-                                    }
-                                } else {
-                                    match pair.Value {
-                                        Blob::Tombstone => {
-                                            (blkAfterKey, ValueLocation::Tombstone)
-                                        },
-                                        Blob::Stream(ref mut strm) => {
-                                            let vread = try!(utils::ReadFully(&mut *strm, &mut vbuf[0 .. maxValueInline+1]));
-                                            let vbuf = &vbuf[0 .. vread];
-                                            if vread < maxValueInline {
-                                                // TODO this alloc+copy is unfortunate
-                                                let mut va = Vec::new();
-                                                for i in 0 .. vbuf.len() {
-                                                    va.push(vbuf[i]);
-                                                }
-                                                (blkAfterKey, ValueLocation::Buffer(va.into_boxed_slice()))
-                                            } else {
-                                                let valuePage = blkAfterKey.firstPage;
-                                                let (len,newBlk) = try!(writeOverflow(blkAfterKey, &mut (vbuf.chain(strm)), pageManager, fs));
-                                                (newBlk, ValueLocation::Overflowed (len,valuePage))
-                                            }
-                                        },
-                                        Blob::Array(a) => {
-                                            if a.len() < maxValueInline {
-                                                (blkAfterKey, ValueLocation::Buffer(a))
-                                            } else {
-                                                let valuePage = blkAfterKey.firstPage;
-                                                let strm = a; // TODO need a Read for this
-                                                let (len,newBlk) = try!(writeOverflow(blkAfterKey, &mut &*strm, pageManager, fs));
-                                                (newBlk, ValueLocation::Overflowed(len,valuePage))
-                                            }
-                                        },
-                                    }
-                                }
-                             },
-
-                             KeyLocation::Overflow(_) => {
+            let (blkAfterValue, vloc) = 
+                match pair.Value {
+                    Blob::Tombstone => {
+                        (blkAfterKey, ValueLocation::Tombstone)
+                    },
+                    _ => match kloc {
+                         KeyLocation::Inline => {
+                            if maxValueInline == 0 {
                                 match pair.Value {
                                     Blob::Tombstone => {
                                         (blkAfterKey, ValueLocation::Tombstone)
@@ -1549,1000 +1493,1056 @@ impl ICursor for LivingCursor {
                                             let (len,newBlk) = try!(writeOverflow(blkAfterKey, &mut &*strm, pageManager, fs));
                                             (newBlk, ValueLocation::Overflowed(len,valuePage))
                                         }
+                                    },
+                                }
+                            } else {
+                                match pair.Value {
+                                    Blob::Tombstone => {
+                                        (blkAfterKey, ValueLocation::Tombstone)
+                                    },
+                                    Blob::Stream(ref mut strm) => {
+                                        let vread = try!(utils::ReadFully(&mut *strm, &mut vbuf[0 .. maxValueInline+1]));
+                                        let vbuf = &vbuf[0 .. vread];
+                                        if vread < maxValueInline {
+                                            // TODO this alloc+copy is unfortunate
+                                            let mut va = Vec::new();
+                                            for i in 0 .. vbuf.len() {
+                                                va.push(vbuf[i]);
+                                            }
+                                            (blkAfterKey, ValueLocation::Buffer(va.into_boxed_slice()))
+                                        } else {
+                                            let valuePage = blkAfterKey.firstPage;
+                                            let (len,newBlk) = try!(writeOverflow(blkAfterKey, &mut (vbuf.chain(strm)), pageManager, fs));
+                                            (newBlk, ValueLocation::Overflowed (len,valuePage))
+                                        }
+                                    },
+                                    Blob::Array(a) => {
+                                        if a.len() < maxValueInline {
+                                            (blkAfterKey, ValueLocation::Buffer(a))
+                                        } else {
+                                            let valuePage = blkAfterKey.firstPage;
+                                            let strm = a; // TODO need a Read for this
+                                            let (len,newBlk) = try!(writeOverflow(blkAfterKey, &mut &*strm, pageManager, fs));
+                                            (newBlk, ValueLocation::Overflowed(len,valuePage))
+                                        }
+                                    },
+                                }
+                            }
+                         },
+
+                         KeyLocation::Overflow(_) => {
+                            match pair.Value {
+                                Blob::Tombstone => {
+                                    (blkAfterKey, ValueLocation::Tombstone)
+                                },
+                                Blob::Stream(ref mut strm) => {
+                                    let valuePage = blkAfterKey.firstPage;
+                                    let (len,newBlk) = try!(writeOverflow(blkAfterKey, &mut *strm, pageManager, fs));
+                                    (newBlk, ValueLocation::Overflowed(len,valuePage))
+                                },
+                                Blob::Array(a) => {
+                                    if a.len() == 0 {
+                                        (blkAfterKey, ValueLocation::Buffer(a))
+                                    } else {
+                                        let valuePage = blkAfterKey.firstPage;
+                                        let strm = a; // TODO need a Read for this
+                                        let (len,newBlk) = try!(writeOverflow(blkAfterKey, &mut &*strm, pageManager, fs));
+                                        (newBlk, ValueLocation::Overflowed(len,valuePage))
                                     }
                                 }
-                             }
-                        }
-                };
-
-                // whether/not the key/value are to be overflowed is now already decided.
-                // now all we have to do is decide if this key/value are going into this leaf
-                // or not.  note that it is possible to overflow these and then have them not
-                // fit into the current leaf and end up landing in the next leaf.
-
-                st.blk = blkAfterValue;
-
-                // TODO ignore prefixLen for overflowed keys?
-                let newPrefixLen = 
-                    if st.keys.len()==0 {
-                        defaultPrefixLen(&k)
-                    } else {
-                        bcmp::PrefixMatch(&*st.keys[0].key, &k, st.prefixLen)
-                    };
-                let sofar = 
-                    if newPrefixLen < st.prefixLen {
-                        // the prefixLen would change with the addition of this key,
-                        // so we need to recalc sofar
-                        let sum = st.keys.iter().map(|lp| leafPairSize(newPrefixLen, lp)).sum();;
-                        sum
-                    } else {
-                        st.sofarLeaf
-                    };
-                let fit = {
-                    let needed = kLocNeed(&k, &kloc, newPrefixLen) + vLocNeed(&vloc);
-                    let used = sofar + LEAF_PAGE_OVERHEAD + 1 + newPrefixLen;
-                    if pgsz > used {
-                        let available = pgsz - used;
-                        (available >= needed)
-                    } else {
-                        false
+                            }
+                         }
                     }
-                };
-                let writeThisPage = (! st.keys.is_empty()) && (! fit);
-
-                if writeThisPage {
-                    try!(writeLeaf(&mut st, false, pb, fs, pgsz, pageManager, &mut *token));
-                }
-
-                // TODO ignore prefixLen for overflowed keys?
-                let newPrefixLen = 
-                    if st.keys.is_empty() {
-                        defaultPrefixLen(&k)
-                    } else {
-                        bcmp::PrefixMatch(&*st.keys[0].key, &k, st.prefixLen)
-                    };
-                let sofar = 
-                    if newPrefixLen < st.prefixLen {
-                        // the prefixLen will change with the addition of this key,
-                        // so we need to recalc sofar
-                        let sum = st.keys.iter().map(|lp| leafPairSize(newPrefixLen, lp)).sum();;
-                        sum
-                    } else {
-                        st.sofarLeaf
-                    };
-                let lp = LeafPair {
-                            key:k,
-                            kLoc:kloc,
-                            vLoc:vloc,
-                            };
-
-                st.sofarLeaf=sofar + leafPairSize(newPrefixLen, &lp);
-                st.keys.push(box lp);
-                st.prefixLen=newPrefixLen;
-            }
-
-            if !st.keys.is_empty() {
-                let isRootNode = st.leaves.is_empty();
-                try!(writeLeaf(&mut st, isRootNode, pb, fs, pgsz, pageManager, &mut *token));
-            }
-            Ok((st.blk,st.leaves,st.firstLeaf))
-        }
-
-        fn writeParentNodes<SeekWrite>(startingBlk: PageBlock, 
-                                       children: &[pgitem],
-                                       pgsz: usize,
-                                       fs: &mut SeekWrite,
-                                       pageManager: &mut IPages,
-                                       token: &mut PendingSegment,
-                                       lastLeaf: PageNum,
-                                       firstLeaf: PageNum,
-                                       pb: &mut PageBuilder,
-                                      ) -> io::Result<(PageBlock, Vec<pgitem>)> where SeekWrite : Seek+Write {
-            // 2 for the page type and flags
-            // 2 for the stored count
-            // 5 for the extra ptr we will add at the end, a varint, 5 is worst case (page num < 4294967295L)
-            // 4 for lastInt32
-            const PARENT_PAGE_OVERHEAD: usize = 2 + 2 + 5 + 4;
-
-            fn calcAvailable(currentSize: usize, couldBeRoot: bool, pgsz: usize) -> usize {
-                let basicSize = pgsz - currentSize;
-                let allowanceForRootNode = if couldBeRoot { size_32 } else { 0 }; // first/last Leaf, lastInt32 already
-                // TODO can this cause integer overflow?
-                basicSize - allowanceForRootNode
-            }
-
-            fn buildParentPage(items: &[&pgitem], 
-                               lastPtr: PageNum, 
-                               overflows: &HashMap<usize,PageNum>,
-                               pb : &mut PageBuilder,
-                              ) {
-                pb.Reset();
-                pb.PutByte(PageType::PARENT_NODE);
-                pb.PutByte(0u8);
-                pb.PutInt16(items.len() as u16);
-                // store all the ptrs, n+1 of them
-                for x in items.iter() {
-                    pb.PutVarint(x.page as u64);
-                }
-                pb.PutVarint(lastPtr as u64);
-                // store all the keys, n of them
-                for i in 0 .. items.len() {
-                    let x = &items[i];
-                    match overflows.get(&i) {
-                        Some(pg) => {
-                            pb.PutByte(ValueFlag::FLAG_OVERFLOW);
-                            pb.PutVarint(x.key.len() as u64);
-                            pb.PutInt32(*pg as PageNum);
-                        },
-                        None => {
-                            pb.PutByte(0u8);
-                            pb.PutVarint(x.key.len() as u64);
-                            pb.PutArray(&x.key);
-                        },
-                    }
-                }
-            }
-
-            fn writeParentPage<SeekWrite>(st: &mut ParentState, 
-                                          items: &[&pgitem],
-                                          overflows: &HashMap<usize,PageNum>,
-                                          pair:&pgitem, 
-                                          isRootNode: bool, 
-                                          pb: &mut PageBuilder, 
-                                          lastLeaf: PageNum,
-                                          fs: &mut SeekWrite,
-                                          pageManager: &mut IPages,
-                                          pgsz: usize,
-                                          token: &mut PendingSegment,
-                                          firstLeaf: PageNum,
-                                         ) -> io::Result<()> where SeekWrite : Seek+Write {
-                let pgnum = pair.page;
-                // assert st.sofar > 0
-                let thisPageNumber = st.blk.firstPage;
-                buildParentPage(items, pgnum, &overflows, pb);
-                let nextBlk =
-                    if isRootNode {
-                        pb.SetPageFlag(PageFlag::FLAG_ROOT_NODE);
-                        pb.SetSecondToLastInt32(firstLeaf);
-                        pb.SetLastInt32(lastLeaf);
-                        PageBlock::new(thisPageNumber+1,st.blk.lastPage)
-                    } else {
-                        if st.blk.firstPage == st.blk.lastPage {
-                            pb.SetPageFlag(PageFlag::FLAG_BOUNDARY_NODE);
-                            let newBlk = pageManager.GetBlock(&mut *token);
-                            pb.SetLastInt32(newBlk.firstPage);
-                            newBlk
-                        } else {
-                            PageBlock::new(thisPageNumber+1,st.blk.lastPage)
-                        }
-                    };
-                try!(pb.Write(fs));
-                if nextBlk.firstPage != (thisPageNumber+1) {
-                    try!(utils::SeekPage(fs, pgsz, nextBlk.firstPage));
-                }
-                st.sofar = 0;
-                st.blk = nextBlk;
-                // TODO isn't there a better way to copy a slice?
-                let mut ba = Vec::new();
-                ba.push_all(&pair.key);
-                let pg = pgitem {page:thisPageNumber, key:ba.into_boxed_slice()};
-                st.nextGeneration.push(pg);
-                Ok(())
-            }
-
-            // this is the body of writeParentNodes
-            let mut st = ParentState {nextGeneration:Vec::new(),sofar: 0,blk:startingBlk,};
-            let mut items = Vec::new();
-            let mut overflows = HashMap::new();
-            for i in 0 .. children.len()-1 {
-                let pair = &children[i];
-                let pgnum = pair.page;
-
-                let neededEitherWay = 1 + Varint::SpaceNeededFor(pair.key.len() as u64) + Varint::SpaceNeededFor(pgnum as u64);
-                let neededForInline = neededEitherWay + pair.key.len();
-                let neededForOverflow = neededEitherWay + size_32;
-                let couldBeRoot = st.nextGeneration.is_empty();
-
-                let available = calcAvailable(st.sofar, couldBeRoot, pgsz);
-                let fitsInline = available >= neededForInline;
-                let wouldFitInlineOnNextPage = (pgsz - PARENT_PAGE_OVERHEAD) >= neededForInline;
-                let fitsOverflow = available >= neededForOverflow;
-                let writeThisPage = (! fitsInline) && (wouldFitInlineOnNextPage || (! fitsOverflow));
-
-                if writeThisPage {
-                    // assert sofar > 0
-                    try!(writeParentPage(&mut st, &items, &overflows, pair, false, pb, lastLeaf, fs, pageManager, pgsz, &mut *token, firstLeaf));
-                }
-
-                if st.sofar == 0 {
-                    st.sofar = PARENT_PAGE_OVERHEAD;
-                    items.clear();
-                }
-
-                items.push(pair);
-                if calcAvailable(st.sofar, st.nextGeneration.is_empty(), pgsz) >= neededForInline {
-                    st.sofar = st.sofar + neededForInline;
-                } else {
-                    let keyOverflowFirstPage = st.blk.firstPage;
-                    let (_,newBlk) = try!(writeOverflow(st.blk, &mut &*pair.key, pageManager, fs));
-                    st.sofar = st.sofar + neededForOverflow;
-                    st.blk = newBlk;
-                    overflows.insert(items.len()-1,keyOverflowFirstPage);
-                }
-            }
-            let isRootNode = st.nextGeneration.is_empty();
-            try!(writeParentPage(&mut st, &items, &overflows, &children[children.len()-1], isRootNode, pb, lastLeaf, fs, pageManager, pgsz, &mut *token, firstLeaf));
-            Ok((st.blk,st.nextGeneration))
-        }
-
-        // this is the body of Create
-        let pgsz = pageManager.PageSize();
-        let mut pb = PageBuilder::new(pgsz);
-        let mut token = pageManager.Begin();
-        let startingBlk = pageManager.GetBlock(&mut token);
-        try!(utils::SeekPage(fs, pgsz, startingBlk.firstPage));
-
-        let mut vbuf = vec![0;pgsz].into_boxed_slice();
-        let (blkAfterLeaves, leaves, firstLeaf) = try!(writeLeaves(startingBlk, pageManager, source, &mut vbuf, fs, &mut pb, &mut token));
-
-        // all the leaves are written.
-        // now write the parent pages.
-        // maybe more than one level of them.
-        // keep writing until we have written a level which has only one node,
-        // which is the root node.
-
-        let lastLeaf = leaves[0].page;
-
-        let rootPage = {
-            let mut blk = blkAfterLeaves;
-            let mut children = leaves;
-            loop {
-                let (newBlk,newChildren) = try!(writeParentNodes(blk, &children, pgsz, fs, pageManager, &mut token, lastLeaf, firstLeaf, &mut pb));
-                blk = newBlk;
-                children = newChildren;
-                if children.len()==1 {
-                    break;
-                }
-            }
-            children[0].page
-        };
-
-        let g = pageManager.End(token, rootPage);
-        Ok((g,rootPage))
-    }
-
-    struct myOverflowReadStream {
-        fs: File,
-        len: usize, // same type as ValueLength(), max len of a single value
-        firstPage: PageNum,
-        buf: Box<[u8]>,
-        currentPage: PageNum,
-        sofarOverall: usize,
-        sofarThisPage: usize,
-        firstPageInBlock: PageNum,
-        offsetToLastPageInThisBlock: PageNum,
-        countRegularDataPagesInBlock: PageNum,
-        boundaryPageNumber: PageNum,
-        bytesOnThisPage: usize,
-        offsetOnThisPage: usize,
-    }
-        
-    impl myOverflowReadStream {
-        fn new(path: &str, pgsz: usize, firstPage: PageNum, len: usize) -> io::Result<myOverflowReadStream> {
-            let f = try!(OpenOptions::new()
-                    .read(true)
-                    .open(path));
-            let mut res = 
-                myOverflowReadStream {
-                    fs: f,
-                    len: len,
-                    firstPage: firstPage,
-                    buf: vec![0;pgsz].into_boxed_slice(),
-                    currentPage: firstPage,
-                    sofarOverall: 0,
-                    sofarThisPage: 0,
-                    firstPageInBlock: 0,
-                    offsetToLastPageInThisBlock: 0, // add to firstPageInBlock to get the last one
-                    countRegularDataPagesInBlock: 0,
-                    boundaryPageNumber: 0,
-                    bytesOnThisPage: 0,
-                    offsetOnThisPage: 0,
-                };
-            try!(res.ReadFirstPage());
-            Ok(res)
-        }
-
-        // TODO consider supporting seek
-
-        fn ReadPage(&mut self) -> io::Result<()> {
-            try!(utils::SeekPage(&mut self.fs, self.buf.len(), self.currentPage));
-            try!(utils::ReadFully(&mut self.fs, &mut *self.buf));
-            // assert PageType is OVERFLOW
-            self.sofarThisPage = 0;
-            if self.currentPage == self.firstPageInBlock {
-                self.bytesOnThisPage = self.buf.len() - (2 + size_32);
-                self.offsetOnThisPage = 2;
-            } else if self.currentPage == self.boundaryPageNumber {
-                self.bytesOnThisPage = self.buf.len() - size_32;
-                self.offsetOnThisPage = 0;
-            } else {
-                // assert currentPage > firstPageInBlock
-                // assert currentPage < boundaryPageNumber OR boundaryPageNumber = 0
-                self.bytesOnThisPage = self.buf.len();
-                self.offsetOnThisPage = 0;
-            }
-            Ok(())
-        }
-
-        fn GetLastInt32(&self) -> u32 {
-            let at = self.buf.len() - size_32;
-            read_u32_be(&self.buf[at .. at+4])
-        }
-
-        fn PageType(&self) -> u8 {
-            self.buf[0]
-        }
-
-        fn CheckPageFlag(&self, f: u8) -> bool {
-            0 != (self.buf[1] & f)
-        }
-
-        fn ReadFirstPage(&mut self) -> io::Result<()> {
-            self.firstPageInBlock = self.currentPage;
-            try!(self.ReadPage());
-            if self.PageType() != (PageType::OVERFLOW_NODE) {
-                try!(Err(io::Error::new(ErrorKind::InvalidInput, "first overflow page has invalid page type")));
-            }
-            if self.CheckPageFlag(PageFlag::FLAG_BOUNDARY_NODE) {
-                // first page landed on a boundary node
-                // lastInt32 is the next page number, which we'll fetch later
-                self.boundaryPageNumber = self.currentPage;
-                self.offsetToLastPageInThisBlock = 0;
-                self.countRegularDataPagesInBlock = 0;
-            } else {
-                self.offsetToLastPageInThisBlock = self.GetLastInt32();
-                if self.CheckPageFlag(PageFlag::FLAG_ENDS_ON_BOUNDARY) {
-                    self.boundaryPageNumber = self.currentPage + self.offsetToLastPageInThisBlock;
-                    self.countRegularDataPagesInBlock = self.offsetToLastPageInThisBlock - 1;
-                } else {
-                    self.boundaryPageNumber = 0;
-                    self.countRegularDataPagesInBlock = self.offsetToLastPageInThisBlock;
-                }
-            }
-            Ok(())
-        }
-
-        fn Read(&mut self, ba: &mut [u8], offset: usize, wanted: usize) -> io::Result<usize> {
-            if self.sofarOverall >= self.len {
-                Ok(0)
-            } else {
-                let mut direct = false;
-                if self.sofarThisPage >= self.bytesOnThisPage {
-                    if self.currentPage == self.boundaryPageNumber {
-                        self.currentPage = self.GetLastInt32();
-                        try!(self.ReadFirstPage());
-                    } else {
-                        // we need a new page.  and if it's a full data page,
-                        // and if wanted is big enough to take all of it, then
-                        // we want to read (at least) it directly into the
-                        // buffer provided by the caller.  we already know
-                        // this candidate page cannot be the first page in a
-                        // block.
-                        let maybeDataPage = self.currentPage + 1;
-                        let isDataPage = 
-                            if self.boundaryPageNumber > 0 {
-                                ((self.len - self.sofarOverall) >= self.buf.len()) && (self.countRegularDataPagesInBlock > 0) && (maybeDataPage > self.firstPageInBlock) && (maybeDataPage < self.boundaryPageNumber)
-                            } else {
-                                ((self.len - self.sofarOverall) >= self.buf.len()) && (self.countRegularDataPagesInBlock > 0) && (maybeDataPage > self.firstPageInBlock) && (maybeDataPage <= (self.firstPageInBlock + self.countRegularDataPagesInBlock))
-                            };
-
-                        if isDataPage && (wanted >= self.buf.len()) {
-                            // assert (currentPage + 1) > firstPageInBlock
-                            //
-                            // don't increment currentPage here because below, we will
-                            // calculate how many pages we actually want to do.
-                            direct = true;
-                            self.bytesOnThisPage = self.buf.len();
-                            self.sofarThisPage = 0;
-                            self.offsetOnThisPage = 0;
-                        } else {
-                            self.currentPage = self.currentPage + 1;
-                            try!(self.ReadPage());
-                        }
-                    }
-                }
-
-                if direct {
-                    // currentPage has not been incremented yet
-                    //
-                    // skip the buffer.  note, therefore, that the contents of the
-                    // buffer are "invalid" in that they do not correspond to currentPage
-                    //
-                    let numPagesWanted = (wanted / self.buf.len()) as PageNum;
-                    // assert countRegularDataPagesInBlock > 0
-                    let lastDataPageInThisBlock = self.firstPageInBlock + self.countRegularDataPagesInBlock;
-                    let theDataPage = self.currentPage + 1;
-                    let numPagesAvailable = 
-                        if self.boundaryPageNumber>0 { 
-                            self.boundaryPageNumber - theDataPage 
-                        } else {
-                            lastDataPageInThisBlock - theDataPage + 1
-                        };
-                    let numPagesToFetch = std::cmp::min(numPagesWanted, numPagesAvailable) as PageNum;
-                    let bytesToFetch = {
-                        let bytesToFetch = (numPagesToFetch as usize) * self.buf.len();
-                        let available = self.len - self.sofarOverall;
-                        if bytesToFetch > available {
-                            available
-                        } else {
-                            bytesToFetch
-                        }
-                    };
-                    // assert bytesToFetch <= wanted
-
-                    try!(utils::SeekPage(&mut self.fs, self.buf.len(), theDataPage));
-                    try!(utils::ReadFully(&mut self.fs, &mut ba[offset .. offset + bytesToFetch]));
-                    self.sofarOverall = self.sofarOverall + bytesToFetch;
-                    self.currentPage = self.currentPage + numPagesToFetch;
-                    self.sofarThisPage = self.buf.len();
-                    Ok(bytesToFetch)
-                } else {
-                    let available = std::cmp::min(self.bytesOnThisPage - self.sofarThisPage, self.len - self.sofarOverall);
-                    let num = std::cmp::min(available, wanted);
-                    for i in 0 .. num {
-                        ba[offset+i] = self.buf[self.offsetOnThisPage + self.sofarThisPage + i];
-                    }
-                    self.sofarOverall = self.sofarOverall + num;
-                    self.sofarThisPage = self.sofarThisPage + num;
-                    Ok(num)
-                }
-            }
-        }
-    }
-
-    impl Read for myOverflowReadStream {
-        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-            let len = buf.len();
-            let r = self.Read(buf, 0, len);
-            println!("want: {:?}", len);
-            println!("read: {:?}", r);
-            println!("sofarOverall: {:?}", self.sofarOverall);
-            r
-        }
-    }
-
-    fn readOverflow(path: &str, pgsz: usize, firstPage: PageNum, buf: &mut [u8]) -> io::Result<usize> {
-        let mut ostrm = try!(myOverflowReadStream::new(path, pgsz, firstPage, buf.len()));
-        utils::ReadFully(&mut ostrm, buf)
-    }
-
-    struct myCursor {
-        path: String,
-        fs: File,
-        len: u64,
-        rootPage: PageNum,
-        pr: PageBuffer,
-        // TODO hook
-        currentPage: PageNum,
-        leafKeys: Vec<usize>,
-        previousLeaf: PageNum,
-        currentKey: Option<usize>,
-        prefix: Option<Box<[u8]>>,
-        firstLeaf: PageNum,
-        lastLeaf: PageNum,
-    }
-
-    impl myCursor {
-        fn new(path: &str, pgsz: usize, rootPage: PageNum) -> io::Result<myCursor> {
-            let mut f = try!(OpenOptions::new()
-                    .read(true)
-                    .open(path));
-            let len = try!(seek_len(&mut f));
-            let mut res = myCursor {
-                path: String::from_str(path),
-                fs: f,
-                len: len,
-                rootPage: rootPage,
-                pr: PageBuffer::new(pgsz),
-                currentPage: 0,
-                leafKeys: Vec::new(),
-                previousLeaf: 0,
-                currentKey: None,
-                prefix: None,
-                firstLeaf: 0, // temporary
-                lastLeaf: 0, // temporary
             };
-            if ! try!(res.setCurrentPage(rootPage)) {
-                return Err(io::Error::new(ErrorKind::InvalidInput, "failed to read root page"));
-            }
-            if res.pr.PageType() == PageType::LEAF_NODE {
-                res.firstLeaf = rootPage;
-                res.lastLeaf = rootPage;
-            } else if res.pr.PageType() == PageType::PARENT_NODE {
-                if ! res.pr.CheckPageFlag(PageFlag::FLAG_ROOT_NODE) { 
-                    return Err(io::Error::new(ErrorKind::InvalidInput, "root page lacks flag"));
-                }
-                res.firstLeaf = res.pr.GetSecondToLastInt32() as PageNum;
-                res.lastLeaf = res.pr.GetLastInt32() as PageNum;
-            } else {
-                return Err(io::Error::new(ErrorKind::InvalidInput, "root page has invalid page type"));
-            }
-              
-            Ok(res)
-        }
 
-        fn resetLeaf(&mut self) {
-            self.leafKeys.clear();
-            self.previousLeaf = 0;
-            self.currentKey = None;
-            self.prefix = None;
-        }
+            // whether/not the key/value are to be overflowed is now already decided.
+            // now all we have to do is decide if this key/value are going into this leaf
+            // or not.  note that it is possible to overflow these and then have them not
+            // fit into the current leaf and end up landing in the next leaf.
 
-        fn setCurrentPage(&mut self, pgnum: PageNum) -> io::Result<bool> {
-            // TODO consider passing a block list for the segment into this
-            // cursor so that the code here can detect if it tries to stray
-            // out of bounds.
+            st.blk = blkAfterValue;
 
-            // TODO if currentPage = pgnum already...
-            self.currentPage = pgnum;
-            self.resetLeaf();
-            if 0 == self.currentPage { 
-                Ok(false)
-            } else {
-                // refuse to go to a page beyond the end of the stream
-                // TODO is this the right place for this check?    
-                let pos = (self.currentPage - 1) as u64 * self.pr.PageSize() as u64;
-                if pos + self.pr.PageSize() as u64 <= self.len {
-                    try!(utils::SeekPage(&mut self.fs, self.pr.PageSize(), self.currentPage));
-                    try!(self.pr.Read(&mut self.fs));
-                    Ok(true)
+            // TODO ignore prefixLen for overflowed keys?
+            let newPrefixLen = 
+                if st.keys.len()==0 {
+                    defaultPrefixLen(&k)
                 } else {
-                    Ok(false)
-                }
-            }
-        }
-
-        fn nextInLeaf(&mut self) -> bool {
-            match self.currentKey {
-                Some(cur) => {
-                    if (cur+1) < self.leafKeys.len() {
-                        self.currentKey = Some(cur + 1);
-                        true
-                    } else {
-                        false
-                    }
-                },
-                None => {
-                    false
-                },
-            }
-        }
-
-        fn prevInLeaf(&mut self) -> bool {
-            match self.currentKey {
-                Some(cur) => {
-                    if cur > 0 {
-                        self.currentKey = Some(cur - 1);
-                        true
-                    } else {
-                        false
-                    }
-                },
-                None => {
-                    false
-                },
-            }
-        }
-
-        fn skipKey(&self, cur: &mut usize) {
-            let kflag = self.pr.GetByte(cur);
-            let klen = self.pr.GetVarint(cur) as usize;
-            if 0 == (kflag & ValueFlag::FLAG_OVERFLOW) {
-                let prefixLen = match self.prefix {
-                    Some(ref a) => a.len(),
-                    None => 0
+                    bcmp::PrefixMatch(&*st.keys[0].key, &k, st.prefixLen)
                 };
-                *cur = *cur + (klen - prefixLen);
-            } else {
-                *cur = *cur + size_32;
-            }
-        }
-
-        fn skipValue(&self, cur: &mut usize) {
-            let vflag = self.pr.GetByte(cur);
-            if 0 != (vflag & ValueFlag::FLAG_TOMBSTONE) { 
-                ()
-            } else {
-                let vlen = self.pr.GetVarint(cur) as usize;
-                if 0 != (vflag & ValueFlag::FLAG_OVERFLOW) {
-                    *cur = *cur + size_32;
+            let sofar = 
+                if newPrefixLen < st.prefixLen {
+                    // the prefixLen would change with the addition of this key,
+                    // so we need to recalc sofar
+                    let sum = st.keys.iter().map(|lp| leafPairSize(newPrefixLen, lp)).sum();;
+                    sum
+                } else {
+                    st.sofarLeaf
+                };
+            let fit = {
+                let needed = kLocNeed(&k, &kloc, newPrefixLen) + vLocNeed(&vloc);
+                let used = sofar + LEAF_PAGE_OVERHEAD + 1 + newPrefixLen;
+                if pgsz > used {
+                    let available = pgsz - used;
+                    (available >= needed)
+                } else {
+                    false
                 }
-                else {
-                    *cur = *cur + vlen;
-                }
+            };
+            let writeThisPage = (! st.keys.is_empty()) && (! fit);
+
+            if writeThisPage {
+                try!(writeLeaf(&mut st, false, pb, fs, pgsz, pageManager, &mut *token));
             }
+
+            // TODO ignore prefixLen for overflowed keys?
+            let newPrefixLen = 
+                if st.keys.is_empty() {
+                    defaultPrefixLen(&k)
+                } else {
+                    bcmp::PrefixMatch(&*st.keys[0].key, &k, st.prefixLen)
+                };
+            let sofar = 
+                if newPrefixLen < st.prefixLen {
+                    // the prefixLen will change with the addition of this key,
+                    // so we need to recalc sofar
+                    let sum = st.keys.iter().map(|lp| leafPairSize(newPrefixLen, lp)).sum();;
+                    sum
+                } else {
+                    st.sofarLeaf
+                };
+            let lp = LeafPair {
+                        key:k,
+                        kLoc:kloc,
+                        vLoc:vloc,
+                        };
+
+            st.sofarLeaf=sofar + leafPairSize(newPrefixLen, &lp);
+            st.keys.push(box lp);
+            st.prefixLen=newPrefixLen;
         }
 
-        fn readLeaf(&mut self) {
-            self.resetLeaf();
-            let mut cur = 0;
-            if self.pr.GetByte(&mut cur) != PageType::LEAF_NODE {
-                panic!("leaf has invalid page type");
-            }
-            self.pr.GetByte(&mut cur);
-            self.previousLeaf = self.pr.GetInt32(&mut cur) as PageNum;
-            let prefixLen = self.pr.GetByte(&mut cur) as usize;
-            if prefixLen > 0 {
-                let mut a = vec![0;prefixLen].into_boxed_slice();
-                self.pr.GetIntoArray(&mut cur, &mut a);
-                self.prefix = Some(a);
-            } else {
-                self.prefix = None;
-            }
-            let countLeafKeys = self.pr.GetInt16(&mut cur) as usize;
-            // assert countLeafKeys>0
-            self.leafKeys.truncate(countLeafKeys);
-            while self.leafKeys.len() < countLeafKeys {
-                self.leafKeys.push(0);
-            }
-            for i in 0 .. countLeafKeys {
-                self.leafKeys[i] = cur;
-                self.skipKey(&mut cur);
-                self.skipValue(&mut cur);
-            }
+        if !st.keys.is_empty() {
+            let isRootNode = st.leaves.is_empty();
+            try!(writeLeaf(&mut st, isRootNode, pb, fs, pgsz, pageManager, &mut *token));
+        }
+        Ok((st.blk,st.leaves,st.firstLeaf))
+    }
+
+    fn writeParentNodes<SeekWrite>(startingBlk: PageBlock, 
+                                   children: &[pgitem],
+                                   pgsz: usize,
+                                   fs: &mut SeekWrite,
+                                   pageManager: &mut IPages,
+                                   token: &mut PendingSegment,
+                                   lastLeaf: PageNum,
+                                   firstLeaf: PageNum,
+                                   pb: &mut PageBuilder,
+                                  ) -> io::Result<(PageBlock, Vec<pgitem>)> where SeekWrite : Seek+Write {
+        // 2 for the page type and flags
+        // 2 for the stored count
+        // 5 for the extra ptr we will add at the end, a varint, 5 is worst case (page num < 4294967295L)
+        // 4 for lastInt32
+        const PARENT_PAGE_OVERHEAD: usize = 2 + 2 + 5 + 4;
+
+        fn calcAvailable(currentSize: usize, couldBeRoot: bool, pgsz: usize) -> usize {
+            let basicSize = pgsz - currentSize;
+            let allowanceForRootNode = if couldBeRoot { size_32 } else { 0 }; // first/last Leaf, lastInt32 already
+            // TODO can this cause integer overflow?
+            basicSize - allowanceForRootNode
         }
 
-        fn keyInLeaf(&self, n: usize) -> io::Result<Box<[u8]>> { 
-            let mut cur = self.leafKeys[n as usize];
-            let kflag = self.pr.GetByte(&mut cur);
-            let klen = self.pr.GetVarint(&mut cur) as usize;
-            // TODO consider alloc res array here, once for all cases below
-            if 0 == (kflag & ValueFlag::FLAG_OVERFLOW) {
-                match self.prefix {
-                    Some(ref a) => {
-                        let prefixLen = a.len();
-                        let mut res = vec![0;klen].into_boxed_slice();
-                        for i in 0 .. prefixLen {
-                            res[i] = a[i];
-                        }
-                        self.pr.GetIntoArray(&mut cur, &mut res[prefixLen .. klen]);
-                        Ok(res)
+        fn buildParentPage(items: &[&pgitem], 
+                           lastPtr: PageNum, 
+                           overflows: &HashMap<usize,PageNum>,
+                           pb : &mut PageBuilder,
+                          ) {
+            pb.Reset();
+            pb.PutByte(PageType::PARENT_NODE);
+            pb.PutByte(0u8);
+            pb.PutInt16(items.len() as u16);
+            // store all the ptrs, n+1 of them
+            for x in items.iter() {
+                pb.PutVarint(x.page as u64);
+            }
+            pb.PutVarint(lastPtr as u64);
+            // store all the keys, n of them
+            for i in 0 .. items.len() {
+                let x = &items[i];
+                match overflows.get(&i) {
+                    Some(pg) => {
+                        pb.PutByte(ValueFlag::FLAG_OVERFLOW);
+                        pb.PutVarint(x.key.len() as u64);
+                        pb.PutInt32(*pg as PageNum);
                     },
                     None => {
-                        let mut res = vec![0;klen].into_boxed_slice();
-                        self.pr.GetIntoArray(&mut cur, &mut res);
-                        Ok(res)
+                        pb.PutByte(0u8);
+                        pb.PutVarint(x.key.len() as u64);
+                        pb.PutArray(&x.key);
                     },
                 }
-            } else {
-                let pgnum = self.pr.GetInt32(&mut cur) as PageNum;
-                let mut res = vec![0;klen].into_boxed_slice();
-                try!(readOverflow(&self.path, self.pr.PageSize(), pgnum, &mut res));
-                Ok(res)
             }
         }
 
-        fn compareKeyInLeaf(&self, n: usize, other: &[u8]) -> io::Result<Ordering> {
-            let mut cur = self.leafKeys[n as usize];
+        fn writeParentPage<SeekWrite>(st: &mut ParentState, 
+                                      items: &[&pgitem],
+                                      overflows: &HashMap<usize,PageNum>,
+                                      pair:&pgitem, 
+                                      isRootNode: bool, 
+                                      pb: &mut PageBuilder, 
+                                      lastLeaf: PageNum,
+                                      fs: &mut SeekWrite,
+                                      pageManager: &mut IPages,
+                                      pgsz: usize,
+                                      token: &mut PendingSegment,
+                                      firstLeaf: PageNum,
+                                     ) -> io::Result<()> where SeekWrite : Seek+Write {
+            let pgnum = pair.page;
+            // assert st.sofar > 0
+            let thisPageNumber = st.blk.firstPage;
+            buildParentPage(items, pgnum, &overflows, pb);
+            let nextBlk =
+                if isRootNode {
+                    pb.SetPageFlag(PageFlag::FLAG_ROOT_NODE);
+                    pb.SetSecondToLastInt32(firstLeaf);
+                    pb.SetLastInt32(lastLeaf);
+                    PageBlock::new(thisPageNumber+1,st.blk.lastPage)
+                } else {
+                    if st.blk.firstPage == st.blk.lastPage {
+                        pb.SetPageFlag(PageFlag::FLAG_BOUNDARY_NODE);
+                        let newBlk = pageManager.GetBlock(&mut *token);
+                        pb.SetLastInt32(newBlk.firstPage);
+                        newBlk
+                    } else {
+                        PageBlock::new(thisPageNumber+1,st.blk.lastPage)
+                    }
+                };
+            try!(pb.Write(fs));
+            if nextBlk.firstPage != (thisPageNumber+1) {
+                try!(utils::SeekPage(fs, pgsz, nextBlk.firstPage));
+            }
+            st.sofar = 0;
+            st.blk = nextBlk;
+            // TODO isn't there a better way to copy a slice?
+            let mut ba = Vec::new();
+            ba.push_all(&pair.key);
+            let pg = pgitem {page:thisPageNumber, key:ba.into_boxed_slice()};
+            st.nextGeneration.push(pg);
+            Ok(())
+        }
+
+        // this is the body of writeParentNodes
+        let mut st = ParentState {nextGeneration:Vec::new(),sofar: 0,blk:startingBlk,};
+        let mut items = Vec::new();
+        let mut overflows = HashMap::new();
+        for i in 0 .. children.len()-1 {
+            let pair = &children[i];
+            let pgnum = pair.page;
+
+            let neededEitherWay = 1 + Varint::SpaceNeededFor(pair.key.len() as u64) + Varint::SpaceNeededFor(pgnum as u64);
+            let neededForInline = neededEitherWay + pair.key.len();
+            let neededForOverflow = neededEitherWay + size_32;
+            let couldBeRoot = st.nextGeneration.is_empty();
+
+            let available = calcAvailable(st.sofar, couldBeRoot, pgsz);
+            let fitsInline = available >= neededForInline;
+            let wouldFitInlineOnNextPage = (pgsz - PARENT_PAGE_OVERHEAD) >= neededForInline;
+            let fitsOverflow = available >= neededForOverflow;
+            let writeThisPage = (! fitsInline) && (wouldFitInlineOnNextPage || (! fitsOverflow));
+
+            if writeThisPage {
+                // assert sofar > 0
+                try!(writeParentPage(&mut st, &items, &overflows, pair, false, pb, lastLeaf, fs, pageManager, pgsz, &mut *token, firstLeaf));
+            }
+
+            if st.sofar == 0 {
+                st.sofar = PARENT_PAGE_OVERHEAD;
+                items.clear();
+            }
+
+            items.push(pair);
+            if calcAvailable(st.sofar, st.nextGeneration.is_empty(), pgsz) >= neededForInline {
+                st.sofar = st.sofar + neededForInline;
+            } else {
+                let keyOverflowFirstPage = st.blk.firstPage;
+                let (_,newBlk) = try!(writeOverflow(st.blk, &mut &*pair.key, pageManager, fs));
+                st.sofar = st.sofar + neededForOverflow;
+                st.blk = newBlk;
+                overflows.insert(items.len()-1,keyOverflowFirstPage);
+            }
+        }
+        let isRootNode = st.nextGeneration.is_empty();
+        try!(writeParentPage(&mut st, &items, &overflows, &children[children.len()-1], isRootNode, pb, lastLeaf, fs, pageManager, pgsz, &mut *token, firstLeaf));
+        Ok((st.blk,st.nextGeneration))
+    }
+
+    // this is the body of Create
+    let pgsz = pageManager.PageSize();
+    let mut pb = PageBuilder::new(pgsz);
+    let mut token = pageManager.Begin();
+    let startingBlk = pageManager.GetBlock(&mut token);
+    try!(utils::SeekPage(fs, pgsz, startingBlk.firstPage));
+
+    let mut vbuf = vec![0;pgsz].into_boxed_slice();
+    let (blkAfterLeaves, leaves, firstLeaf) = try!(writeLeaves(startingBlk, pageManager, source, &mut vbuf, fs, &mut pb, &mut token));
+
+    // all the leaves are written.
+    // now write the parent pages.
+    // maybe more than one level of them.
+    // keep writing until we have written a level which has only one node,
+    // which is the root node.
+
+    let lastLeaf = leaves[0].page;
+
+    let rootPage = {
+        let mut blk = blkAfterLeaves;
+        let mut children = leaves;
+        loop {
+            let (newBlk,newChildren) = try!(writeParentNodes(blk, &children, pgsz, fs, pageManager, &mut token, lastLeaf, firstLeaf, &mut pb));
+            blk = newBlk;
+            children = newChildren;
+            if children.len()==1 {
+                break;
+            }
+        }
+        children[0].page
+    };
+
+    let g = pageManager.End(token, rootPage);
+    Ok((g,rootPage))
+}
+
+struct myOverflowReadStream {
+    fs: File,
+    len: usize, // same type as ValueLength(), max len of a single value
+    firstPage: PageNum,
+    buf: Box<[u8]>,
+    currentPage: PageNum,
+    sofarOverall: usize,
+    sofarThisPage: usize,
+    firstPageInBlock: PageNum,
+    offsetToLastPageInThisBlock: PageNum,
+    countRegularDataPagesInBlock: PageNum,
+    boundaryPageNumber: PageNum,
+    bytesOnThisPage: usize,
+    offsetOnThisPage: usize,
+}
+    
+impl myOverflowReadStream {
+    fn new(path: &str, pgsz: usize, firstPage: PageNum, len: usize) -> io::Result<myOverflowReadStream> {
+        let f = try!(OpenOptions::new()
+                .read(true)
+                .open(path));
+        let mut res = 
+            myOverflowReadStream {
+                fs: f,
+                len: len,
+                firstPage: firstPage,
+                buf: vec![0;pgsz].into_boxed_slice(),
+                currentPage: firstPage,
+                sofarOverall: 0,
+                sofarThisPage: 0,
+                firstPageInBlock: 0,
+                offsetToLastPageInThisBlock: 0, // add to firstPageInBlock to get the last one
+                countRegularDataPagesInBlock: 0,
+                boundaryPageNumber: 0,
+                bytesOnThisPage: 0,
+                offsetOnThisPage: 0,
+            };
+        try!(res.ReadFirstPage());
+        Ok(res)
+    }
+
+    // TODO consider supporting seek
+
+    fn ReadPage(&mut self) -> io::Result<()> {
+        try!(utils::SeekPage(&mut self.fs, self.buf.len(), self.currentPage));
+        try!(utils::ReadFully(&mut self.fs, &mut *self.buf));
+        // assert PageType is OVERFLOW
+        self.sofarThisPage = 0;
+        if self.currentPage == self.firstPageInBlock {
+            self.bytesOnThisPage = self.buf.len() - (2 + size_32);
+            self.offsetOnThisPage = 2;
+        } else if self.currentPage == self.boundaryPageNumber {
+            self.bytesOnThisPage = self.buf.len() - size_32;
+            self.offsetOnThisPage = 0;
+        } else {
+            // assert currentPage > firstPageInBlock
+            // assert currentPage < boundaryPageNumber OR boundaryPageNumber = 0
+            self.bytesOnThisPage = self.buf.len();
+            self.offsetOnThisPage = 0;
+        }
+        Ok(())
+    }
+
+    fn GetLastInt32(&self) -> u32 {
+        let at = self.buf.len() - size_32;
+        read_u32_be(&self.buf[at .. at+4])
+    }
+
+    fn PageType(&self) -> u8 {
+        self.buf[0]
+    }
+
+    fn CheckPageFlag(&self, f: u8) -> bool {
+        0 != (self.buf[1] & f)
+    }
+
+    fn ReadFirstPage(&mut self) -> io::Result<()> {
+        self.firstPageInBlock = self.currentPage;
+        try!(self.ReadPage());
+        if self.PageType() != (PageType::OVERFLOW_NODE) {
+            try!(Err(io::Error::new(ErrorKind::InvalidInput, "first overflow page has invalid page type")));
+        }
+        if self.CheckPageFlag(PageFlag::FLAG_BOUNDARY_NODE) {
+            // first page landed on a boundary node
+            // lastInt32 is the next page number, which we'll fetch later
+            self.boundaryPageNumber = self.currentPage;
+            self.offsetToLastPageInThisBlock = 0;
+            self.countRegularDataPagesInBlock = 0;
+        } else {
+            self.offsetToLastPageInThisBlock = self.GetLastInt32();
+            if self.CheckPageFlag(PageFlag::FLAG_ENDS_ON_BOUNDARY) {
+                self.boundaryPageNumber = self.currentPage + self.offsetToLastPageInThisBlock;
+                self.countRegularDataPagesInBlock = self.offsetToLastPageInThisBlock - 1;
+            } else {
+                self.boundaryPageNumber = 0;
+                self.countRegularDataPagesInBlock = self.offsetToLastPageInThisBlock;
+            }
+        }
+        Ok(())
+    }
+
+    fn Read(&mut self, ba: &mut [u8], offset: usize, wanted: usize) -> io::Result<usize> {
+        if self.sofarOverall >= self.len {
+            Ok(0)
+        } else {
+            let mut direct = false;
+            if self.sofarThisPage >= self.bytesOnThisPage {
+                if self.currentPage == self.boundaryPageNumber {
+                    self.currentPage = self.GetLastInt32();
+                    try!(self.ReadFirstPage());
+                } else {
+                    // we need a new page.  and if it's a full data page,
+                    // and if wanted is big enough to take all of it, then
+                    // we want to read (at least) it directly into the
+                    // buffer provided by the caller.  we already know
+                    // this candidate page cannot be the first page in a
+                    // block.
+                    let maybeDataPage = self.currentPage + 1;
+                    let isDataPage = 
+                        if self.boundaryPageNumber > 0 {
+                            ((self.len - self.sofarOverall) >= self.buf.len()) && (self.countRegularDataPagesInBlock > 0) && (maybeDataPage > self.firstPageInBlock) && (maybeDataPage < self.boundaryPageNumber)
+                        } else {
+                            ((self.len - self.sofarOverall) >= self.buf.len()) && (self.countRegularDataPagesInBlock > 0) && (maybeDataPage > self.firstPageInBlock) && (maybeDataPage <= (self.firstPageInBlock + self.countRegularDataPagesInBlock))
+                        };
+
+                    if isDataPage && (wanted >= self.buf.len()) {
+                        // assert (currentPage + 1) > firstPageInBlock
+                        //
+                        // don't increment currentPage here because below, we will
+                        // calculate how many pages we actually want to do.
+                        direct = true;
+                        self.bytesOnThisPage = self.buf.len();
+                        self.sofarThisPage = 0;
+                        self.offsetOnThisPage = 0;
+                    } else {
+                        self.currentPage = self.currentPage + 1;
+                        try!(self.ReadPage());
+                    }
+                }
+            }
+
+            if direct {
+                // currentPage has not been incremented yet
+                //
+                // skip the buffer.  note, therefore, that the contents of the
+                // buffer are "invalid" in that they do not correspond to currentPage
+                //
+                let numPagesWanted = (wanted / self.buf.len()) as PageNum;
+                // assert countRegularDataPagesInBlock > 0
+                let lastDataPageInThisBlock = self.firstPageInBlock + self.countRegularDataPagesInBlock;
+                let theDataPage = self.currentPage + 1;
+                let numPagesAvailable = 
+                    if self.boundaryPageNumber>0 { 
+                        self.boundaryPageNumber - theDataPage 
+                    } else {
+                        lastDataPageInThisBlock - theDataPage + 1
+                    };
+                let numPagesToFetch = std::cmp::min(numPagesWanted, numPagesAvailable) as PageNum;
+                let bytesToFetch = {
+                    let bytesToFetch = (numPagesToFetch as usize) * self.buf.len();
+                    let available = self.len - self.sofarOverall;
+                    if bytesToFetch > available {
+                        available
+                    } else {
+                        bytesToFetch
+                    }
+                };
+                // assert bytesToFetch <= wanted
+
+                try!(utils::SeekPage(&mut self.fs, self.buf.len(), theDataPage));
+                try!(utils::ReadFully(&mut self.fs, &mut ba[offset .. offset + bytesToFetch]));
+                self.sofarOverall = self.sofarOverall + bytesToFetch;
+                self.currentPage = self.currentPage + numPagesToFetch;
+                self.sofarThisPage = self.buf.len();
+                Ok(bytesToFetch)
+            } else {
+                let available = std::cmp::min(self.bytesOnThisPage - self.sofarThisPage, self.len - self.sofarOverall);
+                let num = std::cmp::min(available, wanted);
+                for i in 0 .. num {
+                    ba[offset+i] = self.buf[self.offsetOnThisPage + self.sofarThisPage + i];
+                }
+                self.sofarOverall = self.sofarOverall + num;
+                self.sofarThisPage = self.sofarThisPage + num;
+                Ok(num)
+            }
+        }
+    }
+}
+
+impl Read for myOverflowReadStream {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let len = buf.len();
+        let r = self.Read(buf, 0, len);
+        println!("want: {:?}", len);
+        println!("read: {:?}", r);
+        println!("sofarOverall: {:?}", self.sofarOverall);
+        r
+    }
+}
+
+fn readOverflow(path: &str, pgsz: usize, firstPage: PageNum, buf: &mut [u8]) -> io::Result<usize> {
+    let mut ostrm = try!(myOverflowReadStream::new(path, pgsz, firstPage, buf.len()));
+    utils::ReadFully(&mut ostrm, buf)
+}
+
+struct myCursor {
+    path: String,
+    fs: File,
+    len: u64,
+    rootPage: PageNum,
+    pr: PageBuffer,
+    // TODO hook
+    currentPage: PageNum,
+    leafKeys: Vec<usize>,
+    previousLeaf: PageNum,
+    currentKey: Option<usize>,
+    prefix: Option<Box<[u8]>>,
+    firstLeaf: PageNum,
+    lastLeaf: PageNum,
+}
+
+impl myCursor {
+    fn new(path: &str, pgsz: usize, rootPage: PageNum) -> io::Result<myCursor> {
+        let mut f = try!(OpenOptions::new()
+                .read(true)
+                .open(path));
+        let len = try!(seek_len(&mut f));
+        let mut res = myCursor {
+            path: String::from_str(path),
+            fs: f,
+            len: len,
+            rootPage: rootPage,
+            pr: PageBuffer::new(pgsz),
+            currentPage: 0,
+            leafKeys: Vec::new(),
+            previousLeaf: 0,
+            currentKey: None,
+            prefix: None,
+            firstLeaf: 0, // temporary
+            lastLeaf: 0, // temporary
+        };
+        if ! try!(res.setCurrentPage(rootPage)) {
+            return Err(io::Error::new(ErrorKind::InvalidInput, "failed to read root page"));
+        }
+        if res.pr.PageType() == PageType::LEAF_NODE {
+            res.firstLeaf = rootPage;
+            res.lastLeaf = rootPage;
+        } else if res.pr.PageType() == PageType::PARENT_NODE {
+            if ! res.pr.CheckPageFlag(PageFlag::FLAG_ROOT_NODE) { 
+                return Err(io::Error::new(ErrorKind::InvalidInput, "root page lacks flag"));
+            }
+            res.firstLeaf = res.pr.GetSecondToLastInt32() as PageNum;
+            res.lastLeaf = res.pr.GetLastInt32() as PageNum;
+        } else {
+            return Err(io::Error::new(ErrorKind::InvalidInput, "root page has invalid page type"));
+        }
+          
+        Ok(res)
+    }
+
+    fn resetLeaf(&mut self) {
+        self.leafKeys.clear();
+        self.previousLeaf = 0;
+        self.currentKey = None;
+        self.prefix = None;
+    }
+
+    fn setCurrentPage(&mut self, pgnum: PageNum) -> io::Result<bool> {
+        // TODO consider passing a block list for the segment into this
+        // cursor so that the code here can detect if it tries to stray
+        // out of bounds.
+
+        // TODO if currentPage = pgnum already...
+        self.currentPage = pgnum;
+        self.resetLeaf();
+        if 0 == self.currentPage { 
+            Ok(false)
+        } else {
+            // refuse to go to a page beyond the end of the stream
+            // TODO is this the right place for this check?    
+            let pos = (self.currentPage - 1) as u64 * self.pr.PageSize() as u64;
+            if pos + self.pr.PageSize() as u64 <= self.len {
+                try!(utils::SeekPage(&mut self.fs, self.pr.PageSize(), self.currentPage));
+                try!(self.pr.Read(&mut self.fs));
+                Ok(true)
+            } else {
+                Ok(false)
+            }
+        }
+    }
+
+    fn nextInLeaf(&mut self) -> bool {
+        match self.currentKey {
+            Some(cur) => {
+                if (cur+1) < self.leafKeys.len() {
+                    self.currentKey = Some(cur + 1);
+                    true
+                } else {
+                    false
+                }
+            },
+            None => {
+                false
+            },
+        }
+    }
+
+    fn prevInLeaf(&mut self) -> bool {
+        match self.currentKey {
+            Some(cur) => {
+                if cur > 0 {
+                    self.currentKey = Some(cur - 1);
+                    true
+                } else {
+                    false
+                }
+            },
+            None => {
+                false
+            },
+        }
+    }
+
+    fn skipKey(&self, cur: &mut usize) {
+        let kflag = self.pr.GetByte(cur);
+        let klen = self.pr.GetVarint(cur) as usize;
+        if 0 == (kflag & ValueFlag::FLAG_OVERFLOW) {
+            let prefixLen = match self.prefix {
+                Some(ref a) => a.len(),
+                None => 0
+            };
+            *cur = *cur + (klen - prefixLen);
+        } else {
+            *cur = *cur + size_32;
+        }
+    }
+
+    fn skipValue(&self, cur: &mut usize) {
+        let vflag = self.pr.GetByte(cur);
+        if 0 != (vflag & ValueFlag::FLAG_TOMBSTONE) { 
+            ()
+        } else {
+            let vlen = self.pr.GetVarint(cur) as usize;
+            if 0 != (vflag & ValueFlag::FLAG_OVERFLOW) {
+                *cur = *cur + size_32;
+            }
+            else {
+                *cur = *cur + vlen;
+            }
+        }
+    }
+
+    fn readLeaf(&mut self) {
+        self.resetLeaf();
+        let mut cur = 0;
+        if self.pr.GetByte(&mut cur) != PageType::LEAF_NODE {
+            panic!("leaf has invalid page type");
+        }
+        self.pr.GetByte(&mut cur);
+        self.previousLeaf = self.pr.GetInt32(&mut cur) as PageNum;
+        let prefixLen = self.pr.GetByte(&mut cur) as usize;
+        if prefixLen > 0 {
+            let mut a = vec![0;prefixLen].into_boxed_slice();
+            self.pr.GetIntoArray(&mut cur, &mut a);
+            self.prefix = Some(a);
+        } else {
+            self.prefix = None;
+        }
+        let countLeafKeys = self.pr.GetInt16(&mut cur) as usize;
+        // assert countLeafKeys>0
+        self.leafKeys.truncate(countLeafKeys);
+        while self.leafKeys.len() < countLeafKeys {
+            self.leafKeys.push(0);
+        }
+        for i in 0 .. countLeafKeys {
+            self.leafKeys[i] = cur;
+            self.skipKey(&mut cur);
+            self.skipValue(&mut cur);
+        }
+    }
+
+    fn keyInLeaf(&self, n: usize) -> io::Result<Box<[u8]>> { 
+        let mut cur = self.leafKeys[n as usize];
+        let kflag = self.pr.GetByte(&mut cur);
+        let klen = self.pr.GetVarint(&mut cur) as usize;
+        // TODO consider alloc res array here, once for all cases below
+        if 0 == (kflag & ValueFlag::FLAG_OVERFLOW) {
+            match self.prefix {
+                Some(ref a) => {
+                    let prefixLen = a.len();
+                    let mut res = vec![0;klen].into_boxed_slice();
+                    for i in 0 .. prefixLen {
+                        res[i] = a[i];
+                    }
+                    self.pr.GetIntoArray(&mut cur, &mut res[prefixLen .. klen]);
+                    Ok(res)
+                },
+                None => {
+                    let mut res = vec![0;klen].into_boxed_slice();
+                    self.pr.GetIntoArray(&mut cur, &mut res);
+                    Ok(res)
+                },
+            }
+        } else {
+            let pgnum = self.pr.GetInt32(&mut cur) as PageNum;
+            let mut res = vec![0;klen].into_boxed_slice();
+            try!(readOverflow(&self.path, self.pr.PageSize(), pgnum, &mut res));
+            Ok(res)
+        }
+    }
+
+    fn compareKeyInLeaf(&self, n: usize, other: &[u8]) -> io::Result<Ordering> {
+        let mut cur = self.leafKeys[n as usize];
+        let kflag = self.pr.GetByte(&mut cur);
+        let klen = self.pr.GetVarint(&mut cur) as usize;
+        if 0 == (kflag & ValueFlag::FLAG_OVERFLOW) {
+            let res = 
+                match self.prefix {
+                    Some(ref a) => {
+                        self.pr.CompareWithPrefix(cur, a, klen, other)
+                    },
+                    None => {
+                        self.pr.Compare(cur, klen, other)
+                    },
+                };
+            Ok(res)
+        } else {
+            // TODO this could be more efficient. we could compare the key
+            // in place in the overflow without fetching the entire thing.
+
+            // TODO overflowed keys are not prefixed.  should they be?
+            let pgnum = self.pr.GetInt32(&mut cur) as PageNum;
+            let mut k = vec![0;klen].into_boxed_slice();
+            try!(readOverflow(&self.path, self.pr.PageSize(), pgnum, &mut k));
+            let res = bcmp::Compare(&*k, other);
+            Ok(res)
+        }
+    }
+
+    fn searchLeaf(&mut self, k: &[u8], min:usize, max:usize, sop:SeekOp, le: Option<usize>, ge: Option<usize>) -> io::Result<Option<usize>> {
+        if max < min {
+            match sop {
+                SeekOp::SEEK_EQ => Ok(None),
+                SeekOp::SEEK_LE => Ok(le),
+                SeekOp::SEEK_GE => Ok(ge),
+            }
+        } else {
+            let mid = (max + min) / 2;
+            // assert mid >= 0
+            match try!(self.compareKeyInLeaf(mid, k)){
+                Ordering::Equal => Ok(Some(mid)),
+                Ordering::Less => self.searchLeaf(k, (mid+1), max, sop, Some(mid), ge),
+                Ordering::Greater => 
+                    // catch underflow
+                    if mid==0 { 
+                        match sop {
+                            SeekOp::SEEK_EQ => Ok(None),
+                            SeekOp::SEEK_LE => Ok(le),
+                            SeekOp::SEEK_GE => Ok(Some(mid)),
+                        }
+                    } else { 
+                        self.searchLeaf(k, min, (mid-1), sop, le, Some(mid))
+                    },
+            }
+        }
+    }
+
+    fn readParentPage(&mut self) -> io::Result<(Vec<PageNum>,Vec<Box<[u8]>>)> {
+        let mut cur = 0;
+        if self.pr.GetByte(&mut cur) != PageType::PARENT_NODE {
+            return Err(io::Error::new(ErrorKind::InvalidInput, "parent page has invalid page type"));
+        }
+        cur = cur + 1; // page flags
+        let count = self.pr.GetInt16(&mut cur);
+        let mut ptrs = Vec::new();
+        let mut keys = Vec::new();
+        for _ in 0 .. count+1 {
+            ptrs.push(self.pr.GetVarint(&mut cur) as PageNum);
+        }
+        for _ in 0 .. count {
             let kflag = self.pr.GetByte(&mut cur);
             let klen = self.pr.GetVarint(&mut cur) as usize;
             if 0 == (kflag & ValueFlag::FLAG_OVERFLOW) {
-                let res = 
-                    match self.prefix {
-                        Some(ref a) => {
-                            self.pr.CompareWithPrefix(cur, a, klen, other)
-                        },
-                        None => {
-                            self.pr.Compare(cur, klen, other)
-                        },
-                    };
-                Ok(res)
+                let mut a = vec![0;klen].into_boxed_slice();
+                self.pr.GetIntoArray(&mut cur, &mut a);
+                keys.push(a);
             } else {
-                // TODO this could be more efficient. we could compare the key
-                // in place in the overflow without fetching the entire thing.
-
-                // TODO overflowed keys are not prefixed.  should they be?
                 let pgnum = self.pr.GetInt32(&mut cur) as PageNum;
                 let mut k = vec![0;klen].into_boxed_slice();
                 try!(readOverflow(&self.path, self.pr.PageSize(), pgnum, &mut k));
-                let res = bcmp::Compare(&*k, other);
-                Ok(res)
+                keys.push(k);
             }
         }
+        Ok((ptrs,keys))
+    }
 
-        fn searchLeaf(&mut self, k: &[u8], min:usize, max:usize, sop:SeekOp, le: Option<usize>, ge: Option<usize>) -> io::Result<Option<usize>> {
-            if max < min {
-                match sop {
-                    SeekOp::SEEK_EQ => Ok(None),
-                    SeekOp::SEEK_LE => Ok(le),
-                    SeekOp::SEEK_GE => Ok(ge),
+    // this is used when moving forward through the leaf pages.
+    // we need to skip any overflows.  when moving backward,
+    // this is not necessary, because each leaf has a pointer to
+    // the leaf before it.
+    fn searchForwardForLeaf(&mut self) -> io::Result<bool> {
+        let pt = self.pr.PageType();
+        if pt == PageType::LEAF_NODE { 
+            Ok(true)
+        } else if pt == PageType::PARENT_NODE { 
+            // if we bump into a parent node, that means there are
+            // no more leaves.
+            Ok(false)
+        } else {
+            let lastInt32 = self.pr.GetLastInt32() as PageNum;
+            //
+            // an overflow page has a value in its LastInt32 which
+            // is one of two things.
+            //
+            // if it's a boundary node, it's the page number of the
+            // next page in the segment.
+            //
+            // otherwise, it's the number of pages to skip ahead.
+            // this skip might take us to whatever follows this
+            // overflow (which could be a leaf or a parent or
+            // another overflow), or it might just take us to a
+            // boundary page (in the case where the overflow didn't
+            // fit).  it doesn't matter.  we just skip ahead.
+            //
+            if self.pr.CheckPageFlag(PageFlag::FLAG_BOUNDARY_NODE) {
+                if try!(self.setCurrentPage(lastInt32)) {
+                    self.searchForwardForLeaf()
+                } else {
+                    Ok(false)
                 }
             } else {
-                let mid = (max + min) / 2;
-                // assert mid >= 0
-                match try!(self.compareKeyInLeaf(mid, k)){
-                    Ordering::Equal => Ok(Some(mid)),
-                    Ordering::Less => self.searchLeaf(k, (mid+1), max, sop, Some(mid), ge),
-                    Ordering::Greater => 
-                        // catch underflow
-                        if mid==0 { 
-                            match sop {
-                                SeekOp::SEEK_EQ => Ok(None),
-                                SeekOp::SEEK_LE => Ok(le),
-                                SeekOp::SEEK_GE => Ok(Some(mid)),
-                            }
-                        } else { 
-                            self.searchLeaf(k, min, (mid-1), sop, le, Some(mid))
-                        },
-                }
-            }
-        }
-
-        fn readParentPage(&mut self) -> io::Result<(Vec<PageNum>,Vec<Box<[u8]>>)> {
-            let mut cur = 0;
-            if self.pr.GetByte(&mut cur) != PageType::PARENT_NODE {
-                return Err(io::Error::new(ErrorKind::InvalidInput, "parent page has invalid page type"));
-            }
-            cur = cur + 1; // page flags
-            let count = self.pr.GetInt16(&mut cur);
-            let mut ptrs = Vec::new();
-            let mut keys = Vec::new();
-            for _ in 0 .. count+1 {
-                ptrs.push(self.pr.GetVarint(&mut cur) as PageNum);
-            }
-            for _ in 0 .. count {
-                let kflag = self.pr.GetByte(&mut cur);
-                let klen = self.pr.GetVarint(&mut cur) as usize;
-                if 0 == (kflag & ValueFlag::FLAG_OVERFLOW) {
-                    let mut a = vec![0;klen].into_boxed_slice();
-                    self.pr.GetIntoArray(&mut cur, &mut a);
-                    keys.push(a);
-                } else {
-                    let pgnum = self.pr.GetInt32(&mut cur) as PageNum;
-                    let mut k = vec![0;klen].into_boxed_slice();
-                    try!(readOverflow(&self.path, self.pr.PageSize(), pgnum, &mut k));
-                    keys.push(k);
-                }
-            }
-            Ok((ptrs,keys))
-        }
-
-        // this is used when moving forward through the leaf pages.
-        // we need to skip any overflows.  when moving backward,
-        // this is not necessary, because each leaf has a pointer to
-        // the leaf before it.
-        fn searchForwardForLeaf(&mut self) -> io::Result<bool> {
-            let pt = self.pr.PageType();
-            if pt == PageType::LEAF_NODE { 
-                Ok(true)
-            } else if pt == PageType::PARENT_NODE { 
-                // if we bump into a parent node, that means there are
-                // no more leaves.
-                Ok(false)
-            } else {
-                let lastInt32 = self.pr.GetLastInt32() as PageNum;
-                //
-                // an overflow page has a value in its LastInt32 which
-                // is one of two things.
-                //
-                // if it's a boundary node, it's the page number of the
-                // next page in the segment.
-                //
-                // otherwise, it's the number of pages to skip ahead.
-                // this skip might take us to whatever follows this
-                // overflow (which could be a leaf or a parent or
-                // another overflow), or it might just take us to a
-                // boundary page (in the case where the overflow didn't
-                // fit).  it doesn't matter.  we just skip ahead.
-                //
-                if self.pr.CheckPageFlag(PageFlag::FLAG_BOUNDARY_NODE) {
-                    if try!(self.setCurrentPage(lastInt32)) {
-                        self.searchForwardForLeaf()
-                    } else {
-                        Ok(false)
-                    }
-                } else {
-                    let lastPage = self.currentPage + lastInt32;
-                    let endsOnBoundary = self.pr.CheckPageFlag(PageFlag::FLAG_ENDS_ON_BOUNDARY);
-                    if endsOnBoundary {
-                        if try!(self.setCurrentPage(lastPage)) {
-                            let next = self.pr.GetLastInt32() as PageNum;
-                            if try!(self.setCurrentPage(next)) {
-                                self.searchForwardForLeaf()
-                            } else {
-                                Ok(false)
-                            }
-                        } else {
-                            Ok(false)
-                        }
-                    } else {
-                        if try!(self.setCurrentPage(lastPage + 1)) {
+                let lastPage = self.currentPage + lastInt32;
+                let endsOnBoundary = self.pr.CheckPageFlag(PageFlag::FLAG_ENDS_ON_BOUNDARY);
+                if endsOnBoundary {
+                    if try!(self.setCurrentPage(lastPage)) {
+                        let next = self.pr.GetLastInt32() as PageNum;
+                        if try!(self.setCurrentPage(next)) {
                             self.searchForwardForLeaf()
                         } else {
                             Ok(false)
                         }
+                    } else {
+                        Ok(false)
+                    }
+                } else {
+                    if try!(self.setCurrentPage(lastPage + 1)) {
+                        self.searchForwardForLeaf()
+                    } else {
+                        Ok(false)
                     }
                 }
             }
         }
+    }
 
-        fn leafIsValid(&self) -> bool {
-            let ok = (!self.leafKeys.is_empty()) && (self.currentKey.is_some()) && (self.currentKey.unwrap() as usize) < self.leafKeys.len();
-            ok
-        }
+    fn leafIsValid(&self) -> bool {
+        let ok = (!self.leafKeys.is_empty()) && (self.currentKey.is_some()) && (self.currentKey.unwrap() as usize) < self.leafKeys.len();
+        ok
+    }
 
-        fn search(&mut self, pg: PageNum, k: &[u8], sop:SeekOp) -> io::Result<()> {
-            if try!(self.setCurrentPage(pg)) {
-                if PageType::LEAF_NODE == self.pr.PageType() {
-                    self.readLeaf();
-                    let tmp_countLeafKeys = self.leafKeys.len();
-                    self.currentKey = try!(self.searchLeaf(k, 0, (tmp_countLeafKeys - 1), sop, None, None));
-                    if SeekOp::SEEK_EQ != sop {
-                        if ! self.leafIsValid() {
-                            // if LE or GE failed on a given page, we might need
-                            // to look at the next/prev leaf.
-                            if SeekOp::SEEK_GE == sop {
-                                let nextPage =
-                                    if self.pr.CheckPageFlag(PageFlag::FLAG_BOUNDARY_NODE) { self.pr.GetLastInt32() as PageNum }
-                                    else if self.currentPage == self.rootPage { 0 }
-                                    else { self.currentPage + 1 };
-                                if try!(self.setCurrentPage(nextPage)) && try!(self.searchForwardForLeaf()) {
-                                    self.readLeaf();
-                                    self.currentKey = Some(0);
-                                }
-                            } else {
-                                let tmp_previousLeaf = self.previousLeaf;
-                                if 0 == self.previousLeaf {
-                                    self.resetLeaf();
-                                } else if try!(self.setCurrentPage(tmp_previousLeaf)) {
-                                    self.readLeaf();
-                                    self.currentKey = Some(self.leafKeys.len() - 1);
-                                }
+    fn search(&mut self, pg: PageNum, k: &[u8], sop:SeekOp) -> io::Result<()> {
+        if try!(self.setCurrentPage(pg)) {
+            if PageType::LEAF_NODE == self.pr.PageType() {
+                self.readLeaf();
+                let tmp_countLeafKeys = self.leafKeys.len();
+                self.currentKey = try!(self.searchLeaf(k, 0, (tmp_countLeafKeys - 1), sop, None, None));
+                if SeekOp::SEEK_EQ != sop {
+                    if ! self.leafIsValid() {
+                        // if LE or GE failed on a given page, we might need
+                        // to look at the next/prev leaf.
+                        if SeekOp::SEEK_GE == sop {
+                            let nextPage =
+                                if self.pr.CheckPageFlag(PageFlag::FLAG_BOUNDARY_NODE) { self.pr.GetLastInt32() as PageNum }
+                                else if self.currentPage == self.rootPage { 0 }
+                                else { self.currentPage + 1 };
+                            if try!(self.setCurrentPage(nextPage)) && try!(self.searchForwardForLeaf()) {
+                                self.readLeaf();
+                                self.currentKey = Some(0);
+                            }
+                        } else {
+                            let tmp_previousLeaf = self.previousLeaf;
+                            if 0 == self.previousLeaf {
+                                self.resetLeaf();
+                            } else if try!(self.setCurrentPage(tmp_previousLeaf)) {
+                                self.readLeaf();
+                                self.currentKey = Some(self.leafKeys.len() - 1);
                             }
                         }
                     }
-                } else if PageType::PARENT_NODE == self.pr.PageType() {
-                    let (ptrs,keys) = try!(self.readParentPage());
-                    match Self::searchInParentPage(k, &ptrs, &keys, 0) {
-                        Some(found) => return self.search(found, k, sop),
-                        None => return self.search(ptrs[ptrs.len() - 1], k, sop),
-                    }
+                }
+            } else if PageType::PARENT_NODE == self.pr.PageType() {
+                let (ptrs,keys) = try!(self.readParentPage());
+                match Self::searchInParentPage(k, &ptrs, &keys, 0) {
+                    Some(found) => return self.search(found, k, sop),
+                    None => return self.search(ptrs[ptrs.len() - 1], k, sop),
                 }
             }
-            Ok(())
         }
-
-        fn searchInParentPage(k: &[u8], ptrs: &Vec<PageNum>, keys: &Vec<Box<[u8]>>, i: usize) -> Option<PageNum> {
-            // TODO linear search?  really?
-            // TODO this doesn't need to be recursive
-            if i < keys.len() {
-                let cmp = bcmp::Compare(k, &*keys[i]);
-                if cmp==Ordering::Greater {
-                    Self::searchInParentPage(k, ptrs, keys, i+1)
-                } else {
-                    Some(ptrs[i])
-                }
-            } else {
-                None
-            }
-        }
-
+        Ok(())
     }
 
-    impl Drop for myCursor {
-        fn drop(&mut self) {
-            // TODO
+    fn searchInParentPage(k: &[u8], ptrs: &Vec<PageNum>, keys: &Vec<Box<[u8]>>, i: usize) -> Option<PageNum> {
+        // TODO linear search?  really?
+        // TODO this doesn't need to be recursive
+        if i < keys.len() {
+            let cmp = bcmp::Compare(k, &*keys[i]);
+            if cmp==Ordering::Greater {
+                Self::searchInParentPage(k, ptrs, keys, i+1)
+            } else {
+                Some(ptrs[i])
+            }
+        } else {
+            None
         }
     }
 
-    impl ICursor for myCursor {
-        fn IsValid(&self) -> bool {
-            self.leafIsValid()
-        }
+}
 
-        fn Seek(&mut self, k:&[u8], sop:SeekOp) {
-            let rootPage = self.rootPage;
-            self.search(rootPage, k, sop).unwrap()
-        }
+impl Drop for myCursor {
+    fn drop(&mut self) {
+        // TODO
+    }
+}
 
-        fn Key(&self) -> Box<[u8]> {
-            let currentKey = self.currentKey.unwrap();
-            self.keyInLeaf(currentKey).unwrap()
-        }
+impl ICursor for myCursor {
+    fn IsValid(&self) -> bool {
+        self.leafIsValid()
+    }
 
-        fn Value(&self) -> Blob {
-            let currentKey = self.currentKey.unwrap();
-            let mut pos = self.leafKeys[currentKey as usize];
+    fn Seek(&mut self, k:&[u8], sop:SeekOp) {
+        let rootPage = self.rootPage;
+        self.search(rootPage, k, sop).unwrap()
+    }
 
-            self.skipKey(&mut pos);
+    fn Key(&self) -> Box<[u8]> {
+        let currentKey = self.currentKey.unwrap();
+        self.keyInLeaf(currentKey).unwrap()
+    }
 
-            let vflag = self.pr.GetByte(&mut pos);
-            if 0 != (vflag & ValueFlag::FLAG_TOMBSTONE) {
-                Blob::Tombstone
+    fn Value(&self) -> Blob {
+        let currentKey = self.currentKey.unwrap();
+        let mut pos = self.leafKeys[currentKey as usize];
+
+        self.skipKey(&mut pos);
+
+        let vflag = self.pr.GetByte(&mut pos);
+        if 0 != (vflag & ValueFlag::FLAG_TOMBSTONE) {
+            Blob::Tombstone
+        } else {
+            let vlen = self.pr.GetVarint(&mut pos) as usize;
+            if 0 != (vflag & ValueFlag::FLAG_OVERFLOW) {
+                let pgnum = self.pr.GetInt32(&mut pos) as PageNum;
+                let strm = myOverflowReadStream::new(&self.path, self.pr.PageSize(), pgnum, vlen).unwrap();
+                Blob::Stream(box strm)
             } else {
-                let vlen = self.pr.GetVarint(&mut pos) as usize;
-                if 0 != (vflag & ValueFlag::FLAG_OVERFLOW) {
-                    let pgnum = self.pr.GetInt32(&mut pos) as PageNum;
-                    let strm = myOverflowReadStream::new(&self.path, self.pr.PageSize(), pgnum, vlen).unwrap();
-                    Blob::Stream(box strm)
-                } else {
-                    let mut a = vec![0;vlen as usize].into_boxed_slice();
-                    self.pr.GetIntoArray(&mut pos, &mut a);
-                    Blob::Array(a)
-                }
+                let mut a = vec![0;vlen as usize].into_boxed_slice();
+                self.pr.GetIntoArray(&mut pos, &mut a);
+                Blob::Array(a)
             }
         }
+    }
 
-        fn ValueLength(&self) -> Option<usize> {
-            let currentKey = self.currentKey.unwrap();
-            let mut cur = self.leafKeys[currentKey as usize];
+    fn ValueLength(&self) -> Option<usize> {
+        let currentKey = self.currentKey.unwrap();
+        let mut cur = self.leafKeys[currentKey as usize];
 
-            self.skipKey(&mut cur);
+        self.skipKey(&mut cur);
 
-            let vflag = self.pr.GetByte(&mut cur);
-            if 0 != (vflag & ValueFlag::FLAG_TOMBSTONE) { 
-                None
-            } else {
-                let vlen = self.pr.GetVarint(&mut cur) as usize;
-                Some(vlen)
-            }
+        let vflag = self.pr.GetByte(&mut cur);
+        if 0 != (vflag & ValueFlag::FLAG_TOMBSTONE) { 
+            None
+        } else {
+            let vlen = self.pr.GetVarint(&mut cur) as usize;
+            Some(vlen)
         }
+    }
 
-        fn KeyCompare(&self, k:&[u8]) -> Ordering {
-            let currentKey = self.currentKey.unwrap();
-            self.compareKeyInLeaf(currentKey, k).unwrap()
+    fn KeyCompare(&self, k:&[u8]) -> Ordering {
+        let currentKey = self.currentKey.unwrap();
+        self.compareKeyInLeaf(currentKey, k).unwrap()
+    }
+
+    fn First(&mut self) {
+        let firstLeaf = self.firstLeaf;
+        if self.setCurrentPage(firstLeaf).unwrap() {
+            self.readLeaf();
+            self.currentKey = Some(0);
         }
+    }
 
-        fn First(&mut self) {
-            let firstLeaf = self.firstLeaf;
-            if self.setCurrentPage(firstLeaf).unwrap() {
+    fn Last(&mut self) {
+        let lastLeaf = self.lastLeaf;
+        if self.setCurrentPage(lastLeaf).unwrap() {
+            self.readLeaf();
+            self.currentKey = Some(self.leafKeys.len() - 1);
+        }
+    }
+
+    fn Next(&mut self) {
+        if ! self.nextInLeaf() {
+            let nextPage =
+                if self.pr.CheckPageFlag(PageFlag::FLAG_BOUNDARY_NODE) { self.pr.GetLastInt32() as PageNum }
+                else if self.pr.PageType() == PageType::LEAF_NODE {
+                    if self.currentPage == self.rootPage { 0 }
+                    else { self.currentPage + 1 }
+                } else { 0 }
+            ;
+            if self.setCurrentPage(nextPage).unwrap() && self.searchForwardForLeaf().unwrap() {
                 self.readLeaf();
                 self.currentKey = Some(0);
             }
         }
+    }
 
-        fn Last(&mut self) {
-            let lastLeaf = self.lastLeaf;
-            if self.setCurrentPage(lastLeaf).unwrap() {
+    fn Prev(&mut self) {
+        if ! self.prevInLeaf() {
+            let previousLeaf = self.previousLeaf;
+            if 0 == previousLeaf {
+                self.resetLeaf();
+            } else if self.setCurrentPage(previousLeaf).unwrap() {
                 self.readLeaf();
                 self.currentKey = Some(self.leafKeys.len() - 1);
             }
         }
-
-        fn Next(&mut self) {
-            if ! self.nextInLeaf() {
-                let nextPage =
-                    if self.pr.CheckPageFlag(PageFlag::FLAG_BOUNDARY_NODE) { self.pr.GetLastInt32() as PageNum }
-                    else if self.pr.PageType() == PageType::LEAF_NODE {
-                        if self.currentPage == self.rootPage { 0 }
-                        else { self.currentPage + 1 }
-                    } else { 0 }
-                ;
-                if self.setCurrentPage(nextPage).unwrap() && self.searchForwardForLeaf().unwrap() {
-                    self.readLeaf();
-                    self.currentKey = Some(0);
-                }
-            }
-        }
-
-        fn Prev(&mut self) {
-            if ! self.prevInLeaf() {
-                let previousLeaf = self.previousLeaf;
-                if 0 == previousLeaf {
-                    self.resetLeaf();
-                } else if self.setCurrentPage(previousLeaf).unwrap() {
-                    self.readLeaf();
-                    self.currentKey = Some(self.leafKeys.len() - 1);
-                }
-            }
-        }
-
     }
 
-    fn OpenCursor(path: &str, pgsz: usize, rootPage: PageNum) -> io::Result<myCursor> {
-        let csr = try!(myCursor::new(path, pgsz, rootPage));
-        Ok(csr)
-    }
+}
+
+fn OpenCursor(path: &str, pgsz: usize, rootPage: PageNum) -> io::Result<myCursor> {
+    let csr = try!(myCursor::new(path, pgsz, rootPage));
+    Ok(csr)
+}
 
 #[derive(Clone)]
 struct HeaderData {
@@ -2561,766 +2561,766 @@ struct SimplePageManager {
     nextPage : PageNum,
 }
 
-    const HEADER_SIZE_IN_BYTES: usize = 4096;
+const HEADER_SIZE_IN_BYTES: usize = 4096;
 
-    impl PendingSegment {
-        fn new() -> PendingSegment {
-            PendingSegment {blockList: Vec::new()}
-        }
+impl PendingSegment {
+    fn new() -> PendingSegment {
+        PendingSegment {blockList: Vec::new()}
+    }
 
-        fn AddBlock(&mut self, b: PageBlock) {
-            let len = self.blockList.len();
-            if (! (self.blockList.is_empty())) && (b.firstPage == self.blockList[len-1].lastPage+1) {
-                // note that by consolidating blocks here, the segment info list will
-                // not have information about the fact that the two blocks were
-                // originally separate.  that's okay, since all we care about here is
-                // keeping track of which pages are used.  but the btree code itself
-                // is still treating the last page of the first block as a boundary
-                // page, even though its pointer to the next block goes to the very
-                // next page, because its page manager happened to give it a block
-                // which immediately follows the one it had.
-                self.blockList[len-1].lastPage = b.lastPage;
-            } else {
-                self.blockList.push(b);
-            }
-        }
-
-        fn End(mut self, lastPage: PageNum) -> (Guid, Vec<PageBlock>, Option<PageBlock>) {
-            let len = self.blockList.len();
-            let unused = {
-                let givenLastPage = self.blockList[len-1].lastPage;
-                if lastPage < givenLastPage {
-                    self.blockList[len-1].lastPage = lastPage;
-                    Some (PageBlock::new(lastPage+1, givenLastPage))
-                } else {
-                    None
-                }
-            };
-            // consume self return blockList
-            (Guid::NewGuid(), self.blockList, unused)
+    fn AddBlock(&mut self, b: PageBlock) {
+        let len = self.blockList.len();
+        if (! (self.blockList.is_empty())) && (b.firstPage == self.blockList[len-1].lastPage+1) {
+            // note that by consolidating blocks here, the segment info list will
+            // not have information about the fact that the two blocks were
+            // originally separate.  that's okay, since all we care about here is
+            // keeping track of which pages are used.  but the btree code itself
+            // is still treating the last page of the first block as a boundary
+            // page, even though its pointer to the next block goes to the very
+            // next page, because its page manager happened to give it a block
+            // which immediately follows the one it had.
+            self.blockList[len-1].lastPage = b.lastPage;
+        } else {
+            self.blockList.push(b);
         }
     }
 
-    impl IPages for SimplePageManager {
-        fn PageSize(&self) -> usize {
-            self.pgsz
-        }
+    fn End(mut self, lastPage: PageNum) -> (Guid, Vec<PageBlock>, Option<PageBlock>) {
+        let len = self.blockList.len();
+        let unused = {
+            let givenLastPage = self.blockList[len-1].lastPage;
+            if lastPage < givenLastPage {
+                self.blockList[len-1].lastPage = lastPage;
+                Some (PageBlock::new(lastPage+1, givenLastPage))
+            } else {
+                None
+            }
+        };
+        // consume self return blockList
+        (Guid::NewGuid(), self.blockList, unused)
+    }
+}
 
-        fn Begin(&mut self) -> PendingSegment {
-            PendingSegment::new()
-        }
-
-        fn GetBlock(&mut self, ps: &mut PendingSegment) -> PageBlock {
-            let blk = PageBlock::new(self.nextPage, self.nextPage + 10 - 1);
-            self.nextPage = self.nextPage + 10;
-            ps.AddBlock(blk);
-            blk
-        }
-
-        fn End(&mut self, ps:PendingSegment, lastPage: PageNum) -> Guid {
-            let (g,_,_) = ps.End(lastPage);
-            g
-        }
-
+impl IPages for SimplePageManager {
+    fn PageSize(&self) -> usize {
+        self.pgsz
     }
 
-    fn readHeader<R>(fs:&mut R) -> io::Result<(HeaderData,usize,PageNum)> where R : Read+Seek {
-        // TODO this func assumes we are at the beginning of the file?
-        // should the seek happen here instead of in the caller?
+    fn Begin(&mut self) -> PendingSegment {
+        PendingSegment::new()
+    }
 
-        fn read<R>(fs: &mut R) -> io::Result<PageBuffer> where R : Read {
-            let mut pr = PageBuffer::new(HEADER_SIZE_IN_BYTES);
-            let got = try!(pr.Read(fs));
-            if got < HEADER_SIZE_IN_BYTES {
-                Err(io::Error::new(ErrorKind::InvalidInput, "invalid header"))
-            } else {
-                Ok(pr)
-            }
+    fn GetBlock(&mut self, ps: &mut PendingSegment) -> PageBlock {
+        let blk = PageBlock::new(self.nextPage, self.nextPage + 10 - 1);
+        self.nextPage = self.nextPage + 10;
+        ps.AddBlock(blk);
+        blk
+    }
+
+    fn End(&mut self, ps:PendingSegment, lastPage: PageNum) -> Guid {
+        let (g,_,_) = ps.End(lastPage);
+        g
+    }
+
+}
+
+fn readHeader<R>(fs:&mut R) -> io::Result<(HeaderData,usize,PageNum)> where R : Read+Seek {
+    // TODO this func assumes we are at the beginning of the file?
+    // should the seek happen here instead of in the caller?
+
+    fn read<R>(fs: &mut R) -> io::Result<PageBuffer> where R : Read {
+        let mut pr = PageBuffer::new(HEADER_SIZE_IN_BYTES);
+        let got = try!(pr.Read(fs));
+        if got < HEADER_SIZE_IN_BYTES {
+            Err(io::Error::new(ErrorKind::InvalidInput, "invalid header"))
+        } else {
+            Ok(pr)
         }
+    }
 
-        fn parse<R>(pr: &PageBuffer, cur: &mut usize, fs: &mut R) -> io::Result<(HeaderData, usize)> where R : Read+Seek {
-            fn readSegmentList(pr: &PageBuffer, cur: &mut usize) -> (Vec<Guid>,HashMap<Guid,SegmentInfo>) {
-                fn readBlockList(prBlocks: &PageBuffer, cur: &mut usize) -> Vec<PageBlock> {
-                    let count = prBlocks.GetVarint(cur) as usize;
-                    let mut a = Vec::new();
-                    for _ in 0 .. count {
-                        let firstPage = prBlocks.GetVarint(cur) as PageNum;
-                        let countPages = prBlocks.GetVarint(cur) as PageNum;
-                        // blocks are stored as firstPage/count rather than as
-                        // firstPage/lastPage, because the count will always be
-                        // smaller as a varint
-                        a.push(PageBlock::new(firstPage,firstPage + countPages - 1));
-                    }
-                    a
-                }
-
-                let count = pr.GetVarint(cur) as usize;
-                let mut a = Vec::new(); // TODO capacity count
-                let mut m = HashMap::new(); // TODO capacity count
+    fn parse<R>(pr: &PageBuffer, cur: &mut usize, fs: &mut R) -> io::Result<(HeaderData, usize)> where R : Read+Seek {
+        fn readSegmentList(pr: &PageBuffer, cur: &mut usize) -> (Vec<Guid>,HashMap<Guid,SegmentInfo>) {
+            fn readBlockList(prBlocks: &PageBuffer, cur: &mut usize) -> Vec<PageBlock> {
+                let count = prBlocks.GetVarint(cur) as usize;
+                let mut a = Vec::new();
                 for _ in 0 .. count {
-                    let mut b = [0;16];
-                    pr.GetIntoArray(cur, &mut b);
-                    let g = Guid::new(b);
-                    a.push(g);
-                    let root = pr.GetVarint(cur) as PageNum;
-                    let age = pr.GetVarint(cur) as u32;
-                    let blocks = readBlockList(pr, cur);
-                    let info = SegmentInfo {root:root,age:age,blocks:blocks};
-                    m.insert(g,info);
+                    let firstPage = prBlocks.GetVarint(cur) as PageNum;
+                    let countPages = prBlocks.GetVarint(cur) as PageNum;
+                    // blocks are stored as firstPage/count rather than as
+                    // firstPage/lastPage, because the count will always be
+                    // smaller as a varint
+                    a.push(PageBlock::new(firstPage,firstPage + countPages - 1));
                 }
-                (a,m)
+                a
             }
 
-            // --------
-
-            let pgsz = pr.GetInt32(cur) as usize;
-            let changeCounter = pr.GetVarint(cur);
-            let mergeCounter = pr.GetVarint(cur);
-            let lenSegmentList = pr.GetVarint(cur) as usize;
-
-            let overflowed = pr.GetByte(cur);
-            let (state,segments,blk) = 
-                if overflowed != 0u8 {
-                    let lenChunk1 = pr.GetInt32(cur) as usize;
-                    let lenChunk2 = lenSegmentList - lenChunk1;
-                    let firstPageChunk2 = pr.GetInt32(cur) as PageNum;
-                    let extraPages = lenChunk2 / pgsz + if (lenChunk2 % pgsz) != 0 { 1 } else { 0 };
-                    let extraPages = extraPages as PageNum;
-                    let lastPageChunk2 = firstPageChunk2 + extraPages - 1;
-                    let mut pr2 = PageBuffer::new(lenSegmentList);
-                    // TODO chain?
-                    // copy from chunk1 into pr2
-                    try!(pr2.ReadPart(fs, 0, lenChunk1));
-                    // now get chunk2 and copy it in as well
-                    try!(utils::SeekPage(fs, pgsz, firstPageChunk2));
-                    try!(pr2.ReadPart(fs, lenChunk1, lenChunk2));
-                    let mut cur2 = 0;
-                    let (state,segments) = readSegmentList(&pr2, &mut cur2);
-                    (state, segments, Some (PageBlock::new(firstPageChunk2, lastPageChunk2)))
-                } else {
-                    let (state,segments) = readSegmentList(pr, cur);
-                    (state,segments,None)
-                };
-
-
-            let hd = 
-                HeaderData
-                {
-                    currentState:state,
-                    segments:segments,
-                    headerOverflow:blk,
-                    changeCounter:changeCounter,
-                    mergeCounter:mergeCounter,
-                };
-
-            Ok((hd, pgsz))
-        }
-
-        fn calcNextPage(pgsz: usize, len: usize) -> PageNum {
-            let numPagesSoFar = (if pgsz > len { 1 } else { len / pgsz }) as PageNum;
-            numPagesSoFar + 1
+            let count = pr.GetVarint(cur) as usize;
+            let mut a = Vec::new(); // TODO capacity count
+            let mut m = HashMap::new(); // TODO capacity count
+            for _ in 0 .. count {
+                let mut b = [0;16];
+                pr.GetIntoArray(cur, &mut b);
+                let g = Guid::new(b);
+                a.push(g);
+                let root = pr.GetVarint(cur) as PageNum;
+                let age = pr.GetVarint(cur) as u32;
+                let blocks = readBlockList(pr, cur);
+                let info = SegmentInfo {root:root,age:age,blocks:blocks};
+                m.insert(g,info);
+            }
+            (a,m)
         }
 
         // --------
 
-        let len = try!(seek_len(fs));
-        if len > 0 {
-            try!(fs.seek(SeekFrom::Start(0 as u64)));
-            let pr = try!(read(fs));
-            let mut cur = 0;
-            let (h, pgsz) = try!(parse(&pr, &mut cur, fs));
-            let nextAvailablePage = calcNextPage(pgsz, len as usize);
-            Ok((h, pgsz, nextAvailablePage))
-        } else {
-            //let defaultPageSize = settings.DefaultPageSize;
-            let defaultPageSize = 4096; // TODO
-            let h = 
-                HeaderData
-                {
-                    segments: HashMap::new(),
-                    currentState: Vec::new(),
-                    headerOverflow: None,
-                    changeCounter: 0,
-                    mergeCounter: 0,
-                };
-            let nextAvailablePage = calcNextPage(defaultPageSize, HEADER_SIZE_IN_BYTES);
-            Ok((h, defaultPageSize, nextAvailablePage))
-        }
+        let pgsz = pr.GetInt32(cur) as usize;
+        let changeCounter = pr.GetVarint(cur);
+        let mergeCounter = pr.GetVarint(cur);
+        let lenSegmentList = pr.GetVarint(cur) as usize;
 
-    }
-
-    fn consolidateBlockList(blocks: &mut Vec<PageBlock>) {
-        blocks.sort_by(|a,b| a.firstPage.cmp(&b.firstPage));
-        loop {
-            if blocks.len()==1 {
-                break;
-            }
-            let mut did = false;
-            for i in 1 .. blocks.len() {
-                if blocks[i-1].lastPage+1 == blocks[i].firstPage {
-                    blocks[i-1].lastPage = blocks[i].lastPage;
-                    blocks.remove(i);
-                    did = true;
-                    break;
-                }
-            }
-            if !did {
-                break;
-            }
-        }
-    }
-
-    fn invertBlockList(blocks: &Vec<PageBlock>) -> Vec<PageBlock> {
-        let len = blocks.len();
-        let mut result = Vec::new();
-        for i in 0 .. len {
-            result.push(blocks[i]);
-        }
-        result.sort_by(|a,b| a.firstPage.cmp(&b.firstPage));
-        for i in 0 .. len-1 {
-            result[i].firstPage = result[i].lastPage+1;
-            result[i].lastPage = result[i+1].firstPage-1;
-        }
-        result.remove(len-1);
-        result
-    }
-
-    fn listAllBlocks(h:&HeaderData, segmentsInWaiting:&HashMap<Guid,SegmentInfo>, pgsz: usize) -> Vec<PageBlock> {
-        let headerBlock = PageBlock::new(1, (HEADER_SIZE_IN_BYTES / pgsz) as PageNum);
-        let mut blocks = Vec::new();
-
-        fn grab(blocks: &mut Vec<PageBlock>, from: &HashMap<Guid,SegmentInfo>) {
-            for info in from.values() {
-                for b in info.blocks.iter() {
-                    blocks.push(*b);
-                }
-            }
-        }
-
-        grab(&mut blocks, &h.segments);
-        grab(&mut blocks, segmentsInWaiting);
-        blocks.push(headerBlock);
-        match h.headerOverflow {
-            Some(blk) => blocks.push(blk),
-            None => ()
-        }
-        blocks
-    }
-
-    // TODO rename this
-    pub struct db {
-        path: String,
-        pgsz: usize,
-        settings: DbSettings,
-        fsMine: File,
-        header: HeaderData,
-        nextPage: PageNum,
-        segmentsInWaiting: HashMap<Guid,SegmentInfo>,
-        freeBlocks: Vec<PageBlock>,
-        merging: HashSet<Guid>,
-        pendingMerges: HashMap<Guid,Vec<Guid>>,
-        // TODO cursors: HashMap<Guid,Vec<Box<ICursor>>>,
-    }
-
-    impl db {
-        pub fn new(path : &str, settings : DbSettings) -> io::Result<db> {
-
-            let mut f = try!(OpenOptions::new()
-                    .read(true)
-                    .write(true)
-                    .create(true)
-                    .open(path));
-
-            let (header,pgsz,firstAvailablePage) = try!(readHeader(&mut f));
-
-            let segmentsInWaiting = HashMap::new();
-            let mut blocks = listAllBlocks(&header, &segmentsInWaiting, pgsz);
-            consolidateBlockList(&mut blocks);
-            let mut freeBlocks = invertBlockList(&blocks);
-            freeBlocks.sort_by(|a,b| b.CountPages().cmp(&a.CountPages()));
-
-            let res = db {
-                path: String::from_str(path),
-                pgsz: pgsz,
-                settings: settings, 
-                fsMine: f, 
-                header: header, 
-                nextPage: firstAvailablePage,
-                segmentsInWaiting: segmentsInWaiting,
-                freeBlocks: freeBlocks,
-                merging: HashSet::new(),
-                pendingMerges: HashMap::new(),
-            };
-            Ok(res)
-        }
-
-        fn getBlock(&mut self, specificSizeInPages: PageNum) -> PageBlock {
-            if specificSizeInPages > 0 {
-                if self.freeBlocks.is_empty() || specificSizeInPages > self.freeBlocks[0].CountPages() {
-                    let newBlk = PageBlock::new(self.nextPage, self.nextPage+specificSizeInPages-1);
-                    self.nextPage = self.nextPage + specificSizeInPages;
-                    newBlk
-                } else {
-                    let headBlk = self.freeBlocks[0];
-                    if headBlk.CountPages() > specificSizeInPages {
-                        // trim the block to size
-                        let blk2 = PageBlock::new(headBlk.firstPage,
-                                                  headBlk.firstPage+specificSizeInPages-1); 
-                        self.freeBlocks[0].firstPage = self.freeBlocks[0].firstPage +
-                            specificSizeInPages;
-                        // TODO problem: the list is probably no longer sorted.  is this okay?
-                        // is a re-sort of the list really worth it?
-                        blk2
-                    } else {
-                        self.freeBlocks.remove(0);
-                        headBlk
-                    }
-                }
+        let overflowed = pr.GetByte(cur);
+        let (state,segments,blk) = 
+            if overflowed != 0u8 {
+                let lenChunk1 = pr.GetInt32(cur) as usize;
+                let lenChunk2 = lenSegmentList - lenChunk1;
+                let firstPageChunk2 = pr.GetInt32(cur) as PageNum;
+                let extraPages = lenChunk2 / pgsz + if (lenChunk2 % pgsz) != 0 { 1 } else { 0 };
+                let extraPages = extraPages as PageNum;
+                let lastPageChunk2 = firstPageChunk2 + extraPages - 1;
+                let mut pr2 = PageBuffer::new(lenSegmentList);
+                // TODO chain?
+                // copy from chunk1 into pr2
+                try!(pr2.ReadPart(fs, 0, lenChunk1));
+                // now get chunk2 and copy it in as well
+                try!(utils::SeekPage(fs, pgsz, firstPageChunk2));
+                try!(pr2.ReadPart(fs, lenChunk1, lenChunk2));
+                let mut cur2 = 0;
+                let (state,segments) = readSegmentList(&pr2, &mut cur2);
+                (state, segments, Some (PageBlock::new(firstPageChunk2, lastPageChunk2)))
             } else {
-                if self.freeBlocks.is_empty() {
-                    let size = self.settings.PagesPerBlock;
-                    let newBlk = PageBlock::new(self.nextPage, self.nextPage+size-1) ;
-                    self.nextPage = self.nextPage + size;
-                    newBlk
+                let (state,segments) = readSegmentList(pr, cur);
+                (state,segments,None)
+            };
+
+
+        let hd = 
+            HeaderData
+            {
+                currentState:state,
+                segments:segments,
+                headerOverflow:blk,
+                changeCounter:changeCounter,
+                mergeCounter:mergeCounter,
+            };
+
+        Ok((hd, pgsz))
+    }
+
+    fn calcNextPage(pgsz: usize, len: usize) -> PageNum {
+        let numPagesSoFar = (if pgsz > len { 1 } else { len / pgsz }) as PageNum;
+        numPagesSoFar + 1
+    }
+
+    // --------
+
+    let len = try!(seek_len(fs));
+    if len > 0 {
+        try!(fs.seek(SeekFrom::Start(0 as u64)));
+        let pr = try!(read(fs));
+        let mut cur = 0;
+        let (h, pgsz) = try!(parse(&pr, &mut cur, fs));
+        let nextAvailablePage = calcNextPage(pgsz, len as usize);
+        Ok((h, pgsz, nextAvailablePage))
+    } else {
+        //let defaultPageSize = settings.DefaultPageSize;
+        let defaultPageSize = 4096; // TODO
+        let h = 
+            HeaderData
+            {
+                segments: HashMap::new(),
+                currentState: Vec::new(),
+                headerOverflow: None,
+                changeCounter: 0,
+                mergeCounter: 0,
+            };
+        let nextAvailablePage = calcNextPage(defaultPageSize, HEADER_SIZE_IN_BYTES);
+        Ok((h, defaultPageSize, nextAvailablePage))
+    }
+
+}
+
+fn consolidateBlockList(blocks: &mut Vec<PageBlock>) {
+    blocks.sort_by(|a,b| a.firstPage.cmp(&b.firstPage));
+    loop {
+        if blocks.len()==1 {
+            break;
+        }
+        let mut did = false;
+        for i in 1 .. blocks.len() {
+            if blocks[i-1].lastPage+1 == blocks[i].firstPage {
+                blocks[i-1].lastPage = blocks[i].lastPage;
+                blocks.remove(i);
+                did = true;
+                break;
+            }
+        }
+        if !did {
+            break;
+        }
+    }
+}
+
+fn invertBlockList(blocks: &Vec<PageBlock>) -> Vec<PageBlock> {
+    let len = blocks.len();
+    let mut result = Vec::new();
+    for i in 0 .. len {
+        result.push(blocks[i]);
+    }
+    result.sort_by(|a,b| a.firstPage.cmp(&b.firstPage));
+    for i in 0 .. len-1 {
+        result[i].firstPage = result[i].lastPage+1;
+        result[i].lastPage = result[i+1].firstPage-1;
+    }
+    result.remove(len-1);
+    result
+}
+
+fn listAllBlocks(h:&HeaderData, segmentsInWaiting:&HashMap<Guid,SegmentInfo>, pgsz: usize) -> Vec<PageBlock> {
+    let headerBlock = PageBlock::new(1, (HEADER_SIZE_IN_BYTES / pgsz) as PageNum);
+    let mut blocks = Vec::new();
+
+    fn grab(blocks: &mut Vec<PageBlock>, from: &HashMap<Guid,SegmentInfo>) {
+        for info in from.values() {
+            for b in info.blocks.iter() {
+                blocks.push(*b);
+            }
+        }
+    }
+
+    grab(&mut blocks, &h.segments);
+    grab(&mut blocks, segmentsInWaiting);
+    blocks.push(headerBlock);
+    match h.headerOverflow {
+        Some(blk) => blocks.push(blk),
+        None => ()
+    }
+    blocks
+}
+
+// TODO rename this
+pub struct db {
+    path: String,
+    pgsz: usize,
+    settings: DbSettings,
+    fsMine: File,
+    header: HeaderData,
+    nextPage: PageNum,
+    segmentsInWaiting: HashMap<Guid,SegmentInfo>,
+    freeBlocks: Vec<PageBlock>,
+    merging: HashSet<Guid>,
+    pendingMerges: HashMap<Guid,Vec<Guid>>,
+    // TODO cursors: HashMap<Guid,Vec<Box<ICursor>>>,
+}
+
+impl db {
+    pub fn new(path : &str, settings : DbSettings) -> io::Result<db> {
+
+        let mut f = try!(OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .open(path));
+
+        let (header,pgsz,firstAvailablePage) = try!(readHeader(&mut f));
+
+        let segmentsInWaiting = HashMap::new();
+        let mut blocks = listAllBlocks(&header, &segmentsInWaiting, pgsz);
+        consolidateBlockList(&mut blocks);
+        let mut freeBlocks = invertBlockList(&blocks);
+        freeBlocks.sort_by(|a,b| b.CountPages().cmp(&a.CountPages()));
+
+        let res = db {
+            path: String::from_str(path),
+            pgsz: pgsz,
+            settings: settings, 
+            fsMine: f, 
+            header: header, 
+            nextPage: firstAvailablePage,
+            segmentsInWaiting: segmentsInWaiting,
+            freeBlocks: freeBlocks,
+            merging: HashSet::new(),
+            pendingMerges: HashMap::new(),
+        };
+        Ok(res)
+    }
+
+    fn getBlock(&mut self, specificSizeInPages: PageNum) -> PageBlock {
+        if specificSizeInPages > 0 {
+            if self.freeBlocks.is_empty() || specificSizeInPages > self.freeBlocks[0].CountPages() {
+                let newBlk = PageBlock::new(self.nextPage, self.nextPage+specificSizeInPages-1);
+                self.nextPage = self.nextPage + specificSizeInPages;
+                newBlk
+            } else {
+                let headBlk = self.freeBlocks[0];
+                if headBlk.CountPages() > specificSizeInPages {
+                    // trim the block to size
+                    let blk2 = PageBlock::new(headBlk.firstPage,
+                                              headBlk.firstPage+specificSizeInPages-1); 
+                    self.freeBlocks[0].firstPage = self.freeBlocks[0].firstPage +
+                        specificSizeInPages;
+                    // TODO problem: the list is probably no longer sorted.  is this okay?
+                    // is a re-sort of the list really worth it?
+                    blk2
                 } else {
-                    let headBlk = self.freeBlocks[0];
                     self.freeBlocks.remove(0);
                     headBlk
                 }
             }
-        }
-
-        fn OpenForWriting(&self) -> io::Result<File> {
-            OpenOptions::new()
-                    .read(true)
-                    .write(true)
-                    .open(&self.path)
-        }
-
-        fn OpenForReading(&self) -> io::Result<File> {
-            OpenOptions::new()
-                    .read(true)
-                    .open(&self.path)
-        }
-
-        // this code should not be called in a release build.  it helps
-        // finds problems by zeroing out pages in blocks that
-        // have been freed.
-        fn stomp(&self, blocks:Vec<PageBlock>) -> io::Result<()> {
-            let bad = vec![0;self.pgsz as usize].into_boxed_slice();
-            let mut fs = try!(OpenOptions::new()
-                    .read(true)
-                    .write(true)
-                    .open(&self.path));
-            for b in blocks {
-                for x in b.firstPage .. b.lastPage+1 {
-                    try!(utils::SeekPage(&mut fs, self.pgsz, x));
-                    try!(fs.write(&bad));
-                }
+        } else {
+            if self.freeBlocks.is_empty() {
+                let size = self.settings.PagesPerBlock;
+                let newBlk = PageBlock::new(self.nextPage, self.nextPage+size-1) ;
+                self.nextPage = self.nextPage + size;
+                newBlk
+            } else {
+                let headBlk = self.freeBlocks[0];
+                self.freeBlocks.remove(0);
+                headBlk
             }
-            Ok(())
+        }
+    }
+
+    fn OpenForWriting(&self) -> io::Result<File> {
+        OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&self.path)
+    }
+
+    fn OpenForReading(&self) -> io::Result<File> {
+        OpenOptions::new()
+                .read(true)
+                .open(&self.path)
+    }
+
+    // this code should not be called in a release build.  it helps
+    // finds problems by zeroing out pages in blocks that
+    // have been freed.
+    fn stomp(&self, blocks:Vec<PageBlock>) -> io::Result<()> {
+        let bad = vec![0;self.pgsz as usize].into_boxed_slice();
+        let mut fs = try!(OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&self.path));
+        for b in blocks {
+            for x in b.firstPage .. b.lastPage+1 {
+                try!(utils::SeekPage(&mut fs, self.pgsz, x));
+                try!(fs.write(&bad));
+            }
+        }
+        Ok(())
+    }
+
+    fn addFreeBlocks(&mut self, blocks:Vec<PageBlock>) {
+
+        // all additions to the freeBlocks list should happen here
+        // by calling this function.
+        //
+        // the list is kept consolidated and sorted by size descending.
+        // unfortunately this requires two sorts, and they happen here
+        // inside a critical section.  but the benefit is considered
+        // worth the trouble.
+        
+        // TODO it is important that freeBlocks contains no overlaps.
+        // add debug-only checks to verify?
+
+        // TODO is there such a thing as a block that is so small we
+        // don't want to bother with it?  what about a single-page block?
+        // should this be a configurable setting?
+
+        // TODO if the last block of the file is free, consider just
+        // moving nextPage back.
+
+        for b in blocks {
+            self.freeBlocks.push(b);
+        }
+        consolidateBlockList(&mut self.freeBlocks);
+        self.freeBlocks.sort_by(|a,b| b.CountPages().cmp(&a.CountPages()));
+    }
+
+    // a stored segmentinfo for a segment is a single blob of bytes.
+    // root page
+    // age
+    // number of pairs
+    // each pair is startBlock,countBlocks
+    // all in varints
+
+    fn writeHeader(&mut self, hdr:&mut HeaderData) -> io::Result<()> {
+        fn spaceNeededForSegmentInfo(info: &SegmentInfo) -> usize {
+            let mut a = 0;
+            for t in info.blocks.iter() {
+                a = a + Varint::SpaceNeededFor(t.firstPage as u64);
+                a = a + Varint::SpaceNeededFor(t.CountPages() as u64);
+            }
+            a = a + Varint::SpaceNeededFor(info.root as u64);
+            a = a + Varint::SpaceNeededFor(info.age as u64);
+            a = a + Varint::SpaceNeededFor(info.blocks.len() as u64);
+            a
         }
 
-        fn addFreeBlocks(&mut self, blocks:Vec<PageBlock>) {
-
-            // all additions to the freeBlocks list should happen here
-            // by calling this function.
-            //
-            // the list is kept consolidated and sorted by size descending.
-            // unfortunately this requires two sorts, and they happen here
-            // inside a critical section.  but the benefit is considered
-            // worth the trouble.
-            
-            // TODO it is important that freeBlocks contains no overlaps.
-            // add debug-only checks to verify?
-
-            // TODO is there such a thing as a block that is so small we
-            // don't want to bother with it?  what about a single-page block?
-            // should this be a configurable setting?
-
-            // TODO if the last block of the file is free, consider just
-            // moving nextPage back.
-
-            for b in blocks {
-                self.freeBlocks.push(b);
+        fn spaceForHeader(h:&HeaderData) -> usize {
+            let mut a = Varint::SpaceNeededFor(h.currentState.len() as u64);
+            // TODO use currentState with a lookup into h.segments instead?
+            // should be the same, right?
+            for info in h.segments.values() {
+                a = a + spaceNeededForSegmentInfo(&info) + 16;
             }
-            consolidateBlockList(&mut self.freeBlocks);
-            self.freeBlocks.sort_by(|a,b| b.CountPages().cmp(&a.CountPages()));
+            a
         }
 
-        // a stored segmentinfo for a segment is a single blob of bytes.
-        // root page
-        // age
-        // number of pairs
-        // each pair is startBlock,countBlocks
-        // all in varints
-
-        fn writeHeader(&mut self, hdr:&mut HeaderData) -> io::Result<()> {
-            fn spaceNeededForSegmentInfo(info: &SegmentInfo) -> usize {
-                let mut a = 0;
-                for t in info.blocks.iter() {
-                    a = a + Varint::SpaceNeededFor(t.firstPage as u64);
-                    a = a + Varint::SpaceNeededFor(t.CountPages() as u64);
-                }
-                a = a + Varint::SpaceNeededFor(info.root as u64);
-                a = a + Varint::SpaceNeededFor(info.age as u64);
-                a = a + Varint::SpaceNeededFor(info.blocks.len() as u64);
-                a
-            }
-
-            fn spaceForHeader(h:&HeaderData) -> usize {
-                let mut a = Varint::SpaceNeededFor(h.currentState.len() as u64);
-                // TODO use currentState with a lookup into h.segments instead?
-                // should be the same, right?
-                for info in h.segments.values() {
-                    a = a + spaceNeededForSegmentInfo(&info) + 16;
-                }
-                a
-            }
-
-            fn buildSegmentList(h:&HeaderData) -> PageBuilder {
-                let space = spaceForHeader(h);
-                let mut pb = PageBuilder::new(space);
-                // TODO format version number
-                pb.PutVarint(h.currentState.len() as u64);
-                for g in h.currentState.iter() {
-                    pb.PutArray(&g.ToByteArray());
-                    match h.segments.get(&g) {
-                        Some(info) => {
-                            pb.PutVarint(info.root as u64);
-                            pb.PutVarint(info.age as u64);
-                            pb.PutVarint(info.blocks.len() as u64);
-                            // we store PageBlock as first/count instead of first/last, since the
-                            // count will always compress better as a varint.
-                            for t in info.blocks.iter() {
-                                pb.PutVarint(t.firstPage as u64);
-                                pb.PutVarint(t.CountPages() as u64);
-                            }
-                        },
-                        None => panic!() // TODO
-                    }
-                }
-                //if 0 != pb.Available then failwith "not exactly full"
-                pb
-            }
-
-            let mut pb = PageBuilder::new(HEADER_SIZE_IN_BYTES);
-            pb.PutInt32(self.pgsz as u32);
-
-            pb.PutVarint(hdr.changeCounter);
-            pb.PutVarint(hdr.mergeCounter);
-
-            let pbSegList = buildSegmentList(hdr);
-            let buf = pbSegList.Buffer();
-            pb.PutVarint(buf.len() as u64);
-
-            let headerOverflow =
-                if pb.Available() >= (buf.len() + 1) {
-                    pb.PutByte(0u8);
-                    pb.PutArray(buf);
-                    None
-                } else {
-                    pb.PutByte(1u8);
-                    let fits = pb.Available() - 4 - 4;
-                    let extra = buf.len() - fits;
-                    let extraPages = extra / self.pgsz + if (extra % self.pgsz) != 0 { 1 } else { 0 };
-                    //printfn "extra pages: %d" extraPages
-                    let blk = self.getBlock(extraPages as PageNum);
-                    try!(utils::SeekPage(&mut self.fsMine, self.pgsz, blk.firstPage));
-                    try!(self.fsMine.write(&buf[fits .. buf.len()]));
-                    pb.PutInt32(fits as u32);
-                    pb.PutInt32(blk.firstPage);
-                    pb.PutArray(&buf[0 .. fits]);
-                    Some(blk)
-                };
-
-            try!(self.fsMine.seek(SeekFrom::Start(0)));
-            try!(pb.Write(&mut self.fsMine));
-            try!(self.fsMine.flush());
-            hdr.headerOverflow = headerOverflow;
-            Ok(())
-        }
-
-        fn getCursor(&self, segs: &HashMap<Guid,SegmentInfo>, g: Guid) -> io::Result<myCursor> {
-            let seg = segs.get(&g).unwrap();
-            let rootPage = seg.root;
-            /* TODO
-            let hook (csr:ICursor) =
-                let fs = self.OpenForReading();
-                fs.Close()
-                lock critSectionCursors (fun () -> 
-                    let cur = Map.find g cursors
-                    let removed = List.filter (fun x -> not (Object.ReferenceEquals(csr, x))) cur
-                    // if we are removing the last cursor for a segment, we do need to
-                    // remove that segment guid from the cursors map, not just leave
-                    // it there with an empty list.
-                    if List.isEmpty removed then
-                        cursors <- Map.remove g cursors
-                        match fnFree with
-                        | Some f -> f g seg
-                        | None -> ()
-                    else
-                        cursors <- Map.add g removed cursors
-                )
-                //printfn "done with cursor %O" g 
-            */
-            let csr = try!(OpenCursor(&self.path, self.pgsz, rootPage));
-            // note that getCursor is (and must be) only called from within
-            // lock critSectionCursors
-            /* TODO
-            let cur = match Map.tryFind g cursors with
-                       | Some c -> c
-                       | None -> []
-            cursors <- Map.add g (csr :: cur) cursors
-            */
-            //printfn "added cursor %O: %A" g seg
-            Ok(csr)
-        }
-
-        pub fn OpenCursor(&mut self) -> io::Result<Box<ICursor>> {
-            // TODO this cursor needs to expose the changeCounter and segment list
-            // on which it is based. for optimistic writes. caller can grab a cursor,
-            // do their writes, then grab the writelock, and grab another cursor, then
-            // compare the two cursors to see if anything important changed.  if not,
-            // commit their writes.  if so, nevermind the written segments and start over.
-
-            // TODO we also need a way to open a cursor on segments in waiting
-            let mut clist = Vec::new();
-            for g in self.header.currentState.iter() {
-                clist.push(try!(self.getCursor(&self.header.segments, *g))); // TODO checkForGoneSegment
-            }
-            let mc = MultiCursor::Create(clist);
-            let lc = LivingCursor::Create(mc);
-            Ok(box lc)
-        }
-
-        pub fn commitSegments(&mut self, newGuids: Vec<Guid>) -> io::Result<()> {
-            // TODO we could check to see if this guid is already in the list.
-            // TODO we should disallow dupes in newGuids
-
-            // self.segmentsInWaiting must contain one seg for each guid in newGuids.
-            // we want those entries to move out and move into the header, currentState
-            // and segments.  This means taking ownership of those SegmentInfos.  But
-            // the others we want to leave.
-
-            let mut newHeader = self.header.clone();
-            for g in newGuids.iter() {
-                match self.segmentsInWaiting.get(&g) {
+        fn buildSegmentList(h:&HeaderData) -> PageBuilder {
+            let space = spaceForHeader(h);
+            let mut pb = PageBuilder::new(space);
+            // TODO format version number
+            pb.PutVarint(h.currentState.len() as u64);
+            for g in h.currentState.iter() {
+                pb.PutArray(&g.ToByteArray());
+                match h.segments.get(&g) {
                     Some(info) => {
-                        newHeader.segments.insert(*g,info.clone());
+                        pb.PutVarint(info.root as u64);
+                        pb.PutVarint(info.age as u64);
+                        pb.PutVarint(info.blocks.len() as u64);
+                        // we store PageBlock as first/count instead of first/last, since the
+                        // count will always compress better as a varint.
+                        for t in info.blocks.iter() {
+                            pb.PutVarint(t.firstPage as u64);
+                            pb.PutVarint(t.CountPages() as u64);
+                        }
                     },
-                    None => {
-                        panic!();
-                    },
+                    None => panic!() // TODO
                 }
             }
-
-            // TODO surely there's a better way to insert one vec into another?
-            // should probably just reverse the direction of currentState.
-            for i in 0 .. newGuids.len() {
-                let g = newGuids[i];
-                newHeader.currentState.insert(i, g);
-            }
-
-            newHeader.changeCounter = newHeader.changeCounter + 1;
-            newHeader.headerOverflow = None;
-
-            try!(self.writeHeader(&mut newHeader));
-            let oldHeaderOverflow = self.header.headerOverflow;
-            self.header = newHeader;
-            for g in newGuids.iter() {
-                match self.segmentsInWaiting.remove(&g) {
-                    Some(_) => {
-                    },
-                    None => {
-                        panic!();
-                    },
-                }
-            }
-
-            //printfn "after commit, currentState: %A" header.currentState
-            //printfn "after commit, segments: %A" header.segments
-            // all the segments we just committed can now be removed from
-            // the segments in waiting list
-            match oldHeaderOverflow {
-                Some(blk) => self.addFreeBlocks(vec![ blk ]),
-                None => ()
-            }
-            // note that we intentionally do not release the writeLock here.
-            // you can change the segment list more than once while holding
-            // the writeLock.  the writeLock gets released when you Dispose() it.
-            Ok(())
+            //if 0 != pb.Available then failwith "not exactly full"
+            pb
         }
 
-        // TODO bad fn name
-        pub fn WriteSegmentFromSortedSequence<I>(&mut self, source: I) -> io::Result<Guid> where I:Iterator<Item=kvp> {
-            let mut fs = try!(self.OpenForWriting());
-            let (g,_) = try!(CreateFromSortedSequenceOfKeyValuePairs(&mut fs, self, source));
-            Ok(g)
-        }
+        let mut pb = PageBuilder::new(HEADER_SIZE_IN_BYTES);
+        pb.PutInt32(self.pgsz as u32);
 
-        // TODO bad fn name
-        pub fn WriteSegment(&mut self, pairs: HashMap<Box<[u8]>,Box<[u8]>>) -> io::Result<Guid> {
-            let mut a : Vec<(Box<[u8]>,Box<[u8]>)> = pairs.into_iter().collect();
+        pb.PutVarint(hdr.changeCounter);
+        pb.PutVarint(hdr.mergeCounter);
 
-            a.sort_by(|a,b| {
-                let (ref ka,_) = *a;
-                let (ref kb,_) = *b;
-                bcmp::Compare(&ka,&kb)
-            });
-            let source = a.into_iter().map(|t| {
-                let (k,v) = t;
-                kvp {Key:k, Value:Blob::Array(v)}
-            });
-            let mut fs = try!(self.OpenForWriting());
-            let (g,_) = try!(CreateFromSortedSequenceOfKeyValuePairs(&mut fs, self, source));
-            Ok(g)
-        }
+        let pbSegList = buildSegmentList(hdr);
+        let buf = pbSegList.Buffer();
+        pb.PutVarint(buf.len() as u64);
 
-        // TODO bad fn name
-        pub fn WriteSegment2(&mut self, pairs: HashMap<Box<[u8]>,Blob>) -> io::Result<Guid> {
-            let mut a : Vec<(Box<[u8]>,Blob)> = pairs.into_iter().collect();
-
-            a.sort_by(|a,b| {
-                let (ref ka,_) = *a;
-                let (ref kb,_) = *b;
-                bcmp::Compare(&ka,&kb)
-            });
-            let source = a.into_iter().map(|t| {
-                let (k,v) = t;
-                kvp {Key:k, Value:v}
-            });
-            let mut fs = try!(self.OpenForWriting());
-            let (g,_) = try!(CreateFromSortedSequenceOfKeyValuePairs(&mut fs, self, source));
-            Ok(g)
-        }
-
-        pub fn merge(&mut self, segs:Vec<Guid>) -> io::Result<Guid> {
-            // TODO don't allow this to happen if the any of the segs
-            // are already involved in a merge.
-            // TODO this is silly if segs has only one item in it
-            //printfn "merge getting cursors: %A" segs
-            let mut clist = Vec::new();
-            // TODO these should probably be for g in &segs
-            for g in segs.iter() {
-                clist.push(try!(self.getCursor(&self.header.segments, *g))); // TODO checkForGoneSegment
-            }
-            for g in segs.iter() {
-                self.merging.insert(*g);
-            }
-            let mut mc = MultiCursor::Create(clist);
-            let mut fs = try!(self.OpenForWriting());
-            mc.First();
-            let (g,_) = try!(CreateFromSortedSequenceOfKeyValuePairs(&mut fs, self, CursorIterator::new(box mc)));
-            //printfn "merged %A to get %A" segs g
-            self.pendingMerges.insert(g, segs);
-            Ok(g)
-        }
-
-        // TODO maybe commitSegments and commitMerge should be the same function.
-        // just check to see if the segment being committed is a merge.  if so,
-        // do the extra paperwork.
-        pub fn commitMerge(&mut self, newGuid:Guid) -> io::Result<()> {
-            // TODO we could check to see if this guid is already in the list.
-
-            let lstOld = self.pendingMerges.get(&newGuid).unwrap().clone();
-            let countOld = lstOld.len();
-            let oldGuidsAsSet : HashSet<Guid> = lstOld.iter().map(|g| *g).collect();
-            let age = {
-                let lstAges : Vec<u32> = lstOld.iter().map(|g| self.header.segments.get(g).unwrap().age).collect();
-                lstAges.iter().max().unwrap() + 1
+        let headerOverflow =
+            if pb.Available() >= (buf.len() + 1) {
+                pb.PutByte(0u8);
+                pb.PutArray(buf);
+                None
+            } else {
+                pb.PutByte(1u8);
+                let fits = pb.Available() - 4 - 4;
+                let extra = buf.len() - fits;
+                let extraPages = extra / self.pgsz + if (extra % self.pgsz) != 0 { 1 } else { 0 };
+                //printfn "extra pages: %d" extraPages
+                let blk = self.getBlock(extraPages as PageNum);
+                try!(utils::SeekPage(&mut self.fsMine, self.pgsz, blk.firstPage));
+                try!(self.fsMine.write(&buf[fits .. buf.len()]));
+                pb.PutInt32(fits as u32);
+                pb.PutInt32(blk.firstPage);
+                pb.PutArray(&buf[0 .. fits]);
+                Some(blk)
             };
 
-            // TODO the following looks expensive.  we just want the SegmentInfo for
-            // each segment being replaced.
-            let segmentsBeingReplaced : HashMap<Guid,SegmentInfo> = self.header.segments
-                .clone()
-                .into_iter()
-                .filter(|&(ref g, _)| oldGuidsAsSet.contains(&g))
-                .collect();
-
-            let ndxFirstOld = self.header.currentState.iter().position(|&g| g == lstOld[0]).unwrap();
-            // if the next line fails, it probably means that somebody tried to merge a set
-            // of segments that are not contiguous in currentState.
-            if lstOld.as_slice() != &self.header.currentState.as_slice()[ndxFirstOld .. ndxFirstOld+countOld] {
-                panic!("segments not found");
-            }
-
-            let mut newHeader = self.header.clone();
-
-            for _ in &lstOld {
-                newHeader.currentState.remove(ndxFirstOld);
-            }
-            newHeader.currentState.insert(ndxFirstOld, newGuid);
-
-            let mut newSegmentInfo = self.segmentsInWaiting.get(&newGuid).unwrap().clone();
-            newSegmentInfo.age = age;
-
-            for g in &oldGuidsAsSet {
-                newHeader.segments.remove(g);
-            }
-            newHeader.segments.insert(newGuid, newSegmentInfo);
-            newHeader.mergeCounter = newHeader.mergeCounter + 1;
-            newHeader.headerOverflow = None;
-            try!(self.writeHeader(&mut newHeader));
-            let oldHeaderOverflow = self.header.headerOverflow;
-            self.header = newHeader;
-
-            self.segmentsInWaiting.remove(&newGuid);
-
-            self.pendingMerges.remove(&newGuid);
-            for g in lstOld {
-                self.merging.remove(&g);
-            }
-
-            // TODO don't free anything that has a cursor
-            let segmentsToBeFreed = segmentsBeingReplaced;
-            let mut blocksToBeFreed = Vec::new();
-            for info in segmentsToBeFreed.values() {
-                blocksToBeFreed.push_all(&info.blocks);
-            }
-            match oldHeaderOverflow {
-                Some(blk) => blocksToBeFreed.push(blk),
-                None => (),
-            }
-            self.addFreeBlocks(blocksToBeFreed);
-
-            // note that we intentionally do not release the writeLock here.
-            // you can change the segment list more than once while holding
-            // the writeLock.  the writeLock gets released when you Dispose() it.
-            Ok(())
-        }
-
+        try!(self.fsMine.seek(SeekFrom::Start(0)));
+        try!(pb.Write(&mut self.fsMine));
+        try!(self.fsMine.flush());
+        hdr.headerOverflow = headerOverflow;
+        Ok(())
     }
 
-    impl IPages for db {
-        fn PageSize(&self) -> usize {
-            self.pgsz
-        }
-
-        fn Begin(&mut self) -> PendingSegment {
-            PendingSegment::new()
-        }
-
-        fn GetBlock(&mut self, ps:&mut PendingSegment) -> PageBlock {
-            let blk = self.getBlock(0); // specificSize=0 means we don't care how big of a block we get
-            ps.AddBlock(blk);
-            blk
-        }
-
-        fn End(&mut self, ps:PendingSegment, lastPage: PageNum) -> Guid {
-            let (g,blocks,unused) = ps.End(lastPage);
-            let info = SegmentInfo {age: 0,blocks:blocks,root:lastPage};
-            self.segmentsInWaiting.insert(g,info);
-            //printfn "wrote %A: %A" g blocks
-            match unused {
-                Some(b) => self.addFreeBlocks(vec![b]),
-                None => ()
-            }
-            g
-        }
-
+    fn getCursor(&self, segs: &HashMap<Guid,SegmentInfo>, g: Guid) -> io::Result<myCursor> {
+        let seg = segs.get(&g).unwrap();
+        let rootPage = seg.root;
+        /* TODO
+        let hook (csr:ICursor) =
+            let fs = self.OpenForReading();
+            fs.Close()
+            lock critSectionCursors (fun () -> 
+                let cur = Map.find g cursors
+                let removed = List.filter (fun x -> not (Object.ReferenceEquals(csr, x))) cur
+                // if we are removing the last cursor for a segment, we do need to
+                // remove that segment guid from the cursors map, not just leave
+                // it there with an empty list.
+                if List.isEmpty removed then
+                    cursors <- Map.remove g cursors
+                    match fnFree with
+                    | Some f -> f g seg
+                    | None -> ()
+                else
+                    cursors <- Map.add g removed cursors
+            )
+            //printfn "done with cursor %O" g 
+        */
+        let csr = try!(OpenCursor(&self.path, self.pgsz, rootPage));
+        // note that getCursor is (and must be) only called from within
+        // lock critSectionCursors
+        /* TODO
+        let cur = match Map.tryFind g cursors with
+                   | Some c -> c
+                   | None -> []
+        cursors <- Map.add g (csr :: cur) cursors
+        */
+        //printfn "added cursor %O: %A" g seg
+        Ok(csr)
     }
+
+    pub fn OpenCursor(&mut self) -> io::Result<Box<ICursor>> {
+        // TODO this cursor needs to expose the changeCounter and segment list
+        // on which it is based. for optimistic writes. caller can grab a cursor,
+        // do their writes, then grab the writelock, and grab another cursor, then
+        // compare the two cursors to see if anything important changed.  if not,
+        // commit their writes.  if so, nevermind the written segments and start over.
+
+        // TODO we also need a way to open a cursor on segments in waiting
+        let mut clist = Vec::new();
+        for g in self.header.currentState.iter() {
+            clist.push(try!(self.getCursor(&self.header.segments, *g))); // TODO checkForGoneSegment
+        }
+        let mc = MultiCursor::Create(clist);
+        let lc = LivingCursor::Create(mc);
+        Ok(box lc)
+    }
+
+    pub fn commitSegments(&mut self, newGuids: Vec<Guid>) -> io::Result<()> {
+        // TODO we could check to see if this guid is already in the list.
+        // TODO we should disallow dupes in newGuids
+
+        // self.segmentsInWaiting must contain one seg for each guid in newGuids.
+        // we want those entries to move out and move into the header, currentState
+        // and segments.  This means taking ownership of those SegmentInfos.  But
+        // the others we want to leave.
+
+        let mut newHeader = self.header.clone();
+        for g in newGuids.iter() {
+            match self.segmentsInWaiting.get(&g) {
+                Some(info) => {
+                    newHeader.segments.insert(*g,info.clone());
+                },
+                None => {
+                    panic!();
+                },
+            }
+        }
+
+        // TODO surely there's a better way to insert one vec into another?
+        // should probably just reverse the direction of currentState.
+        for i in 0 .. newGuids.len() {
+            let g = newGuids[i];
+            newHeader.currentState.insert(i, g);
+        }
+
+        newHeader.changeCounter = newHeader.changeCounter + 1;
+        newHeader.headerOverflow = None;
+
+        try!(self.writeHeader(&mut newHeader));
+        let oldHeaderOverflow = self.header.headerOverflow;
+        self.header = newHeader;
+        for g in newGuids.iter() {
+            match self.segmentsInWaiting.remove(&g) {
+                Some(_) => {
+                },
+                None => {
+                    panic!();
+                },
+            }
+        }
+
+        //printfn "after commit, currentState: %A" header.currentState
+        //printfn "after commit, segments: %A" header.segments
+        // all the segments we just committed can now be removed from
+        // the segments in waiting list
+        match oldHeaderOverflow {
+            Some(blk) => self.addFreeBlocks(vec![ blk ]),
+            None => ()
+        }
+        // note that we intentionally do not release the writeLock here.
+        // you can change the segment list more than once while holding
+        // the writeLock.  the writeLock gets released when you Dispose() it.
+        Ok(())
+    }
+
+    // TODO bad fn name
+    pub fn WriteSegmentFromSortedSequence<I>(&mut self, source: I) -> io::Result<Guid> where I:Iterator<Item=kvp> {
+        let mut fs = try!(self.OpenForWriting());
+        let (g,_) = try!(CreateFromSortedSequenceOfKeyValuePairs(&mut fs, self, source));
+        Ok(g)
+    }
+
+    // TODO bad fn name
+    pub fn WriteSegment(&mut self, pairs: HashMap<Box<[u8]>,Box<[u8]>>) -> io::Result<Guid> {
+        let mut a : Vec<(Box<[u8]>,Box<[u8]>)> = pairs.into_iter().collect();
+
+        a.sort_by(|a,b| {
+            let (ref ka,_) = *a;
+            let (ref kb,_) = *b;
+            bcmp::Compare(&ka,&kb)
+        });
+        let source = a.into_iter().map(|t| {
+            let (k,v) = t;
+            kvp {Key:k, Value:Blob::Array(v)}
+        });
+        let mut fs = try!(self.OpenForWriting());
+        let (g,_) = try!(CreateFromSortedSequenceOfKeyValuePairs(&mut fs, self, source));
+        Ok(g)
+    }
+
+    // TODO bad fn name
+    pub fn WriteSegment2(&mut self, pairs: HashMap<Box<[u8]>,Blob>) -> io::Result<Guid> {
+        let mut a : Vec<(Box<[u8]>,Blob)> = pairs.into_iter().collect();
+
+        a.sort_by(|a,b| {
+            let (ref ka,_) = *a;
+            let (ref kb,_) = *b;
+            bcmp::Compare(&ka,&kb)
+        });
+        let source = a.into_iter().map(|t| {
+            let (k,v) = t;
+            kvp {Key:k, Value:v}
+        });
+        let mut fs = try!(self.OpenForWriting());
+        let (g,_) = try!(CreateFromSortedSequenceOfKeyValuePairs(&mut fs, self, source));
+        Ok(g)
+    }
+
+    pub fn merge(&mut self, segs:Vec<Guid>) -> io::Result<Guid> {
+        // TODO don't allow this to happen if the any of the segs
+        // are already involved in a merge.
+        // TODO this is silly if segs has only one item in it
+        //printfn "merge getting cursors: %A" segs
+        let mut clist = Vec::new();
+        // TODO these should probably be for g in &segs
+        for g in segs.iter() {
+            clist.push(try!(self.getCursor(&self.header.segments, *g))); // TODO checkForGoneSegment
+        }
+        for g in segs.iter() {
+            self.merging.insert(*g);
+        }
+        let mut mc = MultiCursor::Create(clist);
+        let mut fs = try!(self.OpenForWriting());
+        mc.First();
+        let (g,_) = try!(CreateFromSortedSequenceOfKeyValuePairs(&mut fs, self, CursorIterator::new(box mc)));
+        //printfn "merged %A to get %A" segs g
+        self.pendingMerges.insert(g, segs);
+        Ok(g)
+    }
+
+    // TODO maybe commitSegments and commitMerge should be the same function.
+    // just check to see if the segment being committed is a merge.  if so,
+    // do the extra paperwork.
+    pub fn commitMerge(&mut self, newGuid:Guid) -> io::Result<()> {
+        // TODO we could check to see if this guid is already in the list.
+
+        let lstOld = self.pendingMerges.get(&newGuid).unwrap().clone();
+        let countOld = lstOld.len();
+        let oldGuidsAsSet : HashSet<Guid> = lstOld.iter().map(|g| *g).collect();
+        let age = {
+            let lstAges : Vec<u32> = lstOld.iter().map(|g| self.header.segments.get(g).unwrap().age).collect();
+            lstAges.iter().max().unwrap() + 1
+        };
+
+        // TODO the following looks expensive.  we just want the SegmentInfo for
+        // each segment being replaced.
+        let segmentsBeingReplaced : HashMap<Guid,SegmentInfo> = self.header.segments
+            .clone()
+            .into_iter()
+            .filter(|&(ref g, _)| oldGuidsAsSet.contains(&g))
+            .collect();
+
+        let ndxFirstOld = self.header.currentState.iter().position(|&g| g == lstOld[0]).unwrap();
+        // if the next line fails, it probably means that somebody tried to merge a set
+        // of segments that are not contiguous in currentState.
+        if lstOld.as_slice() != &self.header.currentState.as_slice()[ndxFirstOld .. ndxFirstOld+countOld] {
+            panic!("segments not found");
+        }
+
+        let mut newHeader = self.header.clone();
+
+        for _ in &lstOld {
+            newHeader.currentState.remove(ndxFirstOld);
+        }
+        newHeader.currentState.insert(ndxFirstOld, newGuid);
+
+        let mut newSegmentInfo = self.segmentsInWaiting.get(&newGuid).unwrap().clone();
+        newSegmentInfo.age = age;
+
+        for g in &oldGuidsAsSet {
+            newHeader.segments.remove(g);
+        }
+        newHeader.segments.insert(newGuid, newSegmentInfo);
+        newHeader.mergeCounter = newHeader.mergeCounter + 1;
+        newHeader.headerOverflow = None;
+        try!(self.writeHeader(&mut newHeader));
+        let oldHeaderOverflow = self.header.headerOverflow;
+        self.header = newHeader;
+
+        self.segmentsInWaiting.remove(&newGuid);
+
+        self.pendingMerges.remove(&newGuid);
+        for g in lstOld {
+            self.merging.remove(&g);
+        }
+
+        // TODO don't free anything that has a cursor
+        let segmentsToBeFreed = segmentsBeingReplaced;
+        let mut blocksToBeFreed = Vec::new();
+        for info in segmentsToBeFreed.values() {
+            blocksToBeFreed.push_all(&info.blocks);
+        }
+        match oldHeaderOverflow {
+            Some(blk) => blocksToBeFreed.push(blk),
+            None => (),
+        }
+        self.addFreeBlocks(blocksToBeFreed);
+
+        // note that we intentionally do not release the writeLock here.
+        // you can change the segment list more than once while holding
+        // the writeLock.  the writeLock gets released when you Dispose() it.
+        Ok(())
+    }
+
+}
+
+impl IPages for db {
+    fn PageSize(&self) -> usize {
+        self.pgsz
+    }
+
+    fn Begin(&mut self) -> PendingSegment {
+        PendingSegment::new()
+    }
+
+    fn GetBlock(&mut self, ps:&mut PendingSegment) -> PageBlock {
+        let blk = self.getBlock(0); // specificSize=0 means we don't care how big of a block we get
+        ps.AddBlock(blk);
+        blk
+    }
+
+    fn End(&mut self, ps:PendingSegment, lastPage: PageNum) -> Guid {
+        let (g,blocks,unused) = ps.End(lastPage);
+        let info = SegmentInfo {age: 0,blocks:blocks,root:lastPage};
+        self.segmentsInWaiting.insert(g,info);
+        //printfn "wrote %A: %A" g blocks
+        match unused {
+            Some(b) => self.addFreeBlocks(vec![b]),
+            None => ()
+        }
+        g
+    }
+
+}
 
 // ----------------------------------------------------------------
 
