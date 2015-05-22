@@ -1346,7 +1346,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
             assert!(st.keys_in_this_leaf.len() == 1);
 
             let lp = st.keys_in_this_leaf.remove(0); 
-            assert!(st.keys_in_this_leaf.len() == 0);
+            assert!(st.keys_in_this_leaf.is_empty());
 
             f(pb, st.prefixLen, &lp);
             lp.key
@@ -1361,7 +1361,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
                                 token: &mut PendingSegment,
                                ) -> io::Result<()> where SeekWrite : Seek+Write { 
             let last_key = buildLeaf(st, pb);
-            assert!(st.keys_in_this_leaf.len() == 0);
+            assert!(st.keys_in_this_leaf.is_empty());
             let thisPageNumber = st.blk.firstPage;
             let firstLeaf = if st.leaves.is_empty() { thisPageNumber } else { st.firstLeaf };
             let nextBlk = 
@@ -1514,7 +1514,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
                                         (newBlk, ValueLocation::Overflowed(len,valuePage))
                                     },
                                     Blob::Array(a) => {
-                                        if a.len() == 0 {
+                                        if a.is_empty() {
                                             // TODO maybe we need ValueLocation::Empty
                                             (blkAfterKey, ValueLocation::Buffer(a))
                                         } else {
@@ -1573,7 +1573,8 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
                                     (newBlk, ValueLocation::Overflowed(len,valuePage))
                                 },
                                 Blob::Array(a) => {
-                                    if a.len() == 0 {
+                                    if a.is_empty() {
+                                        // TODO maybe we need ValueLocation::Empty
                                         (blkAfterKey, ValueLocation::Buffer(a))
                                     } else {
                                         let valuePage = blkAfterKey.firstPage;
@@ -1684,7 +1685,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
             basicSize - allowanceForRootNode
         }
 
-        fn buildParentPage(items: &[&pgitem], 
+        fn buildParentPage(items: &mut Vec<pgitem>,
                            lastPtr: PageNum, 
                            overflows: &HashMap<usize,PageNum>,
                            pb : &mut PageBuilder,
@@ -1699,8 +1700,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
             }
             pb.PutVarint(lastPtr as u64);
             // store all the keys, n of them
-            for i in 0 .. items.len() {
-                let x = &items[i];
+            for (i,x) in items.drain(..).enumerate() {
                 match overflows.get(&i) {
                     Some(pg) => {
                         pb.PutByte(ValueFlag::FLAG_OVERFLOW);
@@ -1717,9 +1717,10 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
         }
 
         fn writeParentPage<SeekWrite>(st: &mut ParentState, 
-                                      items: &[&pgitem],
+                                      items: &mut Vec<pgitem>,
                                       overflows: &HashMap<usize,PageNum>,
-                                      pair: &pgitem, 
+                                      pgnum: PageNum,
+                                      key: Box<[u8]>,
                                       isRootNode: bool, 
                                       pb: &mut PageBuilder, 
                                       lastLeaf: PageNum,
@@ -1729,7 +1730,6 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
                                       token: &mut PendingSegment,
                                       firstLeaf: PageNum,
                                      ) -> io::Result<()> where SeekWrite : Seek+Write {
-            let pgnum = pair.page;
             // assert st.sofar > 0
             let thisPageNumber = st.blk.firstPage;
             buildParentPage(items, pgnum, &overflows, pb);
@@ -1755,11 +1755,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
             }
             st.sofar = 0;
             st.blk = nextBlk;
-            // TODO can't we just take ownership of the pair pgitem
-            // TODO isn't there a better way to copy a slice?
-            let mut ba = Vec::new();
-            ba.push_all(&pair.key);
-            let pg = pgitem {page:thisPageNumber, key:ba.into_boxed_slice()};
+            let pg = pgitem {page:thisPageNumber, key:key};
             st.nextGeneration.push(pg);
             Ok(())
         }
@@ -1768,8 +1764,9 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
         let mut st = ParentState {nextGeneration:Vec::new(),sofar: 0,blk:startingBlk,};
         let mut items = Vec::new();
         let mut overflows = HashMap::new();
-        for i in 0 .. children.len()-1 {
-            let pair = &children[i];
+        let count_children = children.len();
+        // deal with all the children except the last one
+        for pair in children.drain(0 .. count_children-1) {
             let pgnum = pair.page;
 
             let neededEitherWay = 1 + Varint::SpaceNeededFor(pair.key.len() as u64) + Varint::SpaceNeededFor(pgnum as u64);
@@ -1785,16 +1782,19 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
 
             if writeThisPage {
                 // assert sofar > 0
-                // TODO we want ownership of pair here so we can transfer it down
-                try!(writeParentPage(&mut st, &items, &overflows, pair, false, pb, lastLeaf, fs, pageManager, pgsz, &mut *token, firstLeaf));
+                // we need to make a copy of this key because writeParentPage needs to own one,
+                // but we still need to put this pair in the items (below).
+                let mut copy_key = vec![0; pair.key.len()].into_boxed_slice(); 
+                copy_key.clone_from_slice(&pair.key);
+                try!(writeParentPage(&mut st, &mut items, &overflows, pair.page, copy_key, false, pb, lastLeaf, fs, pageManager, pgsz, &mut *token, firstLeaf));
+                assert!(items.is_empty());
             }
 
             if st.sofar == 0 {
                 st.sofar = PARENT_PAGE_OVERHEAD;
-                items.clear();
+                assert!(items.is_empty());
             }
 
-            items.push(pair);
             if calcAvailable(st.sofar, st.nextGeneration.is_empty(), pgsz) >= neededForInline {
                 st.sofar = st.sofar + neededForInline;
             } else {
@@ -1802,12 +1802,17 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
                 let (_,newBlk) = try!(writeOverflow(st.blk, &mut &*pair.key, pageManager, fs));
                 st.sofar = st.sofar + neededForOverflow;
                 st.blk = newBlk;
-                overflows.insert(items.len()-1,keyOverflowFirstPage);
+                // items.len() is the index that this pair is about to get, just below
+                overflows.insert(items.len(),keyOverflowFirstPage);
             }
+            items.push(pair);
         }
+        assert!(children.len() == 1);
         let isRootNode = st.nextGeneration.is_empty();
-        // TODO we want ownership of pair here so we can transfer it down
-        try!(writeParentPage(&mut st, &items, &overflows, &children[children.len()-1], isRootNode, pb, lastLeaf, fs, pageManager, pgsz, &mut *token, firstLeaf));
+        let pgitem {page: pgnum, key: key} = children.remove(0);
+        assert!(children.is_empty());
+
+        try!(writeParentPage(&mut st, &mut items, &overflows, pgnum, key, isRootNode, pb, lastLeaf, fs, pageManager, pgsz, &mut *token, firstLeaf));
         Ok((st.blk,st.nextGeneration))
     }
 
@@ -1834,7 +1839,8 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
         let mut blk = blkAfterLeaves;
         let mut children = leaves;
         loop {
-            let (newBlk,newChildren) = try!(writeParentNodes(blk, &mut children, pgsz, fs, pageManager, &mut token, lastLeaf, firstLeaf, &mut pb));
+            let (newBlk, newChildren) = try!(writeParentNodes(blk, &mut children, pgsz, fs, pageManager, &mut token, lastLeaf, firstLeaf, &mut pb));
+            assert!(children.is_empty());
             blk = newBlk;
             children = newChildren;
             if children.len()==1 {
