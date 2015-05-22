@@ -139,11 +139,11 @@ fn seek_len<R>(fs: &mut R) -> io::Result<u64> where R : Seek {
 }
 
 struct CursorIterator {
-    csr: Box<ICursor>,
+    csr: MultiCursor
 }
 
 impl CursorIterator {
-    fn new(it: Box<ICursor>) -> CursorIterator {
+    fn new(it: MultiCursor) -> CursorIterator {
         CursorIterator { csr: it }
     }
 }
@@ -920,7 +920,7 @@ impl ICursor for MultiCursor {
 
 }
 
-struct LivingCursor { 
+pub struct LivingCursor { 
     chain : MultiCursor
 }
 
@@ -2543,11 +2543,6 @@ impl ICursor for SegmentCursor {
 
 }
 
-fn OpenCursor(path: &str, pgsz: usize, rootPage: PageNum) -> io::Result<SegmentCursor> {
-    let csr = try!(SegmentCursor::new(path, pgsz, rootPage));
-    Ok(csr)
-}
-
 #[derive(Clone)]
 struct HeaderData {
     // TODO currentState is an ordered copy of segments.Keys.  eliminate duplication?
@@ -3068,7 +3063,7 @@ impl db {
             )
             //printfn "done with cursor %O" g 
         */
-        let csr = try!(OpenCursor(&self.path, self.pgsz, rootPage));
+        let csr = try!(SegmentCursor::new(&self.path, self.pgsz, rootPage));
         // note that getCursor is (and must be) only called from within
         // lock critSectionCursors
         /* TODO
@@ -3081,7 +3076,8 @@ impl db {
         Ok(csr)
     }
 
-    pub fn OpenCursor(&mut self) -> io::Result<Box<ICursor>> {
+    // TODO don't box this
+    pub fn OpenCursor(&mut self) -> io::Result<Box<LivingCursor>> {
         // TODO this cursor needs to expose the changeCounter and segment list
         // on which it is based. for optimistic writes. caller can grab a cursor,
         // do their writes, then grab the writelock, and grab another cursor, then
@@ -3215,7 +3211,7 @@ impl db {
         let mut mc = MultiCursor::Create(clist);
         let mut fs = try!(self.OpenForWriting());
         mc.First();
-        let (g,_) = try!(CreateFromSortedSequenceOfKeyValuePairs(&mut fs, self, CursorIterator::new(box mc)));
+        let (g,_) = try!(CreateFromSortedSequenceOfKeyValuePairs(&mut fs, self, CursorIterator::new(mc)));
         //printfn "merged %A to get %A" segs g
         self.pendingMerges.insert(g, segs);
         Ok(g)
@@ -3590,9 +3586,63 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
 
 #[cfg(test)]
 mod tests {
+    use std;
+
     #[test]
     fn it_works() {
     }
+
+    #[test]
+    #[ignore]
+    fn quick() {
+        fn tempfile(base: &str) -> String {
+            fn tid() -> String {
+                // TODO use the rand crate
+                fn bytes() -> std::io::Result<[u8;16]> {
+                    let mut f = try!(std::fs::OpenOptions::new()
+                            .read(true)
+                            .open("/dev/urandom"));
+                    let mut ba = [0;16];
+                    try!(super::utils::ReadFully(&mut f, &mut ba));
+                    Ok(ba)
+                }
+
+                fn to_hex_string(ba: &[u8]) -> String {
+                    let strs: Vec<String> = ba.iter()
+                        .map(|b| format!("{:02X}", b))
+                        .collect();
+                    strs.connect("")
+                }
+
+                let ba = bytes().unwrap();
+                to_hex_string(&ba)
+            }
+
+            std::fs::create_dir("tmp");
+            let file = "tmp/".to_string() + base + "_" + &tid();
+            file
+        }
+
+        fn f() -> std::io::Result<()> {
+            //println!("running");
+            let mut db = try!(super::db::new(&tempfile("quick"), super::DefaultSettings));
+
+            const NUM : usize = 100000;
+
+            let mut a = Vec::new();
+            for i in 0 .. 10 {
+                let g = try!(db.WriteSegmentFromSortedSequence(super::GenerateNumbers {cur: i * NUM, end: (i+1) * NUM, step: i+1}));
+                a.push(g);
+            }
+            try!(db.commitSegments(a.clone()));
+            let g3 = try!(db.merge(a));
+            try!(db.commitMerge(g3));
+
+            Ok(())
+        }
+        assert!(f().is_ok());
+    }
+
 }
 
 pub struct GenerateNumbers {

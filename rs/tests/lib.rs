@@ -1,6 +1,8 @@
 
 extern crate lsm;
 
+use lsm::ICursor;
+
 fn tid() -> String {
     // TODO use the rand crate
     fn bytes() -> std::io::Result<[u8;16]> {
@@ -49,7 +51,7 @@ fn insert_pair_string_blob(d: &mut std::collections::HashMap<Box<[u8]>,lsm::Blob
     d.insert(to_utf8(k), v);
 }
 
-fn count_keys_forward(csr: &mut lsm::ICursor) -> usize {
+fn count_keys_forward(csr: &mut lsm::LivingCursor) -> usize {
     let mut r = 0;
     csr.First();
     while csr.IsValid() {
@@ -59,7 +61,7 @@ fn count_keys_forward(csr: &mut lsm::ICursor) -> usize {
     r
 }
 
-fn count_keys_backward(csr: &mut lsm::ICursor) -> usize {
+fn count_keys_backward(csr: &mut lsm::LivingCursor) -> usize {
     let mut r = 0;
     csr.Last();
     while csr.IsValid() {
