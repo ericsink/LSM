@@ -1036,9 +1036,6 @@ struct ParentState {
     blk : PageBlock,
 }
 
-// TODO gratuitously different names of the items in these
-// two unions
-
 // this enum keeps track of what happened to a key as we
 // processed it.  either we determined that it will fit
 // inline or we wrote it as an overflow.

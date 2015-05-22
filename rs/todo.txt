@@ -46,11 +46,9 @@ list of cursors
 want to be able to write multiple segments simultaneously.
 but access to the header and to housekeeping structures must be safe.
 
-streaming iterators
+streaming iterator model for ICursor?
 
-database trait
-
-Just make LivingCursor the actual return?  get rid of dynamic dispatch?
+database trait can go away
 
 segment id, would be nice to make it u64
 
@@ -72,4 +70,10 @@ expect instead of unwrap
 
 prefixlen > 255
 
+looks like kvp stuff should probably stay boxed.  both the key and value
+always need to be held longer than one iteration, usually until the
+end of the leaf, and one key for each leaf gets held longer than that.
+which means if the caller provided this as a reference instead of a box,
+we would have to make a copy no matter what, and if the caller had to
+construct a box anyway, we would have done it twice.
 
