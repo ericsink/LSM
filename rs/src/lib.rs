@@ -150,7 +150,7 @@ impl CursorIterator {
 
 impl Iterator for CursorIterator {
     type Item = kvp;
-    fn next(& mut self) -> Option<kvp> {
+    fn next(&mut self) -> Option<kvp> {
         if self.csr.IsValid() {
             let res = Some(kvp{Key:self.csr.Key(), Value:self.csr.Value()});
             self.csr.Next();
@@ -163,7 +163,7 @@ impl Iterator for CursorIterator {
 
 // TODO return Result
 pub trait ICursor : Drop {
-    fn Seek(&mut self, k:&[u8], sop:SeekOp);
+    fn Seek(&mut self, k: &[u8], sop:SeekOp);
     fn First(&mut self);
     fn Last(&mut self);
     fn Next(&mut self);
@@ -182,7 +182,7 @@ pub trait ICursor : Drop {
     fn Value(&self) -> Blob;
 
     fn ValueLength(&self) -> Option<usize>; // tombstone is None
-    fn KeyCompare(&self, k:&[u8]) -> Ordering;
+    fn KeyCompare(&self, k: &[u8]) -> Ordering;
 }
 
 // TODO return Result
@@ -250,13 +250,14 @@ pub mod utils {
     use std::io::SeekFrom;
     use super::PageNum;
 
-    pub fn SeekPage(strm:&mut Seek, pgsz: usize, pageNumber: PageNum) -> io::Result<u64> {
-        if 0==pageNumber { panic!("invalid page number") } // TODO overflow detection in the next line might get this
+    pub fn SeekPage(strm: &mut Seek, pgsz: usize, pageNumber: PageNum) -> io::Result<u64> {
+        if 0==pageNumber { panic!("invalid page number") } 
+        // TODO overflow detection in the next line might get this
         let pos = ((pageNumber as u64) - 1) * (pgsz as u64);
         strm.seek(SeekFrom::Start(pos))
     }
 
-    pub fn ReadFully(strm:&mut Read, buf: &mut [u8]) -> io::Result<usize> {
+    pub fn ReadFully(strm: &mut Read, buf: &mut [u8]) -> io::Result<usize> {
         let mut sofar = 0;
         let len = buf.len();
         loop {
@@ -281,12 +282,12 @@ mod bcmp {
 
     // TODO get rid of this function.  regular cmp() is apparently lexicographic.
     #[inline(always)]
-    pub fn Compare(x:&[u8], y:&[u8]) -> Ordering {
+    pub fn Compare(x: &[u8], y: &[u8]) -> Ordering {
         x.cmp(y)
     }
 
     #[inline(always)]
-    pub fn CompareWithPrefix(prefix:&[u8], x:&[u8], y:&[u8]) -> Ordering {
+    pub fn CompareWithPrefix(prefix: &[u8], x: &[u8], y: &[u8]) -> Ordering {
         assert!(prefix.len() > 0);
         if y.len() <= prefix.len() {
             prefix.cmp(y)
@@ -486,7 +487,7 @@ mod Varint {
 }
 
 /*
-fn write_u32_le(v:& mut [u8], i: u32)
+fn write_u32_le(v: &mut [u8], i: u32)
 {
     v[0] = ((i>> 0) & 0xff_u32) as u8;
     v[1] = ((i>> 8) & 0xff_u32) as u8;
@@ -495,7 +496,7 @@ fn write_u32_le(v:& mut [u8], i: u32)
 }
 */
 
-fn write_u32_be(v:& mut [u8], i: u32)
+fn write_u32_be(v: &mut [u8], i: u32)
 {
     v[0] = ((i>>24) & 0xff_u32) as u8;
     v[1] = ((i>>16) & 0xff_u32) as u8;
@@ -503,7 +504,7 @@ fn write_u32_be(v:& mut [u8], i: u32)
     v[3] = ((i>> 0) & 0xff_u32) as u8;
 }
 
-fn read_u32_be(v:&[u8]) -> u32
+fn read_u32_be(v: &[u8]) -> u32
 {
     let a0 = v[0] as u64;
     let a1 = v[1] as u64;
@@ -514,7 +515,7 @@ fn read_u32_be(v:&[u8]) -> u32
     r as u32
 }
 
-fn read_u16_be(v:&[u8]) -> u16
+fn read_u16_be(v: &[u8]) -> u16
 {
     let a0 = v[0] as u64;
     let a1 = v[1] as u64;
@@ -523,7 +524,7 @@ fn read_u16_be(v:&[u8]) -> u16
     r as u16
 }
 
-fn write_u16_be(v:& mut [u8], i: u16)
+fn write_u16_be(v: &mut [u8], i: u16)
 {
     v[0] = ((i>>8) & 0xff_u16) as u8;
     v[1] = ((i>>0) & 0xff_u16) as u8;
@@ -547,7 +548,7 @@ impl PageBuilder {
         self.cur = 0;
     }
 
-    fn Write(&self, strm:&mut Write) -> io::Result<()> {
+    fn Write(&self, strm: &mut Write) -> io::Result<()> {
         strm.write_all(&*self.buf)
     }
 
@@ -590,7 +591,7 @@ impl PageBuilder {
         res
     }
 
-    fn PutArray(&mut self, ba:&[u8]) {
+    fn PutArray(&mut self, ba: &[u8]) {
         // TODO this can't be the best way to copy a slice
         for i in 0..ba.len() {
             self.buf[self.cur + i] = ba[i];
@@ -735,7 +736,9 @@ enum Direction {
 
 struct MultiCursor { 
     subcursors : Box<[myCursor]>, 
-    cur : Option<usize>, // TODO max number of subcursors?  u8 is probably enough. but array indexing is supposed to be usize.
+    cur : Option<usize>, 
+    // TODO max number of subcursors?  u8 is probably enough. 
+    // but array indexing is supposed to be usize.
     dir : Direction,
 }
 
@@ -767,12 +770,12 @@ impl MultiCursor {
     }
 
     fn findMin(&self) -> Option<usize> {
-        let compare_func = |a:&myCursor,b:&myCursor| a.KeyCompare(&*b.Key());
+        let compare_func = |a: &myCursor,b: &myCursor| a.KeyCompare(&*b.Key());
         self.find(&compare_func)
     }
 
     fn findMax(&self) -> Option<usize> {
-        let compare_func = |a:&myCursor,b:&myCursor| b.KeyCompare(&*a.Key());
+        let compare_func = |a: &myCursor,b: &myCursor| b.KeyCompare(&*a.Key());
         self.find(&compare_func)
     }
 
@@ -825,7 +828,7 @@ impl ICursor for MultiCursor {
         }
     }
 
-    fn KeyCompare(&self, k:&[u8]) -> Ordering {
+    fn KeyCompare(&self, k: &[u8]) -> Ordering {
         match self.cur {
             Some(icur) => self.subcursors[icur].KeyCompare(k),
             None => panic!()
@@ -886,7 +889,7 @@ impl ICursor for MultiCursor {
         }
     }
 
-    fn Seek(&mut self, k:&[u8], sop:SeekOp) {
+    fn Seek(&mut self, k: &[u8], sop:SeekOp) {
         self.cur = None;
         self.dir = Direction::WANDERING;
         for j in 0 .. self.subcursors.len() {
@@ -972,7 +975,7 @@ impl ICursor for LivingCursor {
         self.chain.IsValid() && self.chain.ValueLength().is_some()
     }
 
-    fn KeyCompare(&self, k:&[u8]) -> Ordering {
+    fn KeyCompare(&self, k: &[u8]) -> Ordering {
         self.chain.KeyCompare(k)
     }
 
@@ -986,7 +989,7 @@ impl ICursor for LivingCursor {
         self.skipTombstonesBackward();
     }
 
-    fn Seek(&mut self, k:&[u8], sop:SeekOp) {
+    fn Seek(&mut self, k: &[u8], sop:SeekOp) {
         self.chain.Seek(k, sop);
         match sop {
             SeekOp::SEEK_GE => self.skipTombstonesForward(),
@@ -1067,7 +1070,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
                                 fs: &mut SeekWrite
                                ) -> io::Result<(usize,PageBlock)> where SeekWrite : Seek+Write {
 
-        fn buildFirstPage(ba:&mut Read, pbFirstOverflow : &mut PageBuilder, pgsz: usize) -> io::Result<(usize,bool)> {
+        fn buildFirstPage(ba: &mut Read, pbFirstOverflow : &mut PageBuilder, pgsz: usize) -> io::Result<(usize,bool)> {
             pbFirstOverflow.Reset();
             pbFirstOverflow.PutByte(PageType::OVERFLOW_NODE);
             pbFirstOverflow.PutByte(0u8); // starts 0, may be changed later
@@ -1079,7 +1082,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
             }
         };
 
-        fn buildRegularPage(ba:&mut Read, pbOverflow : &mut PageBuilder, pgsz: usize) -> io::Result<(usize,bool)> {
+        fn buildRegularPage(ba: &mut Read, pbOverflow : &mut PageBuilder, pgsz: usize) -> io::Result<(usize,bool)> {
             pbOverflow.Reset();
             let room = pgsz;
             match pbOverflow.PutStream2(ba, room) {
@@ -1088,7 +1091,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
             }
         };
 
-        fn buildBoundaryPage(ba:&mut Read, pbOverflow : &mut PageBuilder, pgsz: usize) -> io::Result<(usize,bool)> {
+        fn buildBoundaryPage(ba: &mut Read, pbOverflow : &mut PageBuilder, pgsz: usize) -> io::Result<(usize,bool)> {
             pbOverflow.Reset();
             let room = pgsz - size_32;
             // something will be put in lastInt32 before the page is written
@@ -1176,7 +1179,8 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
                         let firstRegularPageNumber = firstBlk.firstPage + 1;
                         if finished {
                             // the first page is also the last one
-                            pbFirstOverflow.SetLastInt32(0); // offset to last used page in this block, which is this one
+                            pbFirstOverflow.SetLastInt32(0); 
+                            // offset to last used page in this block, which is this one
                             try!(pbFirstOverflow.Write(fs));
                             return Ok((sofar, PageBlock::new(firstRegularPageNumber,firstBlk.lastPage)));
                         } else {
@@ -1409,7 +1413,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
             vLocNeed(&lp.vLoc)
         }
 
-        fn defaultPrefixLen(k:&[u8]) -> usize {
+        fn defaultPrefixLen(k: &[u8]) -> usize {
             // TODO max prefix.  relative to page size?  must fit in byte.
             if k.len() > 255 { 255 } else { k.len() }
         }
@@ -1686,7 +1690,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
         fn writeParentPage<SeekWrite>(st: &mut ParentState, 
                                       items: &[&pgitem],
                                       overflows: &HashMap<usize,PageNum>,
-                                      pair:&pgitem, 
+                                      pair: &pgitem, 
                                       isRootNode: bool, 
                                       pb: &mut PageBuilder, 
                                       lastLeaf: PageNum,
@@ -2440,7 +2444,7 @@ impl ICursor for myCursor {
         self.leafIsValid()
     }
 
-    fn Seek(&mut self, k:&[u8], sop:SeekOp) {
+    fn Seek(&mut self, k: &[u8], sop:SeekOp) {
         let rootPage = self.rootPage;
         self.search(rootPage, k, sop).unwrap()
     }
@@ -2488,7 +2492,7 @@ impl ICursor for myCursor {
         }
     }
 
-    fn KeyCompare(&self, k:&[u8]) -> Ordering {
+    fn KeyCompare(&self, k: &[u8]) -> Ordering {
         let currentKey = self.currentKey.unwrap();
         self.compareKeyInLeaf(currentKey, k).unwrap()
     }
@@ -2624,7 +2628,7 @@ impl IPages for SimplePageManager {
 
 }
 
-fn readHeader<R>(fs:&mut R) -> io::Result<(HeaderData,usize,PageNum)> where R : Read+Seek {
+fn readHeader<R>(fs: &mut R) -> io::Result<(HeaderData,usize,PageNum)> where R : Read+Seek {
     // TODO this func assumes we are at the beginning of the file?
     // should the seek happen here instead of in the caller?
 
@@ -2785,7 +2789,7 @@ fn invertBlockList(blocks: &Vec<PageBlock>) -> Vec<PageBlock> {
     result
 }
 
-fn listAllBlocks(h:&HeaderData, segmentsInWaiting:&HashMap<Guid,SegmentInfo>, pgsz: usize) -> Vec<PageBlock> {
+fn listAllBlocks(h: &HeaderData, segmentsInWaiting: &HashMap<Guid,SegmentInfo>, pgsz: usize) -> Vec<PageBlock> {
     let headerBlock = PageBlock::new(1, (HEADER_SIZE_IN_BYTES / pgsz) as PageNum);
     let mut blocks = Vec::new();
 
@@ -2955,7 +2959,7 @@ impl db {
     // each pair is startBlock,countBlocks
     // all in varints
 
-    fn writeHeader(&mut self, hdr:&mut HeaderData) -> io::Result<()> {
+    fn writeHeader(&mut self, hdr: &mut HeaderData) -> io::Result<()> {
         fn spaceNeededForSegmentInfo(info: &SegmentInfo) -> usize {
             let mut a = 0;
             for t in info.blocks.iter() {
@@ -2968,7 +2972,7 @@ impl db {
             a
         }
 
-        fn spaceForHeader(h:&HeaderData) -> usize {
+        fn spaceForHeader(h: &HeaderData) -> usize {
             let mut a = Varint::SpaceNeededFor(h.currentState.len() as u64);
             // TODO use currentState with a lookup into h.segments instead?
             // should be the same, right?
@@ -2978,7 +2982,7 @@ impl db {
             a
         }
 
-        fn buildSegmentList(h:&HeaderData) -> PageBuilder {
+        fn buildSegmentList(h: &HeaderData) -> PageBuilder {
             let space = spaceForHeader(h);
             let mut pb = PageBuilder::new(space);
             // TODO format version number
@@ -3302,7 +3306,7 @@ impl IPages for db {
         PendingSegment::new()
     }
 
-    fn GetBlock(&mut self, ps:&mut PendingSegment) -> PageBlock {
+    fn GetBlock(&mut self, ps: &mut PendingSegment) -> PageBlock {
         let blk = self.getBlock(0); // specificSize=0 means we don't care how big of a block we get
         ps.AddBlock(blk);
         blk
@@ -3599,7 +3603,7 @@ pub struct GenerateNumbers {
 
 impl Iterator for GenerateNumbers {
     type Item = kvp;
-    fn next(& mut self) -> Option<kvp> {
+    fn next(&mut self) -> Option<kvp> {
         if self.cur > self.end {
             None
         }
