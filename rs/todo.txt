@@ -77,3 +77,8 @@ which means if the caller provided this as a reference instead of a box,
 we would have to make a copy no matter what, and if the caller had to
 construct a box anyway, we would have done it twice.
 
+multicursor.Next looks slow.  lots of key compares.
+
+maybe myOverflowReadStream shouldn't be returned as a trait object.
+
+

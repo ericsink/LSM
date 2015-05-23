@@ -35,7 +35,7 @@ use std::fs::File;
 use std::fs::OpenOptions;
 use std::collections::HashMap;
 use std::collections::HashSet;
-
+use std::ops::Index;
 
 const size_32: usize = 4; // TODO
 const size_16: usize = 2; // TODO
@@ -66,6 +66,69 @@ pub struct kvp {
 struct PendingSegment {
     blockList: Vec<PageBlock>
 }
+
+// TODO this is experimental.  it might not be very useful unless
+// it can be used everywhere a regular slice can be used.  but we
+// obviously don't want to just pass around an Index<Output=u8>
+// trait object.  but maybe with static dispatch?
+struct SplitSlice<'a> {
+    front: &'a [u8],
+    back: &'a [u8],
+}
+
+impl<'a> SplitSlice<'a> {
+    fn new(front: &'a [u8], back: &'a [u8]) -> SplitSlice<'a> {
+        SplitSlice {front: front, back: back}
+    }
+
+    fn len(&self) -> usize {
+        self.front.len() + self.back.len()
+    }
+
+    fn into_boxed_slice(self) -> Box<[u8]> {
+        let mut k = Vec::new();
+        k.push_all(&self.front);
+        k.push_all(&self.back);
+        k.into_boxed_slice()
+    }
+}
+
+impl<'a> Index<usize> for SplitSlice<'a> {
+    type Output = u8;
+
+    fn index(&self, _index: usize) -> &u8 {
+        if _index >= self.front.len() {
+            &self.back[_index - self.front.len()]
+        } else {
+            &self.front[_index]
+        }
+    }
+}
+
+// TODO the problem with returning something that is a
+// reference to something inside the SegmentCursor, is
+// that now the SegmentCursor cannot be mutable.
+enum KeyVal<'a> {
+    Overflow(myOverflowReadStream),
+    Normal(SplitSlice<'a>),
+}
+
+impl<'a> KeyVal<'a> {
+    fn into_boxed_slice(self) -> Box<[u8]> {
+        match self {
+            KeyVal::Overflow(mut strm) => {
+                let klen = strm.len();
+                let mut k = vec![0; klen].into_boxed_slice();
+                utils::ReadFully(&mut strm, &mut k);
+                k
+            },
+            KeyVal::Normal(ss) => {
+                ss.into_boxed_slice()
+            },
+        }
+    }
+}
+
 
 #[derive(Hash,PartialEq,Eq,Copy,Clone)]
 struct PageBlock {
@@ -164,9 +227,46 @@ impl Iterator for CursorIterator {
     }
 }
 
+#[derive(Copy,Clone,Debug)]
+pub enum SeekResult {
+    Invalid,
+    Unequal,
+    Equal,
+}
+
+impl SeekResult {
+    fn from_cursor<T: ICursor>(csr: &T, k:&[u8]) -> SeekResult {
+        if csr.IsValid() {
+            if Ordering::Equal == csr.KeyCompare(k) {
+                SeekResult::Equal
+            } else {
+                SeekResult::Unequal
+            }
+        } else {
+            SeekResult::Invalid
+        }
+    }
+
+    fn is_valid(self) -> bool {
+        match self {
+            SeekResult::Invalid => false,
+            SeekResult::Unequal => true,
+            SeekResult::Equal => true,
+        }
+    }
+
+    fn is_valid_and_equal(self) -> bool {
+        match self {
+            SeekResult::Invalid => false,
+            SeekResult::Unequal => false,
+            SeekResult::Equal => true,
+        }
+    }
+}
+
 // TODO return Result
 pub trait ICursor : Drop {
-    fn Seek(&mut self, k: &[u8], sop:SeekOp);
+    fn Seek(&mut self, k: &[u8], sop:SeekOp) -> SeekResult;
     fn First(&mut self);
     fn Last(&mut self);
     fn Next(&mut self);
@@ -716,6 +816,10 @@ impl PageBuffer {
         r
     }
 
+    fn get_slice(&self, start: usize, len: usize) -> &[u8] {
+        &self.buf[start .. len]
+    }
+
     fn GetIntoArray(&self, cur: &mut usize,  a : &mut [u8]) {
         // TODO copy slice
         for i in 0 .. a.len() {
@@ -771,6 +875,9 @@ impl MultiCursor {
             res
         }
     }
+
+    // TODO SegmentCursor should have a function like KeyCompare, but it 
+    // compares the current key against the current key of another cursor.
 
     fn findMin(&self) -> Option<usize> {
         let compare_func = |a: &SegmentCursor,b: &SegmentCursor| a.KeyCompare(&*b.Key());
@@ -855,13 +962,23 @@ impl ICursor for MultiCursor {
     fn Next(&mut self) {
         match self.cur {
             Some(icur) => {
+                // TODO grabbing the Key() here could be really expensive
                 let k = self.subcursors[icur].Key();
                 for j in 0 .. self.subcursors.len() {
                     let csr = &mut self.subcursors[j];
                     if (self.dir != Direction::FORWARD) && (icur != j) { 
-                        (*csr).Seek (&*k, SeekOp::SEEK_GE); 
-                    }
-                    if csr.IsValid() && (Ordering::Equal == csr.KeyCompare(&*k)) { 
+                        // TODO this seems expensive.  can't we, like,
+                        // remember where we are and just move a little
+                        // bit?
+
+                        let sr = (*csr).Seek (&*k, SeekOp::SEEK_GE); 
+                        if sr.is_valid_and_equal() {
+                            csr.Next(); 
+                        }
+                    } else if (icur == j) || (csr.IsValid() && (Ordering::Equal == csr.KeyCompare(&*k))) { 
+                        // in the previous line, (icur == j) should short circuit for better
+                        // performance, since in that case, the other comparisons will always be
+                        // true.
                         csr.Next(); 
                     }
                 }
@@ -872,6 +989,7 @@ impl ICursor for MultiCursor {
         }
     }
 
+    // TODO fix Prev like Next
     fn Prev(&mut self) {
         match self.cur {
             Some(icur) => {
@@ -892,32 +1010,44 @@ impl ICursor for MultiCursor {
         }
     }
 
-    fn Seek(&mut self, k: &[u8], sop:SeekOp) {
+    fn Seek(&mut self, k: &[u8], sop:SeekOp) -> SeekResult {
         self.cur = None;
         self.dir = Direction::WANDERING;
         for j in 0 .. self.subcursors.len() {
-            self.subcursors[j].Seek(k,sop);
-            if self.subcursors[j].IsValid() && ( (SeekOp::SEEK_EQ == sop) || (Ordering::Equal == self.subcursors[j].KeyCompare(k)) ) { 
+            let sr = self.subcursors[j].Seek(k,sop);
+            if sr.is_valid_and_equal() { 
                 self.cur = Some(j);
-                break;
+                return sr;
             }
         }
-        if self.cur.is_none() {
-            match sop {
-                SeekOp::SEEK_GE => {
-                    self.cur = self.findMin();
-                    if self.cur.is_some() { 
+        match sop {
+            SeekOp::SEEK_GE => {
+                self.cur = self.findMin();
+                match self.cur {
+                    Some(i) => {
                         self.dir = Direction::FORWARD; 
-                    }
-                },
-                SeekOp::SEEK_LE => {
-                    self.cur = self.findMax();
-                    if self.cur.is_some() { 
+                        SeekResult::from_cursor(&self.subcursors[i], k)
+                    },
+                    None => {
+                        SeekResult::Invalid
+                    },
+                }
+            },
+            SeekOp::SEEK_LE => {
+                self.cur = self.findMax();
+                match self.cur {
+                    Some(i) => {
                         self.dir = Direction::BACKWARD; 
-                    }
-                },
-                SeekOp::SEEK_EQ => ()
-            }
+                        SeekResult::from_cursor(&self.subcursors[i], k)
+                    },
+                    None => {
+                        SeekResult::Invalid
+                    },
+                }
+            },
+            SeekOp::SEEK_EQ => {
+                SeekResult::Invalid
+            },
         }
     }
 
@@ -992,12 +1122,26 @@ impl ICursor for LivingCursor {
         self.skipTombstonesBackward();
     }
 
-    fn Seek(&mut self, k: &[u8], sop:SeekOp) {
-        self.chain.Seek(k, sop);
+    fn Seek(&mut self, k: &[u8], sop:SeekOp) -> SeekResult {
+        let sr = self.chain.Seek(k, sop);
         match sop {
-            SeekOp::SEEK_GE => self.skipTombstonesForward(),
-            SeekOp::SEEK_LE => self.skipTombstonesBackward(),
-            SeekOp::SEEK_EQ => (),
+            SeekOp::SEEK_GE => {
+                if sr.is_valid() && self.chain.ValueLength().is_none() {
+                    self.skipTombstonesForward();
+                    SeekResult::from_cursor(&self.chain, k)
+                } else {
+                    sr
+                }
+            },
+            SeekOp::SEEK_LE => {
+                if sr.is_valid() && self.chain.ValueLength().is_none() {
+                    self.skipTombstonesBackward();
+                    SeekResult::from_cursor(&self.chain, k)
+                } else {
+                    sr
+                }
+            },
+            SeekOp::SEEK_EQ => sr,
         }
     }
 
@@ -1895,7 +2039,11 @@ impl myOverflowReadStream {
         Ok(res)
     }
 
-    // TODO consider supporting seek
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    // TODO consider supporting Seek trait
 
     fn ReadPage(&mut self) -> io::Result<()> {
         try!(utils::SeekPage(&mut self.fs, self.buf.len(), self.currentPage));
@@ -2235,6 +2383,40 @@ impl SegmentCursor {
         }
     }
 
+    fn is_key_overflowed(&self) -> bool {
+        let n = self.currentKey.unwrap();
+        let mut cur = self.leafKeys[n as usize];
+        let kflag = self.pr.GetByte(&mut cur);
+        0 != (kflag & ValueFlag::FLAG_OVERFLOW)
+    }
+
+    fn keyInLeaf2<'a>(&'a self, n: usize) -> io::Result<KeyVal<'a>> { 
+        let mut cur = self.leafKeys[n as usize];
+        let kflag = self.pr.GetByte(&mut cur);
+        let klen = self.pr.GetVarint(&mut cur) as usize;
+        if 0 == (kflag & ValueFlag::FLAG_OVERFLOW) {
+            match self.prefix {
+                Some(ref a) => {
+                    let ss = SplitSlice::new(&a, self.pr.get_slice(a.len(), klen));
+                    Ok(KeyVal::Normal(ss))
+                },
+                None => {
+                    let ss = SplitSlice::new(&[], self.pr.get_slice(0, klen));
+                    Ok(KeyVal::Normal(ss))
+                },
+            }
+        } else {
+            let pgnum = self.pr.GetInt32(&mut cur) as PageNum;
+            let mut ostrm = try!(myOverflowReadStream::new(&self.path, self.pr.PageSize(), pgnum, klen));
+            Ok(KeyVal::Overflow(ostrm))
+        }
+    }
+
+    fn Key2<'a>(&'a self) -> KeyVal<'a> { 
+        let currentKey = self.currentKey.unwrap();
+        self.keyInLeaf2(currentKey).unwrap()
+    }
+
     fn keyInLeaf(&self, n: usize) -> io::Result<Box<[u8]>> { 
         let mut cur = self.leafKeys[n as usize];
         let kflag = self.pr.GetByte(&mut cur);
@@ -2293,26 +2475,26 @@ impl SegmentCursor {
         }
     }
 
-    fn searchLeaf(&mut self, k: &[u8], min:usize, max:usize, sop:SeekOp, le: Option<usize>, ge: Option<usize>) -> io::Result<Option<usize>> {
+    fn searchLeaf(&mut self, k: &[u8], min:usize, max:usize, sop:SeekOp, le: Option<usize>, ge: Option<usize>) -> io::Result<(Option<usize>,bool)> {
         if max < min {
             match sop {
-                SeekOp::SEEK_EQ => Ok(None),
-                SeekOp::SEEK_LE => Ok(le),
-                SeekOp::SEEK_GE => Ok(ge),
+                SeekOp::SEEK_EQ => Ok((None,false)),
+                SeekOp::SEEK_LE => Ok((le, false)),
+                SeekOp::SEEK_GE => Ok((ge, false)),
             }
         } else {
             let mid = (max + min) / 2;
             // assert mid >= 0
             match try!(self.compareKeyInLeaf(mid, k)){
-                Ordering::Equal => Ok(Some(mid)),
+                Ordering::Equal => Ok((Some(mid),true)),
                 Ordering::Less => self.searchLeaf(k, (mid+1), max, sop, Some(mid), ge),
                 Ordering::Greater => 
                     // catch underflow
                     if mid==0 { 
                         match sop {
-                            SeekOp::SEEK_EQ => Ok(None),
-                            SeekOp::SEEK_LE => Ok(le),
-                            SeekOp::SEEK_GE => Ok(Some(mid)),
+                            SeekOp::SEEK_EQ => Ok((None,false)),
+                            SeekOp::SEEK_LE => Ok((le,false)),
+                            SeekOp::SEEK_GE => Ok((Some(mid),false)),
                         }
                     } else { 
                         self.searchLeaf(k, min, (mid-1), sop, le, Some(mid))
@@ -2414,12 +2596,13 @@ impl SegmentCursor {
         ok
     }
 
-    fn search(&mut self, pg: PageNum, k: &[u8], sop:SeekOp) -> io::Result<()> {
+    fn search(&mut self, pg: PageNum, k: &[u8], sop:SeekOp) -> io::Result<SeekResult> {
         if try!(self.setCurrentPage(pg)) {
             if PageType::LEAF_NODE == self.pr.PageType() {
                 self.readLeaf();
                 let tmp_countLeafKeys = self.leafKeys.len();
-                self.currentKey = try!(self.searchLeaf(k, 0, (tmp_countLeafKeys - 1), sop, None, None));
+                let (newCur, equal) = try!(self.searchLeaf(k, 0, (tmp_countLeafKeys - 1), sop, None, None));
+                self.currentKey = newCur;
                 if SeekOp::SEEK_EQ != sop {
                     if ! self.leafIsValid() {
                         // if LE or GE failed on a given page, we might need
@@ -2444,15 +2627,25 @@ impl SegmentCursor {
                         }
                     }
                 }
+                if self.currentKey.is_none() {
+                    Ok(SeekResult::Invalid)
+                } else if equal {
+                    Ok(SeekResult::Equal)
+                } else {
+                    Ok(SeekResult::Unequal)
+                }
             } else if PageType::PARENT_NODE == self.pr.PageType() {
                 let (ptrs,keys) = try!(self.readParentPage());
                 match Self::searchInParentPage(k, &ptrs, &keys, 0) {
                     Some(found) => return self.search(found, k, sop),
                     None => return self.search(ptrs[ptrs.len() - 1], k, sop),
                 }
+            } else {
+                unreachable!();
             }
+        } else {
+            Ok(SeekResult::Invalid)
         }
-        Ok(())
     }
 
     fn searchInParentPage(k: &[u8], ptrs: &Vec<PageNum>, keys: &Vec<Box<[u8]>>, i: usize) -> Option<PageNum> {
@@ -2483,7 +2676,7 @@ impl ICursor for SegmentCursor {
         self.leafIsValid()
     }
 
-    fn Seek(&mut self, k: &[u8], sop:SeekOp) {
+    fn Seek(&mut self, k: &[u8], sop:SeekOp) -> SeekResult {
         let rootPage = self.rootPage;
         self.search(rootPage, k, sop).unwrap()
     }
