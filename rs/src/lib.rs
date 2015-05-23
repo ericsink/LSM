@@ -963,10 +963,11 @@ impl ICursor for MultiCursor {
     fn Next(&mut self) {
         match self.cur {
             Some(icur) => {
+                if self.dir != Direction::FORWARD {
                     let k = self.subcursors[icur].Key();
                     for j in 0 .. self.subcursors.len() {
                         let csr = &mut self.subcursors[j];
-                        if (self.dir != Direction::FORWARD) && (icur != j) { 
+                        if (icur != j) { 
                             // TODO this seems expensive.  can't we, like,
                             // remember where we are and just move a little
                             // bit?
@@ -982,17 +983,18 @@ impl ICursor for MultiCursor {
                             csr.Next(); 
                         }
                     }
-                    /*
+                } else {
                     for j in 0 .. self.subcursors.len() {
-                        if (icur == j) || (self.subcursors[j].IsValid() && (Ordering::Equal == SegmentCursor::compare_two(&self.subcursors[j], &self.subcursors[icur]).unwrap()) ) { 
-                            // in the previous line, (icur == j) should short circuit for better
-                            // performance, since in that case, the other comparisons will always be
-                            // true.
+                        // don't mess with icur until after the loop, so we can compare against it
+                        if (icur != j) 
+                            && self.subcursors[j].IsValid() 
+                            && (Ordering::Equal == SegmentCursor::compare_two(&self.subcursors[j], &self.subcursors[icur]).unwrap()) {
                             let csr = &mut self.subcursors[j];
                             csr.Next(); 
                         }
                     }
-                    */
+                    self.subcursors[icur].Next();
+                }
                 self.cur = self.findMin();
                 self.dir = Direction::FORWARD;
             },
