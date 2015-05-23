@@ -217,14 +217,22 @@ impl CursorIterator {
 }
 
 impl Iterator for CursorIterator {
-    type Item = kvp;
-    // TODO note the unwraps below.  The API expected by Iterator<Item=kvp> cannot
-    // handle the case where creating that kvp might cause an io error.
-    fn next(&mut self) -> Option<kvp> {
+    type Item = io::Result<kvp>;
+    fn next(&mut self) -> Option<io::Result<kvp>> {
         if self.csr.IsValid() {
-            let res = Some(kvp{Key:self.csr.Key().unwrap(), Value:self.csr.Value().unwrap()});
-            self.csr.Next().unwrap();
-            res
+            let k = self.csr.Key();
+            if k.is_err() {
+                return Some(Err(k.err().unwrap()));
+            }
+            let v = self.csr.Value();
+            if v.is_err() {
+                return Some(Err(v.err().unwrap()));
+            }
+            let r = self.csr.Next();
+            if r.is_err() {
+                return Some(Err(r.err().unwrap()));
+            }
+            Some(Ok(kvp{Key:k.unwrap(), Value:v.unwrap()}))
         } else {
             return None;
         }
@@ -1248,7 +1256,7 @@ struct LeafState {
 fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite, 
                                                             pageManager: &mut IPages, 
                                                             source: I,
-                                                           ) -> io::Result<(Guid,PageNum)> where I:Iterator<Item=kvp>, SeekWrite : Seek+Write {
+                                                           ) -> io::Result<(Guid,PageNum)> where I:Iterator<Item=io::Result<kvp>>, SeekWrite : Seek+Write {
 
     fn writeOverflow<SeekWrite>(startingBlock: PageBlock, 
                                 ba: &mut Read, 
@@ -1460,7 +1468,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
                                 fs: &mut SeekWrite, 
                                 pb: &mut PageBuilder,
                                 token: &mut PendingSegment,
-                                ) -> io::Result<(PageBlock,Vec<pgitem>,PageNum)> where I: Iterator<Item=kvp> , SeekWrite : Seek+Write {
+                                ) -> io::Result<(PageBlock,Vec<pgitem>,PageNum)> where I: Iterator<Item=io::Result<kvp>> , SeekWrite : Seek+Write {
         // 2 for the page type and flags
         // 4 for the prev page
         // 2 for the stored count
@@ -1628,7 +1636,8 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
             blk:leavesBlk,
             };
 
-        for mut pair in source {
+        for result_pair in source {
+            let mut pair = try!(result_pair);
             let k = pair.Key;
 
             // TODO is it possible for this to conclude that the key must be overflowed
@@ -3543,7 +3552,7 @@ impl db {
     }
 
     // TODO bad fn name
-    pub fn WriteSegmentFromSortedSequence<I>(&mut self, source: I) -> io::Result<Guid> where I:Iterator<Item=kvp> {
+    pub fn WriteSegmentFromSortedSequence<I>(&mut self, source: I) -> io::Result<Guid> where I:Iterator<Item=io::Result<kvp>> {
         let mut fs = try!(self.OpenForWriting());
         let (g,_) = try!(CreateFromSortedSequenceOfKeyValuePairs(&mut fs, self, source));
         Ok(g)
@@ -3560,7 +3569,7 @@ impl db {
         });
         let source = a.into_iter().map(|t| {
             let (k,v) = t;
-            kvp {Key:k, Value:Blob::Array(v)}
+            Ok(kvp {Key:k, Value:Blob::Array(v)})
         });
         let mut fs = try!(self.OpenForWriting());
         let (g,_) = try!(CreateFromSortedSequenceOfKeyValuePairs(&mut fs, self, source));
@@ -3578,7 +3587,7 @@ impl db {
         });
         let source = a.into_iter().map(|t| {
             let (k,v) = t;
-            kvp {Key:k, Value:v}
+            Ok(kvp {Key:k, Value:v})
         });
         let mut fs = try!(self.OpenForWriting());
         let (g,_) = try!(CreateFromSortedSequenceOfKeyValuePairs(&mut fs, self, source));
@@ -4042,8 +4051,8 @@ pub struct GenerateNumbers {
 }
 
 impl Iterator for GenerateNumbers {
-    type Item = kvp;
-    fn next(&mut self) -> Option<kvp> {
+    type Item = io::Result<kvp>;
+    fn next(&mut self) -> Option<io::Result<kvp>> {
         if self.cur > self.end {
             None
         }
@@ -4052,7 +4061,7 @@ impl Iterator for GenerateNumbers {
             let v = format!("{}", self.cur * 2).into_bytes().into_boxed_slice();
             let r = kvp{Key:k, Value:Blob::Array(v)};
             self.cur = self.cur + self.step;
-            Some(r)
+            Some(Ok(r))
         }
     }
 }
