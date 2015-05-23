@@ -43,9 +43,10 @@ const SIZE_16: usize = 2; // like std::mem::size_of::<u16>()
 const CURSOR_NOT_VALID: &'static str = "Cursor not valid";
 
 pub type PageNum = u32;
-// type PageSize = u32; // TODO could probably be 16 bits
+// type PageSize = u32;
+
 // TODO also perhaps the type representing size of a value, u32
-// size of a value should NOT be usize.
+// size of a value should NOT be usize, right?
 
 // TODO there is code which assumes that PageNum is u32.
 // but that's the nature of the file format.  the type alias
@@ -111,6 +112,8 @@ impl<'a> Index<usize> for SplitSlice<'a> {
 // TODO the problem with returning something that is a
 // reference to something inside the SegmentCursor, is
 // that now the SegmentCursor cannot be mutable.
+// look at Rusqlite and its predecessor to see how
+// this is done.
 enum KeyVal<'a> {
     Overflow(myOverflowReadStream),
     Normal(SplitSlice<'a>),

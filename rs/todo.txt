@@ -63,8 +63,6 @@ graveyard
 
 reduce malloc
 
-expect instead of unwrap
-
 prefixlen > 255
 
 looks like kvp stuff should probably stay boxed.  both the key and value
@@ -90,8 +88,4 @@ of dynamic dispatch is negligible compared to the IO, right?
 
 annoying that I can't have a mut reference to one element of an array
 while holding any reference to any other element of the array.
-
-some unwrap calls in the db parts of the code.  that code also hasn't
-really been reviewed for mem alloc and clone issues.
-
 
