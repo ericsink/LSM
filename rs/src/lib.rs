@@ -817,7 +817,7 @@ impl PageBuffer {
     }
 
     fn get_slice(&self, start: usize, len: usize) -> &[u8] {
-        &self.buf[start .. len]
+        &self.buf[start .. len + start]
     }
 
     fn GetIntoArray(&self, cur: &mut usize,  a : &mut [u8]) {
@@ -828,6 +828,7 @@ impl PageBuffer {
         *cur = *cur + a.len();
     }
 
+    // TODO this function shows up a lot in the profiler
     fn GetVarint(&self, cur: &mut usize) -> u64 {
         Varint::read(&*self.buf, cur)
     }
@@ -850,7 +851,7 @@ struct MultiCursor {
 }
 
 impl MultiCursor {
-    fn find(&self, compare_func : &Fn(&SegmentCursor,&SegmentCursor) -> Ordering) -> Option<usize> {
+    fn find(&self, swap: bool) -> Option<usize> {
         if self.subcursors.is_empty() {
             None
         } else {
@@ -861,7 +862,12 @@ impl MultiCursor {
                         Some(winning) => {
                             let x = &self.subcursors[i];
                             let y = &self.subcursors[winning];
-                            let c = compare_func(&*x,&*y);
+                            let c =
+                                if swap {
+                                    SegmentCursor::compare_two(y,x).unwrap()
+                                } else {
+                                    SegmentCursor::compare_two(x,y).unwrap()
+                                };
                             if c==Ordering::Less {
                                 res = Some(i)
                             }
@@ -876,17 +882,12 @@ impl MultiCursor {
         }
     }
 
-    // TODO SegmentCursor should have a function like KeyCompare, but it 
-    // compares the current key against the current key of another cursor.
-
     fn findMin(&self) -> Option<usize> {
-        let compare_func = |a: &SegmentCursor,b: &SegmentCursor| a.KeyCompare(&*b.Key());
-        self.find(&compare_func)
+        self.find(false)
     }
 
     fn findMax(&self) -> Option<usize> {
-        let compare_func = |a: &SegmentCursor,b: &SegmentCursor| b.KeyCompare(&*a.Key());
-        self.find(&compare_func)
+        self.find(true)
     }
 
     fn Create(subs: Vec<SegmentCursor>) -> MultiCursor {
@@ -962,26 +963,36 @@ impl ICursor for MultiCursor {
     fn Next(&mut self) {
         match self.cur {
             Some(icur) => {
-                // TODO grabbing the Key() here could be really expensive
-                let k = self.subcursors[icur].Key();
-                for j in 0 .. self.subcursors.len() {
-                    let csr = &mut self.subcursors[j];
-                    if (self.dir != Direction::FORWARD) && (icur != j) { 
-                        // TODO this seems expensive.  can't we, like,
-                        // remember where we are and just move a little
-                        // bit?
+                    let k = self.subcursors[icur].Key();
+                    for j in 0 .. self.subcursors.len() {
+                        let csr = &mut self.subcursors[j];
+                        if (self.dir != Direction::FORWARD) && (icur != j) { 
+                            // TODO this seems expensive.  can't we, like,
+                            // remember where we are and just move a little
+                            // bit?
 
-                        let sr = (*csr).Seek (&*k, SeekOp::SEEK_GE); 
-                        if sr.is_valid_and_equal() {
+                            let sr = (*csr).Seek (&*k, SeekOp::SEEK_GE); 
+                            if sr.is_valid_and_equal() {
+                                csr.Next(); 
+                            }
+                        } else if (icur == j) || (csr.IsValid() && (Ordering::Equal == csr.KeyCompare(&*k)) ) { 
+                            // in the previous line, (icur == j) should short circuit for better
+                            // performance, since in that case, the other comparisons will always be
+                            // true.
                             csr.Next(); 
                         }
-                    } else if (icur == j) || (csr.IsValid() && (Ordering::Equal == csr.KeyCompare(&*k))) { 
-                        // in the previous line, (icur == j) should short circuit for better
-                        // performance, since in that case, the other comparisons will always be
-                        // true.
-                        csr.Next(); 
                     }
-                }
+                    /*
+                    for j in 0 .. self.subcursors.len() {
+                        if (icur == j) || (self.subcursors[j].IsValid() && (Ordering::Equal == SegmentCursor::compare_two(&self.subcursors[j], &self.subcursors[icur]).unwrap()) ) { 
+                            // in the previous line, (icur == j) should short circuit for better
+                            // performance, since in that case, the other comparisons will always be
+                            // true.
+                            let csr = &mut self.subcursors[j];
+                            csr.Next(); 
+                        }
+                    }
+                    */
                 self.cur = self.findMin();
                 self.dir = Direction::FORWARD;
             },
@@ -2472,6 +2483,117 @@ impl SegmentCursor {
             try!(readOverflow(&self.path, self.pr.PageSize(), pgnum, &mut k));
             let res = bcmp::Compare(&*k, other);
             Ok(res)
+        }
+    }
+
+    // TODO move this to the bcmp module?
+    pub fn compare_px_py(px: &[u8], x: &[u8], py: &[u8], y: &[u8]) -> Ordering {
+        let xlen = px.len() + x.len();
+        let ylen = py.len() + y.len();
+        let len = std::cmp::min(xlen, ylen);
+        for i in 0 .. len {
+            let xval = 
+                if i<px.len() {
+                    px[i]
+                } else {
+                    x[i - px.len()]
+                };
+            let yval = 
+                if i<py.len() {
+                    py[i]
+                } else {
+                    y[i - py.len()]
+                };
+            let c = xval.cmp(&yval);
+            if c != Ordering::Equal {
+                return c;
+            }
+        }
+        return xlen.cmp(&ylen);
+    }
+
+    // TODO move this to the bcmp module?
+    pub fn compare_px_y(px: &[u8], x: &[u8], y: &[u8]) -> Ordering {
+        let xlen = px.len() + x.len();
+        let ylen = y.len();
+        let len = std::cmp::min(xlen, ylen);
+        for i in 0 .. len {
+            let xval = 
+                if i<px.len() {
+                    px[i]
+                } else {
+                    x[i - px.len()]
+                };
+            let yval = y[i];
+            let c = xval.cmp(&yval);
+            if c != Ordering::Equal {
+                return c;
+            }
+        }
+        return xlen.cmp(&ylen);
+    }
+
+    // TODO move this to the bcmp module?
+    pub fn compare_x_py(x: &[u8], py: &[u8], y: &[u8]) -> Ordering {
+        let xlen = x.len();
+        let ylen = py.len() + y.len();
+        let len = std::cmp::min(xlen, ylen);
+        for i in 0 .. len {
+            let xval = x[i];
+            let yval = 
+                if i<py.len() {
+                    py[i]
+                } else {
+                    y[i - py.len()]
+                };
+            let c = xval.cmp(&yval);
+            if c != Ordering::Equal {
+                return c;
+            }
+        }
+        return xlen.cmp(&ylen);
+    }
+
+    fn compare_two(x: &SegmentCursor, y: &SegmentCursor) -> io::Result<Ordering> {
+        fn get_info(c: &SegmentCursor) -> (usize, bool, usize, usize) {
+            let n = c.currentKey.unwrap();
+            let mut cur = c.leafKeys[n as usize];
+            let kflag = c.pr.GetByte(&mut cur);
+            let klen = c.pr.GetVarint(&mut cur) as usize;
+            let overflowed = 0 != (kflag & ValueFlag::FLAG_OVERFLOW);
+            (n, overflowed, cur, klen)
+        }
+
+        let (x_n, x_over, x_cur, x_klen) = get_info(x);
+        let (y_n, y_over, y_cur, y_klen) = get_info(y);
+
+        if x_over || y_over {
+            let x_k = try!(x.keyInLeaf(x_n));
+            let y_k = try!(y.keyInLeaf(y_n));
+            Ok(bcmp::Compare(&x_k, &y_k))
+        } else {
+            match (&x.prefix, &y.prefix) {
+                (&Some(ref x_p), &Some(ref y_p)) => {
+                    let x_k = x.pr.get_slice(x_cur, x_klen - x_p.len());
+                    let y_k = y.pr.get_slice(y_cur, y_klen - y_p.len());
+                    Ok(Self::compare_px_py(x_p, x_k, y_p, y_k))
+                },
+                (&Some(ref x_p), &None) => {
+                    let x_k = x.pr.get_slice(x_cur, x_klen - x_p.len());
+                    let y_k = y.pr.get_slice(y_cur, y_klen);
+                    Ok(Self::compare_px_y(x_p, x_k, y_k))
+                },
+                (&None, &Some(ref y_p)) => {
+                    let x_k = x.pr.get_slice(x_cur, x_klen);
+                    let y_k = y.pr.get_slice(y_cur, y_klen - y_p.len());
+                    Ok(Self::compare_x_py(x_k, y_p, y_k))
+                },
+                (&None, &None) => {
+                    let x_k = x.pr.get_slice(x_cur, x_klen);
+                    let y_k = y.pr.get_slice(y_cur, y_klen);
+                    Ok(bcmp::Compare(&x_k, &y_k))
+                },
+            }
         }
     }
 

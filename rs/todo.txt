@@ -81,4 +81,7 @@ multicursor.Next looks slow.  lots of key compares.
 
 maybe myOverflowReadStream shouldn't be returned as a trait object.
 
+a little worried about the KeyCompare always being built in to Seek.
+what about cases that don't use it?
+
 
