@@ -2208,9 +2208,6 @@ impl Read for myOverflowReadStream {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let len = buf.len();
         let r = self.Read(buf, 0, len);
-        println!("want: {:?}", len);
-        println!("read: {:?}", r);
-        println!("sofarOverall: {:?}", self.sofarOverall);
         r
     }
 }
