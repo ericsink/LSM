@@ -44,12 +44,13 @@ type PageBlock =
         member this.CountPages with get() = this.lastPage - this.firstPage + 1
     end
 
+type SegmentNum = uint64
 
 type IPages =
     abstract member PageSize : int with get
     abstract member Begin : unit->IPendingSegment
     abstract member GetBlock : IPendingSegment->PageBlock
-    abstract member End : IPendingSegment*int->Guid
+    abstract member End : IPendingSegment*int->SegmentNum
 
 type SeekOp = SEEK_EQ=0 | SEEK_LE=1 | SEEK_GE=2
 
@@ -71,8 +72,8 @@ type ICursor =
 
 type IWriteLock =
     inherit IDisposable
-    abstract member CommitSegments : seq<Guid> -> unit
-    abstract member CommitMerge : Guid -> unit
+    abstract member CommitSegments : seq<SegmentNum> -> unit
+    abstract member CommitMerge : SegmentNum -> unit
 
 type IDatabaseFile =
     abstract member OpenForReading : unit -> Stream
@@ -95,27 +96,27 @@ type SegmentInfo =
 
 type IDatabase = 
     inherit IDisposable
-    abstract member WriteSegmentFromSortedSequence : seq<kvp> -> Guid
-    abstract member WriteSegment : System.Collections.Generic.IDictionary<byte[],Stream> -> Guid
-    abstract member WriteSegment : System.Collections.Generic.IDictionary<byte[],Blob> -> Guid
-    abstract member ForgetWaitingSegments : seq<Guid> -> unit
+    abstract member WriteSegmentFromSortedSequence : seq<kvp> -> SegmentNum
+    abstract member WriteSegment : System.Collections.Generic.IDictionary<byte[],Stream> -> SegmentNum
+    abstract member WriteSegment : System.Collections.Generic.IDictionary<byte[],Blob> -> SegmentNum
+    abstract member ForgetWaitingSegments : seq<SegmentNum> -> unit
 
     abstract member GetFreeBlocks : unit->PageBlock list
     abstract member OpenCursor : unit->ICursor 
-    abstract member OpenSegmentCursor : Guid->ICursor 
+    abstract member OpenSegmentCursor : SegmentNum->ICursor 
     // TODO consider name such as OpenLivingCursorOnCurrentState()
-    // TODO consider OpenCursorOnSegmentsInWaiting(seq<Guid>)
+    // TODO consider OpenCursorOnSegmentsInWaiting(seq<SegmentNum>)
     // TODO consider ListSegmentsInCurrentState()
-    // TODO consider OpenCursorOnSpecificSegment(seq<Guid>)
+    // TODO consider OpenCursorOnSpecificSegment(seq<SegmentNum>)
 
-    abstract member ListSegments : unit -> (Guid list)*Map<Guid,SegmentInfo>
+    abstract member ListSegments : unit -> (SegmentNum list)*Map<SegmentNum,SegmentInfo>
     abstract member PageSize: unit->int
 
     abstract member RequestWriteLock : int->Async<IWriteLock>
     abstract member RequestWriteLock : unit->Async<IWriteLock>
 
-    abstract member Merge : int*int*bool -> Async<Guid list> option
-    abstract member BackgroundMergeJobs : unit->Async<Guid list> list // TODO have Auto in the name of this?
+    abstract member Merge : int*int*bool -> Async<SegmentNum list> option
+    abstract member BackgroundMergeJobs : unit->Async<SegmentNum list> list // TODO have Auto in the name of this?
 
 module CursorUtils =
     let ToSortedSequenceOfKeyValuePairs (csr:ICursor) = 
@@ -2069,14 +2070,15 @@ type private HeaderData =
     {
         // TODO currentState is an ordered copy of segments.Keys.  eliminate duplication?
         // or add assertions and tests to make sure they never get out of sync?
-        currentState: Guid list
-        segments: Map<Guid,SegmentInfo>
+        currentState: SegmentNum list
+        segments: Map<SegmentNum,SegmentInfo>
         headerOverflow: PageBlock option
         changeCounter: int64
         mergeCounter: int64
     }
 
-type private PendingSegment() =
+type private PendingSegment(num) =
+    let seg_num:SegmentNum = num
     let mutable blockList:PageBlock list = []
     interface IPendingSegment
     member this.AddBlock((b:PageBlock)) =
@@ -2100,7 +2102,7 @@ type private PendingSegment() =
                 Some (PageBlock(lastPage+1, lastBlock.lastPage))
             else
                 None
-        (Guid.NewGuid(), blockList, unused)
+        (seg_num, blockList, unused)
 
 
 // used for testing purposes
@@ -2112,6 +2114,8 @@ type SimplePageManager(_pageSize) =
 
     let critSectionNextPage = obj()
     let mutable nextPage = 1
+    let mutable nextSeg = 1UL
+    let critSectionNextSegment = obj()
 
     let getBlock num =
         lock critSectionNextPage (fun () -> 
@@ -2123,7 +2127,12 @@ type SimplePageManager(_pageSize) =
     interface IPages with
         member this.PageSize = pageSize
 
-        member this.Begin() = PendingSegment() :> IPendingSegment
+        member this.Begin() = 
+            lock critSectionNextSegment (fun () ->
+                let p = PendingSegment(nextSeg) :> IPendingSegment
+                nextSeg <- nextSeg + 1UL
+                p
+            )
 
         // note that we assume that a single pending segment is going
         // to be written by a single thread.  the concrete PendingSegment
@@ -2174,9 +2183,9 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
                     f count []
 
                 let count = pr.GetVarint() |> int
-                let a:Guid[] = Array.zeroCreate count
+                let a:SegmentNum[] = Array.zeroCreate count
                 let fldr acc i = 
-                    let g = Guid(pr.GetArray(16))
+                    let g = pr.GetVarint() |> uint64
                     a.[i] <- g
                     let root = pr.GetVarint() |> int
                     let age = pr.GetVarint() |> int
@@ -2236,7 +2245,8 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
             | Some pr ->
                 let (h, pageSize) = parse pr
                 let nextAvailablePage = calcNextPage pageSize fsMine.Length
-                (h, pageSize, nextAvailablePage)
+                let nextAvailableSegmentNum = 1UL + List.max h.currentState
+                (h, pageSize, nextAvailablePage, nextAvailableSegmentNum)
             | None ->
                 let defaultPageSize = settings.DefaultPageSize
                 let h = 
@@ -2248,13 +2258,14 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
                         mergeCounter = 0L
                     }
                 let nextAvailablePage = calcNextPage defaultPageSize (int64 HEADER_SIZE_IN_BYTES)
-                (h, defaultPageSize, nextAvailablePage)
+                (h, defaultPageSize, nextAvailablePage, 1UL)
 
-    let (firstReadOfHeader,pageSize,firstAvailablePage) = readHeader()
+    let (firstReadOfHeader,pageSize,firstAvailablePage,nextAvailableSegmentNum) = readHeader()
 
     let mutable header = firstReadOfHeader
     let mutable nextPage = firstAvailablePage
-    let mutable segmentsInWaiting: Map<Guid,SegmentInfo> = Map.empty
+    let mutable segmentsInWaiting: Map<SegmentNum,SegmentInfo> = Map.empty
+    let mutable nextSeg = nextAvailableSegmentNum
 
     let consolidateBlockList blocks =
         let sortedBlocks = List.sortBy (fun (x:PageBlock) -> x.firstPage) blocks
@@ -2388,7 +2399,7 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
         #endif
 
     let critSectionCursors = obj()
-    let mutable cursors:Map<Guid,ICursor list> = Map.empty
+    let mutable cursors:Map<SegmentNum,ICursor list> = Map.empty
 
     let getCursor segs g fnFree =
         let seg = Map.find g segs
@@ -2428,12 +2439,18 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
             addFreeBlocks seg.blocks
 
     let critSectionSegmentsInWaiting = obj()
+    let critSectionSegmentNum = obj()
 
     let pageManager = 
         { new IPages with
             member this.PageSize = pageSize
 
-            member this.Begin() = PendingSegment() :> IPendingSegment
+            member this.Begin() = 
+                lock critSectionSegmentNum (fun() ->
+                    let p = PendingSegment(nextSeg) :> IPendingSegment
+                    nextSeg <- nextSeg + 1UL
+                    p
+                )
 
             // note that we assume that a single pending segment is going
             // to be written by a single thread.  the concrete PendingSegment
@@ -2478,15 +2495,15 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
 
         let spaceForHeader h =
             Varint.SpaceNeededFor(List.length h.currentState |> int64) 
-                + List.sumBy (fun g -> (Map.find g h.segments |> spaceNeededForSegmentInfo) + 16) h.currentState
+                + List.sumBy (fun g -> (Map.find g h.segments |> spaceNeededForSegmentInfo) + Varint.SpaceNeededFor(g |> int64)) h.currentState
 
         let buildSegmentList h =
             let space = spaceForHeader h
             let pb = PageBuilder(space)
             // TODO format version number
             pb.PutVarint(List.length h.currentState |> int64)
-            List.iter (fun (g:Guid) -> 
-                pb.PutArray(g.ToByteArray())
+            List.iter (fun (g:SegmentNum) -> 
+                pb.PutVarint(g |> int64)
                 let info = Map.find g h.segments
                 pb.PutVarint(info.root |> int64)
                 pb.PutVarint(info.age |> int64)
@@ -2495,7 +2512,7 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
                 // count will always compress better as a varint.
                 List.iter (fun (t:PageBlock) -> pb.PutVarint(t.firstPage |> int64); pb.PutVarint(t.CountPages |> int64);) info.blocks
                 ) h.currentState
-            //if 0 <> pb.Available then failwith "not exactly full"
+            if 0 <> pb.Available then failwith "not exactly full"
             pb.Buffer
 
         let pb = PageBuilder(HEADER_SIZE_IN_BYTES)
@@ -2541,7 +2558,7 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
     let critSectionPendingMerges = obj()
     // this keeps track of merges which have been written but not
     // yet committed.
-    let mutable pendingMerges:Map<Guid,Guid list> = Map.empty
+    let mutable pendingMerges:Map<SegmentNum,SegmentNum list> = Map.empty
 
     let tryMerge segs =
         let requestMerge () =
@@ -2602,10 +2619,10 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
         )
 
     // only call this if you have the writeLock
-    let commitMerge (newGuid:Guid) =
+    let commitMerge (newSeg:SegmentNum) =
         // TODO we could check to see if this guid is already in the list.
 
-        let lstOld = Map.find newGuid pendingMerges
+        let lstOld = Map.find newSeg pendingMerges
         let countOld = List.length lstOld                                         
         let oldGuidsAsSet = List.fold (fun acc g -> Set.add g acc) Set.empty lstOld
         let lstAges = List.map (fun g -> (Map.find g header.segments).age) lstOld
@@ -2621,10 +2638,10 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
             if lstOld <> subListOld then failwith (sprintf "segments not found: lstOld = %A  currentState = %A" lstOld header.currentState)
             let before = List.take ndxFirstOld header.currentState
             let after = List.skip (ndxFirstOld + countOld) header.currentState
-            let newState = before @ (newGuid :: after)
+            let newState = before @ (newSeg :: after)
             let segmentsWithoutOld = Map.filter (fun g _ -> not (Set.contains g oldGuidsAsSet)) header.segments
-            let newSegmentInfo = Map.find newGuid segmentsInWaiting
-            let newSegments = Map.add newGuid {newSegmentInfo with age=age} segmentsWithoutOld
+            let newSegmentInfo = Map.find newSeg segmentsInWaiting
+            let newSegments = Map.add newSeg {newSegmentInfo with age=age} segmentsWithoutOld
             let newHeaderBeforeWriting = {
                 changeCounter=header.changeCounter
                 mergeCounter=header.mergeCounter + 1L
@@ -2637,11 +2654,11 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
             header <- newHeader
             oldHeaderOverflow
         )
-        removePendingMerge newGuid
+        removePendingMerge newSeg
         // the segment we just committed can now be removed from
         // the segments in waiting list
         lock critSectionSegmentsInWaiting (fun () ->
-            segmentsInWaiting <- Map.remove newGuid segmentsInWaiting
+            segmentsInWaiting <- Map.remove newSeg segmentsInWaiting
         )
         //printfn "segmentsBeingReplaced: %A" segmentsBeingReplaced
         // don't free blocks from any segment which still has a cursor
@@ -2661,15 +2678,15 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
         // the writeLock.  the writeLock gets released when you Dispose() it.
 
     // only call this if you have the writeLock
-    let commitSegments (newGuids:seq<Guid>) fnHook =
+    let commitSegments (newSegs:seq<SegmentNum>) fnHook =
         // TODO we could check to see if this guid is already in the list.
 
-        let newGuidsAsSet = Seq.fold (fun acc g -> Set.add g acc) Set.empty newGuids
+        let newGuidsAsSet = Seq.fold (fun acc g -> Set.add g acc) Set.empty newSegs
 
         let mySegmentsInWaiting = Map.filter (fun g _ -> Set.contains g newGuidsAsSet) segmentsInWaiting
         //printfn "committing: %A" mySegmentsInWaiting
         let oldHeaderOverflow = lock critSectionHeader (fun () -> 
-            let newState = (List.ofSeq newGuids) @ header.currentState
+            let newState = (List.ofSeq newSegs) @ header.currentState
             let newSegments = Map.fold (fun acc g info -> Map.add g {info with age=0} acc) header.segments mySegmentsInWaiting
             let newHeaderBeforeWriting = {
                 changeCounter=header.changeCounter + 1L
@@ -2742,7 +2759,7 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
                     release()
                     GC.SuppressFinalize(this)
 
-                member this.CommitMerge(g:Guid) =
+                member this.CommitMerge(g:SegmentNum) =
                     let already = !isReleased
                     if already then failwith "don't use a writelock after you dispose it"
                     commitMerge g
@@ -2750,10 +2767,10 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
                     // you can change the segment list more than once while holding
                     // the writeLock.  the writeLock gets released when you Dispose() it.
 
-                member this.CommitSegments(newGuids:seq<Guid>) =
+                member this.CommitSegments(newSegs:seq<SegmentNum>) =
                     let already = !isReleased
                     if already then failwith "don't use a writelock after you dispose it"
-                    commitSegments newGuids fnCommitSegmentsHook
+                    commitSegments newSegs fnCommitSegmentsHook
                     // note that we intentionally do not release the writeLock here.
                     // you can change the segment list more than once while holding
                     // the writeLock.  the writeLock gets released when you Dispose() it.
@@ -2916,7 +2933,7 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
         member this.BackgroundMergeJobs() = 
             backgroundMergeJobs
 
-        member this.ForgetWaitingSegments(guids:seq<Guid>) =
+        member this.ForgetWaitingSegments(guids:seq<SegmentNum>) =
             // TODO need a test case for this
             let guidsAsSet = Seq.fold (fun acc g -> Set.add g acc) Set.empty guids
             let mySegmentsInWaiting = Map.filter (fun g _ -> Set.contains g guidsAsSet) segmentsInWaiting
@@ -2945,7 +2962,7 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
             let mc = MultiCursor.Create clist
             LivingCursor.Create mc
 
-        member this.OpenSegmentCursor(g:Guid) =
+        member this.OpenSegmentCursor(g:SegmentNum) =
             let csr = lock critSectionCursors (fun () ->
                 let h = header
                 getCursor h.segments g (Some checkForGoneSegment)

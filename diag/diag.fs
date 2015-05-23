@@ -79,7 +79,7 @@ module diag =
             let sortedSeq = seq { for n in (i * 100000) .. (i+1) .. (i+1) * 100000 do yield kvp(System.Text.Encoding.UTF8.GetBytes(n.ToString("00000000")),Blob.Array(System.Text.Encoding.UTF8.GetBytes((n*2).ToString()))) done }
             let g = db.WriteSegmentFromSortedSequence(sortedSeq);
             a.Add(g)
-            printfn "%A" g
+            //printfn "%A" g
 
         async {
             use! tx = db.RequestWriteLock()
@@ -87,7 +87,7 @@ module diag =
         } |> Async.RunSynchronously
 
         let mrg = db.Merge(0, 4, true)
-        printfn "%A" mrg
+        //printfn "%A" mrg
         async {
             let! res = mrg.Value
             ignore res
@@ -108,7 +108,7 @@ module diag =
             list_free_blocks dbFile
         | "list_segment_keys" -> 
             let seg = argv.[2]
-            let g = System.Guid.Parse(seg)
+            let g = System.Int64.Parse(seg) |> uint64
             list_segment_keys dbFile g
         | _ -> failwith "Unknown op"
 

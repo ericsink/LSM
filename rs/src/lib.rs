@@ -66,7 +66,8 @@ pub struct kvp {
 }
 
 struct PendingSegment {
-    blockList: Vec<PageBlock>
+    blockList: Vec<PageBlock>,
+    segnum: SegmentNum,
 }
 
 // TODO this is experimental.  it might not be very useful unless
@@ -148,44 +149,14 @@ impl PageBlock {
     }
 }
 
-// TODO we need to switch away from using a Guid to identify
-// a segment.  use a u64.
-
-#[derive(Hash,PartialEq,Eq,Copy,Clone,Debug)]
-pub struct Guid {
-    a : [u8; 16]
-}
-
-impl Guid {
-    fn new(ba: [u8; 16]) -> Guid {
-        Guid { a: ba }
-    }
-
-    fn bytes() -> io::Result<[u8; 16]> {
-        use std::fs::OpenOptions;
-        let mut f = try!(OpenOptions::new()
-                .read(true)
-                .open("/dev/urandom"));
-        let mut ba = [0;16];
-        try!(utils::ReadFully(&mut f, &mut ba));
-        Ok(ba)
-    }
-
-    fn NewGuid() -> Guid {
-        Guid { a:Guid::bytes().unwrap() } // TODO kinda silly.  use the uuid crate.
-    }
-
-    fn ToByteArray(&self) -> [u8; 16] {
-        self.a
-    }
-}
+pub type SegmentNum = u64;
 
 // TODO return Result
 trait IPages {
     fn PageSize(&self) -> usize;
     fn Begin(&mut self) -> PendingSegment;
     fn GetBlock(&mut self, token: &mut PendingSegment) -> PageBlock;
-    fn End(&mut self, token: PendingSegment, page: PageNum) -> Guid;
+    fn End(&mut self, token: PendingSegment, page: PageNum) -> SegmentNum;
 }
 
 #[derive(PartialEq,Copy,Clone)]
@@ -299,12 +270,6 @@ pub trait ICursor : Drop {
     fn KeyCompare(&self, k: &[u8]) -> io::Result<Ordering>;
 }
 
-// TODO return Result
-trait IWriteLock : Drop {
-    fn CommitSegments(Iterator<Item=Guid>);
-    fn CommitMerge(&Guid);
-}
-
 pub struct DbSettings {
     pub AutoMergeEnabled : bool,
     pub AutoMergeMinimumPages : PageNum,
@@ -329,31 +294,6 @@ struct SegmentInfo {
     // yes, but then derive clone complains.
     // ideally we could just stop cloning this struct.
     blocks : Vec<PageBlock> 
-}
-
-// TODO this trait probably isn't needed
-trait IDatabase : Drop {
-    fn WriteSegmentFromSortedSequence(q:Iterator<Item=kvp>) -> Guid;
-    //fn WriteSegment : System.Collections.Generic.IDictionary<byte[],Stream> -> Guid;
-    //fn WriteSegment : System.Collections.Generic.IDictionary<byte[],Blob> -> Guid;
-    fn ForgetWaitingSegments(s:Iterator<Item=Guid>);
-
-    fn GetFreeBlocks() -> Iterator<Item=PageBlock>;
-    fn OpenCursor() -> ICursor; // why do we have to specify Item here?  and what lifetime?
-    fn OpenSegmentCursor(Guid) ->ICursor;
-    // TODO consider name such as OpenLivingCursorOnCurrentState()
-    // TODO consider OpenCursorOnSegmentsInWaiting(seq<Guid>)
-    // TODO consider ListSegmentsInCurrentState()
-    // TODO consider OpenCursorOnSpecificSegment(seq<Guid>)
-
-    // fn ListSegments : unit -> (Guid list)*Map<Guid,SegmentInfo>
-    fn PageSize() -> usize;
-
-    // fn RequestWriteLock : int->Async<IWriteLock>
-    // fn RequestWriteLock : unit->Async<IWriteLock>
-
-    // fn Merge : int*int*bool -> Async<Guid list> option
-    // fn BackgroundMergeJobs : unit->Async<Guid list> list // TODO have Auto in the name of this?
 }
 
 pub mod utils {
@@ -1256,7 +1196,7 @@ struct LeafState {
 fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite, 
                                                             pageManager: &mut IPages, 
                                                             source: I,
-                                                           ) -> io::Result<(Guid,PageNum)> where I:Iterator<Item=io::Result<kvp>>, SeekWrite : Seek+Write {
+                                                           ) -> io::Result<(SegmentNum,PageNum)> where I:Iterator<Item=io::Result<kvp>>, SeekWrite : Seek+Write {
 
     fn writeOverflow<SeekWrite>(startingBlock: PageBlock, 
                                 ba: &mut Read, 
@@ -2947,8 +2887,8 @@ impl ICursor for SegmentCursor {
 struct HeaderData {
     // TODO currentState is an ordered copy of segments.Keys.  eliminate duplication?
     // or add assertions and tests to make sure they never get out of sync?
-    currentState: Vec<Guid>,
-    segments: HashMap<Guid,SegmentInfo>,
+    currentState: Vec<SegmentNum>,
+    segments: HashMap<SegmentNum,SegmentInfo>,
     headerOverflow: Option<PageBlock>,
     changeCounter: u64,
     mergeCounter: u64,
@@ -2956,15 +2896,16 @@ struct HeaderData {
 }
 
 struct SimplePageManager {
-    pgsz : usize,
-    nextPage : PageNum,
+    pgsz: usize,
+    nextPage: PageNum,
+    nextSeg: SegmentNum,
 }
 
 const HEADER_SIZE_IN_BYTES: usize = 4096;
 
 impl PendingSegment {
-    fn new() -> PendingSegment {
-        PendingSegment {blockList: Vec::new()}
+    fn new(num: SegmentNum) -> PendingSegment {
+        PendingSegment {blockList: Vec::new(), segnum: num}
     }
 
     fn AddBlock(&mut self, b: PageBlock) {
@@ -2984,7 +2925,7 @@ impl PendingSegment {
         }
     }
 
-    fn End(mut self, lastPage: PageNum) -> (Guid, Vec<PageBlock>, Option<PageBlock>) {
+    fn End(mut self, lastPage: PageNum) -> (SegmentNum, Vec<PageBlock>, Option<PageBlock>) {
         let len = self.blockList.len();
         let unused = {
             let givenLastPage = self.blockList[len-1].lastPage;
@@ -2996,7 +2937,7 @@ impl PendingSegment {
             }
         };
         // consume self return blockList
-        (Guid::NewGuid(), self.blockList, unused)
+        (self.segnum, self.blockList, unused)
     }
 }
 
@@ -3006,7 +2947,9 @@ impl IPages for SimplePageManager {
     }
 
     fn Begin(&mut self) -> PendingSegment {
-        PendingSegment::new()
+        let p = PendingSegment::new(self.nextSeg);
+        self.nextSeg = self.nextSeg + 1;
+        p
     }
 
     fn GetBlock(&mut self, ps: &mut PendingSegment) -> PageBlock {
@@ -3016,17 +2959,14 @@ impl IPages for SimplePageManager {
         blk
     }
 
-    fn End(&mut self, ps:PendingSegment, lastPage: PageNum) -> Guid {
+    fn End(&mut self, ps:PendingSegment, lastPage: PageNum) -> SegmentNum {
         let (g,_,_) = ps.End(lastPage);
         g
     }
 
 }
 
-fn readHeader<R>(fs: &mut R) -> io::Result<(HeaderData,usize,PageNum)> where R : Read+Seek {
-    // TODO this func assumes we are at the beginning of the file?
-    // should the seek happen here instead of in the caller?
-
+fn readHeader<R>(fs: &mut R) -> io::Result<(HeaderData,usize,PageNum,SegmentNum)> where R : Read+Seek {
     fn read<R>(fs: &mut R) -> io::Result<PageBuffer> where R : Read {
         let mut pr = PageBuffer::new(HEADER_SIZE_IN_BYTES);
         let got = try!(pr.Read(fs));
@@ -3038,7 +2978,7 @@ fn readHeader<R>(fs: &mut R) -> io::Result<(HeaderData,usize,PageNum)> where R :
     }
 
     fn parse<R>(pr: &PageBuffer, cur: &mut usize, fs: &mut R) -> io::Result<(HeaderData, usize)> where R : Read+Seek {
-        fn readSegmentList(pr: &PageBuffer, cur: &mut usize) -> (Vec<Guid>,HashMap<Guid,SegmentInfo>) {
+        fn readSegmentList(pr: &PageBuffer, cur: &mut usize) -> (Vec<SegmentNum>,HashMap<SegmentNum,SegmentInfo>) {
             fn readBlockList(prBlocks: &PageBuffer, cur: &mut usize) -> Vec<PageBlock> {
                 let count = prBlocks.GetVarint(cur) as usize;
                 let mut a = Vec::new();
@@ -3057,9 +2997,7 @@ fn readHeader<R>(fs: &mut R) -> io::Result<(HeaderData,usize,PageNum)> where R :
             let mut a = Vec::new(); // TODO capacity count
             let mut m = HashMap::new(); // TODO capacity count
             for _ in 0 .. count {
-                let mut b = [0;16];
-                pr.GetIntoArray(cur, &mut b);
-                let g = Guid::new(b);
+                let g = pr.GetVarint(cur) as SegmentNum;
                 a.push(g);
                 let root = pr.GetVarint(cur) as PageNum;
                 let age = pr.GetVarint(cur) as u32;
@@ -3077,9 +3015,9 @@ fn readHeader<R>(fs: &mut R) -> io::Result<(HeaderData,usize,PageNum)> where R :
         let mergeCounter = pr.GetVarint(cur);
         let lenSegmentList = pr.GetVarint(cur) as usize;
 
-        let overflowed = pr.GetByte(cur);
-        let (state,segments,blk) = 
-            if overflowed != 0u8 {
+        let overflowed = pr.GetByte(cur) != 0u8;
+        let (state, segments, blk) = 
+            if overflowed {
                 let lenChunk1 = pr.GetInt32(cur) as usize;
                 let lenChunk2 = lenSegmentList - lenChunk1;
                 let firstPageChunk2 = pr.GetInt32(cur) as PageNum;
@@ -3094,22 +3032,22 @@ fn readHeader<R>(fs: &mut R) -> io::Result<(HeaderData,usize,PageNum)> where R :
                 try!(utils::SeekPage(fs, pgsz, firstPageChunk2));
                 try!(pr2.ReadPart(fs, lenChunk1, lenChunk2));
                 let mut cur2 = 0;
-                let (state,segments) = readSegmentList(&pr2, &mut cur2);
+                let (state, segments) = readSegmentList(&pr2, &mut cur2);
                 (state, segments, Some (PageBlock::new(firstPageChunk2, lastPageChunk2)))
             } else {
                 let (state,segments) = readSegmentList(pr, cur);
-                (state,segments,None)
+                (state, segments, None)
             };
 
 
         let hd = 
             HeaderData
             {
-                currentState:state,
-                segments:segments,
-                headerOverflow:blk,
-                changeCounter:changeCounter,
-                mergeCounter:mergeCounter,
+                currentState: state,
+                segments: segments,
+                headerOverflow: blk,
+                changeCounter: changeCounter,
+                mergeCounter: mergeCounter,
             };
 
         Ok((hd, pgsz))
@@ -3129,10 +3067,13 @@ fn readHeader<R>(fs: &mut R) -> io::Result<(HeaderData,usize,PageNum)> where R :
         let mut cur = 0;
         let (h, pgsz) = try!(parse(&pr, &mut cur, fs));
         let nextAvailablePage = calcNextPage(pgsz, len as usize);
-        Ok((h, pgsz, nextAvailablePage))
+        let nextAvailableSegmentNum = match h.currentState.iter().max() {
+            Some(n) => n+1,
+            None => 1,
+        };
+        Ok((h, pgsz, nextAvailablePage, nextAvailableSegmentNum))
     } else {
-        //let defaultPageSize = settings.DefaultPageSize;
-        let defaultPageSize = 4096; // TODO
+        let defaultPageSize = DEFAULT_SETTINGS.DefaultPageSize;
         let h = 
             HeaderData
             {
@@ -3143,7 +3084,8 @@ fn readHeader<R>(fs: &mut R) -> io::Result<(HeaderData,usize,PageNum)> where R :
                 mergeCounter: 0,
             };
         let nextAvailablePage = calcNextPage(defaultPageSize, HEADER_SIZE_IN_BYTES);
-        Ok((h, defaultPageSize, nextAvailablePage))
+        let nextAvailableSegmentNum = 1;
+        Ok((h, defaultPageSize, nextAvailablePage, nextAvailableSegmentNum))
     }
 
 }
@@ -3184,11 +3126,11 @@ fn invertBlockList(blocks: &Vec<PageBlock>) -> Vec<PageBlock> {
     result
 }
 
-fn listAllBlocks(h: &HeaderData, segmentsInWaiting: &HashMap<Guid,SegmentInfo>, pgsz: usize) -> Vec<PageBlock> {
+fn listAllBlocks(h: &HeaderData, segmentsInWaiting: &HashMap<SegmentNum,SegmentInfo>, pgsz: usize) -> Vec<PageBlock> {
     let headerBlock = PageBlock::new(1, (HEADER_SIZE_IN_BYTES / pgsz) as PageNum);
     let mut blocks = Vec::new();
 
-    fn grab(blocks: &mut Vec<PageBlock>, from: &HashMap<Guid,SegmentInfo>) {
+    fn grab(blocks: &mut Vec<PageBlock>, from: &HashMap<SegmentNum,SegmentInfo>) {
         for info in from.values() {
             for b in info.blocks.iter() {
                 blocks.push(*b);
@@ -3214,11 +3156,12 @@ pub struct db {
     fsMine: File,
     header: HeaderData,
     nextPage: PageNum,
-    segmentsInWaiting: HashMap<Guid,SegmentInfo>,
+    nextSeg: SegmentNum,
+    segmentsInWaiting: HashMap<SegmentNum,SegmentInfo>,
     freeBlocks: Vec<PageBlock>,
-    merging: HashSet<Guid>,
-    pendingMerges: HashMap<Guid,Vec<Guid>>,
-    // TODO cursors: HashMap<Guid,Vec<Box<ICursor>>>,
+    merging: HashSet<SegmentNum>,
+    pendingMerges: HashMap<SegmentNum,Vec<SegmentNum>>,
+    // TODO cursors: HashMap<SegmentNum,Vec<Box<ICursor>>>,
 }
 
 impl db {
@@ -3230,7 +3173,7 @@ impl db {
                 .create(true)
                 .open(path));
 
-        let (header,pgsz,firstAvailablePage) = try!(readHeader(&mut f));
+        let (header,pgsz,firstAvailablePage,nextAvailableSegmentNum) = try!(readHeader(&mut f));
 
         let segmentsInWaiting = HashMap::new();
         let mut blocks = listAllBlocks(&header, &segmentsInWaiting, pgsz);
@@ -3245,6 +3188,7 @@ impl db {
             fsMine: f, 
             header: header, 
             nextPage: firstAvailablePage,
+            nextSeg: nextAvailableSegmentNum,
             segmentsInWaiting: segmentsInWaiting,
             freeBlocks: freeBlocks,
             merging: HashSet::new(),
@@ -3371,8 +3315,8 @@ impl db {
             let mut a = Varint::SpaceNeededFor(h.currentState.len() as u64);
             // TODO use currentState with a lookup into h.segments instead?
             // should be the same, right?
-            for info in h.segments.values() {
-                a = a + spaceNeededForSegmentInfo(&info) + 16;
+            for (g,info) in h.segments.iter() {
+                a = a + spaceNeededForSegmentInfo(&info) + Varint::SpaceNeededFor(*g);
             }
             a
         }
@@ -3383,7 +3327,7 @@ impl db {
             // TODO format version number
             pb.PutVarint(h.currentState.len() as u64);
             for g in h.currentState.iter() {
-                pb.PutArray(&g.ToByteArray());
+                pb.PutVarint(*g);
                 match h.segments.get(&g) {
                     Some(info) => {
                         pb.PutVarint(info.root as u64);
@@ -3396,10 +3340,10 @@ impl db {
                             pb.PutVarint(t.CountPages() as u64);
                         }
                     },
-                    None => panic!() // TODO
+                    None => panic!("segment num in currentState but not in segments")
                 }
             }
-            //if 0 != pb.Available then failwith "not exactly full"
+            assert!(0 == pb.Available());
             pb
         }
 
@@ -3440,7 +3384,7 @@ impl db {
         Ok(())
     }
 
-    fn getCursor(&self, segs: &HashMap<Guid,SegmentInfo>, g: Guid) -> io::Result<SegmentCursor> {
+    fn getCursor(&self, segs: &HashMap<SegmentNum,SegmentInfo>, g: SegmentNum) -> io::Result<SegmentCursor> {
         let seg = segs.get(&g).unwrap();
         let rootPage = seg.root;
         /* TODO
@@ -3451,7 +3395,7 @@ impl db {
                 let cur = Map.find g cursors
                 let removed = List.filter (fun x -> not (Object.ReferenceEquals(csr, x))) cur
                 // if we are removing the last cursor for a segment, we do need to
-                // remove that segment guid from the cursors map, not just leave
+                // remove that segment num from the cursors map, not just leave
                 // it there with an empty list.
                 if List.isEmpty removed then
                     cursors <- Map.remove g cursors
@@ -3493,17 +3437,17 @@ impl db {
         Ok(lc)
     }
 
-    pub fn commitSegments(&mut self, newGuids: Vec<Guid>) -> io::Result<()> {
-        // TODO we could check to see if this guid is already in the list.
-        // TODO we should disallow dupes in newGuids
+    pub fn commitSegments(&mut self, newSegs: Vec<SegmentNum>) -> io::Result<()> {
+        // TODO we could check to see if this segment num is already in the list.
+        // TODO we should disallow dupes in newSegs
 
-        // self.segmentsInWaiting must contain one seg for each guid in newGuids.
+        // self.segmentsInWaiting must contain one seg for each segment num in newSegs.
         // we want those entries to move out and move into the header, currentState
         // and segments.  This means taking ownership of those SegmentInfos.  But
         // the others we want to leave.
 
         let mut newHeader = self.header.clone();
-        for g in newGuids.iter() {
+        for g in newSegs.iter() {
             match self.segmentsInWaiting.get(&g) {
                 Some(info) => {
                     newHeader.segments.insert(*g,info.clone());
@@ -3516,8 +3460,8 @@ impl db {
 
         // TODO surely there's a better way to insert one vec into another?
         // like insert_all, similar to push_all?
-        for i in 0 .. newGuids.len() {
-            let g = newGuids[i];
+        for i in 0 .. newSegs.len() {
+            let g = newSegs[i];
             newHeader.currentState.insert(i, g);
         }
 
@@ -3527,7 +3471,7 @@ impl db {
         try!(self.writeHeader(&mut newHeader));
         let oldHeaderOverflow = self.header.headerOverflow;
         self.header = newHeader;
-        for g in newGuids.iter() {
+        for g in newSegs.iter() {
             match self.segmentsInWaiting.remove(&g) {
                 Some(_) => {
                 },
@@ -3552,14 +3496,14 @@ impl db {
     }
 
     // TODO bad fn name
-    pub fn WriteSegmentFromSortedSequence<I>(&mut self, source: I) -> io::Result<Guid> where I:Iterator<Item=io::Result<kvp>> {
+    pub fn WriteSegmentFromSortedSequence<I>(&mut self, source: I) -> io::Result<SegmentNum> where I:Iterator<Item=io::Result<kvp>> {
         let mut fs = try!(self.OpenForWriting());
         let (g,_) = try!(CreateFromSortedSequenceOfKeyValuePairs(&mut fs, self, source));
         Ok(g)
     }
 
     // TODO bad fn name
-    pub fn WriteSegment(&mut self, pairs: HashMap<Box<[u8]>,Box<[u8]>>) -> io::Result<Guid> {
+    pub fn WriteSegment(&mut self, pairs: HashMap<Box<[u8]>,Box<[u8]>>) -> io::Result<SegmentNum> {
         let mut a : Vec<(Box<[u8]>,Box<[u8]>)> = pairs.into_iter().collect();
 
         a.sort_by(|a,b| {
@@ -3577,7 +3521,7 @@ impl db {
     }
 
     // TODO bad fn name
-    pub fn WriteSegment2(&mut self, pairs: HashMap<Box<[u8]>,Blob>) -> io::Result<Guid> {
+    pub fn WriteSegment2(&mut self, pairs: HashMap<Box<[u8]>,Blob>) -> io::Result<SegmentNum> {
         let mut a : Vec<(Box<[u8]>,Blob)> = pairs.into_iter().collect();
 
         a.sort_by(|a,b| {
@@ -3594,7 +3538,7 @@ impl db {
         Ok(g)
     }
 
-    pub fn merge(&mut self, segs:Vec<Guid>) -> io::Result<Guid> {
+    pub fn merge(&mut self, segs:Vec<SegmentNum>) -> io::Result<SegmentNum> {
         // TODO don't allow this to happen if the any of the segs
         // are already involved in a merge.
         // TODO this is silly if segs has only one item in it
@@ -3619,12 +3563,12 @@ impl db {
     // TODO maybe commitSegments and commitMerge should be the same function.
     // just check to see if the segment being committed is a merge.  if so,
     // do the extra paperwork.
-    pub fn commitMerge(&mut self, newGuid:Guid) -> io::Result<()> {
-        // TODO we could check to see if this guid is already in the list.
+    pub fn commitMerge(&mut self, newSeg:SegmentNum) -> io::Result<()> {
+        // TODO we could check to see if this segment num is already in the list.
 
-        let lstOld = self.pendingMerges.get(&newGuid).unwrap().clone();
+        let lstOld = self.pendingMerges.get(&newSeg).unwrap().clone();
         let countOld = lstOld.len();
-        let oldGuidsAsSet : HashSet<Guid> = lstOld.iter().map(|g| *g).collect();
+        let oldGuidsAsSet : HashSet<SegmentNum> = lstOld.iter().map(|g| *g).collect();
         let age = {
             let lstAges : Vec<u32> = lstOld.iter().map(|g| self.header.segments.get(g).unwrap().age).collect();
             lstAges.iter().max().unwrap() + 1
@@ -3632,7 +3576,7 @@ impl db {
 
         // TODO the following looks expensive.  we just want the SegmentInfo for
         // each segment being replaced.
-        let segmentsBeingReplaced : HashMap<Guid,SegmentInfo> = self.header.segments
+        let segmentsBeingReplaced : HashMap<SegmentNum,SegmentInfo> = self.header.segments
             .clone()
             .into_iter()
             .filter(|&(ref g, _)| oldGuidsAsSet.contains(&g))
@@ -3650,24 +3594,24 @@ impl db {
         for _ in &lstOld {
             newHeader.currentState.remove(ndxFirstOld);
         }
-        newHeader.currentState.insert(ndxFirstOld, newGuid);
+        newHeader.currentState.insert(ndxFirstOld, newSeg);
 
-        let mut newSegmentInfo = self.segmentsInWaiting.get(&newGuid).unwrap().clone();
+        let mut newSegmentInfo = self.segmentsInWaiting.get(&newSeg).unwrap().clone();
         newSegmentInfo.age = age;
 
         for g in &oldGuidsAsSet {
             newHeader.segments.remove(g);
         }
-        newHeader.segments.insert(newGuid, newSegmentInfo);
+        newHeader.segments.insert(newSeg, newSegmentInfo);
         newHeader.mergeCounter = newHeader.mergeCounter + 1;
         newHeader.headerOverflow = None;
         try!(self.writeHeader(&mut newHeader));
         let oldHeaderOverflow = self.header.headerOverflow;
         self.header = newHeader;
 
-        self.segmentsInWaiting.remove(&newGuid);
+        self.segmentsInWaiting.remove(&newSeg);
 
-        self.pendingMerges.remove(&newGuid);
+        self.pendingMerges.remove(&newSeg);
         for g in lstOld {
             self.merging.remove(&g);
         }
@@ -3698,7 +3642,9 @@ impl IPages for db {
     }
 
     fn Begin(&mut self) -> PendingSegment {
-        PendingSegment::new()
+        let p = PendingSegment::new(self.nextSeg);
+        self.nextSeg = self.nextSeg + 1;
+        p
     }
 
     fn GetBlock(&mut self, ps: &mut PendingSegment) -> PageBlock {
@@ -3707,7 +3653,7 @@ impl IPages for db {
         blk
     }
 
-    fn End(&mut self, ps:PendingSegment, lastPage: PageNum) -> Guid {
+    fn End(&mut self, ps:PendingSegment, lastPage: PageNum) -> SegmentNum {
         let (g,blocks,unused) = ps.End(lastPage);
         let info = SegmentInfo {age: 0,blocks:blocks,root:lastPage};
         self.segmentsInWaiting.insert(g,info);
