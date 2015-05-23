@@ -86,3 +86,17 @@ tempted to limit key size.  no overflows.
 
 fix all the ICursor methods to return an io error on invalid instead of panic
 
+currently no tests for an overflowed key?
+
+currently using trait objects Seek+Write for writing to the db.  the overhead
+of dynamic dispatch is negligible compared to the IO, right?
+
+annoying that I can't have a mut reference to one element of an array
+while holding any reference to any other element of the array.
+
+still have slice copy loops
+
+some unwrap calls in the db parts of the code.  that code also hasn't
+really been reviewed for mem alloc and clone issues.
+
+

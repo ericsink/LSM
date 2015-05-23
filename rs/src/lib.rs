@@ -218,6 +218,8 @@ impl CursorIterator {
 
 impl Iterator for CursorIterator {
     type Item = kvp;
+    // TODO note the unwraps below.  The API expected by Iterator<Item=kvp> cannot
+    // handle the case where creating that kvp might cause an io error.
     fn next(&mut self) -> Option<kvp> {
         if self.csr.IsValid() {
             let res = Some(kvp{Key:self.csr.Key().unwrap(), Value:self.csr.Value().unwrap()});
@@ -1463,7 +1465,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
         // 4 for the prev page
         // 2 for the stored count
         // 4 for lastInt32 (which isn't in pb.Available)
-        let LEAF_PAGE_OVERHEAD = 2 + 4 + 2 + 4;
+        const LEAF_PAGE_OVERHEAD: usize = 2 + 4 + 2 + 4;
 
         fn buildLeaf(st: &mut LeafState, pb: &mut PageBuilder) -> Box<[u8]> {
             pb.Reset();
@@ -1611,7 +1613,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
         }
 
         fn defaultPrefixLen(k: &[u8]) -> usize {
-            // TODO max prefix.  relative to page size?  must fit in byte.
+            // TODO max prefix.  relative to page size?  currently must fit in one byte.
             if k.len() > 255 { 255 } else { k.len() }
         }
 
@@ -1628,7 +1630,6 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
 
         for mut pair in source {
             let k = pair.Key;
-            // but pair.Value might be null (a tombstone)
 
             // TODO is it possible for this to conclude that the key must be overflowed
             // when it would actually fit because of prefixing?
@@ -1645,6 +1646,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
             // the max limit of an inline value is when the key is inline
             // on a new page.
 
+            // TODO this is a usize, so it might cause integer underflow.
             let availableOnNewPageAfterKey = 
                 pgsz 
                 - LEAF_PAGE_OVERHEAD 
@@ -2444,12 +2446,11 @@ impl SegmentCursor {
         let mut cur = self.leafKeys[n as usize];
         let kflag = self.pr.GetByte(&mut cur);
         let klen = self.pr.GetVarint(&mut cur) as usize;
-        // TODO consider alloc res array here, once for all cases below
+        let mut res = vec![0;klen].into_boxed_slice();
         if 0 == (kflag & ValueFlag::FLAG_OVERFLOW) {
             match self.prefix {
                 Some(ref a) => {
                     let prefixLen = a.len();
-                    let mut res = vec![0;klen].into_boxed_slice();
                     for i in 0 .. prefixLen {
                         res[i] = a[i];
                     }
@@ -2457,14 +2458,12 @@ impl SegmentCursor {
                     Ok(res)
                 },
                 None => {
-                    let mut res = vec![0;klen].into_boxed_slice();
                     self.pr.GetIntoArray(&mut cur, &mut res);
                     Ok(res)
                 },
             }
         } else {
             let pgnum = self.pr.GetInt32(&mut cur) as PageNum;
-            let mut res = vec![0;klen].into_boxed_slice();
             try!(readOverflow(&self.path, self.pr.PageSize(), pgnum, &mut res));
             Ok(res)
         }
@@ -2584,6 +2583,9 @@ impl SegmentCursor {
         let (y_n, y_over, y_cur, y_klen) = try!(get_info(y));
 
         if x_over || y_over {
+            // if either of these keys is overflowed, don't bother
+            // trying to do anything clever.  just read both keys
+            // into memory and compare them.
             let x_k = try!(x.keyInLeaf(x_n));
             let y_k = try!(y.keyInLeaf(y_n));
             Ok(bcmp::Compare(&x_k, &y_k))
@@ -2627,7 +2629,8 @@ impl SegmentCursor {
                 Ordering::Equal => Ok((Some(mid),true)),
                 Ordering::Less => self.searchLeaf(k, (mid+1), max, sop, Some(mid), ge),
                 Ordering::Greater => 
-                    // catch underflow
+                    // we could just recurse with mid-1, but that would overflow if
+                    // mod is 0, so we catch that case here.
                     if mid==0 { 
                         match sop {
                             SeekOp::SEEK_EQ => Ok((None,false)),
@@ -2644,6 +2647,7 @@ impl SegmentCursor {
     fn readParentPage(&mut self) -> io::Result<(Vec<PageNum>,Vec<Box<[u8]>>)> {
         let mut cur = 0;
         if self.pr.GetByte(&mut cur) != PageType::PARENT_NODE {
+            // note that in the reafLeaf case, this is a panic.
             return Err(io::Error::new(ErrorKind::Other, "parent page has invalid page type"));
         }
         cur = cur + 1; // page flags
@@ -2730,7 +2734,8 @@ impl SegmentCursor {
     }
 
     fn leafIsValid(&self) -> bool {
-        let ok = (!self.leafKeys.is_empty()) && (self.currentKey.is_some()) && (self.currentKey.unwrap() as usize) < self.leafKeys.len();
+        // TODO the bounds check of self.currentKey against self.leafKeys.len() could be an assert
+        let ok = (!self.leafKeys.is_empty()) && (self.currentKey.is_some()) && (self.currentKey.expect("just did is_some") as usize) < self.leafKeys.len();
         ok
     }
 
@@ -2788,7 +2793,7 @@ impl SegmentCursor {
 
     fn searchInParentPage(k: &[u8], ptrs: &Vec<PageNum>, keys: &Vec<Box<[u8]>>, i: usize) -> Option<PageNum> {
         // TODO linear search?  really?
-        // TODO this doesn't need to be recursive
+        // TODO also, this doesn't need to be recursive
         if i < keys.len() {
             let cmp = bcmp::Compare(k, &*keys[i]);
             if cmp==Ordering::Greater {
