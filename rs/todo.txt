@@ -62,7 +62,7 @@ varint in a separate crate?
 
 does IPages need Result?
 
-ICursor definitely needs Result
+graveyard
 
 reduce malloc
 
@@ -81,4 +81,8 @@ maybe myOverflowReadStream shouldn't be returned as a trait object.
 
 a little worried about the KeyCompare always being built in to Seek.
 what about cases that don't use it?
+
+tempted to limit key size.  no overflows.
+
+fix all the ICursor methods to return an io error on invalid instead of panic
 

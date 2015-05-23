@@ -37,8 +37,10 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::ops::Index;
 
-const size_32: usize = 4; // TODO
-const size_16: usize = 2; // TODO
+const SIZE_32: usize = 4; // like std::mem::size_of::<u32>()
+const SIZE_16: usize = 2; // like std::mem::size_of::<u16>()
+
+const CURSOR_NOT_VALID: &'static str = "Cursor not valid";
 
 pub type PageNum = u32;
 // type PageSize = u32; // TODO could probably be 16 bits
@@ -114,16 +116,16 @@ enum KeyVal<'a> {
 }
 
 impl<'a> KeyVal<'a> {
-    fn into_boxed_slice(self) -> Box<[u8]> {
+    fn into_boxed_slice(self) -> io::Result<Box<[u8]>> {
         match self {
             KeyVal::Overflow(mut strm) => {
                 let klen = strm.len();
                 let mut k = vec![0; klen].into_boxed_slice();
-                utils::ReadFully(&mut strm, &mut k);
-                k
+                try!(utils::ReadFully(&mut strm, &mut k));
+                Ok(k)
             },
             KeyVal::Normal(ss) => {
-                ss.into_boxed_slice()
+                Ok(ss.into_boxed_slice())
             },
         }
     }
@@ -218,8 +220,8 @@ impl Iterator for CursorIterator {
     type Item = kvp;
     fn next(&mut self) -> Option<kvp> {
         if self.csr.IsValid() {
-            let res = Some(kvp{Key:self.csr.Key(), Value:self.csr.Value()});
-            self.csr.Next();
+            let res = Some(kvp{Key:self.csr.Key().unwrap(), Value:self.csr.Value().unwrap()});
+            self.csr.Next().unwrap();
             res
         } else {
             return None;
@@ -235,15 +237,15 @@ pub enum SeekResult {
 }
 
 impl SeekResult {
-    fn from_cursor<T: ICursor>(csr: &T, k:&[u8]) -> SeekResult {
+    fn from_cursor<T: ICursor>(csr: &T, k:&[u8]) -> io::Result<SeekResult> {
         if csr.IsValid() {
-            if Ordering::Equal == csr.KeyCompare(k) {
-                SeekResult::Equal
+            if Ordering::Equal == try!(csr.KeyCompare(k)) {
+                Ok(SeekResult::Equal)
             } else {
-                SeekResult::Unequal
+                Ok(SeekResult::Unequal)
             }
         } else {
-            SeekResult::Invalid
+            Ok(SeekResult::Invalid)
         }
     }
 
@@ -264,13 +266,12 @@ impl SeekResult {
     }
 }
 
-// TODO return Result
 pub trait ICursor : Drop {
-    fn Seek(&mut self, k: &[u8], sop:SeekOp) -> SeekResult;
-    fn First(&mut self);
-    fn Last(&mut self);
-    fn Next(&mut self);
-    fn Prev(&mut self);
+    fn Seek(&mut self, k: &[u8], sop:SeekOp) -> io::Result<SeekResult>;
+    fn First(&mut self) -> io::Result<()>;
+    fn Last(&mut self) -> io::Result<()>;
+    fn Next(&mut self) -> io::Result<()>;
+    fn Prev(&mut self) -> io::Result<()>;
 
     fn IsValid(&self) -> bool;
 
@@ -278,14 +279,14 @@ pub trait ICursor : Drop {
     // would need to be "until the next call", and Rust can't really
     // do that.  or at least, that model isn't compatible with Rust
     // iterators.  look for rust community discussions on "streaming iterators".
-    fn Key(&self) -> Box<[u8]>;
+    fn Key(&self) -> io::Result<Box<[u8]>>;
 
     // TODO similarly with Value().  When the Blob is an array, we would
     // prefer to return a reference to the bytes in the page.
-    fn Value(&self) -> Blob;
+    fn Value(&self) -> io::Result<Blob>;
 
-    fn ValueLength(&self) -> Option<usize>; // tombstone is None
-    fn KeyCompare(&self, k: &[u8]) -> Ordering;
+    fn ValueLength(&self) -> io::Result<Option<usize>>; // tombstone is None
+    fn KeyCompare(&self, k: &[u8]) -> io::Result<Ordering>;
 }
 
 // TODO return Result
@@ -301,7 +302,7 @@ pub struct DbSettings {
     pub PagesPerBlock : PageNum,
 }
 
-pub const DefaultSettings : DbSettings = 
+pub const DEFAULT_SETTINGS : DbSettings = 
     DbSettings
     {
         AutoMergeEnabled : true,
@@ -351,11 +352,13 @@ pub mod utils {
     use std::io::Read;
     use std::io::Write;
     use std::io::SeekFrom;
+    use std::io::ErrorKind;
     use super::PageNum;
 
     pub fn SeekPage(strm: &mut Seek, pgsz: usize, pageNumber: PageNum) -> io::Result<u64> {
-        if 0==pageNumber { panic!("invalid page number") } 
-        // TODO overflow detection in the next line might get this
+        if 0==pageNumber { 
+            return Err(io::Error::new(ErrorKind::Other, "invalid page number"));
+        }
         let pos = ((pageNumber as u64) - 1) * (pgsz as u64);
         strm.seek(SeekFrom::Start(pos))
     }
@@ -704,33 +707,33 @@ impl PageBuilder {
 
     fn PutInt32(&mut self, ov: u32) {
         let at = self.cur;
-        write_u32_be(&mut self.buf[at .. at+size_32], ov);
-        self.cur = self.cur + size_32;
+        write_u32_be(&mut self.buf[at .. at + SIZE_32], ov);
+        self.cur = self.cur + SIZE_32;
     }
 
     fn SetSecondToLastInt32(&mut self, page: u32) {
         let len = self.buf.len();
-        let at = len - 2 * size_32;
+        let at = len - 2 * SIZE_32;
         if self.cur > at { panic!("SetSecondToLastInt32 is squashing data"); }
-        write_u32_be(&mut self.buf[at .. at+size_32], page);
+        write_u32_be(&mut self.buf[at .. at + SIZE_32], page);
     }
 
     fn SetLastInt32(&mut self, page: u32) {
         let len = self.buf.len();
-        let at = len - 1 * size_32;
+        let at = len - 1 * SIZE_32;
         if self.cur > at { panic!("SetLastInt32 is squashing data"); }
-        write_u32_be(&mut self.buf[at .. at+size_32], page);
+        write_u32_be(&mut self.buf[at .. at + SIZE_32], page);
     }
 
     fn PutInt16(&mut self, ov: u16) {
         let at = self.cur;
-        write_u16_be(&mut self.buf[at .. at+size_16], ov);
-        self.cur = self.cur + size_16;
+        write_u16_be(&mut self.buf[at .. at + SIZE_16], ov);
+        self.cur = self.cur + SIZE_16;
     }
 
     // TODO rm
     fn PutInt16At(&mut self, at: usize, ov: u16) {
-        write_u16_be(&mut self.buf[at .. at+size_16], ov);
+        write_u16_be(&mut self.buf[at .. at + SIZE_16], ov);
     }
 
     fn PutVarint(&mut self, ov: u64) {
@@ -784,13 +787,13 @@ impl PageBuffer {
 
     fn GetInt32(&self, cur: &mut usize) -> u32 {
         let at = *cur;
-        let r = read_u32_be(&self.buf[at .. at+size_32]);
-        *cur = *cur + size_32;
+        let r = read_u32_be(&self.buf[at .. at + SIZE_32]);
+        *cur = *cur + SIZE_32;
         r
     }
 
     fn GetInt32At(&self, at: usize) -> u32 {
-        read_u32_be(&self.buf[at .. at+size_32])
+        read_u32_be(&self.buf[at .. at + SIZE_32])
     }
 
     fn CheckPageFlag(&self, f: u8) -> bool {
@@ -799,20 +802,20 @@ impl PageBuffer {
 
     fn GetSecondToLastInt32(&self) -> u32 {
         let len = self.buf.len();
-        let at = len - 2 * size_32;
+        let at = len - 2 * SIZE_32;
         self.GetInt32At(at)
     }
 
     fn GetLastInt32(&self) -> u32 {
         let len = self.buf.len();
-        let at = len - 1 * size_32;
+        let at = len - 1 * SIZE_32;
         self.GetInt32At(at)
     }
 
     fn GetInt16(&self, cur: &mut usize) -> u16 {
         let at = *cur;
-        let r = read_u16_be(&self.buf[at .. at+size_16]);
-        *cur = *cur + size_16;
+        let r = read_u16_be(&self.buf[at .. at + SIZE_16]);
+        *cur = *cur + SIZE_16;
         r
     }
 
@@ -845,15 +848,13 @@ enum Direction {
 struct MultiCursor { 
     subcursors : Box<[SegmentCursor]>, 
     cur : Option<usize>, 
-    // TODO max number of subcursors?  u8 is probably enough. 
-    // but array indexing is supposed to be usize.
     dir : Direction,
 }
 
 impl MultiCursor {
-    fn find(&self, swap: bool) -> Option<usize> {
+    fn find(&self, swap: bool) -> io::Result<Option<usize>> {
         if self.subcursors.is_empty() {
-            None
+            Ok(None)
         } else {
             let mut res = None::<usize>;
             for i in 0 .. self.subcursors.len() {
@@ -864,9 +865,9 @@ impl MultiCursor {
                             let y = &self.subcursors[winning];
                             let c =
                                 if swap {
-                                    SegmentCursor::compare_two(y,x).unwrap()
+                                    try!(SegmentCursor::compare_two(y,x))
                                 } else {
-                                    SegmentCursor::compare_two(x,y).unwrap()
+                                    try!(SegmentCursor::compare_two(x,y))
                                 };
                             if c==Ordering::Less {
                                 res = Some(i)
@@ -878,15 +879,15 @@ impl MultiCursor {
                     }
                 }
             }
-            res
+            Ok(res)
         }
     }
 
-    fn findMin(&self) -> Option<usize> {
+    fn findMin(&self) -> io::Result<Option<usize>> {
         self.find(false)
     }
 
-    fn findMax(&self) -> Option<usize> {
+    fn findMax(&self) -> io::Result<Option<usize>> {
         self.find(true)
     }
 
@@ -911,76 +912,74 @@ impl ICursor for MultiCursor {
         }
     }
 
-    fn First(&mut self) {
+    fn First(&mut self) -> io::Result<()> {
         for i in 0 .. self.subcursors.len() {
-            self.subcursors[i].First();
+            try!(self.subcursors[i].First());
         }
-        self.cur = self.findMin();
+        self.cur = try!(self.findMin());
         self.dir = Direction::WANDERING; // TODO why?
+        Ok(())
     }
 
-    fn Last(&mut self) {
+    fn Last(&mut self) -> io::Result<()> {
         for i in 0 .. self.subcursors.len() {
-            self.subcursors[i].Last();
+            try!(self.subcursors[i].Last());
         }
-        self.cur = self.findMax();
+        self.cur = try!(self.findMax());
         self.dir = Direction::WANDERING; // TODO why?
+        Ok(())
     }
 
-    // the following members are designed to panic if called when
-    // the cursor is not valid.
-    // this matches the C# behavior and the expected behavior of ICursor.
-    // don't call these methods without checking IsValid() first.
-
-    fn Key(&self) -> Box<[u8]> {
+    fn Key(&self) -> io::Result<Box<[u8]>> {
         match self.cur {
+            None => Err(io::Error::new(ErrorKind::Other, CURSOR_NOT_VALID)),
             Some(icur) => self.subcursors[icur].Key(),
-            None => panic!()
         }
     }
 
-    fn KeyCompare(&self, k: &[u8]) -> Ordering {
+    fn KeyCompare(&self, k: &[u8]) -> io::Result<Ordering> {
         match self.cur {
+            None => Err(io::Error::new(ErrorKind::Other, CURSOR_NOT_VALID)),
             Some(icur) => self.subcursors[icur].KeyCompare(k),
-            None => panic!()
         }
     }
 
-    fn Value(&self) -> Blob {
+    fn Value(&self) -> io::Result<Blob> {
         match self.cur {
+            None => Err(io::Error::new(ErrorKind::Other, CURSOR_NOT_VALID)),
             Some(icur) => self.subcursors[icur].Value(),
-            None => panic!()
         }
     }
 
-    fn ValueLength(&self) -> Option<usize> {
+    fn ValueLength(&self) -> io::Result<Option<usize>> {
         match self.cur {
+            None => Err(io::Error::new(ErrorKind::Other, CURSOR_NOT_VALID)),
             Some(icur) => self.subcursors[icur].ValueLength(),
-            None => panic!()
         }
     }
 
-    fn Next(&mut self) {
+    fn Next(&mut self) -> io::Result<()> {
         match self.cur {
+            None => Err(io::Error::new(ErrorKind::Other, CURSOR_NOT_VALID)),
             Some(icur) => {
                 if self.dir != Direction::FORWARD {
-                    let k = self.subcursors[icur].Key();
+                    let k = try!(self.subcursors[icur].Key());
                     for j in 0 .. self.subcursors.len() {
                         let csr = &mut self.subcursors[j];
-                        if (icur != j) { 
+                        if icur != j { 
                             // TODO this seems expensive.  can't we, like,
                             // remember where we are and just move a little
                             // bit?
 
-                            let sr = (*csr).Seek (&*k, SeekOp::SEEK_GE); 
+                            let sr = try!(csr.Seek(&*k, SeekOp::SEEK_GE));
                             if sr.is_valid_and_equal() {
-                                csr.Next(); 
+                                try!(csr.Next());
                             }
-                        } else if (icur == j) || (csr.IsValid() && (Ordering::Equal == csr.KeyCompare(&*k)) ) { 
+                        } else if (icur == j) || (csr.IsValid() && (Ordering::Equal == try!(csr.KeyCompare(&*k))) ) { 
                             // in the previous line, (icur == j) should short circuit for better
                             // performance, since in that case, the other comparisons will always be
                             // true.
-                            csr.Next(); 
+                            try!(csr.Next());
                         }
                     }
                 } else {
@@ -988,78 +987,79 @@ impl ICursor for MultiCursor {
                         // don't mess with icur until after the loop, so we can compare against it
                         if (icur != j) 
                             && self.subcursors[j].IsValid() 
-                            && (Ordering::Equal == SegmentCursor::compare_two(&self.subcursors[j], &self.subcursors[icur]).unwrap()) {
+                            && (Ordering::Equal == try!(SegmentCursor::compare_two(&self.subcursors[j], &self.subcursors[icur]))) {
                             let csr = &mut self.subcursors[j];
-                            csr.Next(); 
+                            try!(csr.Next());
                         }
                     }
-                    self.subcursors[icur].Next();
+                    try!(self.subcursors[icur].Next());
                 }
-                self.cur = self.findMin();
+                self.cur = try!(self.findMin());
                 self.dir = Direction::FORWARD;
+                Ok(())
             },
-            None => panic!()
         }
     }
 
     // TODO fix Prev like Next
-    fn Prev(&mut self) {
+    fn Prev(&mut self) -> io::Result<()> {
         match self.cur {
+            None => Err(io::Error::new(ErrorKind::Other, CURSOR_NOT_VALID)),
             Some(icur) => {
-                let k = self.subcursors[icur].Key();
+                let k = try!(self.subcursors[icur].Key());
                 for j in 0 .. self.subcursors.len() {
                     let csr = &mut self.subcursors[j];
                     if (self.dir != Direction::BACKWARD) && (icur != j) { 
-                        (*csr).Seek (&*k, SeekOp::SEEK_LE); 
+                        try!(csr.Seek (&*k, SeekOp::SEEK_LE));
                     }
-                    if csr.IsValid() && (Ordering::Equal == csr.KeyCompare(&*k)) { 
-                        csr.Prev(); 
+                    if csr.IsValid() && (Ordering::Equal == try!(csr.KeyCompare(&*k))) { 
+                        try!(csr.Prev());
                     }
                 }
-                self.cur = self.findMax();
+                self.cur = try!(self.findMax());
                 self.dir = Direction::BACKWARD;
+                Ok(())
             },
-            None => panic!()
         }
     }
 
-    fn Seek(&mut self, k: &[u8], sop:SeekOp) -> SeekResult {
+    fn Seek(&mut self, k: &[u8], sop:SeekOp) -> io::Result<SeekResult> {
         self.cur = None;
         self.dir = Direction::WANDERING;
         for j in 0 .. self.subcursors.len() {
-            let sr = self.subcursors[j].Seek(k,sop);
+            let sr = try!(self.subcursors[j].Seek(k,sop));
             if sr.is_valid_and_equal() { 
                 self.cur = Some(j);
-                return sr;
+                return Ok(sr);
             }
         }
         match sop {
             SeekOp::SEEK_GE => {
-                self.cur = self.findMin();
+                self.cur = try!(self.findMin());
                 match self.cur {
                     Some(i) => {
                         self.dir = Direction::FORWARD; 
                         SeekResult::from_cursor(&self.subcursors[i], k)
                     },
                     None => {
-                        SeekResult::Invalid
+                        Ok(SeekResult::Invalid)
                     },
                 }
             },
             SeekOp::SEEK_LE => {
-                self.cur = self.findMax();
+                self.cur = try!(self.findMax());
                 match self.cur {
                     Some(i) => {
                         self.dir = Direction::BACKWARD; 
                         SeekResult::from_cursor(&self.subcursors[i], k)
                     },
                     None => {
-                        SeekResult::Invalid
+                        Ok(SeekResult::Invalid)
                     },
                 }
             },
             SeekOp::SEEK_EQ => {
-                SeekResult::Invalid
+                Ok(SeekResult::Invalid)
             },
         }
     }
@@ -1071,16 +1071,18 @@ pub struct LivingCursor {
 }
 
 impl LivingCursor {
-    fn skipTombstonesForward(&mut self) {
-        while self.chain.IsValid() && self.chain.ValueLength().is_none() {
-            self.chain.Next();
+    fn skipTombstonesForward(&mut self) -> io::Result<()> {
+        while self.chain.IsValid() && try!(self.chain.ValueLength()).is_none() {
+            try!(self.chain.Next());
         }
+        Ok(())
     }
 
-    fn skipTombstonesBackward(&mut self) {
-        while self.chain.IsValid() && self.chain.ValueLength().is_none() {
-            self.chain.Prev();
+    fn skipTombstonesBackward(&mut self) -> io::Result<()> {
+        while self.chain.IsValid() && try!(self.chain.ValueLength()).is_none() {
+            try!(self.chain.Prev());
         }
+        Ok(())
     }
 
     fn Create(ch : MultiCursor) -> LivingCursor {
@@ -1095,66 +1097,78 @@ impl Drop for LivingCursor {
 }
 
 impl ICursor for LivingCursor {
-    fn First(&mut self) {
-        self.chain.First();
-        self.skipTombstonesForward();
+    fn First(&mut self) -> io::Result<()> {
+        try!(self.chain.First());
+        try!(self.skipTombstonesForward());
+        Ok(())
     }
 
-    fn Last(&mut self) {
-        self.chain.Last();
-        self.skipTombstonesBackward();
+    fn Last(&mut self) -> io::Result<()> {
+        try!(self.chain.Last());
+        try!(self.skipTombstonesBackward());
+        Ok(())
     }
 
-    fn Key(&self) -> Box<[u8]> {
+    fn Key(&self) -> io::Result<Box<[u8]>> {
         self.chain.Key()
     }
 
-    fn Value(&self) -> Blob {
+    fn Value(&self) -> io::Result<Blob> {
         self.chain.Value()
     }
 
-    fn ValueLength(&self) -> Option<usize> {
+    fn ValueLength(&self) -> io::Result<Option<usize>> {
         self.chain.ValueLength()
     }
 
     fn IsValid(&self) -> bool {
-        self.chain.IsValid() && self.chain.ValueLength().is_some()
+        self.chain.IsValid() 
+            && {
+                let r = self.chain.ValueLength();
+                if r.is_ok() {
+                    r.unwrap().is_some()
+                } else {
+                    false
+                }
+            }
     }
 
-    fn KeyCompare(&self, k: &[u8]) -> Ordering {
+    fn KeyCompare(&self, k: &[u8]) -> io::Result<Ordering> {
         self.chain.KeyCompare(k)
     }
 
-    fn Next(&mut self) {
-        self.chain.Next();
-        self.skipTombstonesForward();
+    fn Next(&mut self) -> io::Result<()> {
+        try!(self.chain.Next());
+        try!(self.skipTombstonesForward());
+        Ok(())
     }
 
-    fn Prev(&mut self) {
-        self.chain.Prev();
-        self.skipTombstonesBackward();
+    fn Prev(&mut self) -> io::Result<()> {
+        try!(self.chain.Prev());
+        try!(self.skipTombstonesBackward());
+        Ok(())
     }
 
-    fn Seek(&mut self, k: &[u8], sop:SeekOp) -> SeekResult {
-        let sr = self.chain.Seek(k, sop);
+    fn Seek(&mut self, k: &[u8], sop:SeekOp) -> io::Result<SeekResult> {
+        let sr = try!(self.chain.Seek(k, sop));
         match sop {
             SeekOp::SEEK_GE => {
-                if sr.is_valid() && self.chain.ValueLength().is_none() {
-                    self.skipTombstonesForward();
+                if sr.is_valid() && self.chain.ValueLength().unwrap().is_none() {
+                    try!(self.skipTombstonesForward());
                     SeekResult::from_cursor(&self.chain, k)
                 } else {
-                    sr
+                    Ok(sr)
                 }
             },
             SeekOp::SEEK_LE => {
-                if sr.is_valid() && self.chain.ValueLength().is_none() {
-                    self.skipTombstonesBackward();
+                if sr.is_valid() && self.chain.ValueLength().unwrap().is_none() {
+                    try!(self.skipTombstonesBackward());
                     SeekResult::from_cursor(&self.chain, k)
                 } else {
-                    sr
+                    Ok(sr)
                 }
             },
-            SeekOp::SEEK_EQ => sr,
+            SeekOp::SEEK_EQ => Ok(sr),
         }
     }
 
@@ -1244,7 +1258,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
             pbFirstOverflow.Reset();
             pbFirstOverflow.PutByte(PageType::OVERFLOW_NODE);
             pbFirstOverflow.PutByte(0u8); // starts 0, may be changed later
-            let room = pgsz - (2 + size_32);
+            let room = pgsz - (2 + SIZE_32);
             // something will be put in lastInt32 later
             match pbFirstOverflow.PutStream2(ba, room) {
                 Ok(put) => Ok((put, put<room)),
@@ -1263,7 +1277,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
 
         fn buildBoundaryPage(ba: &mut Read, pbOverflow : &mut PageBuilder, pgsz: usize) -> io::Result<(usize,bool)> {
             pbOverflow.Reset();
-            let room = pgsz - size_32;
+            let room = pgsz - SIZE_32;
             // something will be put in lastInt32 before the page is written
             match pbOverflow.PutStream2(ba, room) {
                 Ok(put) => Ok((put, put<room)),
@@ -1837,7 +1851,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
 
         fn calcAvailable(currentSize: usize, couldBeRoot: bool, pgsz: usize) -> usize {
             let basicSize = pgsz - currentSize;
-            let allowanceForRootNode = if couldBeRoot { size_32 } else { 0 }; // first/last Leaf, lastInt32 already
+            let allowanceForRootNode = if couldBeRoot { SIZE_32 } else { 0 }; // first/last Leaf, lastInt32 already
             // TODO can this cause integer overflow?
             basicSize - allowanceForRootNode
         }
@@ -1928,7 +1942,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
 
             let neededEitherWay = 1 + Varint::SpaceNeededFor(pair.key.len() as u64) + Varint::SpaceNeededFor(pgnum as u64);
             let neededForInline = neededEitherWay + pair.key.len();
-            let neededForOverflow = neededEitherWay + size_32;
+            let neededForOverflow = neededEitherWay + SIZE_32;
             let couldBeRoot = st.nextGeneration.is_empty();
 
             let available = calcAvailable(st.sofar, couldBeRoot, pgsz);
@@ -2014,7 +2028,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
 struct myOverflowReadStream {
     fs: File,
     len: usize, // same type as ValueLength(), max len of a single value
-    firstPage: PageNum, // will be needed for Seek
+    firstPage: PageNum, // will be needed for Seek trait
     buf: Box<[u8]>,
     currentPage: PageNum,
     sofarOverall: usize,
@@ -2064,10 +2078,10 @@ impl myOverflowReadStream {
         // assert PageType is OVERFLOW
         self.sofarThisPage = 0;
         if self.currentPage == self.firstPageInBlock {
-            self.bytesOnThisPage = self.buf.len() - (2 + size_32);
+            self.bytesOnThisPage = self.buf.len() - (2 + SIZE_32);
             self.offsetOnThisPage = 2;
         } else if self.currentPage == self.boundaryPageNumber {
-            self.bytesOnThisPage = self.buf.len() - size_32;
+            self.bytesOnThisPage = self.buf.len() - SIZE_32;
             self.offsetOnThisPage = 0;
         } else {
             // assert currentPage > firstPageInBlock
@@ -2079,7 +2093,7 @@ impl myOverflowReadStream {
     }
 
     fn GetLastInt32(&self) -> u32 {
-        let at = self.buf.len() - size_32;
+        let at = self.buf.len() - SIZE_32;
         read_u32_be(&self.buf[at .. at+4])
     }
 
@@ -2095,7 +2109,7 @@ impl myOverflowReadStream {
         self.firstPageInBlock = self.currentPage;
         try!(self.ReadPage());
         if self.PageType() != (PageType::OVERFLOW_NODE) {
-            try!(Err(io::Error::new(ErrorKind::InvalidInput, "first overflow page has invalid page type")));
+            return Err(io::Error::new(ErrorKind::Other, "first overflow page has invalid page type"));
         }
         if self.CheckPageFlag(PageFlag::FLAG_BOUNDARY_NODE) {
             // first page landed on a boundary node
@@ -2254,19 +2268,19 @@ impl SegmentCursor {
             lastLeaf: 0, // temporary
         };
         if ! try!(res.setCurrentPage(rootPage)) {
-            return Err(io::Error::new(ErrorKind::InvalidInput, "failed to read root page"));
+            return Err(io::Error::new(ErrorKind::Other, "failed to read root page"));
         }
         if res.pr.PageType() == PageType::LEAF_NODE {
             res.firstLeaf = rootPage;
             res.lastLeaf = rootPage;
         } else if res.pr.PageType() == PageType::PARENT_NODE {
             if ! res.pr.CheckPageFlag(PageFlag::FLAG_ROOT_NODE) { 
-                return Err(io::Error::new(ErrorKind::InvalidInput, "root page lacks flag"));
+                return Err(io::Error::new(ErrorKind::Other, "root page lacks flag"));
             }
             res.firstLeaf = res.pr.GetSecondToLastInt32() as PageNum;
             res.lastLeaf = res.pr.GetLastInt32() as PageNum;
         } else {
-            return Err(io::Error::new(ErrorKind::InvalidInput, "root page has invalid page type"));
+            return Err(io::Error::new(ErrorKind::Other, "root page has invalid page type"));
         }
           
         Ok(res)
@@ -2345,7 +2359,7 @@ impl SegmentCursor {
             };
             *cur = *cur + (klen - prefixLen);
         } else {
-            *cur = *cur + size_32;
+            *cur = *cur + SIZE_32;
         }
     }
 
@@ -2356,7 +2370,7 @@ impl SegmentCursor {
         } else {
             let vlen = self.pr.GetVarint(cur) as usize;
             if 0 != (vflag & ValueFlag::FLAG_OVERFLOW) {
-                *cur = *cur + size_32;
+                *cur = *cur + SIZE_32;
             }
             else {
                 *cur = *cur + vlen;
@@ -2393,11 +2407,15 @@ impl SegmentCursor {
         }
     }
 
-    fn is_key_overflowed(&self) -> bool {
-        let n = self.currentKey.unwrap();
-        let mut cur = self.leafKeys[n as usize];
-        let kflag = self.pr.GetByte(&mut cur);
-        0 != (kflag & ValueFlag::FLAG_OVERFLOW)
+    fn is_key_overflowed(&self) -> io::Result<bool> {
+        match self.currentKey {
+            None => Err(io::Error::new(ErrorKind::Other, CURSOR_NOT_VALID)),
+            Some(n) => {
+                let mut cur = self.leafKeys[n as usize];
+                let kflag = self.pr.GetByte(&mut cur);
+                Ok(0 != (kflag & ValueFlag::FLAG_OVERFLOW))
+            },
+        }
     }
 
     fn keyInLeaf2<'a>(&'a self, n: usize) -> io::Result<KeyVal<'a>> { 
@@ -2417,14 +2435,9 @@ impl SegmentCursor {
             }
         } else {
             let pgnum = self.pr.GetInt32(&mut cur) as PageNum;
-            let mut ostrm = try!(myOverflowReadStream::new(&self.path, self.pr.PageSize(), pgnum, klen));
+            let ostrm = try!(myOverflowReadStream::new(&self.path, self.pr.PageSize(), pgnum, klen));
             Ok(KeyVal::Overflow(ostrm))
         }
-    }
-
-    fn Key2<'a>(&'a self) -> KeyVal<'a> { 
-        let currentKey = self.currentKey.unwrap();
-        self.keyInLeaf2(currentKey).unwrap()
     }
 
     fn keyInLeaf(&self, n: usize) -> io::Result<Box<[u8]>> { 
@@ -2554,17 +2567,21 @@ impl SegmentCursor {
     }
 
     fn compare_two(x: &SegmentCursor, y: &SegmentCursor) -> io::Result<Ordering> {
-        fn get_info(c: &SegmentCursor) -> (usize, bool, usize, usize) {
-            let n = c.currentKey.unwrap();
-            let mut cur = c.leafKeys[n as usize];
-            let kflag = c.pr.GetByte(&mut cur);
-            let klen = c.pr.GetVarint(&mut cur) as usize;
-            let overflowed = 0 != (kflag & ValueFlag::FLAG_OVERFLOW);
-            (n, overflowed, cur, klen)
+        fn get_info(c: &SegmentCursor) -> io::Result<(usize, bool, usize, usize)> {
+            match c.currentKey {
+                None => Err(io::Error::new(ErrorKind::Other, CURSOR_NOT_VALID)),
+                Some(n) => {
+                    let mut cur = c.leafKeys[n as usize];
+                    let kflag = c.pr.GetByte(&mut cur);
+                    let klen = c.pr.GetVarint(&mut cur) as usize;
+                    let overflowed = 0 != (kflag & ValueFlag::FLAG_OVERFLOW);
+                    Ok((n, overflowed, cur, klen))
+                },
+            }
         }
 
-        let (x_n, x_over, x_cur, x_klen) = get_info(x);
-        let (y_n, y_over, y_cur, y_klen) = get_info(y);
+        let (x_n, x_over, x_cur, x_klen) = try!(get_info(x));
+        let (y_n, y_over, y_cur, y_klen) = try!(get_info(y));
 
         if x_over || y_over {
             let x_k = try!(x.keyInLeaf(x_n));
@@ -2627,7 +2644,7 @@ impl SegmentCursor {
     fn readParentPage(&mut self) -> io::Result<(Vec<PageNum>,Vec<Box<[u8]>>)> {
         let mut cur = 0;
         if self.pr.GetByte(&mut cur) != PageType::PARENT_NODE {
-            return Err(io::Error::new(ErrorKind::InvalidInput, "parent page has invalid page type"));
+            return Err(io::Error::new(ErrorKind::Other, "parent page has invalid page type"));
         }
         cur = cur + 1; // page flags
         let count = self.pr.GetInt16(&mut cur);
@@ -2797,76 +2814,90 @@ impl ICursor for SegmentCursor {
         self.leafIsValid()
     }
 
-    fn Seek(&mut self, k: &[u8], sop:SeekOp) -> SeekResult {
+    fn Seek(&mut self, k: &[u8], sop:SeekOp) -> io::Result<SeekResult> {
         let rootPage = self.rootPage;
-        self.search(rootPage, k, sop).unwrap()
+        self.search(rootPage, k, sop)
     }
 
-    fn Key(&self) -> Box<[u8]> {
-        let currentKey = self.currentKey.unwrap();
-        self.keyInLeaf(currentKey).unwrap()
+    fn Key(&self) -> io::Result<Box<[u8]>> {
+        match self.currentKey {
+            None => Err(io::Error::new(ErrorKind::Other, CURSOR_NOT_VALID)),
+            Some(currentKey) => self.keyInLeaf(currentKey),
+        }
     }
 
-    fn Value(&self) -> Blob {
-        let currentKey = self.currentKey.unwrap();
-        let mut pos = self.leafKeys[currentKey as usize];
+    fn Value(&self) -> io::Result<Blob> {
+        match self.currentKey {
+            None => Err(io::Error::new(ErrorKind::Other, CURSOR_NOT_VALID)),
+            Some(currentKey) => {
+                let mut pos = self.leafKeys[currentKey as usize];
 
-        self.skipKey(&mut pos);
+                self.skipKey(&mut pos);
 
-        let vflag = self.pr.GetByte(&mut pos);
-        if 0 != (vflag & ValueFlag::FLAG_TOMBSTONE) {
-            Blob::Tombstone
-        } else {
-            let vlen = self.pr.GetVarint(&mut pos) as usize;
-            if 0 != (vflag & ValueFlag::FLAG_OVERFLOW) {
-                let pgnum = self.pr.GetInt32(&mut pos) as PageNum;
-                let strm = myOverflowReadStream::new(&self.path, self.pr.PageSize(), pgnum, vlen).unwrap();
-                Blob::Stream(box strm)
-            } else {
-                let mut a = vec![0;vlen as usize].into_boxed_slice();
-                self.pr.GetIntoArray(&mut pos, &mut a);
-                Blob::Array(a)
+                let vflag = self.pr.GetByte(&mut pos);
+                if 0 != (vflag & ValueFlag::FLAG_TOMBSTONE) {
+                    Ok(Blob::Tombstone)
+                } else {
+                    let vlen = self.pr.GetVarint(&mut pos) as usize;
+                    if 0 != (vflag & ValueFlag::FLAG_OVERFLOW) {
+                        let pgnum = self.pr.GetInt32(&mut pos) as PageNum;
+                        let strm = try!(myOverflowReadStream::new(&self.path, self.pr.PageSize(), pgnum, vlen));
+                        Ok(Blob::Stream(box strm))
+                    } else {
+                        let mut a = vec![0;vlen as usize].into_boxed_slice();
+                        self.pr.GetIntoArray(&mut pos, &mut a);
+                        Ok(Blob::Array(a))
+                    }
+                }
             }
         }
     }
 
-    fn ValueLength(&self) -> Option<usize> {
-        let currentKey = self.currentKey.unwrap();
-        let mut cur = self.leafKeys[currentKey as usize];
+    fn ValueLength(&self) -> io::Result<Option<usize>> {
+        match self.currentKey {
+            None => Err(io::Error::new(ErrorKind::Other, CURSOR_NOT_VALID)),
+            Some(currentKey) => {
+                let mut cur = self.leafKeys[currentKey as usize];
 
-        self.skipKey(&mut cur);
+                self.skipKey(&mut cur);
 
-        let vflag = self.pr.GetByte(&mut cur);
-        if 0 != (vflag & ValueFlag::FLAG_TOMBSTONE) { 
-            None
-        } else {
-            let vlen = self.pr.GetVarint(&mut cur) as usize;
-            Some(vlen)
+                let vflag = self.pr.GetByte(&mut cur);
+                if 0 != (vflag & ValueFlag::FLAG_TOMBSTONE) { 
+                    Ok(None)
+                } else {
+                    let vlen = self.pr.GetVarint(&mut cur) as usize;
+                    Ok(Some(vlen))
+                }
+            }
         }
     }
 
-    fn KeyCompare(&self, k: &[u8]) -> Ordering {
-        let currentKey = self.currentKey.unwrap();
-        self.compareKeyInLeaf(currentKey, k).unwrap()
+    fn KeyCompare(&self, k: &[u8]) -> io::Result<Ordering> {
+        match self.currentKey {
+            None => Err(io::Error::new(ErrorKind::Other, CURSOR_NOT_VALID)),
+            Some(currentKey) => self.compareKeyInLeaf(currentKey, k)
+        }
     }
 
-    fn First(&mut self) {
+    fn First(&mut self) -> io::Result<()> {
         let firstLeaf = self.firstLeaf;
-        if self.setCurrentPage(firstLeaf).unwrap() {
+        if try!(self.setCurrentPage(firstLeaf)) {
             self.readLeaf();
             self.currentKey = Some(0);
         }
+        Ok(())
     }
 
-    fn Last(&mut self) {
+    fn Last(&mut self) -> io::Result<()> {
         let lastLeaf = self.lastLeaf;
-        if self.setCurrentPage(lastLeaf).unwrap() {
+        if try!(self.setCurrentPage(lastLeaf)) {
             self.readLeaf();
             self.currentKey = Some(self.leafKeys.len() - 1);
         }
+        Ok(())
     }
 
-    fn Next(&mut self) {
+    fn Next(&mut self) -> io::Result<()> {
         if ! self.nextInLeaf() {
             let nextPage =
                 if self.pr.CheckPageFlag(PageFlag::FLAG_BOUNDARY_NODE) { self.pr.GetLastInt32() as PageNum }
@@ -2875,23 +2906,25 @@ impl ICursor for SegmentCursor {
                     else { self.currentPage + 1 }
                 } else { 0 }
             ;
-            if self.setCurrentPage(nextPage).unwrap() && self.searchForwardForLeaf().unwrap() {
+            if try!(self.setCurrentPage(nextPage)) && try!(self.searchForwardForLeaf()) {
                 self.readLeaf();
                 self.currentKey = Some(0);
             }
         }
+        Ok(())
     }
 
-    fn Prev(&mut self) {
+    fn Prev(&mut self) -> io::Result<()> {
         if ! self.prevInLeaf() {
             let previousLeaf = self.previousLeaf;
             if 0 == previousLeaf {
                 self.resetLeaf();
-            } else if self.setCurrentPage(previousLeaf).unwrap() {
+            } else if try!(self.setCurrentPage(previousLeaf)) {
                 self.readLeaf();
                 self.currentKey = Some(self.leafKeys.len() - 1);
             }
         }
+        Ok(())
     }
 
 }
@@ -2984,7 +3017,7 @@ fn readHeader<R>(fs: &mut R) -> io::Result<(HeaderData,usize,PageNum)> where R :
         let mut pr = PageBuffer::new(HEADER_SIZE_IN_BYTES);
         let got = try!(pr.Read(fs));
         if got < HEADER_SIZE_IN_BYTES {
-            Err(io::Error::new(ErrorKind::InvalidInput, "invalid header"))
+            Err(io::Error::new(ErrorKind::Other, "invalid header"))
         } else {
             Ok(pr)
         }
@@ -3468,7 +3501,7 @@ impl db {
         }
 
         // TODO surely there's a better way to insert one vec into another?
-        // should probably just reverse the direction of currentState.
+        // like insert_all, similar to push_all?
         for i in 0 .. newGuids.len() {
             let g = newGuids[i];
             newHeader.currentState.insert(i, g);
@@ -3562,7 +3595,7 @@ impl db {
         }
         let mut mc = MultiCursor::Create(clist);
         let mut fs = try!(self.OpenForWriting());
-        mc.First();
+        try!(mc.First());
         let (g,_) = try!(CreateFromSortedSequenceOfKeyValuePairs(&mut fs, self, CursorIterator::new(mc)));
         //printfn "merged %A to get %A" segs g
         self.pendingMerges.insert(g, segs);
@@ -3977,7 +4010,7 @@ mod tests {
 
         fn f() -> std::io::Result<()> {
             //println!("running");
-            let mut db = try!(super::db::new(&tempfile("quick"), super::DefaultSettings));
+            let mut db = try!(super::db::new(&tempfile("quick"), super::DEFAULT_SETTINGS));
 
             const NUM : usize = 100000;
 
