@@ -1955,7 +1955,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
     // keep writing until we have written a level which has only one node,
     // which is the root node.
 
-    let lastLeaf = leaves[0].page;
+    let lastLeaf = leaves[leaves.len()-1].page;
 
     let rootPage = {
         let mut blk = blkAfterLeaves;
