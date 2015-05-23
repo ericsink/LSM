@@ -32,6 +32,7 @@ considering the CLR has better support for value types than its peers, fs doesn'
 try! vs SG_ERROR_CHECK
 currently avoiding Rc,Arc,Cell,RefCell until I need them.
 test harness is quite cool
+I like integers without suffixes being more flexible
 
 really cool using valgrind.  
 and really cool that valgrind shouldn't be as useful.

@@ -2881,13 +2881,13 @@ impl ICursor for SegmentCursor {
 #[derive(Clone)]
 struct HeaderData {
     // TODO currentState is an ordered copy of segments.Keys.  eliminate duplication?
-    // or add assertions and tests to make sure they never get out of sync?
+    // or add assertions and tests to make sure they never get out of sync?  we wish
+    // we had a form of HashMap that kept track of ordering.
     currentState: Vec<SegmentNum>,
     segments: HashMap<SegmentNum,SegmentInfo>,
     headerOverflow: Option<PageBlock>,
     changeCounter: u64,
     mergeCounter: u64,
-    // TODO next segment id/num
 }
 
 struct SimplePageManager {
@@ -2922,7 +2922,7 @@ impl PendingSegment {
 
     fn End(mut self, lastPage: PageNum) -> (SegmentNum, Vec<PageBlock>, Option<PageBlock>) {
         let len = self.blockList.len();
-        let unused = {
+        let leftovers = {
             let givenLastPage = self.blockList[len-1].lastPage;
             if lastPage < givenLastPage {
                 self.blockList[len-1].lastPage = lastPage;
@@ -2932,7 +2932,7 @@ impl PendingSegment {
             }
         };
         // consume self return blockList
-        (self.segnum, self.blockList, unused)
+        (self.segnum, self.blockList, leftovers)
     }
 }
 
@@ -3293,7 +3293,7 @@ impl db {
     // each pair is startBlock,countBlocks
     // all in varints
 
-    fn writeHeader(&mut self, hdr: &mut HeaderData) -> io::Result<()> {
+    fn writeHeader(&mut self, hdr: &mut HeaderData) -> io::Result<Option<PageBlock>> {
         fn spaceNeededForSegmentInfo(info: &SegmentInfo) -> usize {
             let mut a = 0;
             for t in info.blocks.iter() {
@@ -3375,46 +3375,57 @@ impl db {
         try!(self.fsMine.seek(SeekFrom::Start(0)));
         try!(pb.Write(&mut self.fsMine));
         try!(self.fsMine.flush());
+        let oldHeaderOverflow = hdr.headerOverflow;
         hdr.headerOverflow = headerOverflow;
-        Ok(())
+        Ok((oldHeaderOverflow))
     }
 
-    fn getCursor(&self, segs: &HashMap<SegmentNum,SegmentInfo>, g: SegmentNum) -> io::Result<SegmentCursor> {
-        let seg = segs.get(&g).unwrap();
-        let rootPage = seg.root;
-        /* TODO
-        let hook (csr:ICursor) =
-            let fs = self.OpenForReading();
-            fs.Close()
-            lock critSectionCursors (fun () -> 
-                let cur = Map.find g cursors
-                let removed = List.filter (fun x -> not (Object.ReferenceEquals(csr, x))) cur
-                // if we are removing the last cursor for a segment, we do need to
-                // remove that segment num from the cursors map, not just leave
-                // it there with an empty list.
-                if List.isEmpty removed then
-                    cursors <- Map.remove g cursors
-                    match fnFree with
-                    | Some f -> f g seg
-                    | None -> ()
-                else
-                    cursors <- Map.add g removed cursors
-            )
-            //printfn "done with cursor %O" g 
-        */
-        let csr = try!(SegmentCursor::new(&self.path, self.pgsz, rootPage));
-        // note that getCursor is (and must be) only called from within
-        // lock critSectionCursors
-        /* TODO
-        let cur = match Map.tryFind g cursors with
-                   | Some c -> c
-                   | None -> []
-        cursors <- Map.add g (csr :: cur) cursors
-        */
-        //printfn "added cursor %O: %A" g seg
-        Ok(csr)
+    // TODO this function looks for the segment in the header.segments,
+    // which means it cannot be used to open a cursor on a pendingSegment,
+    // which we think we might need in the future.
+    fn getCursor(&self, 
+                 g: SegmentNum
+                ) -> io::Result<SegmentCursor> {
+        match self.header.segments.get(&g) {
+            None => Err(io::Error::new(ErrorKind::Other, "getCursor: segment not found")),
+            Some(seg) => {
+                let rootPage = seg.root;
+                /* TODO
+                let hook (csr:ICursor) =
+                    let fs = self.OpenForReading();
+                    fs.Close()
+                    lock critSectionCursors (fun () -> 
+                        let cur = Map.find g cursors
+                        let removed = List.filter (fun x -> not (Object.ReferenceEquals(csr, x))) cur
+                        // if we are removing the last cursor for a segment, we do need to
+                        // remove that segment num from the cursors map, not just leave
+                        // it there with an empty list.
+                        if List.isEmpty removed then
+                            cursors <- Map.remove g cursors
+                            match fnFree with
+                            | Some f -> f g seg
+                            | None -> ()
+                        else
+                            cursors <- Map.add g removed cursors
+                    )
+                    //printfn "done with cursor %O" g 
+                */
+                let csr = try!(SegmentCursor::new(&self.path, self.pgsz, rootPage));
+                // note that getCursor is (and must be) only called from within
+                // lock critSectionCursors
+                /* TODO
+                let cur = match Map.tryFind g cursors with
+                           | Some c -> c
+                           | None -> []
+                cursors <- Map.add g (csr :: cur) cursors
+                */
+                //printfn "added cursor %O: %A" g seg
+                Ok(csr)
+            }
+        }
     }
 
+    // TODO we also need a way to open a cursor on segments in waiting
     pub fn OpenCursor(&mut self) -> io::Result<LivingCursor> {
         // TODO this cursor needs to expose the changeCounter and segment list
         // on which it is based. for optimistic writes. caller can grab a cursor,
@@ -3422,10 +3433,9 @@ impl db {
         // compare the two cursors to see if anything important changed.  if not,
         // commit their writes.  if so, nevermind the written segments and start over.
 
-        // TODO we also need a way to open a cursor on segments in waiting
         let mut clist = Vec::new();
         for g in self.header.currentState.iter() {
-            clist.push(try!(self.getCursor(&self.header.segments, *g))); // TODO checkForGoneSegment
+            clist.push(try!(self.getCursor(*g))); // TODO checkForGoneSegment
         }
         let mc = MultiCursor::Create(clist);
         let lc = LivingCursor::Create(mc);
@@ -3433,8 +3443,17 @@ impl db {
     }
 
     pub fn commitSegments(&mut self, newSegs: Vec<SegmentNum>) -> io::Result<()> {
-        // TODO we could check to see if this segment num is already in the list.
-        // TODO we should disallow dupes in newSegs
+        assert!({
+            let mut ok = true;
+            for newSegNum in newSegs.iter() {
+                ok = self.header.currentState.iter().position(|&g| g == *newSegNum).is_none();
+                if !ok {
+                    break;
+                }
+            }
+            ok
+        });
+        assert_eq!(newSegs.len(), newSegs.iter().map(|g| *g).collect::<HashSet<SegmentNum>>().len());
 
         // self.segmentsInWaiting must contain one seg for each segment num in newSegs.
         // we want those entries to move out and move into the header, currentState
@@ -3442,13 +3461,14 @@ impl db {
         // the others we want to leave.
 
         let mut newHeader = self.header.clone();
+        let mut newSegmentsInWaiting = self.segmentsInWaiting.clone();
         for g in newSegs.iter() {
-            match self.segmentsInWaiting.get(&g) {
+            match newSegmentsInWaiting.remove(&g) {
                 Some(info) => {
-                    newHeader.segments.insert(*g,info.clone());
+                    newHeader.segments.insert(*g,info);
                 },
                 None => {
-                    panic!();
+                    return Err(io::Error::new(ErrorKind::Other, "commitSegments: segment not found in segmentsInWaiting"));
                 },
             }
         }
@@ -3461,20 +3481,10 @@ impl db {
         }
 
         newHeader.changeCounter = newHeader.changeCounter + 1;
-        newHeader.headerOverflow = None;
 
-        try!(self.writeHeader(&mut newHeader));
-        let oldHeaderOverflow = self.header.headerOverflow;
+        let oldHeaderOverflow = try!(self.writeHeader(&mut newHeader));
         self.header = newHeader;
-        for g in newSegs.iter() {
-            match self.segmentsInWaiting.remove(&g) {
-                Some(_) => {
-                },
-                None => {
-                    panic!();
-                },
-            }
-        }
+        self.segmentsInWaiting = newSegmentsInWaiting;
 
         //printfn "after commit, currentState: %A" header.currentState
         //printfn "after commit, segments: %A" header.segments
@@ -3541,7 +3551,7 @@ impl db {
         let mut clist = Vec::new();
         // TODO these should probably be for g in &segs
         for g in segs.iter() {
-            clist.push(try!(self.getCursor(&self.header.segments, *g))); // TODO checkForGoneSegment
+            clist.push(try!(self.getCursor(*g))); // TODO checkForGoneSegment
         }
         for g in segs.iter() {
             self.merging.insert(*g);
@@ -3558,56 +3568,89 @@ impl db {
     // TODO maybe commitSegments and commitMerge should be the same function.
     // just check to see if the segment being committed is a merge.  if so,
     // do the extra paperwork.
-    pub fn commitMerge(&mut self, newSeg:SegmentNum) -> io::Result<()> {
-        // TODO we could check to see if this segment num is already in the list.
+    pub fn commitMerge(&mut self, newSegNum:SegmentNum) -> io::Result<()> {
+        assert!(self.header.currentState.iter().position(|&g| g == newSegNum).is_none());
 
-        let lstOld = self.pendingMerges.get(&newSeg).unwrap().clone();
-        let countOld = lstOld.len();
-        let oldGuidsAsSet : HashSet<SegmentNum> = lstOld.iter().map(|g| *g).collect();
-        let age = {
-            let lstAges : Vec<u32> = lstOld.iter().map(|g| self.header.segments.get(g).unwrap().age).collect();
-            lstAges.iter().max().unwrap() + 1
+        // we need the list of segments which were merged.  we make a copy of
+        // so that we're not keeping a reference that inhibits our ability to
+        // get other references a little later in the function.
+
+        let old = {
+            let maybe = self.pendingMerges.get(&newSegNum);
+            if maybe.is_none() {
+                return Err(io::Error::new(ErrorKind::Other, "commitMerge: segment not found in pendingMerges"));
+            } else {
+                maybe.expect("just checked is_none").clone()
+            }
         };
 
-        // TODO the following looks expensive.  we just want the SegmentInfo for
-        // each segment being replaced.
-        let segmentsBeingReplaced : HashMap<SegmentNum,SegmentInfo> = self.header.segments
-            .clone()
-            .into_iter()
-            .filter(|&(ref g, _)| oldGuidsAsSet.contains(&g))
-            .collect();
+        let oldAsSet : HashSet<SegmentNum> = old.iter().map(|g| *g).collect();
+        assert!(oldAsSet.len() == old.len());
 
-        let ndxFirstOld = self.header.currentState.iter().position(|&g| g == lstOld[0]).unwrap();
+        // now we need to verify that the segments being replaced are in currentState
+        // and contiguous.
+
+        let ndxFirstOld = self.header.currentState.iter()
+            .position(|&g| g == old[0]).expect("first segment being replaced not found in currentState");
+
         // if the next line fails, it probably means that somebody tried to merge a set
         // of segments that are not contiguous in currentState.
-        if lstOld.as_slice() != &self.header.currentState.as_slice()[ndxFirstOld .. ndxFirstOld+countOld] {
+        let countOld = old.len();
+        if old.as_slice() != &self.header.currentState.as_slice()[ndxFirstOld .. ndxFirstOld + countOld] {
             panic!("segments not found");
         }
 
+        // now we construct a newHeader
+
         let mut newHeader = self.header.clone();
 
-        for _ in &lstOld {
+        // first, fix the currentState
+
+        for _ in &old {
             newHeader.currentState.remove(ndxFirstOld);
         }
-        newHeader.currentState.insert(ndxFirstOld, newSeg);
+        newHeader.currentState.insert(ndxFirstOld, newSegNum);
 
-        let mut newSegmentInfo = self.segmentsInWaiting.get(&newSeg).unwrap().clone();
-        newSegmentInfo.age = age;
+        // remove the old segmentinfos, keeping them for later
 
-        for g in &oldGuidsAsSet {
-            newHeader.segments.remove(g);
+        let mut segmentsBeingReplaced = HashMap::new();
+        for g in &oldAsSet {
+            let info = newHeader.segments.remove(g).expect("old seg not found in header.segments");
+            segmentsBeingReplaced.insert(g, info);
         }
-        newHeader.segments.insert(newSeg, newSegmentInfo);
+
+        // now get the segment info for the new segment
+
+        let mut newSegmentInfo = {
+            let maybe = self.segmentsInWaiting.get(&newSegNum);
+            if maybe.is_none() {
+                return Err(io::Error::new(ErrorKind::Other, "commitMerge: segment not found in segmentsInWaiting"));
+            } else {
+                maybe.expect("seg not found").clone()
+            }
+        };
+
+        // and fix its age to be one higher than the maximum age of the
+        // segments it replaced.
+
+        let age_of_new_segment = {
+            let ages: Vec<u32> = segmentsBeingReplaced.values().map(|info| info.age).collect();
+            1 + ages.iter().max().expect("this cannot be empty")
+        };
+        newSegmentInfo.age = age_of_new_segment;
+
+        newHeader.segments.insert(newSegNum, newSegmentInfo);
+
         newHeader.mergeCounter = newHeader.mergeCounter + 1;
-        newHeader.headerOverflow = None;
-        try!(self.writeHeader(&mut newHeader));
-        let oldHeaderOverflow = self.header.headerOverflow;
+
+        let oldHeaderOverflow = try!(self.writeHeader(&mut newHeader));
+
+        // the write of the new header has succeeded.
+
         self.header = newHeader;
-
-        self.segmentsInWaiting.remove(&newSeg);
-
-        self.pendingMerges.remove(&newSeg);
-        for g in lstOld {
+        self.segmentsInWaiting.remove(&newSegNum);
+        self.pendingMerges.remove(&newSegNum);
+        for g in old {
             self.merging.remove(&g);
         }
 
@@ -3649,11 +3692,11 @@ impl IPages for db {
     }
 
     fn End(&mut self, ps:PendingSegment, lastPage: PageNum) -> SegmentNum {
-        let (g,blocks,unused) = ps.End(lastPage);
+        let (g, blocks, leftovers) = ps.End(lastPage);
         let info = SegmentInfo {age: 0,blocks:blocks,root:lastPage};
         self.segmentsInWaiting.insert(g,info);
         //printfn "wrote %A: %A" g blocks
-        match unused {
+        match leftovers {
             Some(b) => self.addFreeBlocks(vec![b]),
             None => ()
         }
