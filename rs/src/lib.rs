@@ -648,10 +648,7 @@ impl PageBuilder {
     }
 
     fn PutArray(&mut self, ba: &[u8]) {
-        // TODO this can't be the best way to copy a slice
-        for i in 0..ba.len() {
-            self.buf[self.cur + i] = ba[i];
-        }
+        self.buf[self.cur .. self.cur + ba.len()].clone_from_slice(ba);
         self.cur = self.cur + ba.len();
     }
 
@@ -774,10 +771,8 @@ impl PageBuffer {
     }
 
     fn GetIntoArray(&self, cur: &mut usize,  a : &mut [u8]) {
-        // TODO copy slice
-        for i in 0 .. a.len() {
-            a[i] = self.buf[*cur + i];
-        }
+        let len = a.len();
+        a.clone_from_slice(&self.buf[*cur .. *cur + len]);
         *cur = *cur + a.len();
     }
 

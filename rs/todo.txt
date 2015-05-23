@@ -50,10 +50,6 @@ but access to the header and to housekeeping structures must be safe.
 
 streaming iterator model for ICursor?
 
-database trait can go away
-
-segment id, would be nice to make it u64
-
 same for pgnum but then storage is wasteful,
 want to store as a varint, but then space in the page calculations are
 more complicated.
@@ -82,9 +78,9 @@ maybe myOverflowReadStream shouldn't be returned as a trait object.
 a little worried about the KeyCompare always being built in to Seek.
 what about cases that don't use it?
 
-tempted to limit key size.  no overflows.
-
-fix all the ICursor methods to return an io error on invalid instead of panic
+tempted to limit key size.  no overflows for keys.  key is limited by
+the page size (minus overhead).  if you need a bigger key, then use a
+bigger page size.
 
 currently no tests for an overflowed key?
 
@@ -93,8 +89,6 @@ of dynamic dispatch is negligible compared to the IO, right?
 
 annoying that I can't have a mut reference to one element of an array
 while holding any reference to any other element of the array.
-
-still have slice copy loops
 
 some unwrap calls in the db parts of the code.  that code also hasn't
 really been reviewed for mem alloc and clone issues.
