@@ -3567,7 +3567,8 @@ impl InnerPart {
                 let csr = try!(SegmentCursor::new(&self.path, self.pgsz, rootPage, &self, g, csrnum));
 
                 cursors.nextCursorNum = cursors.nextCursorNum + 1;
-                cursors.cursors.insert(csrnum, g);
+                let was = cursors.cursors.insert(csrnum, g);
+                assert!(was.is_none());
                 Ok(csr)
             }
         }
