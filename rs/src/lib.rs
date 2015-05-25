@@ -181,17 +181,17 @@ fn seek_len<R>(fs: &mut R) -> io::Result<u64> where R : Seek {
     Ok(len)
 }
 
-struct CursorIterator {
-    csr: MultiCursor
+struct CursorIterator<'a> {
+    csr: MultiCursor<'a>
 }
 
-impl CursorIterator {
+impl<'a> CursorIterator<'a> {
     fn new(it: MultiCursor) -> CursorIterator {
         CursorIterator { csr: it }
     }
 }
 
-impl Iterator for CursorIterator {
+impl<'a> Iterator for CursorIterator<'a> {
     type Item = io::Result<kvp>;
     fn next(&mut self) -> Option<io::Result<kvp>> {
         if self.csr.IsValid() {
@@ -251,7 +251,7 @@ impl SeekResult {
     }
 }
 
-pub trait ICursor : Drop {
+pub trait ICursor {
     fn Seek(&mut self, k: &[u8], sop:SeekOp) -> io::Result<SeekResult>;
     fn First(&mut self) -> io::Result<()>;
     fn Last(&mut self) -> io::Result<()>;
@@ -795,13 +795,13 @@ enum Direction {
     WANDERING = 2,
 }
 
-struct MultiCursor { 
-    subcursors : Box<[SegmentCursor]>, 
+struct MultiCursor<'a> { 
+    subcursors : Box<[SegmentCursor<'a>]>, 
     cur : Option<usize>, 
     dir : Direction,
 }
 
-impl MultiCursor {
+impl<'a> MultiCursor<'a> {
     fn find(&self, swap: bool) -> io::Result<Option<usize>> {
         if self.subcursors.is_empty() {
             Ok(None)
@@ -848,13 +848,7 @@ impl MultiCursor {
 
 }
 
-impl Drop for MultiCursor {
-    fn drop(&mut self) {
-        // TODO
-    }
-}
-
-impl ICursor for MultiCursor {
+impl<'a> ICursor for MultiCursor<'a> {
     fn IsValid(&self) -> bool {
         match self.cur {
             Some(i) => self.subcursors[i].IsValid(),
@@ -1016,11 +1010,11 @@ impl ICursor for MultiCursor {
 
 }
 
-pub struct LivingCursor { 
-    chain : MultiCursor
+pub struct LivingCursor<'a> { 
+    chain : MultiCursor<'a>
 }
 
-impl LivingCursor {
+impl<'a> LivingCursor<'a> {
     fn skipTombstonesForward(&mut self) -> io::Result<()> {
         while self.chain.IsValid() && try!(self.chain.ValueLength()).is_none() {
             try!(self.chain.Next());
@@ -1040,13 +1034,7 @@ impl LivingCursor {
     }
 }
 
-impl Drop for LivingCursor {
-    fn drop(&mut self) {
-        // TODO
-    }
-}
-
-impl ICursor for LivingCursor {
+impl<'a> ICursor for LivingCursor<'a> {
     fn First(&mut self) -> io::Result<()> {
         try!(self.chain.First());
         try!(self.skipTombstonesForward());
@@ -2182,13 +2170,21 @@ fn readOverflow(path: &str, pgsz: usize, firstPage: PageNum, buf: &mut [u8]) -> 
     utils::ReadFully(&mut ostrm, buf)
 }
 
-struct SegmentCursor {
+struct SegmentCursor<'a> {
     path: String,
+
+    // TODO in the f# version, these three were a closure.
+    // it would be nice to make it work that way again.
+    // so that this code would not have specific knowledge
+    // of the InnerPart type.
+    inner: &'a InnerPart,
+    segnum: SegmentNum,
+    csrnum: u64,
+
     fs: File,
     len: u64,
     rootPage: PageNum,
     pr: PageBuffer,
-    // TODO hook
     currentPage: PageNum,
     leafKeys: Vec<usize>,
     previousLeaf: PageNum,
@@ -2198,8 +2194,8 @@ struct SegmentCursor {
     lastLeaf: PageNum,
 }
 
-impl SegmentCursor {
-    fn new(path: &str, pgsz: usize, rootPage: PageNum) -> io::Result<SegmentCursor> {
+impl<'a> SegmentCursor<'a> {
+    fn new(path: &str, pgsz: usize, rootPage: PageNum, inner: &'a InnerPart, segnum: SegmentNum, csrnum: u64) -> io::Result<SegmentCursor<'a>> {
         let mut f = try!(OpenOptions::new()
                 .read(true)
                 .open(path));
@@ -2207,6 +2203,9 @@ impl SegmentCursor {
         let mut res = SegmentCursor {
             path: String::from_str(path),
             fs: f,
+            inner: inner,
+            segnum: segnum,
+            csrnum: csrnum,
             len: len,
             rootPage: rootPage,
             pr: PageBuffer::new(pgsz),
@@ -2369,7 +2368,8 @@ impl SegmentCursor {
         }
     }
 
-    fn keyInLeaf2<'a>(&'a self, n: usize) -> io::Result<KeyVal<'a>> { 
+    // TODO experimental
+    fn keyInLeaf2(&'a self, n: usize) -> io::Result<KeyVal<'a>> { 
         let mut cur = self.leafKeys[n as usize];
         let kflag = self.pr.GetByte(&mut cur);
         let klen = self.pr.GetVarint(&mut cur) as usize;
@@ -2757,13 +2757,13 @@ impl SegmentCursor {
 
 }
 
-impl Drop for SegmentCursor {
+impl<'a> Drop for SegmentCursor<'a> {
     fn drop(&mut self) {
-        // TODO
+        self.inner.cursor_dropped(self.segnum, self.csrnum);
     }
 }
 
-impl ICursor for SegmentCursor {
+impl<'a> ICursor for SegmentCursor<'a> {
     fn IsValid(&self) -> bool {
         self.leafIsValid()
     }
@@ -3185,8 +3185,8 @@ struct SafeHeader {
 }
 
 struct SafeCursors {
-    TODO: u32,
-    // TODO cursors: HashMap<SegmentNum,Vec<Box<ICursor>>>,
+    nextCursorNum: u64,
+    cursors: HashMap<u64,SegmentNum>,
 }
 
 struct InnerPart {
@@ -3264,7 +3264,8 @@ impl<'a> db<'a> {
         };
 
         let cursors = SafeCursors {
-            TODO: 1,
+            nextCursorNum: 1,
+            cursors: HashMap::new(),
         };
 
         let inner = InnerPart {
@@ -3328,6 +3329,14 @@ impl<'a> db<'a> {
 }
 
 impl InnerPart {
+
+    fn cursor_dropped(&self, segnum: SegmentNum, csrnum: u64) {
+        //println!("cursor_dropped");
+        let mut cursors = self.lock_cursors().unwrap(); // gotta succeed
+        let seg = cursors.cursors.remove(&csrnum).expect("gotta be there");
+        assert_eq!(seg, segnum);
+        // TODO is this the place to check to see if all the cursors on that segment are gone?
+    }
 
     fn getBlock(&self, space: &mut Space, specificSizeInPages: PageNum) -> PageBlock {
         if specificSizeInPages > 0 {
@@ -3553,16 +3562,12 @@ impl InnerPart {
                     )
                     //printfn "done with cursor %O" g 
                 */
-                let csr = try!(SegmentCursor::new(&self.path, self.pgsz, rootPage));
-                // note that getCursor is (and must be) only called from within
-                // lock critSectionCursors
-                /* TODO
-                let cur = match Map.tryFind g cursors with
-                           | Some c -> c
-                           | None -> []
-                cursors <- Map.add g (csr :: cur) cursors
-                */
-                //printfn "added cursor %O: %A" g seg
+                let mut cursors = try!(self.lock_cursors());
+                let csrnum = cursors.nextCursorNum;
+                let csr = try!(SegmentCursor::new(&self.path, self.pgsz, rootPage, &self, g, csrnum));
+
+                cursors.nextCursorNum = cursors.nextCursorNum + 1;
+                cursors.cursors.insert(csrnum, g);
                 Ok(csr)
             }
         }
