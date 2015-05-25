@@ -44,9 +44,15 @@ fn time_me() {
             let g = try!(db.WriteSegmentFromSortedSequence(lsm::GenerateNumbers {cur: i * NUM, end: (i+1) * NUM, step: i+1}));
             a.push(g);
         }
-        try!(db.commitSegments(a.clone()));
+        {
+            let mut lck = try!(db.GetWriteLock());
+            try!(lck.commitSegments(a.clone()));
+        }
         let g3 = try!(db.merge(a));
-        try!(db.commitMerge(g3));
+        {
+            let mut lck = try!(db.GetWriteLock());
+            try!(lck.commitMerge(g3));
+        }
 
         let res : std::io::Result<bool> = Ok(true);
         res

@@ -53,24 +53,24 @@ fn insert_pair_string_blob(d: &mut std::collections::HashMap<Box<[u8]>,lsm::Blob
     d.insert(to_utf8(k), v);
 }
 
-fn count_keys_forward(csr: &mut lsm::LivingCursor) -> usize {
+fn count_keys_forward(csr: &mut lsm::LivingCursor) -> std::io::Result<usize> {
     let mut r = 0;
-    csr.First();
+    try!(csr.First());
     while csr.IsValid() {
         r = r + 1;
-        csr.Next();
+        try!(csr.Next());
     }
-    r
+    Ok(r)
 }
 
-fn count_keys_backward(csr: &mut lsm::LivingCursor) -> usize {
+fn count_keys_backward(csr: &mut lsm::LivingCursor) -> std::io::Result<usize> {
     let mut r = 0;
-    csr.Last();
+    try!(csr.Last());
     while csr.IsValid() {
         r = r + 1;
-        csr.Prev();
+        try!(csr.Prev());
     }
-    r
+    Ok(r)
 }
 
 fn ReadValue(b: lsm::Blob) -> std::io::Result<Box<[u8]>> {
@@ -88,11 +88,11 @@ fn ReadValue(b: lsm::Blob) -> std::io::Result<Box<[u8]>> {
 #[test]
 fn empty_cursor() {
     fn f() -> std::io::Result<()> {
-        let mut db = try!(lsm::db::new(tempfile("empty_cursor"), lsm::DEFAULT_SETTINGS));
+        let db = try!(lsm::db::new(tempfile("empty_cursor"), lsm::DEFAULT_SETTINGS));
         let mut csr = try!(db.OpenCursor());
-        csr.First();
+        try!(csr.First());
         assert!(!csr.IsValid());
-        csr.Last();
+        try!(csr.Last());
         assert!(!csr.IsValid());
         Ok(())
     }
@@ -102,13 +102,16 @@ fn empty_cursor() {
 #[test]
 fn first_prev() {
     fn f() -> std::io::Result<()> {
-        let mut db = try!(lsm::db::new(tempfile("first_prev"), lsm::DEFAULT_SETTINGS));
+        let db = try!(lsm::db::new(tempfile("first_prev"), lsm::DEFAULT_SETTINGS));
         let g = try!(db.WriteSegmentFromSortedSequence(lsm::GenerateNumbers {cur: 0, end: 100, step: 1}));
-        try!(db.commitSegments(vec![g]));
+        {
+            let lck = try!(db.GetWriteLock());
+            try!(lck.commitSegments(vec![g]));
+        }
         let mut csr = try!(db.OpenCursor());
-        csr.First();
+        try!(csr.First());
         assert!(csr.IsValid());
-        csr.Prev();
+        try!(csr.Prev());
         assert!(!csr.IsValid());
         Ok(())
     }
@@ -118,13 +121,16 @@ fn first_prev() {
 #[test]
 fn last_next() {
     fn f() -> std::io::Result<()> {
-        let mut db = try!(lsm::db::new(tempfile("first_prev"), lsm::DEFAULT_SETTINGS));
+        let db = try!(lsm::db::new(tempfile("first_prev"), lsm::DEFAULT_SETTINGS));
         let g = try!(db.WriteSegmentFromSortedSequence(lsm::GenerateNumbers {cur: 0, end: 100, step: 1}));
-        try!(db.commitSegments(vec![g]));
+        {
+            let lck = try!(db.GetWriteLock());
+            try!(lck.commitSegments(vec![g]));
+        }
         let mut csr = try!(db.OpenCursor());
-        csr.Last();
+        try!(csr.Last());
         assert!(csr.IsValid());
-        csr.Next();
+        try!(csr.Next());
         assert!(!csr.IsValid());
         Ok(())
     }
@@ -134,28 +140,31 @@ fn last_next() {
 #[test]
 fn seek() {
     fn f() -> std::io::Result<()> {
-        let mut db = try!(lsm::db::new(tempfile("seek"), lsm::DEFAULT_SETTINGS));
+        let db = try!(lsm::db::new(tempfile("seek"), lsm::DEFAULT_SETTINGS));
         let g = try!(db.WriteSegmentFromSortedSequence(lsm::GenerateNumbers {cur: 0, end: 100, step: 1}));
-        try!(db.commitSegments(vec![g]));
+        {
+            let lck = try!(db.GetWriteLock());
+            try!(lck.commitSegments(vec![g]));
+        }
         let mut csr = try!(db.OpenCursor());
-        csr.First();
+        try!(csr.First());
         assert!(csr.IsValid());
         // TODO constructing the utf8 byte array seems convoluted
 
         let k = format!("{:08}", 42).into_bytes().into_boxed_slice();
-        csr.Seek(&k, lsm::SeekOp::SEEK_EQ);
+        try!(csr.Seek(&k, lsm::SeekOp::SEEK_EQ));
         assert!(csr.IsValid());
 
         let k = format!("{:08}", 105).into_bytes().into_boxed_slice();
-        csr.Seek(&k, lsm::SeekOp::SEEK_EQ);
+        try!(csr.Seek(&k, lsm::SeekOp::SEEK_EQ));
         assert!(!csr.IsValid());
 
         let k = format!("{:08}", 105).into_bytes().into_boxed_slice();
-        csr.Seek(&k, lsm::SeekOp::SEEK_GE);
+        try!(csr.Seek(&k, lsm::SeekOp::SEEK_GE));
         assert!(!csr.IsValid());
 
         let k = format!("{:08}", 105).into_bytes().into_boxed_slice();
-        csr.Seek(&k, lsm::SeekOp::SEEK_LE);
+        try!(csr.Seek(&k, lsm::SeekOp::SEEK_LE));
         assert!(csr.IsValid());
         // TODO get the key
 
@@ -167,43 +176,46 @@ fn seek() {
 #[test]
 fn lexographic() {
     fn f() -> std::io::Result<()> {
-        let mut db = try!(lsm::db::new(tempfile("lexicographic"), lsm::DEFAULT_SETTINGS));
+        let db = try!(lsm::db::new(tempfile("lexicographic"), lsm::DEFAULT_SETTINGS));
         let mut d = std::collections::HashMap::new();
         insert_pair_string_string(&mut d, "8", "");
         insert_pair_string_string(&mut d, "10", "");
         insert_pair_string_string(&mut d, "20", "");
         let g = try!(db.WriteSegment(d));
-        try!(db.commitSegments(vec![g]));
+        {
+            let lck = try!(db.GetWriteLock());
+            try!(lck.commitSegments(vec![g]));
+        }
         let mut csr = try!(db.OpenCursor());
-        csr.First();
+        try!(csr.First());
         assert!(csr.IsValid());
         assert_eq!(from_utf8(csr.Key().unwrap()), "10");
 
-        csr.Next();
+        try!(csr.Next());
         assert!(csr.IsValid());
         assert_eq!(from_utf8(csr.Key().unwrap()), "20");
 
-        csr.Next();
+        try!(csr.Next());
         assert!(csr.IsValid());
         assert_eq!(from_utf8(csr.Key().unwrap()), "8");
 
-        csr.Next();
+        try!(csr.Next());
         assert!(!csr.IsValid());
 
         // --------
-        csr.Last();
+        try!(csr.Last());
         assert!(csr.IsValid());
         assert_eq!(from_utf8(csr.Key().unwrap()), "8");
 
-        csr.Prev();
+        try!(csr.Prev());
         assert!(csr.IsValid());
         assert_eq!(from_utf8(csr.Key().unwrap()), "20");
 
-        csr.Prev();
+        try!(csr.Prev());
         assert!(csr.IsValid());
         assert_eq!(from_utf8(csr.Key().unwrap()), "10");
 
-        csr.Prev();
+        try!(csr.Prev());
         assert!(!csr.IsValid());
 
         Ok(())
@@ -214,7 +226,7 @@ fn lexographic() {
 #[test]
 fn seek_cur() {
     fn f() -> std::io::Result<()> {
-        let mut db = try!(lsm::db::new(tempfile("seek_cur"), lsm::DEFAULT_SETTINGS));
+        let db = try!(lsm::db::new(tempfile("seek_cur"), lsm::DEFAULT_SETTINGS));
         let mut t1 = std::collections::HashMap::new();
         for i in 0 .. 100 {
             let sk = format!("{:03}", i);
@@ -229,10 +241,13 @@ fn seek_cur() {
         }
         let g1 = try!(db.WriteSegment(t1));
         let g2 = try!(db.WriteSegment(t2));
-        try!(db.commitSegments(vec![g1]));
-        try!(db.commitSegments(vec![g2]));
+        {
+            let lck = try!(db.GetWriteLock());
+            try!(lck.commitSegments(vec![g1]));
+            try!(lck.commitSegments(vec![g2]));
+        }
         let mut csr = try!(db.OpenCursor());
-        csr.Seek(&to_utf8("00001"), lsm::SeekOp::SEEK_EQ);;
+        try!(csr.Seek(&to_utf8("00001"), lsm::SeekOp::SEEK_EQ));
         assert!(csr.IsValid());
         Ok(())
     }
@@ -242,7 +257,7 @@ fn seek_cur() {
 #[test]
 fn weird() {
     fn f() -> std::io::Result<()> {
-        let mut db = try!(lsm::db::new(tempfile("weird"), lsm::DEFAULT_SETTINGS));
+        let db = try!(lsm::db::new(tempfile("weird"), lsm::DEFAULT_SETTINGS));
         let mut t1 = std::collections::HashMap::new();
         for i in 0 .. 100 {
             let sk = format!("{:03}", i);
@@ -257,54 +272,57 @@ fn weird() {
         }
         let g1 = try!(db.WriteSegment(t1));
         let g2 = try!(db.WriteSegment(t2));
-        try!(db.commitSegments(vec![g1]));
-        try!(db.commitSegments(vec![g2]));
+        {
+            let lck = try!(db.GetWriteLock());
+            try!(lck.commitSegments(vec![g1]));
+            try!(lck.commitSegments(vec![g2]));
+        }
         let mut csr = try!(db.OpenCursor());
-        csr.First();
+        try!(csr.First());
         for _ in 0 .. 100 {
-            csr.Next();
+            try!(csr.Next());
             assert!(csr.IsValid());
         }
         for _ in 0 .. 50 {
-            csr.Prev();
+            try!(csr.Prev());
             assert!(csr.IsValid());
         }
         for _ in 0 .. 100 {
-            csr.Next();
+            try!(csr.Next());
             assert!(csr.IsValid());
-            csr.Next();
+            try!(csr.Next());
             assert!(csr.IsValid());
-            csr.Prev();
+            try!(csr.Prev());
             assert!(csr.IsValid());
         }
         println!("{:?}", csr.Key());
         for _ in 0 .. 50 {
             let k = csr.Key().unwrap();
             println!("{:?}", k);
-            csr.Seek(&k, lsm::SeekOp::SEEK_EQ);;
+            try!(csr.Seek(&k, lsm::SeekOp::SEEK_EQ));
             assert!(csr.IsValid());
-            csr.Next();
-            assert!(csr.IsValid());
-        }
-        for _ in 0 .. 50 {
-            let k = csr.Key().unwrap();
-            csr.Seek(&k, lsm::SeekOp::SEEK_EQ);;
-            assert!(csr.IsValid());
-            csr.Prev();
+            try!(csr.Next());
             assert!(csr.IsValid());
         }
         for _ in 0 .. 50 {
             let k = csr.Key().unwrap();
-            csr.Seek(&k, lsm::SeekOp::SEEK_LE);;
+            try!(csr.Seek(&k, lsm::SeekOp::SEEK_EQ));
             assert!(csr.IsValid());
-            csr.Prev();
+            try!(csr.Prev());
             assert!(csr.IsValid());
         }
         for _ in 0 .. 50 {
             let k = csr.Key().unwrap();
-            csr.Seek(&k, lsm::SeekOp::SEEK_GE);;
+            try!(csr.Seek(&k, lsm::SeekOp::SEEK_LE));
             assert!(csr.IsValid());
-            csr.Next();
+            try!(csr.Prev());
+            assert!(csr.IsValid());
+        }
+        for _ in 0 .. 50 {
+            let k = csr.Key().unwrap();
+            try!(csr.Seek(&k, lsm::SeekOp::SEEK_GE));
+            assert!(csr.IsValid());
+            try!(csr.Next());
             assert!(csr.IsValid());
         }
         // got the following value from the debugger.
@@ -319,31 +337,37 @@ fn weird() {
 #[test]
 fn no_le_ge_multicursor() {
     fn f() -> std::io::Result<()> {
-        let mut db = try!(lsm::db::new(tempfile("no_le_ge_multicursor"), lsm::DEFAULT_SETTINGS));
+        let db = try!(lsm::db::new(tempfile("no_le_ge_multicursor"), lsm::DEFAULT_SETTINGS));
 
         let mut t1 = std::collections::HashMap::new();
         insert_pair_string_string(&mut t1, "c", "3");
         insert_pair_string_string(&mut t1, "g", "7");
         let g1 = try!(db.WriteSegment(t1));
-        try!(db.commitSegments(vec![g1]));
+        {
+            let lck = try!(db.GetWriteLock());
+            try!(lck.commitSegments(vec![g1]));
+        }
 
         let mut t2 = std::collections::HashMap::new();
         insert_pair_string_string(&mut t2, "e", "5");
         let g2 = try!(db.WriteSegment(t2));
-        try!(db.commitSegments(vec![g2]));
+        {
+            let lck = try!(db.GetWriteLock());
+            try!(lck.commitSegments(vec![g2]));
+        }
 
         let mut csr = try!(db.OpenCursor());
 
-        csr.Seek(&to_utf8("a"), lsm::SeekOp::SEEK_LE);;
+        try!(csr.Seek(&to_utf8("a"), lsm::SeekOp::SEEK_LE));
         assert!(!csr.IsValid());
 
-        csr.Seek(&to_utf8("d"), lsm::SeekOp::SEEK_LE);;
+        try!(csr.Seek(&to_utf8("d"), lsm::SeekOp::SEEK_LE));
         assert!(csr.IsValid());
 
-        csr.Seek(&to_utf8("f"), lsm::SeekOp::SEEK_GE);;
+        try!(csr.Seek(&to_utf8("f"), lsm::SeekOp::SEEK_GE));
         assert!(csr.IsValid());
 
-        csr.Seek(&to_utf8("h"), lsm::SeekOp::SEEK_GE);;
+        try!(csr.Seek(&to_utf8("h"), lsm::SeekOp::SEEK_GE));
         assert!(!csr.IsValid());
 
         Ok(())
@@ -354,14 +378,17 @@ fn no_le_ge_multicursor() {
 #[test]
 fn empty_val() {
     fn f() -> std::io::Result<()> {
-        let mut db = try!(lsm::db::new(tempfile("empty_val"), lsm::DEFAULT_SETTINGS));
+        let db = try!(lsm::db::new(tempfile("empty_val"), lsm::DEFAULT_SETTINGS));
 
         let mut t1 = std::collections::HashMap::new();
         insert_pair_string_string(&mut t1, "_", "");
         let g1 = try!(db.WriteSegment(t1));
-        try!(db.commitSegments(vec![g1]));
+        {
+            let lck = try!(db.GetWriteLock());
+            try!(lck.commitSegments(vec![g1]));
+        }
         let mut csr = try!(db.OpenCursor());
-        csr.Seek(&to_utf8("_"), lsm::SeekOp::SEEK_EQ);;
+        try!(csr.Seek(&to_utf8("_"), lsm::SeekOp::SEEK_EQ));
         assert!(csr.IsValid());
         assert_eq!(0, csr.ValueLength().unwrap().unwrap());
 
@@ -373,7 +400,7 @@ fn empty_val() {
 #[test]
 fn delete_not_there() {
     fn f() -> std::io::Result<()> {
-        let mut db = try!(lsm::db::new(tempfile("delete_not_there"), lsm::DEFAULT_SETTINGS));
+        let db = try!(lsm::db::new(tempfile("delete_not_there"), lsm::DEFAULT_SETTINGS));
 
         let mut t1 = std::collections::HashMap::new();
         insert_pair_string_string(&mut t1, "a", "1");
@@ -381,16 +408,22 @@ fn delete_not_there() {
         insert_pair_string_string(&mut t1, "c", "3");
         insert_pair_string_string(&mut t1, "d", "4");
         let g1 = try!(db.WriteSegment(t1));
-        try!(db.commitSegments(vec![g1]));
+        {
+            let lck = try!(db.GetWriteLock());
+            try!(lck.commitSegments(vec![g1]));
+        }
 
         let mut t2 = std::collections::HashMap::new();
         insert_pair_string_blob(&mut t2, "e", lsm::Blob::Tombstone);
         let g2 = try!(db.WriteSegment2(t2));
-        try!(db.commitSegments(vec![g2]));
+        {
+            let lck = try!(db.GetWriteLock());
+            try!(lck.commitSegments(vec![g2]));
+        }
 
         let mut csr = try!(db.OpenCursor());
-        assert_eq!(4, count_keys_forward(&mut csr));
-        assert_eq!(4, count_keys_backward(&mut csr));
+        assert_eq!(4, try!(count_keys_forward(&mut csr)));
+        assert_eq!(4, try!(count_keys_backward(&mut csr)));
 
         Ok(())
     }
@@ -400,16 +433,19 @@ fn delete_not_there() {
 #[test]
 fn delete_nothing_there() {
     fn f() -> std::io::Result<()> {
-        let mut db = try!(lsm::db::new(tempfile("delete_nothing_there"), lsm::DEFAULT_SETTINGS));
+        let db = try!(lsm::db::new(tempfile("delete_nothing_there"), lsm::DEFAULT_SETTINGS));
 
         let mut t2 = std::collections::HashMap::new();
         insert_pair_string_blob(&mut t2, "e", lsm::Blob::Tombstone);
         let g2 = try!(db.WriteSegment2(t2));
-        try!(db.commitSegments(vec![g2]));
+        {
+            let lck = try!(db.GetWriteLock());
+            try!(lck.commitSegments(vec![g2]));
+        }
 
         let mut csr = try!(db.OpenCursor());
-        assert_eq!(0, count_keys_forward(&mut csr));
-        assert_eq!(0, count_keys_backward(&mut csr));
+        assert_eq!(0, try!(count_keys_forward(&mut csr)));
+        assert_eq!(0, try!(count_keys_backward(&mut csr)));
 
         Ok(())
     }
@@ -419,7 +455,7 @@ fn delete_nothing_there() {
 #[test]
 fn simple_tombstone() {
     fn f(del: &str) -> std::io::Result<()> {
-        let mut db = try!(lsm::db::new(tempfile("simple_tombstone"), lsm::DEFAULT_SETTINGS));
+        let db = try!(lsm::db::new(tempfile("simple_tombstone"), lsm::DEFAULT_SETTINGS));
 
         let mut t1 = std::collections::HashMap::new();
         insert_pair_string_string(&mut t1, "a", "1");
@@ -427,16 +463,22 @@ fn simple_tombstone() {
         insert_pair_string_string(&mut t1, "c", "3");
         insert_pair_string_string(&mut t1, "d", "4");
         let g1 = try!(db.WriteSegment(t1));
-        try!(db.commitSegments(vec![g1]));
+        {
+            let lck = try!(db.GetWriteLock());
+            try!(lck.commitSegments(vec![g1]));
+        }
 
         let mut t2 = std::collections::HashMap::new();
         insert_pair_string_blob(&mut t2, del, lsm::Blob::Tombstone);
         let g2 = try!(db.WriteSegment2(t2));
-        try!(db.commitSegments(vec![g2]));
+        {
+            let lck = try!(db.GetWriteLock());
+            try!(lck.commitSegments(vec![g2]));
+        }
 
         let mut csr = try!(db.OpenCursor());
-        assert_eq!(3, count_keys_forward(&mut csr));
-        assert_eq!(3, count_keys_backward(&mut csr));
+        assert_eq!(3, try!(count_keys_forward(&mut csr)));
+        assert_eq!(3, try!(count_keys_backward(&mut csr)));
 
         Ok(())
     }
@@ -449,7 +491,7 @@ fn simple_tombstone() {
 #[test]
 fn many_segments() {
     fn f() -> std::io::Result<bool> {
-        let mut db = try!(lsm::db::new(tempfile("many_segments"), lsm::DEFAULT_SETTINGS));
+        let db = try!(lsm::db::new(tempfile("many_segments"), lsm::DEFAULT_SETTINGS));
 
         const NUM : usize = 5000;
         const EACH : usize = 10;
@@ -459,7 +501,10 @@ fn many_segments() {
             let g = try!(db.WriteSegmentFromSortedSequence(lsm::GenerateNumbers {cur: i * EACH, end: (i+1) * EACH, step: 1}));
             a.push(g);
         }
-        try!(db.commitSegments(a.clone()));
+        {
+            let lck = try!(db.GetWriteLock());
+            try!(lck.commitSegments(a.clone()));
+        }
 
         let res : std::io::Result<bool> = Ok(true);
         res
@@ -470,7 +515,7 @@ fn many_segments() {
 #[test]
 fn one_blob() {
     fn f() -> std::io::Result<()> {
-        let mut db = try!(lsm::db::new(tempfile("one_blob"), lsm::DEFAULT_SETTINGS));
+        let db = try!(lsm::db::new(tempfile("one_blob"), lsm::DEFAULT_SETTINGS));
 
         const LEN : usize = 100000;
 
@@ -482,13 +527,16 @@ fn one_blob() {
         let mut t2 = std::collections::HashMap::new();
         insert_pair_string_blob(&mut t2, "e", lsm::Blob::Array(v.into_boxed_slice()));
         let g2 = try!(db.WriteSegment2(t2));
-        try!(db.commitSegments(vec![g2]));
+        {
+            let lck = try!(db.GetWriteLock());
+            try!(lck.commitSegments(vec![g2]));
+        }
 
         let mut csr = try!(db.OpenCursor());
-        assert_eq!(1, count_keys_forward(&mut csr));
-        assert_eq!(1, count_keys_backward(&mut csr));
+        assert_eq!(1, try!(count_keys_forward(&mut csr)));
+        assert_eq!(1, try!(count_keys_backward(&mut csr)));
 
-        csr.First();
+        try!(csr.First());
         assert!(csr.IsValid());
         assert_eq!(LEN, csr.ValueLength().unwrap().unwrap());
         let mut q = csr.Value().unwrap();
@@ -511,24 +559,27 @@ fn one_blob() {
 #[test]
 fn no_le_ge() {
     fn f() -> std::io::Result<()> {
-        let mut db = try!(lsm::db::new(tempfile("no_le_ge"), lsm::DEFAULT_SETTINGS));
+        let db = try!(lsm::db::new(tempfile("no_le_ge"), lsm::DEFAULT_SETTINGS));
         let mut t1 = std::collections::HashMap::new();
         insert_pair_string_string(&mut t1, "c", "3");
         insert_pair_string_string(&mut t1, "g", "7");
         insert_pair_string_string(&mut t1, "e", "5");
         let g1 = try!(db.WriteSegment(t1));
-        try!(db.commitSegments(vec![g1]));
+        {
+            let lck = try!(db.GetWriteLock());
+            try!(lck.commitSegments(vec![g1]));
+        }
         let mut csr = try!(db.OpenCursor());
-        csr.Seek(&to_utf8("a"), lsm::SeekOp::SEEK_LE);
+        try!(csr.Seek(&to_utf8("a"), lsm::SeekOp::SEEK_LE));
         assert!(!csr.IsValid());
 
-        csr.Seek(&to_utf8("d"), lsm::SeekOp::SEEK_LE);
+        try!(csr.Seek(&to_utf8("d"), lsm::SeekOp::SEEK_LE));
         assert!(csr.IsValid());
 
-        csr.Seek(&to_utf8("f"), lsm::SeekOp::SEEK_GE);
+        try!(csr.Seek(&to_utf8("f"), lsm::SeekOp::SEEK_GE));
         assert!(csr.IsValid());
 
-        csr.Seek(&to_utf8("h"), lsm::SeekOp::SEEK_GE);
+        try!(csr.Seek(&to_utf8("h"), lsm::SeekOp::SEEK_GE));
         assert!(!csr.IsValid());
 
         Ok(())
@@ -539,7 +590,7 @@ fn no_le_ge() {
 #[test]
 fn seek_ge_le_bigger() {
     fn f() -> std::io::Result<()> {
-        let mut db = try!(lsm::db::new(tempfile("seek_ge_le_bigger"), lsm::DEFAULT_SETTINGS));
+        let db = try!(lsm::db::new(tempfile("seek_ge_le_bigger"), lsm::DEFAULT_SETTINGS));
         let mut t1 = std::collections::HashMap::new();
         for i in 0 .. 10000 {
             let sk = format!("{}", i*2);
@@ -547,19 +598,22 @@ fn seek_ge_le_bigger() {
             insert_pair_string_string(&mut t1, &sk, &sv);
         }
         let g = try!(db.WriteSegment(t1));
-        try!(db.commitSegments(vec![g]));
+        {
+            let lck = try!(db.GetWriteLock());
+            try!(lck.commitSegments(vec![g]));
+        }
         let mut csr = try!(db.OpenCursor());
-        csr.Seek(&to_utf8("8088"), lsm::SeekOp::SEEK_EQ);
+        try!(csr.Seek(&to_utf8("8088"), lsm::SeekOp::SEEK_EQ));
         assert!(csr.IsValid());
 
-        csr.Seek(&to_utf8("8087"), lsm::SeekOp::SEEK_EQ);
+        try!(csr.Seek(&to_utf8("8087"), lsm::SeekOp::SEEK_EQ));
         assert!(!csr.IsValid());
 
-        csr.Seek(&to_utf8("8087"), lsm::SeekOp::SEEK_LE);
+        try!(csr.Seek(&to_utf8("8087"), lsm::SeekOp::SEEK_LE));
         assert!(csr.IsValid());
         assert_eq!("8086", from_utf8(csr.Key().unwrap()));
 
-        csr.Seek(&to_utf8("8087"), lsm::SeekOp::SEEK_GE);
+        try!(csr.Seek(&to_utf8("8087"), lsm::SeekOp::SEEK_GE));
         assert!(csr.IsValid());
         assert_eq!("8088", from_utf8(csr.Key().unwrap()));
 
@@ -571,7 +625,7 @@ fn seek_ge_le_bigger() {
 #[test]
 fn seek_ge_le() {
     fn f() -> std::io::Result<()> {
-        let mut db = try!(lsm::db::new(tempfile("seek_ge_le"), lsm::DEFAULT_SETTINGS));
+        let db = try!(lsm::db::new(tempfile("seek_ge_le"), lsm::DEFAULT_SETTINGS));
         let mut t1 = std::collections::HashMap::new();
         insert_pair_string_string(&mut t1, "a", "1");
         insert_pair_string_string(&mut t1, "c", "3");
@@ -587,19 +641,22 @@ fn seek_ge_le() {
         insert_pair_string_string(&mut t1, "w", "23");
         insert_pair_string_string(&mut t1, "y", "25");
         let g = try!(db.WriteSegment(t1));
-        try!(db.commitSegments(vec![g]));
+        {
+            let lck = try!(db.GetWriteLock());
+            try!(lck.commitSegments(vec![g]));
+        }
         let mut csr = try!(db.OpenCursor());
-        assert_eq!(13, count_keys_forward(&mut csr));
-        assert_eq!(13, count_keys_backward(&mut csr));
+        assert_eq!(13, try!(count_keys_forward(&mut csr)));
+        assert_eq!(13, try!(count_keys_backward(&mut csr)));
 
-        csr.Seek(&to_utf8("n"), lsm::SeekOp::SEEK_EQ);
+        try!(csr.Seek(&to_utf8("n"), lsm::SeekOp::SEEK_EQ));
         assert!(!csr.IsValid());
 
-        csr.Seek(&to_utf8("n"), lsm::SeekOp::SEEK_LE);
+        try!(csr.Seek(&to_utf8("n"), lsm::SeekOp::SEEK_LE));
         assert!(csr.IsValid());
         assert_eq!("m", from_utf8(csr.Key().unwrap()));
 
-        csr.Seek(&to_utf8("n"), lsm::SeekOp::SEEK_GE);
+        try!(csr.Seek(&to_utf8("n"), lsm::SeekOp::SEEK_GE));
         assert!(csr.IsValid());
         assert_eq!("o", from_utf8(csr.Key().unwrap()));
 
@@ -611,56 +668,62 @@ fn seek_ge_le() {
 #[test]
 fn tombstone() {
     fn f() -> std::io::Result<()> {
-        let mut db = try!(lsm::db::new(tempfile("tombstone"), lsm::DEFAULT_SETTINGS));
+        let db = try!(lsm::db::new(tempfile("tombstone"), lsm::DEFAULT_SETTINGS));
         let mut t1 = std::collections::HashMap::new();
         insert_pair_string_string(&mut t1, "a", "1");
         insert_pair_string_string(&mut t1, "b", "2");
         insert_pair_string_string(&mut t1, "c", "3");
         insert_pair_string_string(&mut t1, "d", "4");
         let g1 = try!(db.WriteSegment(t1));
-        try!(db.commitSegments(vec![g1]));
+        {
+            let lck = try!(db.GetWriteLock());
+            try!(lck.commitSegments(vec![g1]));
+        }
         let mut t2 = std::collections::HashMap::new();
         insert_pair_string_blob(&mut t2, "b", lsm::Blob::Tombstone);
         let g2 = try!(db.WriteSegment2(t2));
-        try!(db.commitSegments(vec![g2]));
+        {
+            let lck = try!(db.GetWriteLock());
+            try!(lck.commitSegments(vec![g2]));
+        }
         // TODO it would be nice to check the multicursor without the living wrapper
-        let mut lc = try!(db.OpenCursor());
-        lc.First();
-        assert!(lc.IsValid());
-        assert_eq!("a", from_utf8(lc.Key().unwrap()));
-        assert_eq!("1", from_utf8(ReadValue(lc.Value().unwrap()).unwrap()));
+        let mut csr = try!(db.OpenCursor());
+        try!(csr.First());
+        assert!(csr.IsValid());
+        assert_eq!("a", from_utf8(csr.Key().unwrap()));
+        assert_eq!("1", from_utf8(ReadValue(csr.Value().unwrap()).unwrap()));
 
-        lc.Next();
-        assert!(lc.IsValid());
-        assert_eq!("c", from_utf8(lc.Key().unwrap()));
-        assert_eq!("3", from_utf8(ReadValue(lc.Value().unwrap()).unwrap()));
+        try!(csr.Next());
+        assert!(csr.IsValid());
+        assert_eq!("c", from_utf8(csr.Key().unwrap()));
+        assert_eq!("3", from_utf8(ReadValue(csr.Value().unwrap()).unwrap()));
 
-        lc.Next();
-        assert!(lc.IsValid());
-        assert_eq!("d", from_utf8(lc.Key().unwrap()));
-        assert_eq!("4", from_utf8(ReadValue(lc.Value().unwrap()).unwrap()));
+        try!(csr.Next());
+        assert!(csr.IsValid());
+        assert_eq!("d", from_utf8(csr.Key().unwrap()));
+        assert_eq!("4", from_utf8(ReadValue(csr.Value().unwrap()).unwrap()));
 
-        lc.Next();
-        assert!(!lc.IsValid());
+        try!(csr.Next());
+        assert!(!csr.IsValid());
 
-        assert_eq!(3, count_keys_forward(&mut lc));
-        assert_eq!(3, count_keys_backward(&mut lc));
+        assert_eq!(3, try!(count_keys_forward(&mut csr)));
+        assert_eq!(3, try!(count_keys_backward(&mut csr)));
 
-        lc.Seek(&to_utf8("b"), lsm::SeekOp::SEEK_EQ);
-        assert!(!lc.IsValid());
+        try!(csr.Seek(&to_utf8("b"), lsm::SeekOp::SEEK_EQ));
+        assert!(!csr.IsValid());
 
-        lc.Seek(&to_utf8("b"), lsm::SeekOp::SEEK_LE);
-        assert!(lc.IsValid());
-        assert_eq!("a", from_utf8(lc.Key().unwrap()));
-        lc.Next();
-        assert!(lc.IsValid());
-        assert_eq!("c", from_utf8(lc.Key().unwrap()));
+        try!(csr.Seek(&to_utf8("b"), lsm::SeekOp::SEEK_LE));
+        assert!(csr.IsValid());
+        assert_eq!("a", from_utf8(csr.Key().unwrap()));
+        try!(csr.Next());
+        assert!(csr.IsValid());
+        assert_eq!("c", from_utf8(csr.Key().unwrap()));
 
-        lc.Seek(&to_utf8("b"), lsm::SeekOp::SEEK_GE);
-        assert!(lc.IsValid());
-        assert_eq!("c", from_utf8(lc.Key().unwrap()));
-        lc.Prev();
-        assert_eq!("a", from_utf8(lc.Key().unwrap()));
+        try!(csr.Seek(&to_utf8("b"), lsm::SeekOp::SEEK_GE));
+        assert!(csr.IsValid());
+        assert_eq!("c", from_utf8(csr.Key().unwrap()));
+        try!(csr.Prev());
+        assert_eq!("a", from_utf8(csr.Key().unwrap()));
 
         Ok(())
     }
@@ -670,25 +733,31 @@ fn tombstone() {
 #[test]
 fn overwrite() {
     fn f() -> std::io::Result<()> {
-        let mut db = try!(lsm::db::new(tempfile("overwrite"), lsm::DEFAULT_SETTINGS));
+        let db = try!(lsm::db::new(tempfile("overwrite"), lsm::DEFAULT_SETTINGS));
         let mut t1 = std::collections::HashMap::new();
         insert_pair_string_string(&mut t1, "a", "1");
         insert_pair_string_string(&mut t1, "b", "2");
         insert_pair_string_string(&mut t1, "c", "3");
         insert_pair_string_string(&mut t1, "d", "4");
         let g1 = try!(db.WriteSegment(t1));
-        try!(db.commitSegments(vec![g1]));
-        fn getb(db: &mut lsm::db) -> std::io::Result<String> {
+        {
+            let lck = try!(db.GetWriteLock());
+            try!(lck.commitSegments(vec![g1]));
+        }
+        fn getb(db: &lsm::db) -> std::io::Result<String> {
             let mut csr = try!(db.OpenCursor());
-            csr.Seek(&to_utf8("b"), lsm::SeekOp::SEEK_EQ);
+            try!(csr.Seek(&to_utf8("b"), lsm::SeekOp::SEEK_EQ));
             Ok(from_utf8(ReadValue(csr.Value().unwrap()).unwrap()))
         }
-        assert_eq!("2", getb(&mut db).unwrap());
+        assert_eq!("2", getb(&db).unwrap());
         let mut t2 = std::collections::HashMap::new();
         insert_pair_string_string(&mut t2, "b", "5");
         let g2 = try!(db.WriteSegment(t2));
-        try!(db.commitSegments(vec![g2]));
-        assert_eq!("5", getb(&mut db).unwrap());
+        {
+            let lck = try!(db.GetWriteLock());
+            try!(lck.commitSegments(vec![g2]));
+        }
+        assert_eq!("5", getb(&db).unwrap());
 
         Ok(())
     }
@@ -703,7 +772,7 @@ fn blobs_of_many_sizes() {
                 PagesPerBlock : 4,
                 .. lsm::DEFAULT_SETTINGS
             };
-        let mut db = try!(lsm::db::new(tempfile("blobs_of_many_sizes"), settings));
+        let db = try!(lsm::db::new(tempfile("blobs_of_many_sizes"), settings));
         // TODO why doesn't Box<[u8]> support clone?
         // for now, we have a function to generate the pile we need, and we call it twice
         fn gen() -> std::collections::HashMap<Box<[u8]>,Box<[u8]>> {
@@ -720,11 +789,14 @@ fn blobs_of_many_sizes() {
             t1
         }
         let g1 = try!(db.WriteSegment(gen()));
-        try!(db.commitSegments(vec![g1]));
+        {
+            let lck = try!(db.GetWriteLock());
+            try!(lck.commitSegments(vec![g1]));
+        }
         let mut csr = try!(db.OpenCursor());
         let t1 = gen(); // generate another copy
         for (k,v) in t1 {
-            csr.Seek(&k, lsm::SeekOp::SEEK_EQ);
+            try!(csr.Seek(&k, lsm::SeekOp::SEEK_EQ));
             assert!(csr.IsValid());
             assert_eq!(v.len(), csr.ValueLength().unwrap().unwrap());
             assert_eq!(v, ReadValue(csr.Value().unwrap()).unwrap());
@@ -738,34 +810,40 @@ fn blobs_of_many_sizes() {
 fn write_then_read() {
     fn f() -> std::io::Result<()> {
         fn write(name: &str) -> std::io::Result<()> {
-            let mut db = try!(lsm::db::new(String::from_str(name), lsm::DEFAULT_SETTINGS));
+            let db = try!(lsm::db::new(String::from_str(name), lsm::DEFAULT_SETTINGS));
             let mut d = std::collections::HashMap::new();
             for i in 1 .. 100 {
                 let s = format!("{}", i);
                 insert_pair_string_string(&mut d, &s, &s);
             }
             let g = try!(db.WriteSegment(d));
-            try!(db.commitSegments(vec![g]));
+        {
+            let lck = try!(db.GetWriteLock());
+            try!(lck.commitSegments(vec![g]));
+        }
             let mut d = std::collections::HashMap::new();
             insert_pair_string_blob(&mut d, "73", lsm::Blob::Tombstone);
             let g = try!(db.WriteSegment2(d));
-            try!(db.commitSegments(vec![g]));
+        {
+            let lck = try!(db.GetWriteLock());
+            try!(lck.commitSegments(vec![g]));
+        }
             Ok(())
         }
 
         fn read(name: &str) -> std::io::Result<()> {
-            let mut db = try!(lsm::db::new(String::from_str(name), lsm::DEFAULT_SETTINGS));
+            let db = try!(lsm::db::new(String::from_str(name), lsm::DEFAULT_SETTINGS));
             let mut csr = try!(db.OpenCursor());
-            csr.Seek(&format!("{}", 42).into_bytes().into_boxed_slice(), lsm::SeekOp::SEEK_EQ);
+            try!(csr.Seek(&format!("{}", 42).into_bytes().into_boxed_slice(), lsm::SeekOp::SEEK_EQ));
             assert!(csr.IsValid());
-            csr.Next();
+            try!(csr.Next());
             assert_eq!("43", from_utf8(csr.Key().unwrap()));
-            csr.Seek(&format!("{}", 73).into_bytes().into_boxed_slice(), lsm::SeekOp::SEEK_EQ);
+            try!(csr.Seek(&format!("{}", 73).into_bytes().into_boxed_slice(), lsm::SeekOp::SEEK_EQ));
             assert!(!csr.IsValid());
-            csr.Seek(&format!("{}", 73).into_bytes().into_boxed_slice(), lsm::SeekOp::SEEK_LE);
+            try!(csr.Seek(&format!("{}", 73).into_bytes().into_boxed_slice(), lsm::SeekOp::SEEK_LE));
             assert!(csr.IsValid());
             assert_eq!("72", from_utf8(csr.Key().unwrap()));
-            csr.Next();
+            try!(csr.Next());
             assert!(csr.IsValid());
             assert_eq!("74", from_utf8(csr.Key().unwrap()));
             Ok(())
@@ -782,16 +860,19 @@ fn write_then_read() {
 #[test]
 fn prefix_compression() {
     fn f() -> std::io::Result<()> {
-        let mut db = try!(lsm::db::new(tempfile("prefix_compression"), lsm::DEFAULT_SETTINGS));
+        let db = try!(lsm::db::new(tempfile("prefix_compression"), lsm::DEFAULT_SETTINGS));
         let mut d = std::collections::HashMap::new();
         for i in 1 .. 10000 {
             let s = format!("{}", i);
             insert_pair_string_string(&mut d, &("prefix_compression".to_string() + &s), &s);
         }
         let g = try!(db.WriteSegment(d));
-        try!(db.commitSegments(vec![g]));
+        {
+            let lck = try!(db.GetWriteLock());
+            try!(lck.commitSegments(vec![g]));
+        }
         let mut csr = try!(db.OpenCursor());
-        csr.First();
+        try!(csr.First());
         assert!(csr.IsValid());
         Ok(())
     }
@@ -801,7 +882,7 @@ fn prefix_compression() {
 #[test]
 fn threads() {
     fn f() -> std::io::Result<()> {
-        use std::sync::{Arc, Mutex};
+        use std::sync::Arc;
         use std::thread;
 
         let settings = lsm::DbSettings {

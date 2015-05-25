@@ -2908,7 +2908,7 @@ impl IPages for SimplePageManager {
 
     fn Begin(&self) -> io::Result<PendingSegment> {
         match self.nextSeg.lock() {
-            Err(poisoned) => Err(io::Error::new(ErrorKind::Other, "poisoned")),
+            Err(_poisoned) => Err(io::Error::new(ErrorKind::Other, "poisoned")),
             Ok(mut nextSeg) => {
                 let p = PendingSegment::new(*nextSeg);
                 *nextSeg = *nextSeg + 1;
@@ -2919,7 +2919,7 @@ impl IPages for SimplePageManager {
 
     fn GetBlock(&self, ps: &mut PendingSegment) -> io::Result<PageBlock> {
         match self.nextPage.lock() {
-            Err(poisoned) => Err(io::Error::new(ErrorKind::Other, "poisoned")),
+            Err(_poisoned) => Err(io::Error::new(ErrorKind::Other, "poisoned")),
             Ok(mut nextPage) => {
                 let blk = PageBlock::new(*nextPage, *nextPage + 10 - 1);
                 *nextPage = *nextPage + 10;
@@ -3285,7 +3285,7 @@ impl<'a> db<'a> {
         // somebody actually asks for the lock.
 
         let lck = WriteLock { inner: None };
-        let mut res = db {
+        let res = db {
             inner: inner,
             write_lock: Mutex::new(lck),
         };
@@ -3294,7 +3294,7 @@ impl<'a> db<'a> {
 
     pub fn GetWriteLock(&'a self) -> io::Result<std::sync::MutexGuard<WriteLock<'a>>> {
         match self.write_lock.lock() {
-            Err(poisoned) => return Err(io::Error::new(ErrorKind::Other, "poisoned")),
+            Err(_poisoned) => return Err(io::Error::new(ErrorKind::Other, "poisoned")),
             Ok(mut lck) => {
                 // set the inner reference
                 lck.inner = Some(&self.inner);
@@ -3324,16 +3324,6 @@ impl<'a> db<'a> {
 
     pub fn merge(&self, segs:Vec<SegmentNum>) -> io::Result<SegmentNum> {
         self.inner.merge(segs)
-    }
-
-    // TODO remove this
-    pub fn commitSegments(&self, newSegs: Vec<SegmentNum>) -> io::Result<()> {
-        self.inner.commitSegments(newSegs)
-    }
-
-    // TODO remove this
-    pub fn commitMerge(&self, newSegNum:SegmentNum) -> io::Result<()> {
-        self.inner.commitMerge(newSegNum)
     }
 }
 
@@ -3586,7 +3576,7 @@ impl InnerPart {
         // compare the two cursors to see if anything important changed.  if not,
         // commit their writes.  if so, nevermind the written segments and start over.
 
-        let mut st = try!(self.lock_header());
+        let st = try!(self.lock_header());
         let mut clist = Vec::new();
         for g in st.header.currentState.iter() {
             clist.push(try!(self.getCursor(&*st, *g))); // TODO checkForGoneSegment
@@ -3598,8 +3588,8 @@ impl InnerPart {
 
     fn lock_space(&self) -> io::Result<std::sync::MutexGuard<Space>> {
         match self.space.lock() {
-            Err(poisoned) => return Err(io::Error::new(ErrorKind::Other, "poisoned")),
-            Ok(mut lck) => {
+            Err(_poisoned) => return Err(io::Error::new(ErrorKind::Other, "poisoned")),
+            Ok(lck) => {
                 Ok(lck)
             }
         }
@@ -3607,8 +3597,8 @@ impl InnerPart {
 
     fn lock_waiting(&self) -> io::Result<std::sync::MutexGuard<SafeSegmentsInWaiting>> {
         match self.segmentsInWaiting.lock() {
-            Err(poisoned) => return Err(io::Error::new(ErrorKind::Other, "poisoned")),
-            Ok(mut lck) => {
+            Err(_poisoned) => return Err(io::Error::new(ErrorKind::Other, "poisoned")),
+            Ok(lck) => {
                 Ok(lck)
             }
         }
@@ -3616,8 +3606,8 @@ impl InnerPart {
 
     fn lock_merge_stuff(&self) -> io::Result<std::sync::MutexGuard<SafeMergeStuff>> {
         match self.mergeStuff.lock() {
-            Err(poisoned) => return Err(io::Error::new(ErrorKind::Other, "poisoned")),
-            Ok(mut lck) => {
+            Err(_poisoned) => return Err(io::Error::new(ErrorKind::Other, "poisoned")),
+            Ok(lck) => {
                 Ok(lck)
             }
         }
@@ -3625,8 +3615,8 @@ impl InnerPart {
 
     fn lock_header(&self) -> io::Result<std::sync::MutexGuard<SafeHeader>> {
         match self.header.lock() {
-            Err(poisoned) => return Err(io::Error::new(ErrorKind::Other, "poisoned")),
-            Ok(mut lck) => {
+            Err(_poisoned) => return Err(io::Error::new(ErrorKind::Other, "poisoned")),
+            Ok(lck) => {
                 Ok(lck)
             }
         }
@@ -3634,8 +3624,8 @@ impl InnerPart {
 
     fn lock_cursors(&self) -> io::Result<std::sync::MutexGuard<SafeCursors>> {
         match self.cursors.lock() {
-            Err(poisoned) => return Err(io::Error::new(ErrorKind::Other, "poisoned")),
-            Ok(mut lck) => {
+            Err(_poisoned) => return Err(io::Error::new(ErrorKind::Other, "poisoned")),
+            Ok(lck) => {
                 Ok(lck)
             }
         }
@@ -3898,7 +3888,7 @@ impl IPages for InnerPart {
 
     fn Begin(&self) -> io::Result<PendingSegment> {
         match self.nextSeg.lock() {
-            Err(poisoned) => Err(io::Error::new(ErrorKind::Other, "poisoned")),
+            Err(_poisoned) => Err(io::Error::new(ErrorKind::Other, "poisoned")),
             Ok(mut st) => {
                 let p = PendingSegment::new(st.nextSeg);
                 st.nextSeg = st.nextSeg + 1;
@@ -4163,9 +4153,15 @@ mod tests {
                 let g = try!(db.WriteSegmentFromSortedSequence(super::GenerateNumbers {cur: i * NUM, end: (i+1) * NUM, step: i+1}));
                 a.push(g);
             }
-            try!(db.commitSegments(a.clone()));
+            {
+                let lck = try!(db.GetWriteLock());
+                try!(lck.commitSegments(a.clone()));
+            }
             let g3 = try!(db.merge(a));
-            try!(db.commitMerge(g3));
+            {
+                let lck = try!(db.GetWriteLock());
+                try!(lck.commitMerge(g3));
+            }
 
             Ok(())
         }

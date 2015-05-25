@@ -37,7 +37,7 @@ fn tempfile(base: &str) -> String {
 fn bunch(b: &mut test::Bencher) {
     fn f() -> std::io::Result<bool> {
         //println!("running");
-        let mut db = try!(lsm::db::new(&tempfile("bunch"), lsm::DEFAULT_SETTINGS));
+        let db = try!(lsm::db::new(tempfile("bunch"), lsm::DEFAULT_SETTINGS));
 
         const NUM : usize = 10000;
 
@@ -46,9 +46,15 @@ fn bunch(b: &mut test::Bencher) {
             let g = try!(db.WriteSegmentFromSortedSequence(lsm::GenerateNumbers {cur: i * NUM, end: (i+1) * NUM, step: i+1}));
             a.push(g);
         }
-        try!(db.commitSegments(a.clone()));
+        {
+            let lck = try!(db.GetWriteLock());
+            try!(lck.commitSegments(a.clone()));
+        }
         let g3 = try!(db.merge(a));
-        try!(db.commitMerge(g3));
+        {
+            let mut lck = try!(db.GetWriteLock());
+            try!(lck.commitMerge(g3));
+        }
 
         let res : std::io::Result<bool> = Ok(true);
         res
