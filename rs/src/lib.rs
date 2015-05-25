@@ -74,7 +74,7 @@ struct PendingSegment {
 // TODO this is experimental.  it might not be very useful unless
 // it can be used everywhere a regular slice can be used.  but we
 // obviously don't want to just pass around an Index<Output=u8>
-// trait object.  but maybe with static dispatch?
+// trait object if that forces us into dynamic dispatch everywhere.
 struct SplitSlice<'a> {
     front: &'a [u8],
     back: &'a [u8],
@@ -2181,6 +2181,7 @@ struct SegmentCursor<'a> {
     segnum: SegmentNum,
     csrnum: u64,
 
+    blocks: Vec<PageBlock>,
     fs: File,
     len: u64,
     rootPage: PageNum,
@@ -2195,7 +2196,14 @@ struct SegmentCursor<'a> {
 }
 
 impl<'a> SegmentCursor<'a> {
-    fn new(path: &str, pgsz: usize, rootPage: PageNum, inner: &'a InnerPart, segnum: SegmentNum, csrnum: u64) -> io::Result<SegmentCursor<'a>> {
+    fn new(path: &str, 
+           pgsz: usize, 
+           rootPage: PageNum, 
+           blocks: Vec<PageBlock>,
+           inner: &'a InnerPart, 
+           segnum: SegmentNum, 
+           csrnum: u64
+          ) -> io::Result<SegmentCursor<'a>> {
         let mut f = try!(OpenOptions::new()
                 .read(true)
                 .open(path));
@@ -2203,6 +2211,7 @@ impl<'a> SegmentCursor<'a> {
         let mut res = SegmentCursor {
             path: String::from_str(path),
             fs: f,
+            blocks: blocks,
             inner: inner,
             segnum: segnum,
             csrnum: csrnum,
@@ -2244,9 +2253,7 @@ impl<'a> SegmentCursor<'a> {
     }
 
     fn setCurrentPage(&mut self, pgnum: PageNum) -> io::Result<bool> {
-        // TODO consider passing a block list for the segment into this
-        // cursor so that the code here can detect if it tries to stray
-        // out of bounds.
+        // use self.blocks to make sure we are not straying out of bounds.
 
         // TODO if currentPage = pgnum already...
         self.currentPage = pgnum;
@@ -2895,47 +2902,6 @@ struct HeaderData {
     mergeCounter: u64,
 }
 
-struct SimplePageManager {
-    pgsz: usize,
-    nextPage: std::sync::Mutex<PageNum>,
-    nextSeg: std::sync::Mutex<SegmentNum>,
-}
-
-impl IPages for SimplePageManager {
-    fn PageSize(&self) -> usize {
-        self.pgsz
-    }
-
-    fn Begin(&self) -> io::Result<PendingSegment> {
-        match self.nextSeg.lock() {
-            Err(_poisoned) => Err(io::Error::new(ErrorKind::Other, "poisoned")),
-            Ok(mut nextSeg) => {
-                let p = PendingSegment::new(*nextSeg);
-                *nextSeg = *nextSeg + 1;
-                Ok(p)
-            },
-        }
-    }
-
-    fn GetBlock(&self, ps: &mut PendingSegment) -> io::Result<PageBlock> {
-        match self.nextPage.lock() {
-            Err(_poisoned) => Err(io::Error::new(ErrorKind::Other, "poisoned")),
-            Ok(mut nextPage) => {
-                let blk = PageBlock::new(*nextPage, *nextPage + 10 - 1);
-                *nextPage = *nextPage + 10;
-                ps.AddBlock(blk);
-                Ok(blk)
-            },
-        }
-    }
-
-    fn End(&self, ps:PendingSegment, lastPage: PageNum) -> io::Result<SegmentNum> {
-        let (g,_,_) = ps.End(lastPage);
-        Ok(g)
-    }
-
-}
-
 const HEADER_SIZE_IN_BYTES: usize = 4096;
 
 impl PendingSegment {
@@ -3187,6 +3153,7 @@ struct SafeHeader {
 struct SafeCursors {
     nextCursorNum: u64,
     cursors: HashMap<u64,SegmentNum>,
+    zombies: HashMap<SegmentNum,SegmentInfo>,
 }
 
 struct InnerPart {
@@ -3266,6 +3233,7 @@ impl<'a> db<'a> {
         let cursors = SafeCursors {
             nextCursorNum: 1,
             cursors: HashMap::new(),
+            zombies: HashMap::new(),
         };
 
         let inner = InnerPart {
@@ -3335,7 +3303,14 @@ impl InnerPart {
         let mut cursors = self.lock_cursors().unwrap(); // gotta succeed
         let seg = cursors.cursors.remove(&csrnum).expect("gotta be there");
         assert_eq!(seg, segnum);
-        // TODO is this the place to check to see if all the cursors on that segment are gone?
+        match cursors.zombies.remove(&segnum) {
+            Some(info) => {
+                let mut space = self.lock_space().unwrap(); // gotta succeed
+                self.addFreeBlocks(&mut space, info.blocks);
+            },
+            None => {
+            },
+        }
     }
 
     fn getBlock(&self, space: &mut Space, specificSizeInPages: PageNum) -> PageBlock {
@@ -3564,7 +3539,7 @@ impl InnerPart {
                 */
                 let mut cursors = try!(self.lock_cursors());
                 let csrnum = cursors.nextCursorNum;
-                let csr = try!(SegmentCursor::new(&self.path, self.pgsz, rootPage, &self, g, csrnum));
+                let csr = try!(SegmentCursor::new(&self.path, self.pgsz, rootPage, seg.blocks.clone(), &self, g, csrnum));
 
                 cursors.nextCursorNum = cursors.nextCursorNum + 1;
                 let was = cursors.cursors.insert(csrnum, g);
@@ -3867,8 +3842,21 @@ impl InnerPart {
             mergeStuff.merging.remove(&g);
         }
 
-        // TODO don't free anything that has a cursor
-        let segmentsToBeFreed = segmentsBeingReplaced;
+        let mut segmentsToBeFreed = segmentsBeingReplaced;
+        {
+            let mut cursors = try!(self.lock_cursors());
+            let segmentsWithACursor : HashSet<SegmentNum> = cursors.cursors.iter().map(|t| {let (_,segnum) = t; *segnum}).collect();
+            for g in segmentsWithACursor {
+                // don't free anything that has a cursor
+                match segmentsToBeFreed.remove(&g) {
+                    Some(z) => {
+                        cursors.zombies.insert(g, z);
+                    },
+                    None => {
+                    },
+                }
+            }
+        }
         let mut blocksToBeFreed = Vec::new();
         for info in segmentsToBeFreed.values() {
             blocksToBeFreed.push_all(&info.blocks);
