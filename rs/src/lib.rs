@@ -175,9 +175,15 @@ pub enum SeekOp {
 // isn't part of the Seek trait, but this implementation should
 // suffice.
 fn seek_len<R>(fs: &mut R) -> io::Result<u64> where R : Seek {
+    // remember where we are
     let pos = try!(fs.seek(SeekFrom::Current(0)));
+
+    // seek the end
     let len = try!(fs.seek(SeekFrom::End(0)));
+
+    // restore to where we were
     let _ = try!(fs.seek(SeekFrom::Start(pos)));
+
     Ok(len)
 }
 
@@ -401,6 +407,7 @@ mod Varint {
         else { 9 }
     }
 
+    // TODO stronger inline hint?
     pub fn read(buf: &[u8], cur: &mut usize) -> u64 {
         let c = *cur;
         let a0 = buf[c] as u64;
