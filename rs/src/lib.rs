@@ -136,7 +136,7 @@ impl<'a> KeyVal<'a> {
 }
 
 
-#[derive(Hash,PartialEq,Eq,Copy,Clone)]
+#[derive(Hash,PartialEq,Eq,Copy,Clone,Debug)]
 struct PageBlock {
     firstPage: PageNum,
     lastPage: PageNum,
@@ -154,12 +154,13 @@ impl PageBlock {
 
 pub type SegmentNum = u64;
 
-// TODO return Result
+// TODO io::Result isn't really the right type to use here,
+// but it's the Result type used everywhere else.
 trait IPages {
     fn PageSize(&self) -> usize;
-    fn Begin(&mut self) -> PendingSegment;
-    fn GetBlock(&mut self, token: &mut PendingSegment) -> PageBlock;
-    fn End(&mut self, token: PendingSegment, page: PageNum) -> SegmentNum;
+    fn Begin(&self) -> io::Result<PendingSegment>;
+    fn GetBlock(&self, token: &mut PendingSegment) -> io::Result<PageBlock>;
+    fn End(&self, token: PendingSegment, page: PageNum) -> io::Result<SegmentNum>;
 }
 
 #[derive(PartialEq,Copy,Clone)]
@@ -273,6 +274,7 @@ pub trait ICursor : Drop {
     fn KeyCompare(&self, k: &[u8]) -> io::Result<Ordering>;
 }
 
+//#[derive(Copy,Clone)]
 pub struct DbSettings {
     pub AutoMergeEnabled : bool,
     pub AutoMergeMinimumPages : PageNum,
@@ -1192,13 +1194,13 @@ struct LeafState {
 }
 
 fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite, 
-                                                            pageManager: &mut IPages, 
+                                                            pageManager: &IPages, 
                                                             source: I,
                                                            ) -> io::Result<(SegmentNum,PageNum)> where I:Iterator<Item=io::Result<kvp>>, SeekWrite : Seek+Write {
 
     fn writeOverflow<SeekWrite>(startingBlock: PageBlock, 
                                 ba: &mut Read, 
-                                pageManager: &mut IPages, 
+                                pageManager: &IPages, 
                                 fs: &mut SeekWrite
                                ) -> io::Result<(usize,PageBlock)> where SeekWrite : Seek+Write {
 
@@ -1270,7 +1272,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
                                     pgsz: usize,
                                     pbOverflow: &mut PageBuilder,
                                     pbFirstOverflow: &mut PageBuilder,
-                                    pageManager: &mut IPages,
+                                    pageManager: &IPages,
                                     token: &mut PendingSegment
                                    ) -> io::Result<(usize,PageBlock)> where SeekWrite : Seek+Write {
             // each trip through this loop will write out one
@@ -1297,7 +1299,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
                         // the first page landed on a boundary.
                         // we can just set the flag and write it now.
                         pbFirstOverflow.SetPageFlag(PageFlag::FLAG_BOUNDARY_NODE);
-                        let blk = pageManager.GetBlock(&mut *token);
+                        let blk = try!(pageManager.GetBlock(&mut *token));
                         pbFirstOverflow.SetLastInt32(blk.firstPage);
                         try!(pbFirstOverflow.Write(fs));
                         try!(utils::SeekPage(fs, pgsz, blk.firstPage));
@@ -1365,7 +1367,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
                                 } else {
                                     // write the boundary page
                                     let sofar = sofar + putBoundary;
-                                    let blk = pageManager.GetBlock(&mut *token);
+                                    let blk = try!(pageManager.GetBlock(&mut *token));
                                     pbOverflow.SetLastInt32(blk.firstPage);
                                     try!(pbOverflow.Write(fs));
 
@@ -1392,7 +1394,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
         }
 
         let pgsz = pageManager.PageSize();
-        let mut token = pageManager.Begin();
+        let mut token = try!(pageManager.Begin());
         let mut pbFirstOverflow = PageBuilder::new(pgsz);
         let mut pbOverflow = PageBuilder::new(pgsz);
 
@@ -1400,7 +1402,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
     }
 
     fn writeLeaves<I,SeekWrite>(leavesBlk:PageBlock,
-                                pageManager: &mut IPages,
+                                pageManager: &IPages,
                                 source: I,
                                 vbuf: &mut [u8],
                                 fs: &mut SeekWrite, 
@@ -1476,7 +1478,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
                                 pb: &mut PageBuilder, 
                                 fs: &mut SeekWrite, 
                                 pgsz: usize,
-                                pageManager: &mut IPages,
+                                pageManager: &IPages,
                                 token: &mut PendingSegment,
                                ) -> io::Result<()> where SeekWrite : Seek+Write { 
             let last_key = buildLeaf(st, pb);
@@ -1488,7 +1490,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
                     PageBlock::new(thisPageNumber + 1, st.blk.lastPage)
                 } else if thisPageNumber == st.blk.lastPage {
                     pb.SetPageFlag(PageFlag::FLAG_BOUNDARY_NODE);
-                    let newBlk = pageManager.GetBlock(&mut *token);
+                    let newBlk = try!(pageManager.GetBlock(&mut *token));
                     pb.SetLastInt32(newBlk.firstPage);
                     newBlk
                 } else {
@@ -1786,7 +1788,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
                                    children: &mut Vec<pgitem>,
                                    pgsz: usize,
                                    fs: &mut SeekWrite,
-                                   pageManager: &mut IPages,
+                                   pageManager: &IPages,
                                    token: &mut PendingSegment,
                                    lastLeaf: PageNum,
                                    firstLeaf: PageNum,
@@ -1845,7 +1847,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
                                       pb: &mut PageBuilder, 
                                       lastLeaf: PageNum,
                                       fs: &mut SeekWrite,
-                                      pageManager: &mut IPages,
+                                      pageManager: &IPages,
                                       pgsz: usize,
                                       token: &mut PendingSegment,
                                       firstLeaf: PageNum,
@@ -1862,7 +1864,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
                 } else {
                     if st.blk.firstPage == st.blk.lastPage {
                         pb.SetPageFlag(PageFlag::FLAG_BOUNDARY_NODE);
-                        let newBlk = pageManager.GetBlock(&mut *token);
+                        let newBlk = try!(pageManager.GetBlock(&mut *token));
                         pb.SetLastInt32(newBlk.firstPage);
                         newBlk
                     } else {
@@ -1939,8 +1941,8 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
     // this is the body of Create
     let pgsz = pageManager.PageSize();
     let mut pb = PageBuilder::new(pgsz);
-    let mut token = pageManager.Begin();
-    let startingBlk = pageManager.GetBlock(&mut token);
+    let mut token = try!(pageManager.Begin());
+    let startingBlk = try!(pageManager.GetBlock(&mut token));
     try!(utils::SeekPage(fs, pgsz, startingBlk.firstPage));
 
     // TODO this is a buffer just for the purpose of being reused
@@ -1970,7 +1972,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
         children[0].page
     };
 
-    let g = pageManager.End(token, rootPage);
+    let g = try!(pageManager.End(token, rootPage));
     Ok((g,rootPage))
 }
 
@@ -2895,8 +2897,43 @@ struct HeaderData {
 
 struct SimplePageManager {
     pgsz: usize,
-    nextPage: PageNum,
-    nextSeg: SegmentNum,
+    nextPage: std::sync::Mutex<PageNum>,
+    nextSeg: std::sync::Mutex<SegmentNum>,
+}
+
+impl IPages for SimplePageManager {
+    fn PageSize(&self) -> usize {
+        self.pgsz
+    }
+
+    fn Begin(&self) -> io::Result<PendingSegment> {
+        match self.nextSeg.lock() {
+            Err(poisoned) => Err(io::Error::new(ErrorKind::Other, "poisoned")),
+            Ok(mut nextSeg) => {
+                let p = PendingSegment::new(*nextSeg);
+                *nextSeg = *nextSeg + 1;
+                Ok(p)
+            },
+        }
+    }
+
+    fn GetBlock(&self, ps: &mut PendingSegment) -> io::Result<PageBlock> {
+        match self.nextPage.lock() {
+            Err(poisoned) => Err(io::Error::new(ErrorKind::Other, "poisoned")),
+            Ok(mut nextPage) => {
+                let blk = PageBlock::new(*nextPage, *nextPage + 10 - 1);
+                *nextPage = *nextPage + 10;
+                ps.AddBlock(blk);
+                Ok(blk)
+            },
+        }
+    }
+
+    fn End(&self, ps:PendingSegment, lastPage: PageNum) -> io::Result<SegmentNum> {
+        let (g,_,_) = ps.End(lastPage);
+        Ok(g)
+    }
+
 }
 
 const HEADER_SIZE_IN_BYTES: usize = 4096;
@@ -2907,6 +2944,7 @@ impl PendingSegment {
     }
 
     fn AddBlock(&mut self, b: PageBlock) {
+        //println!("seg {:?} got block {:?}", self.segnum, b);
         let len = self.blockList.len();
         if (! (self.blockList.is_empty())) && (b.firstPage == self.blockList[len-1].lastPage+1) {
             // note that by consolidating blocks here, the segment info list will
@@ -2937,31 +2975,6 @@ impl PendingSegment {
         // consume self return blockList
         (self.segnum, self.blockList, leftovers)
     }
-}
-
-impl IPages for SimplePageManager {
-    fn PageSize(&self) -> usize {
-        self.pgsz
-    }
-
-    fn Begin(&mut self) -> PendingSegment {
-        let p = PendingSegment::new(self.nextSeg);
-        self.nextSeg = self.nextSeg + 1;
-        p
-    }
-
-    fn GetBlock(&mut self, ps: &mut PendingSegment) -> PageBlock {
-        let blk = PageBlock::new(self.nextPage, self.nextPage + 10 - 1);
-        self.nextPage = self.nextPage + 10;
-        ps.AddBlock(blk);
-        blk
-    }
-
-    fn End(&mut self, ps:PendingSegment, lastPage: PageNum) -> SegmentNum {
-        let (g,_,_) = ps.End(lastPage);
-        g
-    }
-
 }
 
 fn readHeader<R>(fs: &mut R) -> io::Result<(HeaderData,usize,PageNum,SegmentNum)> where R : Read+Seek {
@@ -3146,30 +3159,79 @@ fn listAllBlocks(h: &HeaderData, segmentsInWaiting: &HashMap<SegmentNum,SegmentI
     blocks
 }
 
-// TODO rename this
-pub struct db {
-    path: String,
-    pgsz: usize,
-    settings: DbSettings,
-    fsMine: File,
-    header: HeaderData,
-    nextPage: PageNum,
+use std::sync::Mutex;
+
+struct NextSeg {
     nextSeg: SegmentNum,
-    segmentsInWaiting: HashMap<SegmentNum,SegmentInfo>,
+}
+
+struct Space {
+    nextPage: PageNum,
     freeBlocks: Vec<PageBlock>,
+}
+
+struct SafeSegmentsInWaiting {
+    segmentsInWaiting: HashMap<SegmentNum,SegmentInfo>,
+}
+
+struct SafeMergeStuff {
     merging: HashSet<SegmentNum>,
     pendingMerges: HashMap<SegmentNum,Vec<SegmentNum>>,
+}
+
+struct SafeHeader {
+    // TODO one level too much nesting
+    header: HeaderData,
+}
+
+struct SafeCursors {
+    TODO: u32,
     // TODO cursors: HashMap<SegmentNum,Vec<Box<ICursor>>>,
 }
 
-impl db {
-    pub fn new(path : &str, settings : DbSettings) -> io::Result<db> {
+struct InnerPart {
+    path: String,
+    pgsz: usize,
+    settings: DbSettings,
+
+    nextSeg: Mutex<NextSeg>,
+    space: Mutex<Space>,
+    // TODO should the header mutex be an RWLock?
+    header: Mutex<SafeHeader>,
+    segmentsInWaiting: Mutex<SafeSegmentsInWaiting>,
+    mergeStuff: Mutex<SafeMergeStuff>,
+    cursors: Mutex<SafeCursors>,
+}
+
+pub struct WriteLock<'a> {
+    inner: Option<&'a InnerPart>
+}
+
+impl<'a> WriteLock<'a> {
+    pub fn commitSegments(&self, newSegs: Vec<SegmentNum>) -> io::Result<()> {
+        self.inner.unwrap().commitSegments(newSegs)
+    }
+
+    pub fn commitMerge(&self, newSegNum:SegmentNum) -> io::Result<()> {
+        self.inner.unwrap().commitMerge(newSegNum)
+    }
+}
+
+// TODO rename this
+pub struct db<'a> {
+
+    inner: InnerPart,
+    write_lock: Mutex<WriteLock<'a>>,
+}
+
+impl<'a> db<'a> {
+    pub fn new(path: String, settings : DbSettings) -> io::Result<db<'a>> {
 
         let mut f = try!(OpenOptions::new()
                 .read(true)
-                .write(true)
+                //.write(true) // TODO needed here?
                 .create(true)
-                .open(path));
+                .open(&path));
 
         let (header,pgsz,firstAvailablePage,nextAvailableSegmentNum) = try!(readHeader(&mut f));
 
@@ -3179,53 +3241,134 @@ impl db {
         let mut freeBlocks = invertBlockList(&blocks);
         freeBlocks.sort_by(|a,b| b.CountPages().cmp(&a.CountPages()));
 
-        let res = db {
-            path: String::from_str(path),
-            pgsz: pgsz,
-            settings: settings, 
-            fsMine: f, 
-            header: header, 
-            nextPage: firstAvailablePage,
+        let nextSeg = NextSeg {
             nextSeg: nextAvailableSegmentNum,
-            segmentsInWaiting: segmentsInWaiting,
+        };
+
+        let space = Space {
+            nextPage: firstAvailablePage, 
             freeBlocks: freeBlocks,
+        };
+
+        let segmentsInWaiting = SafeSegmentsInWaiting {
+            segmentsInWaiting: segmentsInWaiting,
+        };
+
+        let mergeStuff = SafeMergeStuff {
             merging: HashSet::new(),
             pendingMerges: HashMap::new(),
+        };
+
+        let header = SafeHeader {
+            header: header, 
+        };
+
+        let cursors = SafeCursors {
+            TODO: 1,
+        };
+
+        let inner = InnerPart {
+            path: path,
+            pgsz: pgsz,
+            settings: settings, 
+            header: Mutex::new(header),
+            nextSeg: Mutex::new(nextSeg),
+            space: Mutex::new(space),
+            segmentsInWaiting: Mutex::new(segmentsInWaiting),
+            mergeStuff: Mutex::new(mergeStuff),
+            cursors: Mutex::new(cursors),
+        };
+
+        // WriteLock contains a reference to another part of
+        // the struct it is in.  So we wrap it in an option,
+        // and set it to null for now.  We set it later when
+        // somebody actually asks for the lock.
+
+        let lck = WriteLock { inner: None };
+        let mut res = db {
+            inner: inner,
+            write_lock: Mutex::new(lck),
         };
         Ok(res)
     }
 
-    fn getBlock(&mut self, specificSizeInPages: PageNum) -> PageBlock {
+    pub fn GetWriteLock(&'a self) -> io::Result<std::sync::MutexGuard<WriteLock<'a>>> {
+        match self.write_lock.lock() {
+            Err(poisoned) => return Err(io::Error::new(ErrorKind::Other, "poisoned")),
+            Ok(mut lck) => {
+                // set the inner reference
+                lck.inner = Some(&self.inner);
+                Ok(lck)
+            }
+        }
+    }
+
+    // the following methods are passthrus, exposing inner
+    // stuff publicly.
+
+    pub fn OpenCursor(&self) -> io::Result<LivingCursor> {
+        self.inner.OpenCursor()
+    }
+
+    pub fn WriteSegmentFromSortedSequence<I>(&self, source: I) -> io::Result<SegmentNum> where I:Iterator<Item=io::Result<kvp>> {
+        self.inner.WriteSegmentFromSortedSequence(source)
+    }
+
+    pub fn WriteSegment(&self, pairs: HashMap<Box<[u8]>,Box<[u8]>>) -> io::Result<SegmentNum> {
+        self.inner.WriteSegment(pairs)
+    }
+
+    pub fn WriteSegment2(&self, pairs: HashMap<Box<[u8]>,Blob>) -> io::Result<SegmentNum> {
+        self.inner.WriteSegment2(pairs)
+    }
+
+    pub fn merge(&self, segs:Vec<SegmentNum>) -> io::Result<SegmentNum> {
+        self.inner.merge(segs)
+    }
+
+    // TODO remove this
+    pub fn commitSegments(&self, newSegs: Vec<SegmentNum>) -> io::Result<()> {
+        self.inner.commitSegments(newSegs)
+    }
+
+    // TODO remove this
+    pub fn commitMerge(&self, newSegNum:SegmentNum) -> io::Result<()> {
+        self.inner.commitMerge(newSegNum)
+    }
+}
+
+impl InnerPart {
+
+    fn getBlock(&self, space: &mut Space, specificSizeInPages: PageNum) -> PageBlock {
         if specificSizeInPages > 0 {
-            if self.freeBlocks.is_empty() || specificSizeInPages > self.freeBlocks[0].CountPages() {
-                let newBlk = PageBlock::new(self.nextPage, self.nextPage+specificSizeInPages-1);
-                self.nextPage = self.nextPage + specificSizeInPages;
+            if space.freeBlocks.is_empty() || specificSizeInPages > space.freeBlocks[0].CountPages() {
+                let newBlk = PageBlock::new(space.nextPage, space.nextPage+specificSizeInPages-1);
+                space.nextPage = space.nextPage + specificSizeInPages;
                 newBlk
             } else {
-                let headBlk = self.freeBlocks[0];
+                let headBlk = space.freeBlocks[0];
                 if headBlk.CountPages() > specificSizeInPages {
                     // trim the block to size
                     let blk2 = PageBlock::new(headBlk.firstPage,
                                               headBlk.firstPage+specificSizeInPages-1); 
-                    self.freeBlocks[0].firstPage = self.freeBlocks[0].firstPage +
-                        specificSizeInPages;
+                    space.freeBlocks[0].firstPage = space.freeBlocks[0].firstPage + specificSizeInPages;
                     // TODO problem: the list is probably no longer sorted.  is this okay?
                     // is a re-sort of the list really worth it?
                     blk2
                 } else {
-                    self.freeBlocks.remove(0);
+                    space.freeBlocks.remove(0);
                     headBlk
                 }
             }
         } else {
-            if self.freeBlocks.is_empty() {
+            if space.freeBlocks.is_empty() {
                 let size = self.settings.PagesPerBlock;
-                let newBlk = PageBlock::new(self.nextPage, self.nextPage+size-1) ;
-                self.nextPage = self.nextPage + size;
+                let newBlk = PageBlock::new(space.nextPage, space.nextPage+size-1) ;
+                space.nextPage = space.nextPage + size;
                 newBlk
             } else {
-                let headBlk = self.freeBlocks[0];
-                self.freeBlocks.remove(0);
+                let headBlk = space.freeBlocks[0];
+                space.freeBlocks.remove(0);
                 headBlk
             }
         }
@@ -3262,7 +3405,7 @@ impl db {
         Ok(())
     }
 
-    fn addFreeBlocks(&mut self, blocks:Vec<PageBlock>) {
+    fn addFreeBlocks(&self, space: &mut Space, blocks:Vec<PageBlock>) {
 
         // all additions to the freeBlocks list should happen here
         // by calling this function.
@@ -3283,10 +3426,10 @@ impl db {
         // moving nextPage back.
 
         for b in blocks {
-            self.freeBlocks.push(b);
+            space.freeBlocks.push(b);
         }
-        consolidateBlockList(&mut self.freeBlocks);
-        self.freeBlocks.sort_by(|a,b| b.CountPages().cmp(&a.CountPages()));
+        consolidateBlockList(&mut space.freeBlocks);
+        space.freeBlocks.sort_by(|a,b| b.CountPages().cmp(&a.CountPages()));
     }
 
     // a stored segmentinfo for a segment is a single blob of bytes.
@@ -3296,7 +3439,12 @@ impl db {
     // each pair is startBlock,countBlocks
     // all in varints
 
-    fn writeHeader(&mut self, hdr: &mut HeaderData) -> io::Result<Option<PageBlock>> {
+    fn writeHeader(&self, 
+                   st: &mut SafeHeader, 
+                   space: &mut Space,
+                   fs: &mut File, 
+                   mut hdr: HeaderData
+                  ) -> io::Result<Option<PageBlock>> {
         fn spaceNeededForSegmentInfo(info: &SegmentInfo) -> usize {
             let mut a = 0;
             for t in info.blocks.iter() {
@@ -3351,7 +3499,7 @@ impl db {
         pb.PutVarint(hdr.changeCounter);
         pb.PutVarint(hdr.mergeCounter);
 
-        let pbSegList = buildSegmentList(hdr);
+        let pbSegList = buildSegmentList(&hdr);
         let buf = pbSegList.Buffer();
         pb.PutVarint(buf.len() as u64);
 
@@ -3366,20 +3514,21 @@ impl db {
                 let extra = buf.len() - fits;
                 let extraPages = extra / self.pgsz + if (extra % self.pgsz) != 0 { 1 } else { 0 };
                 //printfn "extra pages: %d" extraPages
-                let blk = self.getBlock(extraPages as PageNum);
-                try!(utils::SeekPage(&mut self.fsMine, self.pgsz, blk.firstPage));
-                try!(self.fsMine.write(&buf[fits .. buf.len()]));
+                let blk = self.getBlock(space, extraPages as PageNum);
+                try!(utils::SeekPage(fs, self.pgsz, blk.firstPage));
+                try!(fs.write(&buf[fits .. buf.len()]));
                 pb.PutInt32(fits as u32);
                 pb.PutInt32(blk.firstPage);
                 pb.PutArray(&buf[0 .. fits]);
                 Some(blk)
             };
 
-        try!(self.fsMine.seek(SeekFrom::Start(0)));
-        try!(pb.Write(&mut self.fsMine));
-        try!(self.fsMine.flush());
+        try!(fs.seek(SeekFrom::Start(0)));
+        try!(pb.Write(fs));
+        try!(fs.flush());
         let oldHeaderOverflow = hdr.headerOverflow;
         hdr.headerOverflow = headerOverflow;
+        st.header = hdr;
         Ok((oldHeaderOverflow))
     }
 
@@ -3387,9 +3536,10 @@ impl db {
     // which means it cannot be used to open a cursor on a pendingSegment,
     // which we think we might need in the future.
     fn getCursor(&self, 
+                 st: &SafeHeader,
                  g: SegmentNum
                 ) -> io::Result<SegmentCursor> {
-        match self.header.segments.get(&g) {
+        match st.header.segments.get(&g) {
             None => Err(io::Error::new(ErrorKind::Other, "getCursor: segment not found")),
             Some(seg) => {
                 let rootPage = seg.root;
@@ -3429,42 +3579,95 @@ impl db {
     }
 
     // TODO we also need a way to open a cursor on segments in waiting
-    pub fn OpenCursor(&mut self) -> io::Result<LivingCursor> {
+    fn OpenCursor(&self) -> io::Result<LivingCursor> {
         // TODO this cursor needs to expose the changeCounter and segment list
         // on which it is based. for optimistic writes. caller can grab a cursor,
         // do their writes, then grab the writelock, and grab another cursor, then
         // compare the two cursors to see if anything important changed.  if not,
         // commit their writes.  if so, nevermind the written segments and start over.
 
+        let mut st = try!(self.lock_header());
         let mut clist = Vec::new();
-        for g in self.header.currentState.iter() {
-            clist.push(try!(self.getCursor(*g))); // TODO checkForGoneSegment
+        for g in st.header.currentState.iter() {
+            clist.push(try!(self.getCursor(&*st, *g))); // TODO checkForGoneSegment
         }
         let mc = MultiCursor::Create(clist);
         let lc = LivingCursor::Create(mc);
         Ok(lc)
     }
 
-    pub fn commitSegments(&mut self, newSegs: Vec<SegmentNum>) -> io::Result<()> {
+    fn lock_space(&self) -> io::Result<std::sync::MutexGuard<Space>> {
+        match self.space.lock() {
+            Err(poisoned) => return Err(io::Error::new(ErrorKind::Other, "poisoned")),
+            Ok(mut lck) => {
+                Ok(lck)
+            }
+        }
+    }
+
+    fn lock_waiting(&self) -> io::Result<std::sync::MutexGuard<SafeSegmentsInWaiting>> {
+        match self.segmentsInWaiting.lock() {
+            Err(poisoned) => return Err(io::Error::new(ErrorKind::Other, "poisoned")),
+            Ok(mut lck) => {
+                Ok(lck)
+            }
+        }
+    }
+
+    fn lock_merge_stuff(&self) -> io::Result<std::sync::MutexGuard<SafeMergeStuff>> {
+        match self.mergeStuff.lock() {
+            Err(poisoned) => return Err(io::Error::new(ErrorKind::Other, "poisoned")),
+            Ok(mut lck) => {
+                Ok(lck)
+            }
+        }
+    }
+
+    fn lock_header(&self) -> io::Result<std::sync::MutexGuard<SafeHeader>> {
+        match self.header.lock() {
+            Err(poisoned) => return Err(io::Error::new(ErrorKind::Other, "poisoned")),
+            Ok(mut lck) => {
+                Ok(lck)
+            }
+        }
+    }
+
+    fn lock_cursors(&self) -> io::Result<std::sync::MutexGuard<SafeCursors>> {
+        match self.cursors.lock() {
+            Err(poisoned) => return Err(io::Error::new(ErrorKind::Other, "poisoned")),
+            Ok(mut lck) => {
+                Ok(lck)
+            }
+        }
+    }
+
+    fn commitSegments(&self, 
+                          newSegs: Vec<SegmentNum>
+                         ) -> io::Result<()> {
+        assert_eq!(newSegs.len(), newSegs.iter().map(|g| *g).collect::<HashSet<SegmentNum>>().len());
+
+        let mut st = try!(self.lock_header());
+        let mut waiting = try!(self.lock_waiting());
+        let mut space = try!(self.lock_space());
+
         assert!({
             let mut ok = true;
             for newSegNum in newSegs.iter() {
-                ok = self.header.currentState.iter().position(|&g| g == *newSegNum).is_none();
+                ok = st.header.currentState.iter().position(|&g| g == *newSegNum).is_none();
                 if !ok {
                     break;
                 }
             }
             ok
         });
-        assert_eq!(newSegs.len(), newSegs.iter().map(|g| *g).collect::<HashSet<SegmentNum>>().len());
 
         // self.segmentsInWaiting must contain one seg for each segment num in newSegs.
         // we want those entries to move out and move into the header, currentState
         // and segments.  This means taking ownership of those SegmentInfos.  But
         // the others we want to leave.
 
-        let mut newHeader = self.header.clone();
-        let mut newSegmentsInWaiting = self.segmentsInWaiting.clone();
+        let mut newHeader = st.header.clone();
+        let mut newSegmentsInWaiting = waiting.segmentsInWaiting.clone();
         for g in newSegs.iter() {
             match newSegmentsInWaiting.remove(&g) {
                 Some(info) => {
@@ -3485,16 +3688,16 @@ impl db {
 
         newHeader.changeCounter = newHeader.changeCounter + 1;
 
-        let oldHeaderOverflow = try!(self.writeHeader(&mut newHeader));
-        self.header = newHeader;
-        self.segmentsInWaiting = newSegmentsInWaiting;
+        let mut fs = try!(self.OpenForWriting());
+        let oldHeaderOverflow = try!(self.writeHeader(&mut st, &mut space, &mut fs, newHeader));
+        waiting.segmentsInWaiting = newSegmentsInWaiting;
 
         //printfn "after commit, currentState: %A" header.currentState
         //printfn "after commit, segments: %A" header.segments
         // all the segments we just committed can now be removed from
         // the segments in waiting list
         match oldHeaderOverflow {
-            Some(blk) => self.addFreeBlocks(vec![ blk ]),
+            Some(blk) => self.addFreeBlocks(&mut space, vec![ blk ]),
             None => ()
         }
         // note that we intentionally do not release the writeLock here.
@@ -3504,14 +3707,14 @@ impl db {
     }
 
     // TODO bad fn name
-    pub fn WriteSegmentFromSortedSequence<I>(&mut self, source: I) -> io::Result<SegmentNum> where I:Iterator<Item=io::Result<kvp>> {
+    fn WriteSegmentFromSortedSequence<I>(&self, source: I) -> io::Result<SegmentNum> where I:Iterator<Item=io::Result<kvp>> {
         let mut fs = try!(self.OpenForWriting());
         let (g,_) = try!(CreateFromSortedSequenceOfKeyValuePairs(&mut fs, self, source));
         Ok(g)
     }
 
     // TODO bad fn name
-    pub fn WriteSegment(&mut self, pairs: HashMap<Box<[u8]>,Box<[u8]>>) -> io::Result<SegmentNum> {
+    fn WriteSegment(&self, pairs: HashMap<Box<[u8]>,Box<[u8]>>) -> io::Result<SegmentNum> {
         let mut a : Vec<(Box<[u8]>,Box<[u8]>)> = pairs.into_iter().collect();
 
         a.sort_by(|a,b| {
@@ -3529,7 +3732,7 @@ impl db {
     }
 
     // TODO bad fn name
-    pub fn WriteSegment2(&mut self, pairs: HashMap<Box<[u8]>,Blob>) -> io::Result<SegmentNum> {
+    fn WriteSegment2(&self, pairs: HashMap<Box<[u8]>,Blob>) -> io::Result<SegmentNum> {
         let mut a : Vec<(Box<[u8]>,Blob)> = pairs.into_iter().collect();
 
         a.sort_by(|a,b| {
@@ -3546,40 +3749,51 @@ impl db {
         Ok(g)
     }
 
-    pub fn merge(&mut self, segs:Vec<SegmentNum>) -> io::Result<SegmentNum> {
-        // TODO don't allow this to happen if the any of the segs
-        // are already involved in a merge.
-        // TODO this is silly if segs has only one item in it
-        //printfn "merge getting cursors: %A" segs
+    fn merge(&self, segs:Vec<SegmentNum>) -> io::Result<SegmentNum> {
         let mut clist = Vec::new();
-        // TODO these should probably be for g in &segs
-        for g in segs.iter() {
-            clist.push(try!(self.getCursor(*g))); // TODO checkForGoneSegment
-        }
-        for g in segs.iter() {
-            self.merging.insert(*g);
+        {
+            let mut st = try!(self.lock_header());
+            let mut mergeStuff = try!(self.lock_merge_stuff());
+            // TODO don't allow this to happen if the any of the segs
+            // are already involved in a merge.
+            // TODO this is silly if segs has only one item in it
+            //printfn "merge getting cursors: %A" segs
+            // TODO these should probably be for g in &segs
+            for g in segs.iter() {
+                clist.push(try!(self.getCursor(&mut st, *g))); // TODO checkForGoneSegment
+            }
+            for g in segs.iter() {
+                mergeStuff.merging.insert(*g);
+            }
         }
         let mut mc = MultiCursor::Create(clist);
         let mut fs = try!(self.OpenForWriting());
         try!(mc.First());
         let (g,_) = try!(CreateFromSortedSequenceOfKeyValuePairs(&mut fs, self, CursorIterator::new(mc)));
         //printfn "merged %A to get %A" segs g
-        self.pendingMerges.insert(g, segs);
+        let mut mergeStuff = try!(self.lock_merge_stuff());
+        mergeStuff.pendingMerges.insert(g, segs);
         Ok(g)
     }
 
     // TODO maybe commitSegments and commitMerge should be the same function.
     // just check to see if the segment being committed is a merge.  if so,
     // do the extra paperwork.
-    pub fn commitMerge(&mut self, newSegNum:SegmentNum) -> io::Result<()> {
-        assert!(self.header.currentState.iter().position(|&g| g == newSegNum).is_none());
+    fn commitMerge(&self, newSegNum:SegmentNum) -> io::Result<()> {
+
+        let mut st = try!(self.lock_header());
+        let mut waiting = try!(self.lock_waiting());
+        let mut space = try!(self.lock_space());
+        let mut mergeStuff = try!(self.lock_merge_stuff());
+
+        assert!(st.header.currentState.iter().position(|&g| g == newSegNum).is_none());
 
         // we need the list of segments which were merged.  we make a copy of
         // so that we're not keeping a reference that inhibits our ability to
         // get other references a little later in the function.
 
         let old = {
-            let maybe = self.pendingMerges.get(&newSegNum);
+            let maybe = mergeStuff.pendingMerges.get(&newSegNum);
             if maybe.is_none() {
                 return Err(io::Error::new(ErrorKind::Other, "commitMerge: segment not found in pendingMerges"));
             } else {
@@ -3593,19 +3807,19 @@ impl db {
         // now we need to verify that the segments being replaced are in currentState
         // and contiguous.
 
-        let ndxFirstOld = self.header.currentState.iter()
+        let ndxFirstOld = st.header.currentState.iter()
             .position(|&g| g == old[0]).expect("first segment being replaced not found in currentState");
 
         // if the next line fails, it probably means that somebody tried to merge a set
         // of segments that are not contiguous in currentState.
         let countOld = old.len();
-        if old.as_slice() != &self.header.currentState.as_slice()[ndxFirstOld .. ndxFirstOld + countOld] {
+        if old.as_slice() != &st.header.currentState.as_slice()[ndxFirstOld .. ndxFirstOld + countOld] {
             panic!("segments not found");
         }
 
         // now we construct a newHeader
 
-        let mut newHeader = self.header.clone();
+        let mut newHeader = st.header.clone();
 
         // first, fix the currentState
 
@@ -3625,7 +3839,7 @@ impl db {
         // now get the segment info for the new segment
 
         let mut newSegmentInfo = {
-            let maybe = self.segmentsInWaiting.get(&newSegNum);
+            let maybe = waiting.segmentsInWaiting.get(&newSegNum);
             if maybe.is_none() {
                 return Err(io::Error::new(ErrorKind::Other, "commitMerge: segment not found in segmentsInWaiting"));
             } else {
@@ -3646,15 +3860,15 @@ impl db {
 
         newHeader.mergeCounter = newHeader.mergeCounter + 1;
 
-        let oldHeaderOverflow = try!(self.writeHeader(&mut newHeader));
+        let mut fs = try!(self.OpenForWriting());
+        let oldHeaderOverflow = try!(self.writeHeader(&mut st, &mut space, &mut fs, newHeader));
 
         // the write of the new header has succeeded.
 
-        self.header = newHeader;
-        self.segmentsInWaiting.remove(&newSegNum);
-        self.pendingMerges.remove(&newSegNum);
+        waiting.segmentsInWaiting.remove(&newSegNum);
+        mergeStuff.pendingMerges.remove(&newSegNum);
         for g in old {
-            self.merging.remove(&g);
+            mergeStuff.merging.remove(&g);
         }
 
         // TODO don't free anything that has a cursor
@@ -3667,7 +3881,7 @@ impl db {
             Some(blk) => blocksToBeFreed.push(blk),
             None => (),
         }
-        self.addFreeBlocks(blocksToBeFreed);
+        self.addFreeBlocks(&mut space, blocksToBeFreed);
 
         // note that we intentionally do not release the writeLock here.
         // you can change the segment list more than once while holding
@@ -3677,33 +3891,42 @@ impl db {
 
 }
 
-impl IPages for db {
+impl IPages for InnerPart {
     fn PageSize(&self) -> usize {
         self.pgsz
     }
 
-    fn Begin(&mut self) -> PendingSegment {
-        let p = PendingSegment::new(self.nextSeg);
-        self.nextSeg = self.nextSeg + 1;
-        p
+    fn Begin(&self) -> io::Result<PendingSegment> {
+        match self.nextSeg.lock() {
+            Err(poisoned) => Err(io::Error::new(ErrorKind::Other, "poisoned")),
+            Ok(mut st) => {
+                let p = PendingSegment::new(st.nextSeg);
+                st.nextSeg = st.nextSeg + 1;
+                Ok(p)
+            },
+        }
     }
 
-    fn GetBlock(&mut self, ps: &mut PendingSegment) -> PageBlock {
-        let blk = self.getBlock(0); // specificSize=0 means we don't care how big of a block we get
+    fn GetBlock(&self, ps: &mut PendingSegment) -> io::Result<PageBlock> {
+        let mut space = try!(self.lock_space());
+        // specificSize=0 means we don't care how big of a block we get
+        let blk = self.getBlock(&mut space, 0);
         ps.AddBlock(blk);
-        blk
+        Ok(blk)
     }
 
-    fn End(&mut self, ps:PendingSegment, lastPage: PageNum) -> SegmentNum {
+    fn End(&self, ps:PendingSegment, lastPage: PageNum) -> io::Result<SegmentNum> {
         let (g, blocks, leftovers) = ps.End(lastPage);
         let info = SegmentInfo {age: 0,blocks:blocks,root:lastPage};
-        self.segmentsInWaiting.insert(g,info);
+        let mut waiting = try!(self.lock_waiting());
+        let mut space = try!(self.lock_space());
+        waiting.segmentsInWaiting.insert(g,info);
         //printfn "wrote %A: %A" g blocks
         match leftovers {
-            Some(b) => self.addFreeBlocks(vec![b]),
+            Some(b) => self.addFreeBlocks(&mut space, vec![b]),
             None => ()
         }
-        g
+        Ok(g)
     }
 
 }
@@ -3722,86 +3945,6 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
 
     let mutable inTransaction = false 
     let mutable waiting = Deque.empty
-
-    let getWriteLock front timeout fnCommitSegmentsHook =
-        let whence = Environment.StackTrace // TODO remove this.  it was just for debugging.
-        let createWriteLockObject () =
-            let isReleased = ref false
-            let release() =
-                isReleased := true
-                let next = lock critSectionInTransaction (fun () ->
-                    if Deque.isEmpty waiting then
-                        //printfn "nobody waiting. tx done"
-                        inTransaction <- false
-                        None
-                    else
-                        //printfn "queue has %d waiting.  next." (Queue.length waiting)
-                        let f = Deque.head waiting
-                        waiting <- Deque.tail waiting
-                        //printfn "giving writeLock to next"
-                        Some f
-                )
-                match next with
-                | Some f ->
-                    f()
-                    //printfn "done giving writeLock to next"
-                | None -> ()
-            {
-            new System.Object() with
-                override this.Finalize() =
-                    let already = !isReleased
-                    if not already then failwith (sprintf "a writelock must be explicitly disposed: %s" whence)
-
-            interface IWriteLock with
-                member this.Dispose() =
-                    let already = !isReleased
-                    if already then failwith "only dispose a writelock once"
-                    release()
-                    GC.SuppressFinalize(this)
-
-                member this.CommitMerge(g:Guid) =
-                    let already = !isReleased
-                    if already then failwith "don't use a writelock after you dispose it"
-                    commitMerge g
-                    // note that we intentionally do not release the writeLock here.
-                    // you can change the segment list more than once while holding
-                    // the writeLock.  the writeLock gets released when you Dispose() it.
-
-                member this.CommitSegments(newGuids:seq<Guid>) =
-                    let already = !isReleased
-                    if already then failwith "don't use a writelock after you dispose it"
-                    commitSegments newGuids fnCommitSegmentsHook
-                    // note that we intentionally do not release the writeLock here.
-                    // you can change the segment list more than once while holding
-                    // the writeLock.  the writeLock gets released when you Dispose() it.
-            }
-
-        lock critSectionInTransaction (fun () -> 
-            if inTransaction then 
-                let ev = new System.Threading.ManualResetEventSlim()
-                let cb () = ev.Set()
-                if front then
-                    waiting <- Deque.cons cb waiting
-                else
-                    waiting <- Deque.conj cb waiting
-                //printfn "Add to wait list: %O" whence
-                async {
-                    let! b = Async.AwaitWaitHandle(ev.WaitHandle, timeout)
-                    ev.Dispose()
-                    if b then
-                        let lck = createWriteLockObject () 
-                        return lck
-                    else
-                        return failwith "timeout waiting for write lock"
-                }
-            else 
-                //printfn "No waiting: %O" whence
-                inTransaction <- true
-                async { 
-                    let lck = createWriteLockObject () 
-                    return lck
-                }
-            )
 
     let getPossibleMerge level min all =
         let h = header
@@ -4011,7 +4154,7 @@ mod tests {
 
         fn f() -> std::io::Result<()> {
             //println!("running");
-            let mut db = try!(super::db::new(&tempfile("quick"), super::DEFAULT_SETTINGS));
+            let mut db = try!(super::db::new(tempfile("quick"), super::DEFAULT_SETTINGS));
 
             const NUM : usize = 100000;
 

@@ -22,7 +22,6 @@ correlation of idiomatic and perf
 optimizer makes a HUGE difference.
 integer overflow checks not that expensive
 type inference:  do I have the item or a reference to it?
-ducking all concurrency issues for now.  perf impact.
 vim mode SO much faster
 rs is definitely more verbose and cluttered than fs
 fs more productive
@@ -44,11 +43,6 @@ why do usize and u64 require a cast?
 cargo bench is very cool.
 wish I could control the units (always ns) are get them to display with commas or something
 
-concurrency
-list of cursors
-want to be able to write multiple segments simultaneously.
-but access to the header and to housekeeping structures must be safe.
-
 streaming iterator model for ICursor?
 
 same for pgnum but then storage is wasteful,
@@ -56,8 +50,6 @@ want to store as a varint, but then space in the page calculations are
 more complicated.
 
 varint in a separate crate?
-
-does IPages need Result?
 
 graveyard
 

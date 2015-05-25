@@ -35,7 +35,7 @@ fn tempfile(base: &str) -> String {
 fn time_me() {
     fn f() -> std::io::Result<bool> {
         //println!("running");
-        let mut db = try!(lsm::db::new(&tempfile("time_me"), lsm::DEFAULT_SETTINGS));
+        let mut db = try!(lsm::db::new(tempfile("time_me"), lsm::DEFAULT_SETTINGS));
 
         const NUM : usize = 100000;
 

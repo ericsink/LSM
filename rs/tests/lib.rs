@@ -1,4 +1,6 @@
 
+#![feature(collections)]
+
 extern crate lsm;
 
 use lsm::ICursor;
@@ -86,7 +88,7 @@ fn ReadValue(b: lsm::Blob) -> std::io::Result<Box<[u8]>> {
 #[test]
 fn empty_cursor() {
     fn f() -> std::io::Result<()> {
-        let mut db = try!(lsm::db::new(&tempfile("empty_cursor"), lsm::DEFAULT_SETTINGS));
+        let mut db = try!(lsm::db::new(tempfile("empty_cursor"), lsm::DEFAULT_SETTINGS));
         let mut csr = try!(db.OpenCursor());
         csr.First();
         assert!(!csr.IsValid());
@@ -100,7 +102,7 @@ fn empty_cursor() {
 #[test]
 fn first_prev() {
     fn f() -> std::io::Result<()> {
-        let mut db = try!(lsm::db::new(&tempfile("first_prev"), lsm::DEFAULT_SETTINGS));
+        let mut db = try!(lsm::db::new(tempfile("first_prev"), lsm::DEFAULT_SETTINGS));
         let g = try!(db.WriteSegmentFromSortedSequence(lsm::GenerateNumbers {cur: 0, end: 100, step: 1}));
         try!(db.commitSegments(vec![g]));
         let mut csr = try!(db.OpenCursor());
@@ -116,7 +118,7 @@ fn first_prev() {
 #[test]
 fn last_next() {
     fn f() -> std::io::Result<()> {
-        let mut db = try!(lsm::db::new(&tempfile("first_prev"), lsm::DEFAULT_SETTINGS));
+        let mut db = try!(lsm::db::new(tempfile("first_prev"), lsm::DEFAULT_SETTINGS));
         let g = try!(db.WriteSegmentFromSortedSequence(lsm::GenerateNumbers {cur: 0, end: 100, step: 1}));
         try!(db.commitSegments(vec![g]));
         let mut csr = try!(db.OpenCursor());
@@ -132,7 +134,7 @@ fn last_next() {
 #[test]
 fn seek() {
     fn f() -> std::io::Result<()> {
-        let mut db = try!(lsm::db::new(&tempfile("seek"), lsm::DEFAULT_SETTINGS));
+        let mut db = try!(lsm::db::new(tempfile("seek"), lsm::DEFAULT_SETTINGS));
         let g = try!(db.WriteSegmentFromSortedSequence(lsm::GenerateNumbers {cur: 0, end: 100, step: 1}));
         try!(db.commitSegments(vec![g]));
         let mut csr = try!(db.OpenCursor());
@@ -165,7 +167,7 @@ fn seek() {
 #[test]
 fn lexographic() {
     fn f() -> std::io::Result<()> {
-        let mut db = try!(lsm::db::new(&tempfile("lexicographic"), lsm::DEFAULT_SETTINGS));
+        let mut db = try!(lsm::db::new(tempfile("lexicographic"), lsm::DEFAULT_SETTINGS));
         let mut d = std::collections::HashMap::new();
         insert_pair_string_string(&mut d, "8", "");
         insert_pair_string_string(&mut d, "10", "");
@@ -212,7 +214,7 @@ fn lexographic() {
 #[test]
 fn seek_cur() {
     fn f() -> std::io::Result<()> {
-        let mut db = try!(lsm::db::new(&tempfile("seek_cur"), lsm::DEFAULT_SETTINGS));
+        let mut db = try!(lsm::db::new(tempfile("seek_cur"), lsm::DEFAULT_SETTINGS));
         let mut t1 = std::collections::HashMap::new();
         for i in 0 .. 100 {
             let sk = format!("{:03}", i);
@@ -240,7 +242,7 @@ fn seek_cur() {
 #[test]
 fn weird() {
     fn f() -> std::io::Result<()> {
-        let mut db = try!(lsm::db::new(&tempfile("weird"), lsm::DEFAULT_SETTINGS));
+        let mut db = try!(lsm::db::new(tempfile("weird"), lsm::DEFAULT_SETTINGS));
         let mut t1 = std::collections::HashMap::new();
         for i in 0 .. 100 {
             let sk = format!("{:03}", i);
@@ -317,7 +319,7 @@ fn weird() {
 #[test]
 fn no_le_ge_multicursor() {
     fn f() -> std::io::Result<()> {
-        let mut db = try!(lsm::db::new(&tempfile("no_le_ge_multicursor"), lsm::DEFAULT_SETTINGS));
+        let mut db = try!(lsm::db::new(tempfile("no_le_ge_multicursor"), lsm::DEFAULT_SETTINGS));
 
         let mut t1 = std::collections::HashMap::new();
         insert_pair_string_string(&mut t1, "c", "3");
@@ -352,7 +354,7 @@ fn no_le_ge_multicursor() {
 #[test]
 fn empty_val() {
     fn f() -> std::io::Result<()> {
-        let mut db = try!(lsm::db::new(&tempfile("empty_val"), lsm::DEFAULT_SETTINGS));
+        let mut db = try!(lsm::db::new(tempfile("empty_val"), lsm::DEFAULT_SETTINGS));
 
         let mut t1 = std::collections::HashMap::new();
         insert_pair_string_string(&mut t1, "_", "");
@@ -371,7 +373,7 @@ fn empty_val() {
 #[test]
 fn delete_not_there() {
     fn f() -> std::io::Result<()> {
-        let mut db = try!(lsm::db::new(&tempfile("delete_not_there"), lsm::DEFAULT_SETTINGS));
+        let mut db = try!(lsm::db::new(tempfile("delete_not_there"), lsm::DEFAULT_SETTINGS));
 
         let mut t1 = std::collections::HashMap::new();
         insert_pair_string_string(&mut t1, "a", "1");
@@ -398,7 +400,7 @@ fn delete_not_there() {
 #[test]
 fn delete_nothing_there() {
     fn f() -> std::io::Result<()> {
-        let mut db = try!(lsm::db::new(&tempfile("delete_nothing_there"), lsm::DEFAULT_SETTINGS));
+        let mut db = try!(lsm::db::new(tempfile("delete_nothing_there"), lsm::DEFAULT_SETTINGS));
 
         let mut t2 = std::collections::HashMap::new();
         insert_pair_string_blob(&mut t2, "e", lsm::Blob::Tombstone);
@@ -417,7 +419,7 @@ fn delete_nothing_there() {
 #[test]
 fn simple_tombstone() {
     fn f(del: &str) -> std::io::Result<()> {
-        let mut db = try!(lsm::db::new(&tempfile("simple_tombstone"), lsm::DEFAULT_SETTINGS));
+        let mut db = try!(lsm::db::new(tempfile("simple_tombstone"), lsm::DEFAULT_SETTINGS));
 
         let mut t1 = std::collections::HashMap::new();
         insert_pair_string_string(&mut t1, "a", "1");
@@ -447,7 +449,7 @@ fn simple_tombstone() {
 #[test]
 fn many_segments() {
     fn f() -> std::io::Result<bool> {
-        let mut db = try!(lsm::db::new(&tempfile("many_segments"), lsm::DEFAULT_SETTINGS));
+        let mut db = try!(lsm::db::new(tempfile("many_segments"), lsm::DEFAULT_SETTINGS));
 
         const NUM : usize = 5000;
         const EACH : usize = 10;
@@ -468,7 +470,7 @@ fn many_segments() {
 #[test]
 fn one_blob() {
     fn f() -> std::io::Result<()> {
-        let mut db = try!(lsm::db::new(&tempfile("one_blob"), lsm::DEFAULT_SETTINGS));
+        let mut db = try!(lsm::db::new(tempfile("one_blob"), lsm::DEFAULT_SETTINGS));
 
         const LEN : usize = 100000;
 
@@ -509,7 +511,7 @@ fn one_blob() {
 #[test]
 fn no_le_ge() {
     fn f() -> std::io::Result<()> {
-        let mut db = try!(lsm::db::new(&tempfile("no_le_ge"), lsm::DEFAULT_SETTINGS));
+        let mut db = try!(lsm::db::new(tempfile("no_le_ge"), lsm::DEFAULT_SETTINGS));
         let mut t1 = std::collections::HashMap::new();
         insert_pair_string_string(&mut t1, "c", "3");
         insert_pair_string_string(&mut t1, "g", "7");
@@ -537,7 +539,7 @@ fn no_le_ge() {
 #[test]
 fn seek_ge_le_bigger() {
     fn f() -> std::io::Result<()> {
-        let mut db = try!(lsm::db::new(&tempfile("seek_ge_le_bigger"), lsm::DEFAULT_SETTINGS));
+        let mut db = try!(lsm::db::new(tempfile("seek_ge_le_bigger"), lsm::DEFAULT_SETTINGS));
         let mut t1 = std::collections::HashMap::new();
         for i in 0 .. 10000 {
             let sk = format!("{}", i*2);
@@ -569,7 +571,7 @@ fn seek_ge_le_bigger() {
 #[test]
 fn seek_ge_le() {
     fn f() -> std::io::Result<()> {
-        let mut db = try!(lsm::db::new(&tempfile("seek_ge_le"), lsm::DEFAULT_SETTINGS));
+        let mut db = try!(lsm::db::new(tempfile("seek_ge_le"), lsm::DEFAULT_SETTINGS));
         let mut t1 = std::collections::HashMap::new();
         insert_pair_string_string(&mut t1, "a", "1");
         insert_pair_string_string(&mut t1, "c", "3");
@@ -609,7 +611,7 @@ fn seek_ge_le() {
 #[test]
 fn tombstone() {
     fn f() -> std::io::Result<()> {
-        let mut db = try!(lsm::db::new(&tempfile("tombstone"), lsm::DEFAULT_SETTINGS));
+        let mut db = try!(lsm::db::new(tempfile("tombstone"), lsm::DEFAULT_SETTINGS));
         let mut t1 = std::collections::HashMap::new();
         insert_pair_string_string(&mut t1, "a", "1");
         insert_pair_string_string(&mut t1, "b", "2");
@@ -668,7 +670,7 @@ fn tombstone() {
 #[test]
 fn overwrite() {
     fn f() -> std::io::Result<()> {
-        let mut db = try!(lsm::db::new(&tempfile("overwrite"), lsm::DEFAULT_SETTINGS));
+        let mut db = try!(lsm::db::new(tempfile("overwrite"), lsm::DEFAULT_SETTINGS));
         let mut t1 = std::collections::HashMap::new();
         insert_pair_string_string(&mut t1, "a", "1");
         insert_pair_string_string(&mut t1, "b", "2");
@@ -701,7 +703,7 @@ fn blobs_of_many_sizes() {
                 PagesPerBlock : 4,
                 .. lsm::DEFAULT_SETTINGS
             };
-        let mut db = try!(lsm::db::new(&tempfile("blobs_of_many_sizes"), settings));
+        let mut db = try!(lsm::db::new(tempfile("blobs_of_many_sizes"), settings));
         // TODO why doesn't Box<[u8]> support clone?
         // for now, we have a function to generate the pile we need, and we call it twice
         fn gen() -> std::collections::HashMap<Box<[u8]>,Box<[u8]>> {
@@ -736,7 +738,7 @@ fn blobs_of_many_sizes() {
 fn write_then_read() {
     fn f() -> std::io::Result<()> {
         fn write(name: &str) -> std::io::Result<()> {
-            let mut db = try!(lsm::db::new(&name, lsm::DEFAULT_SETTINGS));
+            let mut db = try!(lsm::db::new(String::from_str(name), lsm::DEFAULT_SETTINGS));
             let mut d = std::collections::HashMap::new();
             for i in 1 .. 100 {
                 let s = format!("{}", i);
@@ -752,7 +754,7 @@ fn write_then_read() {
         }
 
         fn read(name: &str) -> std::io::Result<()> {
-            let mut db = try!(lsm::db::new(&name, lsm::DEFAULT_SETTINGS));
+            let mut db = try!(lsm::db::new(String::from_str(name), lsm::DEFAULT_SETTINGS));
             let mut csr = try!(db.OpenCursor());
             csr.Seek(&format!("{}", 42).into_bytes().into_boxed_slice(), lsm::SeekOp::SEEK_EQ);
             assert!(csr.IsValid());
@@ -780,7 +782,7 @@ fn write_then_read() {
 #[test]
 fn prefix_compression() {
     fn f() -> std::io::Result<()> {
-        let mut db = try!(lsm::db::new(&tempfile("prefix_compression"), lsm::DEFAULT_SETTINGS));
+        let mut db = try!(lsm::db::new(tempfile("prefix_compression"), lsm::DEFAULT_SETTINGS));
         let mut d = std::collections::HashMap::new();
         for i in 1 .. 10000 {
             let s = format!("{}", i);
@@ -793,6 +795,47 @@ fn prefix_compression() {
         assert!(csr.IsValid());
         Ok(())
     }
+    assert!(f().is_ok());
+}
+
+#[test]
+fn threads() {
+    fn f() -> std::io::Result<()> {
+        use std::sync::{Arc, Mutex};
+        use std::thread;
+
+        let settings = lsm::DbSettings {
+                DefaultPageSize : 256,
+                PagesPerBlock : 4,
+                .. lsm::DEFAULT_SETTINGS
+            };
+        let db = try!(lsm::db::new(tempfile("threads"), settings));
+        let data = Arc::new(db);
+
+        let h1 = {
+            let data = data.clone();
+            let h = thread::spawn(move || -> std::io::Result<()> {
+                let g = try!(data.WriteSegmentFromSortedSequence(lsm::GenerateNumbers {cur: 0, end: 10000, step: 1}));
+                Ok(())
+            });
+            h
+        };
+
+        let h2 = {
+            let data = data.clone();
+            let h = thread::spawn(move || -> std::io::Result<()> {
+                let g = try!(data.WriteSegmentFromSortedSequence(lsm::GenerateNumbers {cur: 20000, end: 30000, step: 1}));
+                Ok(())
+            });
+            h
+        };
+
+        h1.join();
+        h2.join();
+
+        Ok(())
+    }
+
     assert!(f().is_ok());
 }
 
