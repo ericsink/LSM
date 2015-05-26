@@ -29,7 +29,7 @@ fn tid() -> String {
 }
 
 fn tempfile(base: &str) -> String {
-    std::fs::create_dir("tmp");
+    let _ = std::fs::create_dir("tmp");
     let file = "tmp/".to_string() + base + "_" + &tid();
     file
 }
@@ -73,7 +73,7 @@ fn count_keys_backward(csr: &mut lsm::LivingCursor) -> lsm::Result<usize> {
     Ok(r)
 }
 
-fn ReadValue(b: lsm::Blob) -> lsm::Result<Box<[u8]>> {
+fn read_value(b: lsm::Blob) -> lsm::Result<Box<[u8]>> {
     match b {
         lsm::Blob::Stream(mut strm) => {
             let mut a = Vec::new();
@@ -691,17 +691,17 @@ fn tombstone() {
         try!(csr.First());
         assert!(csr.IsValid());
         assert_eq!("a", from_utf8(csr.Key().unwrap()));
-        assert_eq!("1", from_utf8(ReadValue(csr.Value().unwrap()).unwrap()));
+        assert_eq!("1", from_utf8(read_value(csr.Value().unwrap()).unwrap()));
 
         try!(csr.Next());
         assert!(csr.IsValid());
         assert_eq!("c", from_utf8(csr.Key().unwrap()));
-        assert_eq!("3", from_utf8(ReadValue(csr.Value().unwrap()).unwrap()));
+        assert_eq!("3", from_utf8(read_value(csr.Value().unwrap()).unwrap()));
 
         try!(csr.Next());
         assert!(csr.IsValid());
         assert_eq!("d", from_utf8(csr.Key().unwrap()));
-        assert_eq!("4", from_utf8(ReadValue(csr.Value().unwrap()).unwrap()));
+        assert_eq!("4", from_utf8(read_value(csr.Value().unwrap()).unwrap()));
 
         try!(csr.Next());
         assert!(!csr.IsValid());
@@ -747,7 +747,7 @@ fn overwrite() {
         fn getb(db: &lsm::db) -> lsm::Result<String> {
             let mut csr = try!(db.OpenCursor());
             try!(csr.Seek(&to_utf8("b"), lsm::SeekOp::SEEK_EQ));
-            Ok(from_utf8(ReadValue(csr.Value().unwrap()).unwrap()))
+            Ok(from_utf8(read_value(csr.Value().unwrap()).unwrap()))
         }
         assert_eq!("2", getb(&db).unwrap());
         let mut t2 = std::collections::HashMap::new();
@@ -799,7 +799,7 @@ fn blobs_of_many_sizes() {
             try!(csr.Seek(&k, lsm::SeekOp::SEEK_EQ));
             assert!(csr.IsValid());
             assert_eq!(v.len(), csr.ValueLength().unwrap().unwrap());
-            assert_eq!(v, ReadValue(csr.Value().unwrap()).unwrap());
+            assert_eq!(v, read_value(csr.Value().unwrap()).unwrap());
         }
         Ok(())
     }
@@ -896,7 +896,7 @@ fn threads() {
         let h1 = {
             let data = data.clone();
             let h = thread::spawn(move || -> lsm::Result<()> {
-                let g = try!(data.WriteSegmentFromSortedSequence(lsm::GenerateNumbers {cur: 0, end: 10000, step: 1}));
+                let _g = try!(data.WriteSegmentFromSortedSequence(lsm::GenerateNumbers {cur: 0, end: 10000, step: 1}));
                 Ok(())
             });
             h
@@ -905,14 +905,16 @@ fn threads() {
         let h2 = {
             let data = data.clone();
             let h = thread::spawn(move || -> lsm::Result<()> {
-                let g = try!(data.WriteSegmentFromSortedSequence(lsm::GenerateNumbers {cur: 20000, end: 30000, step: 1}));
+                let _g = try!(data.WriteSegmentFromSortedSequence(lsm::GenerateNumbers {cur: 20000, end: 30000, step: 1}));
                 Ok(())
             });
             h
         };
 
-        h1.join();
-        h2.join();
+        let r1 = h1.join();
+        let r2 = h2.join();
+        assert!(r1.is_ok());
+        assert!(r2.is_ok());
 
         Ok(())
     }
