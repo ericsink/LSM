@@ -69,6 +69,7 @@ enum LsmError {
 
     CursorNotValid,
     InvalidPageNumber,
+    InvalidPageType,
     Poisoned,
 }
 
@@ -81,6 +82,7 @@ impl std::fmt::Display for LsmError {
             LsmError::Poisoned => write!(f, "Poisoned"),
             LsmError::CursorNotValid => write!(f, "Cursor not valid"),
             LsmError::InvalidPageNumber => write!(f, "Invalid page number"),
+            LsmError::InvalidPageType => write!(f, "Invalid page type"),
         }
     }
 }
@@ -94,6 +96,7 @@ impl std::error::Error for LsmError {
             LsmError::Poisoned => "poisoned",
             LsmError::CursorNotValid => "cursor not valid",
             LsmError::InvalidPageNumber => "invalid page number",
+            LsmError::InvalidPageType => "invalid page type",
         }
     }
 
@@ -832,8 +835,8 @@ impl PageBuffer {
         bcmp::CompareWithPrefix(prefix, slice, other)
     }
 
-    fn PageType(&self) -> u8 {
-        self.buf[0]
+    fn PageType(&self) -> Result<PageType> {
+        PageType::from_u8(self.buf[0])
     }
 
     fn GetByte(&self, cur: &mut usize) -> u8 {
@@ -1240,10 +1243,31 @@ impl<'a> ICursor<'a> for LivingCursor<'a> {
 
 }
 
-mod PageType {
-    pub const LEAF_NODE: u8 = 1;
-    pub const PARENT_NODE: u8 = 2;
-    pub const OVERFLOW_NODE: u8 = 3;
+#[derive(Hash,PartialEq,Eq,Copy,Clone,Debug)]
+#[repr(u8)]
+enum PageType {
+    LEAF_NODE,
+    PARENT_NODE,
+    OVERFLOW_NODE,
+}
+
+impl PageType {
+    fn to_u8(self) -> u8 {
+        match self {
+            PageType::LEAF_NODE => 1,
+            PageType::PARENT_NODE => 2,
+            PageType::OVERFLOW_NODE => 3,
+        }
+    }
+
+    fn from_u8(v: u8) -> Result<PageType> {
+        match v {
+            1 => Ok(PageType::LEAF_NODE),
+            2 => Ok(PageType::PARENT_NODE),
+            3 => Ok(PageType::OVERFLOW_NODE),
+            _ => Err(LsmError::InvalidPageType),
+        }
+    }
 }
 
 mod ValueFlag {
@@ -1322,7 +1346,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
 
         fn buildFirstPage(ba: &mut Read, pbFirstOverflow : &mut PageBuilder, pgsz: usize) -> Result<(usize,bool)> {
             pbFirstOverflow.Reset();
-            pbFirstOverflow.PutByte(PageType::OVERFLOW_NODE);
+            pbFirstOverflow.PutByte(PageType::OVERFLOW_NODE.to_u8());
             pbFirstOverflow.PutByte(0u8); // starts 0, may be changed later
             let room = pgsz - (2 + SIZE_32);
             // something will be put in lastInt32 later
@@ -1527,7 +1551,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
 
         fn buildLeaf(st: &mut LeafState, pb: &mut PageBuilder) -> Box<[u8]> {
             pb.Reset();
-            pb.PutByte(PageType::LEAF_NODE);
+            pb.PutByte(PageType::LEAF_NODE.to_u8());
             pb.PutByte(0u8); // flags
             pb.PutInt32 (st.prevLeaf); // prev page num.
             // TODO prefixLen is one byte.  should it be two?
@@ -1923,7 +1947,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
                            pb : &mut PageBuilder,
                           ) {
             pb.Reset();
-            pb.PutByte(PageType::PARENT_NODE);
+            pb.PutByte(PageType::PARENT_NODE.to_u8());
             pb.PutByte(0u8);
             pb.PutInt16(items.len() as u16);
             // store all the ptrs, n+1 of them
@@ -2158,8 +2182,8 @@ impl myOverflowReadStream {
         read_u32_be(&self.buf[at .. at+4])
     }
 
-    fn PageType(&self) -> u8 {
-        self.buf[0]
+    fn PageType(&self) -> Result<PageType> {
+        PageType::from_u8(self.buf[0])
     }
 
     fn CheckPageFlag(&self, f: u8) -> bool {
@@ -2169,7 +2193,7 @@ impl myOverflowReadStream {
     fn ReadFirstPage(&mut self) -> Result<()> {
         self.firstPageInBlock = self.currentPage;
         try!(self.ReadPage());
-        if self.PageType() != (PageType::OVERFLOW_NODE) {
+        if try!(self.PageType()) != (PageType::OVERFLOW_NODE) {
             return Err(LsmError::CorruptFile("first overflow page has invalid page type"));
         }
         if self.CheckPageFlag(PageFlag::FLAG_BOUNDARY_NODE) {
@@ -2369,10 +2393,11 @@ impl<'a> SegmentCursor<'a> {
         if ! try!(res.setCurrentPage(rootPage)) {
             return Err(LsmError::Misc("failed to read root page"));
         }
-        if res.pr.PageType() == PageType::LEAF_NODE {
+        let pt = try!(res.pr.PageType());
+        if pt == PageType::LEAF_NODE {
             res.firstLeaf = rootPage;
             res.lastLeaf = rootPage;
-        } else if res.pr.PageType() == PageType::PARENT_NODE {
+        } else if pt == PageType::PARENT_NODE {
             if ! res.pr.CheckPageFlag(PageFlag::FLAG_ROOT_NODE) { 
                 return Err(LsmError::CorruptFile("root page lacks flag"));
             }
@@ -2475,11 +2500,12 @@ impl<'a> SegmentCursor<'a> {
         }
     }
 
-    fn readLeaf(&mut self) {
+    fn readLeaf(&mut self) -> Result<()> {
         self.resetLeaf();
         let mut cur = 0;
-        if self.pr.GetByte(&mut cur) != PageType::LEAF_NODE {
-            panic!("leaf has invalid page type");
+        let pt = try!(PageType::from_u8(self.pr.GetByte(&mut cur)));
+        if pt != PageType::LEAF_NODE {
+            return Err(LsmError::CorruptFile("leaf has invalid page type"));
         }
         self.pr.GetByte(&mut cur);
         self.previousLeaf = self.pr.GetInt32(&mut cur) as PageNum;
@@ -2502,6 +2528,7 @@ impl<'a> SegmentCursor<'a> {
             self.skipKey(&mut cur);
             self.skipValue(&mut cur);
         }
+        Ok(())
     }
 
     fn is_key_overflowed(&self) -> Result<bool> {
@@ -2739,8 +2766,8 @@ impl<'a> SegmentCursor<'a> {
 
     fn readParentPage(&mut self) -> Result<(Vec<PageNum>,Vec<Box<[u8]>>)> {
         let mut cur = 0;
-        if self.pr.GetByte(&mut cur) != PageType::PARENT_NODE {
-            // note that in the reafLeaf case, this is a panic.
+        let pt = try!(PageType::from_u8(self.pr.GetByte(&mut cur)));
+        if  pt != PageType::PARENT_NODE {
             return Err(LsmError::CorruptFile("parent page has invalid page type"));
         }
         cur = cur + 1; // page flags
@@ -2780,7 +2807,7 @@ impl<'a> SegmentCursor<'a> {
     // a perf difference if there are overflow pages between
     // the leaves.
     fn searchForwardForLeaf(&mut self) -> Result<bool> {
-        let pt = self.pr.PageType();
+        let pt = try!(self.pr.PageType());
         if pt == PageType::LEAF_NODE { 
             Ok(true)
         } else if pt == PageType::PARENT_NODE { 
@@ -2842,8 +2869,9 @@ impl<'a> SegmentCursor<'a> {
 
     fn search(&mut self, pg: PageNum, k: &[u8], sop:SeekOp) -> Result<SeekResult> {
         if try!(self.setCurrentPage(pg)) {
-            if PageType::LEAF_NODE == self.pr.PageType() {
-                self.readLeaf();
+            let pt = try!(self.pr.PageType());
+            if PageType::LEAF_NODE == pt {
+                try!(self.readLeaf());
                 let tmp_countLeafKeys = self.leafKeys.len();
                 let (newCur, equal) = try!(self.searchLeaf(k, 0, (tmp_countLeafKeys - 1), sop, None, None));
                 self.currentKey = newCur;
@@ -2857,7 +2885,7 @@ impl<'a> SegmentCursor<'a> {
                                 else if self.currentPage == self.rootPage { 0 }
                                 else { self.currentPage + 1 };
                             if try!(self.setCurrentPage(nextPage)) && try!(self.searchForwardForLeaf()) {
-                                self.readLeaf();
+                                try!(self.readLeaf());
                                 self.currentKey = Some(0);
                             }
                         } else {
@@ -2865,7 +2893,7 @@ impl<'a> SegmentCursor<'a> {
                             if 0 == self.previousLeaf {
                                 self.resetLeaf();
                             } else if try!(self.setCurrentPage(tmp_previousLeaf)) {
-                                self.readLeaf();
+                                try!(self.readLeaf());
                                 self.currentKey = Some(self.leafKeys.len() - 1);
                             }
                         }
@@ -2878,7 +2906,7 @@ impl<'a> SegmentCursor<'a> {
                 } else {
                     Ok(SeekResult::Unequal)
                 }
-            } else if PageType::PARENT_NODE == self.pr.PageType() {
+            } else if PageType::PARENT_NODE == pt {
                 let (ptrs,keys) = try!(self.readParentPage());
                 match Self::searchInParentPage(k, &ptrs, &keys, 0) {
                     Some(found) => return self.search(found, k, sop),
@@ -3020,7 +3048,7 @@ impl<'a> ICursor<'a> for SegmentCursor<'a> {
     fn First(&mut self) -> Result<()> {
         let firstLeaf = self.firstLeaf;
         if try!(self.setCurrentPage(firstLeaf)) {
-            self.readLeaf();
+            try!(self.readLeaf());
             self.currentKey = Some(0);
         }
         Ok(())
@@ -3029,7 +3057,7 @@ impl<'a> ICursor<'a> for SegmentCursor<'a> {
     fn Last(&mut self) -> Result<()> {
         let lastLeaf = self.lastLeaf;
         if try!(self.setCurrentPage(lastLeaf)) {
-            self.readLeaf();
+            try!(self.readLeaf());
             self.currentKey = Some(self.leafKeys.len() - 1);
         }
         Ok(())
@@ -3039,13 +3067,13 @@ impl<'a> ICursor<'a> for SegmentCursor<'a> {
         if ! self.nextInLeaf() {
             let nextPage =
                 if self.pr.CheckPageFlag(PageFlag::FLAG_BOUNDARY_NODE) { self.pr.GetLastInt32() as PageNum }
-                else if self.pr.PageType() == PageType::LEAF_NODE {
+                else if try!(self.pr.PageType()) == PageType::LEAF_NODE {
                     if self.currentPage == self.rootPage { 0 }
                     else { self.currentPage + 1 }
                 } else { 0 }
             ;
             if try!(self.setCurrentPage(nextPage)) && try!(self.searchForwardForLeaf()) {
-                self.readLeaf();
+                try!(self.readLeaf());
                 self.currentKey = Some(0);
             }
         }
@@ -3058,7 +3086,7 @@ impl<'a> ICursor<'a> for SegmentCursor<'a> {
             if 0 == previousLeaf {
                 self.resetLeaf();
             } else if try!(self.setCurrentPage(previousLeaf)) {
-                self.readLeaf();
+                try!(self.readLeaf());
                 self.currentKey = Some(self.leafKeys.len() - 1);
             }
         }
