@@ -70,6 +70,7 @@ enum LsmError {
     CursorNotValid,
     InvalidPageNumber,
     InvalidPageType,
+    RootPageNotInSegmentBlockList,
     Poisoned,
 }
 
@@ -83,6 +84,7 @@ impl std::fmt::Display for LsmError {
             LsmError::CursorNotValid => write!(f, "Cursor not valid"),
             LsmError::InvalidPageNumber => write!(f, "Invalid page number"),
             LsmError::InvalidPageType => write!(f, "Invalid page type"),
+            LsmError::RootPageNotInSegmentBlockList => write!(f, "Root page not in segment block list"),
         }
     }
 }
@@ -97,6 +99,7 @@ impl std::error::Error for LsmError {
             LsmError::CursorNotValid => "cursor not valid",
             LsmError::InvalidPageNumber => "invalid page number",
             LsmError::InvalidPageType => "invalid page type",
+            LsmError::RootPageNotInSegmentBlockList => "Root page not in segment block list",
         }
     }
 
@@ -252,9 +255,22 @@ impl PageBlock {
         PageBlock { firstPage: first, lastPage: last }
     }
 
-    fn CountPages(&self) -> PageNum {
+    fn count_pages(&self) -> PageNum {
         self.lastPage - self.firstPage + 1
     }
+
+    fn contains_page(&self, pgnum: PageNum) -> bool {
+        (pgnum >= self.firstPage) && (pgnum <= self.lastPage)
+    }
+}
+
+fn block_list_contains_page(blocks: &Vec<PageBlock>, pgnum: PageNum) -> bool {
+    for blk in blocks.iter() {
+        if blk.contains_page(pgnum) {
+            return true;
+        }
+    }
+    return false;
 }
 
 pub type SegmentNum = u64;
@@ -2394,6 +2410,8 @@ impl<'a> SegmentCursor<'a> {
             lastLeaf: 0, // temporary
         };
         if ! try!(res.setCurrentPage(rootPage)) {
+            // TODO fix this error.  or assert, because we previously verified
+            // that the root page was in the block list we were given.
             return Err(LsmError::Misc("failed to read root page"));
         }
         let pt = try!(res.pr.PageType());
@@ -3163,7 +3181,7 @@ fn readHeader<R>(fs: &mut R) -> Result<(HeaderData,usize,PageNum,SegmentNum)> wh
     }
 
     fn parse<R>(pr: &PageBuffer, cur: &mut usize, fs: &mut R) -> Result<(HeaderData, usize)> where R : Read+Seek {
-        fn readSegmentList(pr: &PageBuffer, cur: &mut usize) -> (Vec<SegmentNum>,HashMap<SegmentNum,SegmentInfo>) {
+        fn readSegmentList(pr: &PageBuffer, cur: &mut usize) -> Result<(Vec<SegmentNum>,HashMap<SegmentNum,SegmentInfo>)> {
             fn readBlockList(prBlocks: &PageBuffer, cur: &mut usize) -> Vec<PageBlock> {
                 let count = prBlocks.GetVarint(cur) as usize;
                 let mut a = Vec::new();
@@ -3187,10 +3205,13 @@ fn readHeader<R>(fs: &mut R) -> Result<(HeaderData,usize,PageNum,SegmentNum)> wh
                 let root = pr.GetVarint(cur) as PageNum;
                 let age = pr.GetVarint(cur) as u32;
                 let blocks = readBlockList(pr, cur);
+                if !block_list_contains_page(&blocks, root) {
+                    return Err(LsmError::RootPageNotInSegmentBlockList);
+                }
                 let info = SegmentInfo {root:root,age:age,blocks:blocks};
                 m.insert(g,info);
             }
-            (a,m)
+            Ok((a,m))
         }
 
         // --------
@@ -3217,10 +3238,10 @@ fn readHeader<R>(fs: &mut R) -> Result<(HeaderData,usize,PageNum,SegmentNum)> wh
                 try!(utils::SeekPage(fs, pgsz, firstPageChunk2));
                 try!(pr2.ReadPart(fs, lenChunk1, lenChunk2));
                 let mut cur2 = 0;
-                let (state, segments) = readSegmentList(&pr2, &mut cur2);
+                let (state, segments) = try!(readSegmentList(&pr2, &mut cur2));
                 (state, segments, Some (PageBlock::new(firstPageChunk2, lastPageChunk2)))
             } else {
-                let (state,segments) = readSegmentList(pr, cur);
+                let (state,segments) = try!(readSegmentList(pr, cur));
                 (state, segments, None)
             };
 
@@ -3413,7 +3434,7 @@ impl<'a> db<'a> {
         let mut blocks = listAllBlocks(&header, &segmentsInWaiting, pgsz);
         consolidateBlockList(&mut blocks);
         let mut freeBlocks = invertBlockList(&blocks);
-        freeBlocks.sort_by(|a,b| b.CountPages().cmp(&a.CountPages()));
+        freeBlocks.sort_by(|a,b| b.count_pages().cmp(&a.count_pages()));
 
         let nextSeg = NextSeg {
             nextSeg: nextAvailableSegmentNum,
@@ -3525,13 +3546,13 @@ impl InnerPart {
 
     fn getBlock(&self, space: &mut Space, specificSizeInPages: PageNum) -> PageBlock {
         if specificSizeInPages > 0 {
-            if space.freeBlocks.is_empty() || specificSizeInPages > space.freeBlocks[0].CountPages() {
+            if space.freeBlocks.is_empty() || specificSizeInPages > space.freeBlocks[0].count_pages() {
                 let newBlk = PageBlock::new(space.nextPage, space.nextPage+specificSizeInPages-1);
                 space.nextPage = space.nextPage + specificSizeInPages;
                 newBlk
             } else {
                 let headBlk = space.freeBlocks[0];
-                if headBlk.CountPages() > specificSizeInPages {
+                if headBlk.count_pages() > specificSizeInPages {
                     // trim the block to size
                     let blk2 = PageBlock::new(headBlk.firstPage,
                                               headBlk.firstPage+specificSizeInPages-1); 
@@ -3613,7 +3634,7 @@ impl InnerPart {
             space.freeBlocks.push(b);
         }
         consolidateBlockList(&mut space.freeBlocks);
-        space.freeBlocks.sort_by(|a,b| b.CountPages().cmp(&a.CountPages()));
+        space.freeBlocks.sort_by(|a,b| b.count_pages().cmp(&a.count_pages()));
     }
 
     // a stored segmentinfo for a segment is a single blob of bytes.
@@ -3633,7 +3654,7 @@ impl InnerPart {
             let mut a = 0;
             for t in info.blocks.iter() {
                 a = a + Varint::SpaceNeededFor(t.firstPage as u64);
-                a = a + Varint::SpaceNeededFor(t.CountPages() as u64);
+                a = a + Varint::SpaceNeededFor(t.count_pages() as u64);
             }
             a = a + Varint::SpaceNeededFor(info.root as u64);
             a = a + Varint::SpaceNeededFor(info.age as u64);
@@ -3667,7 +3688,7 @@ impl InnerPart {
                         // count will always compress better as a varint.
                         for t in info.blocks.iter() {
                             pb.PutVarint(t.firstPage as u64);
-                            pb.PutVarint(t.CountPages() as u64);
+                            pb.PutVarint(t.count_pages() as u64);
                         }
                     },
                     None => panic!("segment num in currentState but not in segments")
