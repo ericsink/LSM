@@ -920,3 +920,32 @@ fn threads() {
     assert!(f().is_ok());
 }
 
+#[test]
+fn key_ref() {
+    fn f() -> lsm::Result<()> {
+        let db = try!(lsm::db::new(tempfile("key_ref"), lsm::DEFAULT_SETTINGS));
+        let g = try!(db.WriteSegmentFromSortedSequence(lsm::GenerateNumbers {cur: 0, end: 100, step: 1}));
+        {
+            let lck = try!(db.GetWriteLock());
+            try!(lck.commitSegments(vec![g]));
+        }
+        let mut csr = try!(db.OpenCursor());
+        try!(csr.First());
+        assert!(csr.IsValid());
+
+        while csr.IsValid() {
+            {
+                // KeyRef takes an immutable reference on the cursor.
+                // which means you can't call Next() on that cursor
+                // until the reference goes out of scope.  So this
+                // is in its own block.
+                let q = csr.KeyRef();
+                println!("{:?}", q);
+            }
+            try!(csr.Next());
+        }
+        Ok(())
+    }
+    assert!(f().is_ok());
+}
+

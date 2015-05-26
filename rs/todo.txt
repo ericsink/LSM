@@ -45,8 +45,6 @@ why do usize and u64 require a cast?  usize is not an alias.
 cargo bench is very cool.
 wish I could control the units (always ns) or get them to display with commas or something
 
-streaming iterator model for ICursor?
-
 make pgnum a u64?
 same for pgnum but then storage is wasteful,
 want to store as a varint, but then space in the page calculations are
@@ -89,4 +87,8 @@ arguments, plus lifetimes.  but this would require far more analysis,
 so currently, the programmer is required to make these things explicit
 at the function boundaries.  i wonder if this kind of analysis will
 be possible later.
+
+I wonder if Key() and Value() should just go away, replacing them
+with KeyRef() and ValueRef().  The caller is always free to do the
+allocation if they want.
 

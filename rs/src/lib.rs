@@ -164,32 +164,61 @@ impl<'a> Index<usize> for SplitSlice<'a> {
     }
 }
 
-// TODO the problem with returning something that is a
-// reference to something inside the SegmentCursor, is
-// that now the SegmentCursor cannot be mutable.
-// look at Rusqlite and its predecessor to see how
-// this is done.
-enum KeyVal<'a> {
-    Overflow(myOverflowReadStream),
-    Normal(SplitSlice<'a>),
+pub enum KeyRef<'a> {
+    Overflowed(usize, Box<Read>),
+    Prefixed(&'a [u8],&'a [u8]),
+    Normal(&'a [u8]),
 }
 
-impl<'a> KeyVal<'a> {
-    fn into_boxed_slice(self) -> Result<Box<[u8]>> {
+impl<'a> std::fmt::Debug for KeyRef<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::result::Result<(), std::fmt::Error> {
+        match *self {
+            KeyRef::Overflowed(klen,_) => write!(f, "Overflowed, len={}", klen),
+            KeyRef::Prefixed(front,back) => write!(f, "Prefixed, front={:?}, back={:?}", front, back),
+            KeyRef::Normal(a) => write!(f, "Normal, len={:?}", a),
+        }
+    }
+}
+
+impl<'a> KeyRef<'a> {
+    pub fn into_boxed_slice(self) -> Result<Box<[u8]>> {
         match self {
-            KeyVal::Overflow(mut strm) => {
-                let klen = strm.len();
-                let mut k = vec![0; klen].into_boxed_slice();
-                try!(utils::ReadFully(&mut strm, &mut k));
-                Ok(k)
+            KeyRef::Overflowed(klen, mut strm) => {
+                let mut a = Vec::new();
+                try!(strm.read_to_end(&mut a));
+                Ok(a.into_boxed_slice())
             },
-            KeyVal::Normal(ss) => {
-                Ok(ss.into_boxed_slice())
+            KeyRef::Normal(a) => {
+                let mut k = Vec::new();
+                k.push_all(a);
+                Ok(k.into_boxed_slice())
+            },
+            KeyRef::Prefixed(front,back) => {
+                let mut k = Vec::new();
+                k.push_all(front);
+                k.push_all(back);
+                Ok(k.into_boxed_slice())
             },
         }
     }
 }
 
+
+pub enum ValueRef<'a> {
+    Tombstone,
+    Overflowed(usize, Box<Read>),
+    Normal(&'a [u8]),
+}
+
+impl<'a> std::fmt::Debug for ValueRef<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::result::Result<(), std::fmt::Error> {
+        match *self {
+            ValueRef::Overflowed(klen,_) => write!(f, "Overflowed, len={}", klen),
+            ValueRef::Normal(a) => write!(f, "Normal, len={:?}", a),
+            ValueRef::Tombstone => write!(f, "Tombstone"),
+        }
+    }
+}
 
 #[derive(Hash,PartialEq,Eq,Copy,Clone,Debug)]
 struct PageBlock {
@@ -281,7 +310,7 @@ pub enum SeekResult {
 }
 
 impl SeekResult {
-    fn from_cursor<T: ICursor>(csr: &T, k:&[u8]) -> Result<SeekResult> {
+    fn from_cursor<'a, T: ICursor<'a>>(csr: &T, k:&[u8]) -> Result<SeekResult> {
         if csr.IsValid() {
             if Ordering::Equal == try!(csr.KeyCompare(k)) {
                 Ok(SeekResult::Equal)
@@ -310,7 +339,7 @@ impl SeekResult {
     }
 }
 
-pub trait ICursor {
+pub trait ICursor<'a> {
     fn Seek(&mut self, k: &[u8], sop:SeekOp) -> Result<SeekResult>;
     fn First(&mut self) -> Result<()>;
     fn Last(&mut self) -> Result<()>;
@@ -319,14 +348,10 @@ pub trait ICursor {
 
     fn IsValid(&self) -> bool;
 
-    // TODO we wish Key() could return a reference, but the lifetime
-    // would need to be "until the next call", and Rust can't really
-    // do that.  or at least, that model isn't compatible with Rust
-    // iterators.  look for rust community discussions on "streaming iterators".
-    fn Key(&self) -> Result<Box<[u8]>>;
+    fn KeyRef(&'a self) -> Result<KeyRef<'a>>;
+    fn ValueRef(&'a self) -> Result<ValueRef<'a>>;
 
-    // TODO similarly with Value().  When the Blob is an array, we would
-    // prefer to return a reference to the bytes in the page.
+    fn Key(&self) -> Result<Box<[u8]>>;
     fn Value(&self) -> Result<Blob>;
 
     fn ValueLength(&self) -> Result<Option<usize>>; // tombstone is None
@@ -910,7 +935,7 @@ impl<'a> MultiCursor<'a> {
 
 }
 
-impl<'a> ICursor for MultiCursor<'a> {
+impl<'a> ICursor<'a> for MultiCursor<'a> {
     fn IsValid(&self) -> bool {
         match self.cur {
             Some(i) => self.subcursors[i].IsValid(),
@@ -940,6 +965,20 @@ impl<'a> ICursor for MultiCursor<'a> {
         match self.cur {
             None => Err(LsmError::CursorNotValid),
             Some(icur) => self.subcursors[icur].Key(),
+        }
+    }
+
+    fn KeyRef(&'a self) -> Result<KeyRef<'a>> {
+        match self.cur {
+            None => Err(LsmError::CursorNotValid),
+            Some(icur) => self.subcursors[icur].KeyRef(),
+        }
+    }
+
+    fn ValueRef(&'a self) -> Result<ValueRef<'a>> {
+        match self.cur {
+            None => Err(LsmError::CursorNotValid),
+            Some(icur) => self.subcursors[icur].ValueRef(),
         }
     }
 
@@ -1096,7 +1135,7 @@ impl<'a> LivingCursor<'a> {
     }
 }
 
-impl<'a> ICursor for LivingCursor<'a> {
+impl<'a> ICursor<'a> for LivingCursor<'a> {
     fn First(&mut self) -> Result<()> {
         try!(self.chain.First());
         try!(self.skipTombstonesForward());
@@ -1111,6 +1150,14 @@ impl<'a> ICursor for LivingCursor<'a> {
 
     fn Key(&self) -> Result<Box<[u8]>> {
         self.chain.Key()
+    }
+
+    fn KeyRef(&'a self) -> Result<KeyRef<'a>> {
+        self.chain.KeyRef()
+    }
+
+    fn ValueRef(&'a self) -> Result<ValueRef<'a>> {
+        self.chain.ValueRef()
     }
 
     fn Value(&self) -> Result<Blob> {
@@ -2023,7 +2070,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
 struct myOverflowReadStream {
     fs: File,
     len: usize, // same type as ValueLength(), max len of a single value
-    firstPage: PageNum, // TODO will be needed for Seek trait
+    firstPage: PageNum, // TODO will be needed later for Seek trait
     buf: Box<[u8]>,
     currentPage: PageNum,
     sofarOverall: usize,
@@ -2246,7 +2293,7 @@ struct SegmentCursor<'a> {
     segnum: SegmentNum,
     csrnum: u64,
 
-    blocks: Vec<PageBlock>, // TODO will be needed later
+    blocks: Vec<PageBlock>, // TODO will be needed later for stray checking
     fs: File,
     len: u64,
     rootPage: PageNum,
@@ -2449,26 +2496,23 @@ impl<'a> SegmentCursor<'a> {
         }
     }
 
-    // TODO experimental
-    fn keyInLeaf2(&'a self, n: usize) -> Result<KeyVal<'a>> { 
+    fn keyInLeaf2(&'a self, n: usize) -> Result<KeyRef<'a>> { 
         let mut cur = self.leafKeys[n as usize];
         let kflag = self.pr.GetByte(&mut cur);
         let klen = self.pr.GetVarint(&mut cur) as usize;
         if 0 == (kflag & ValueFlag::FLAG_OVERFLOW) {
             match self.prefix {
                 Some(ref a) => {
-                    let ss = SplitSlice::new(&a, self.pr.get_slice(a.len(), klen));
-                    Ok(KeyVal::Normal(ss))
+                    Ok(KeyRef::Prefixed(&a, self.pr.get_slice(cur, klen - a.len())))
                 },
                 None => {
-                    let ss = SplitSlice::new(&[], self.pr.get_slice(0, klen));
-                    Ok(KeyVal::Normal(ss))
+                    Ok(KeyRef::Normal(self.pr.get_slice(cur, klen)))
                 },
             }
         } else {
             let pgnum = self.pr.GetInt32(&mut cur) as PageNum;
             let ostrm = try!(myOverflowReadStream::new(&self.path, self.pr.PageSize(), pgnum, klen));
-            Ok(KeyVal::Overflow(ostrm))
+            Ok(KeyRef::Overflowed(klen, box ostrm))
         }
     }
 
@@ -2844,7 +2888,7 @@ impl<'a> Drop for SegmentCursor<'a> {
     }
 }
 
-impl<'a> ICursor for SegmentCursor<'a> {
+impl<'a> ICursor<'a> for SegmentCursor<'a> {
     fn IsValid(&self) -> bool {
         self.leafIsValid()
     }
@@ -2858,6 +2902,13 @@ impl<'a> ICursor for SegmentCursor<'a> {
         match self.currentKey {
             None => Err(LsmError::CursorNotValid),
             Some(currentKey) => self.keyInLeaf(currentKey),
+        }
+    }
+
+    fn KeyRef(&'a self) -> Result<KeyRef<'a>> {
+        match self.currentKey {
+            None => Err(LsmError::CursorNotValid),
+            Some(currentKey) => self.keyInLeaf2(currentKey),
         }
     }
 
@@ -2882,6 +2933,31 @@ impl<'a> ICursor for SegmentCursor<'a> {
                         let mut a = vec![0;vlen as usize].into_boxed_slice();
                         self.pr.GetIntoArray(&mut pos, &mut a);
                         Ok(Blob::Array(a))
+                    }
+                }
+            }
+        }
+    }
+
+    fn ValueRef(&'a self) -> Result<ValueRef<'a>> {
+        match self.currentKey {
+            None => Err(LsmError::CursorNotValid),
+            Some(currentKey) => {
+                let mut pos = self.leafKeys[currentKey as usize];
+
+                self.skipKey(&mut pos);
+
+                let vflag = self.pr.GetByte(&mut pos);
+                if 0 != (vflag & ValueFlag::FLAG_TOMBSTONE) {
+                    Ok(ValueRef::Tombstone)
+                } else {
+                    let vlen = self.pr.GetVarint(&mut pos) as usize;
+                    if 0 != (vflag & ValueFlag::FLAG_OVERFLOW) {
+                        let pgnum = self.pr.GetInt32(&mut pos) as PageNum;
+                        let strm = try!(myOverflowReadStream::new(&self.path, self.pr.PageSize(), pgnum, vlen));
+                        Ok(ValueRef::Overflowed(vlen, box strm))
+                    } else {
+                        Ok(ValueRef::Normal(self.pr.get_slice(pos, vlen)))
                     }
                 }
             }
