@@ -5,60 +5,6 @@ length works?
 
 what if a zero-length value gets overflowed?
 
-arrays:
-
-    SELECT c.givenName
-    FROM c IN Families.children
-    WHERE c.grade = 8
-
-how to do:
-
-    SELECT * 
-    FROM Families.children
-
-range queries for numbers won't work until we encode
-the index key in binary.  varint for integers?
-
-range query problem with end key.  needs to be the first
-sorted value which should not be included in the range.
-given the way keys are encoded, for an int, this would
-have to be N+1.
-
-can query on whether a key is present
-
-can query on whether a value is a certain type
-
-keys for documents:
-    j/collectionID/rid -> json
-
-keys for index entries:
-    x/collectionID/path/value/rid -> nothing
-
-    x vs j, single byte
-    
-    collID.  string?
-
-    path is a series of zero-terminated utf8 strings
-
-    special delimiter before the value
-
-    value is a type byte + encoding for that type
-
-    delimiter after the value
-
-    then rid
-
-when a record changes, we need to update its index entries.
-how to get rid of the old ones?  list all index keys from the
-old version of the record.  list all index keys for the new
-version.  compare/update.
-
-how to make sure value cannot be interpreted as part of the
-path
-
-is an empty string valid as part of the path?  a json record
-can have an empty string as a key, right?
-
 seek in myOverflowReadStream
 
 still lots of automerge issues
@@ -74,21 +20,19 @@ need to actually design the file header
     format version number
 
 do we need IDatabase if there is only one implementation
-of it?  same for IWriteLock.
-
---
+of it?  same for IWriteLock.  no.  rs version eliminates
+them.
 
 range splitting
 
 fractional cascading
 
-range deletes
-
-suffix deletes
+range deletes.  graveyard.
 
 bloom filters?
 
-try to improve the performance of multicursor
+try to improve the performance of multicursor.  more like
+rs version?
 
 lz4 stream
 
@@ -99,57 +43,17 @@ consider nessos streams instead of seq<kvp> ?
 need something to make sure that only one Database object
 exists for a given file
 
-do we have a test that chains multicursors with other multicursors?
-do we need one?  that should actually never happen in normal use.
+chg fs version to have multicursor assume segment cursor subs,
+and livecursor assume multicursor sub.
 
 #if integrity_checks
 
 look at reducing memory allocations in writeLeaves.  (done?)
 
-write a test that verifies that BTreeSegment.Create
-never seeks if it has no boundary.  (but overflows break
-this now).  need a stream
-that overrides seek and throws.  this test preserves
-the ability to write a btree into almost any kind of
-stream.  common use case remains writing with an
-involved page manager.
-
-test multicursor with the same cursor twice?
-
-test multicursor with two identical subs?
-
 still concerned about how much we are copying byte[] for keys
 
 what are the embedded pointers in the runs in SQLite4 LSM?
 
-now we can chain a
-zlib stream and compress as it goes in.
-
 create shorter synthetic keys in the parent nodes?
-
---------
-
-kinds of queries:
-
-string =.  works with any specific path.
-
-integer, double = or range.  any specific path.
-
-how to deal with arrays?
-
-the overall list of documents is like an array.  except it doesn't
-have specific indices.  will somebody want to query on an array and
-say "I want a string of value 'x' and it must appear at position 4?"
-
-select blah from collection -- collection is an array of documents,
-each of which is an array or record?
-
-
-postgresql
-documentdb sql
-n1ql
-apache drill
-
-
 
 

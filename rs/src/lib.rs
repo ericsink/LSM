@@ -887,6 +887,7 @@ impl PageBuffer {
     }
 
     // TODO this function shows up a lot in the profiler
+    // TODO inline hint?
     fn GetVarint(&self, cur: &mut usize) -> u64 {
         Varint::read(&*self.buf, cur)
     }
@@ -2770,6 +2771,14 @@ impl<'a> SegmentCursor<'a> {
     // we need to skip any overflows.  when moving backward,
     // this is not necessary, because each leaf has a pointer to
     // the leaf before it.
+    // TODO it's unfortunate that Next is the slower operation
+    // when it is far more common than Prev.  OTOH, the pages
+    // are written as we stream through a set of kvp objects,
+    // and we don't want to rewind, and we want to write each
+    // page only once, and we want to keep the minimum amount
+    // of stuff in memory as we go.  and this code only causes
+    // a perf difference if there are overflow pages between
+    // the leaves.
     fn searchForwardForLeaf(&mut self) -> Result<bool> {
         let pt = self.pr.PageType();
         if pt == PageType::LEAF_NODE { 
@@ -3364,7 +3373,6 @@ impl<'a> db<'a> {
 
         let mut f = try!(OpenOptions::new()
                 .read(true)
-                //.write(true) // TODO needed here?
                 .create(true)
                 .open(&path));
 
@@ -3428,6 +3436,8 @@ impl<'a> db<'a> {
         };
         Ok(res)
     }
+
+    // TODO func to ask for the write lock without blocking?
 
     pub fn GetWriteLock(&'a self) -> Result<std::sync::MutexGuard<WriteLock<'a>>> {
         let mut lck = try!(self.write_lock.lock());
@@ -3686,26 +3696,6 @@ impl InnerPart {
             None => Err(LsmError::Misc("getCursor: segment not found")),
             Some(seg) => {
                 let rootPage = seg.root;
-                /* TODO
-                let hook (csr:ICursor) =
-                    let fs = self.OpenForReading();
-                    fs.Close()
-                    lock critSectionCursors (fun () -> 
-                        let cur = Map.find g cursors
-                        let removed = List.filter (fun x -> not (Object.ReferenceEquals(csr, x))) cur
-                        // if we are removing the last cursor for a segment, we do need to
-                        // remove that segment num from the cursors map, not just leave
-                        // it there with an empty list.
-                        if List.isEmpty removed then
-                            cursors <- Map.remove g cursors
-                            match fnFree with
-                            | Some f -> f g seg
-                            | None -> ()
-                        else
-                            cursors <- Map.add g removed cursors
-                    )
-                    //printfn "done with cursor %O" g 
-                */
                 let mut cursors = try!(self.cursors.lock());
                 let csrnum = cursors.nextCursorNum;
                 let csr = try!(SegmentCursor::new(&self.path, self.pgsz, rootPage, seg.blocks.clone(), &self, g, csrnum));
@@ -3729,7 +3719,7 @@ impl InnerPart {
         let st = try!(self.header.lock());
         let mut clist = Vec::new();
         for g in st.header.currentState.iter() {
-            clist.push(try!(self.getCursor(&*st, *g))); // TODO checkForGoneSegment
+            clist.push(try!(self.getCursor(&*st, *g)));
         }
         let mc = MultiCursor::Create(clist);
         let lc = LivingCursor::Create(mc);
@@ -3737,8 +3727,8 @@ impl InnerPart {
     }
 
     fn commitSegments(&self, 
-                          newSegs: Vec<SegmentNum>
-                         ) -> Result<()> {
+                      newSegs: Vec<SegmentNum>
+                     ) -> Result<()> {
         assert_eq!(newSegs.len(), newSegs.iter().map(|g| *g).collect::<HashSet<SegmentNum>>().len());
 
         let mut st = try!(self.header.lock());

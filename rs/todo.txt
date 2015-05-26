@@ -65,8 +65,6 @@ which means if the caller provided this as a reference instead of a box,
 we would have to make a copy no matter what, and if the caller had to
 construct a box anyway, we would have done it twice.
 
-maybe myOverflowReadStream shouldn't be returned as a trait object.
-
 a little worried about the KeyCompare always being built in to Seek.
 what about cases that don't use it?
 
