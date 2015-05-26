@@ -2439,13 +2439,20 @@ impl<'a> SegmentCursor<'a> {
     }
 
     fn setCurrentPage(&mut self, pgnum: PageNum) -> Result<bool> {
-        // use self.blocks to make sure we are not straying out of bounds.
+        // TODO use self.blocks to make sure we are not straying out of bounds.
+
+
+        // TODO so I think this function actually should be Result<()>.
+        // it used to return Ok(false) in situations that I think should
+        // actually have been errors.  not 100% sure yet.  still trying
+        // to verify all the cases.
 
         // TODO if currentPage = pgnum already...
         self.currentPage = pgnum;
         self.resetLeaf();
         if 0 == self.currentPage { 
-            Ok(false)
+            Err(LsmError::InvalidPageNumber)
+            //Ok(false)
         } else {
             // refuse to go to a page beyond the end of the stream
             // TODO is this the right place for this check?    
@@ -2455,7 +2462,8 @@ impl<'a> SegmentCursor<'a> {
                 try!(self.pr.Read(&mut self.fs));
                 Ok(true)
             } else {
-                Ok(false)
+                Err(LsmError::InvalidPageNumber)
+                //Ok(false)
             }
         }
     }
@@ -4328,13 +4336,14 @@ mod tests {
 }
 
 pub struct GenerateNumbers {
-    pub cur : usize,
-    pub end : usize,
-    pub step : usize,
+    pub cur: usize,
+    pub end: usize,
+    pub step: usize,
 }
 
 impl Iterator for GenerateNumbers {
     type Item = Result<kvp>;
+    // TODO allow the number of digits to be customized?
     fn next(&mut self) -> Option<Result<kvp>> {
         if self.cur > self.end {
             None
@@ -4344,6 +4353,49 @@ impl Iterator for GenerateNumbers {
             let v = format!("{}", self.cur * 2).into_bytes().into_boxed_slice();
             let r = kvp{Key:k, Value:Blob::Array(v)};
             self.cur = self.cur + self.step;
+            Some(Ok(r))
+        }
+    }
+}
+
+pub struct GenerateWeirdPairs {
+    pub cur: usize,
+    pub end: usize,
+    pub klen: usize,
+    pub vlen: usize,
+}
+
+impl Iterator for GenerateWeirdPairs {
+    type Item = Result<kvp>;
+    fn next(&mut self) -> Option<Result<kvp>> {
+        if self.cur > self.end {
+            None
+        }
+        else {
+            fn get_weird(i: usize) -> u8 {
+                let f = i as f64;
+                let f = f.sin() * 1000.0;
+                let f = f.abs();
+                let f = f.floor() as u32;
+                let f = f & 0xff;
+                let f = f as u8;
+                f
+            }
+
+            let mut k = Vec::new();
+            for i in 0 .. self.klen {
+                k.push(get_weird(i + self.cur));
+            }
+            let k = k.into_boxed_slice();
+
+            let mut v = Vec::new();
+            for i in 0 .. self.vlen {
+                v.push(get_weird(i * 2 + self.cur));
+            }
+            let v = v.into_boxed_slice();
+
+            let r = kvp{Key:k, Value:Blob::Array(v)};
+            self.cur = self.cur + 1;
             Some(Ok(r))
         }
     }

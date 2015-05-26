@@ -951,3 +951,53 @@ fn key_ref() {
     assert!(f().is_ok());
 }
 
+#[test]
+fn threads_with_weird_pairs() {
+    fn f(klen: usize, vlen: usize, threads: usize, pairs: usize) -> lsm::Result<()> {
+        use std::sync::Arc;
+        use std::thread;
+
+        let settings = lsm::DbSettings {
+                DefaultPageSize : 256,
+                PagesPerBlock : 2,
+                .. lsm::DEFAULT_SETTINGS
+            };
+        let db = try!(lsm::db::new(tempfile("threads_with_overflows"), settings));
+        let data = Arc::new(db);
+
+        let mut handles = Vec::new();
+        
+        for i in 0 .. threads {
+            let h = {
+                let data = data.clone();
+                let h = thread::spawn(move || -> lsm::Result<()> {
+                    let _g = try!(data.WriteSegmentFromSortedSequence(lsm::GenerateWeirdPairs {cur: i*10, end: i*10+pairs, klen: klen, vlen: vlen}));
+                    Ok(())
+                });
+                h
+            };
+            handles.push(h);
+        }
+
+        for h in handles {
+            let r = h.join();
+            assert!(r.is_ok());
+        }
+
+        Ok(())
+    }
+
+    let r = f(100, 100, 10, 1000); 
+    assert!(r.is_ok());
+
+    let r = f(100, 1000, 10, 100); 
+    assert!(r.is_ok());
+
+    let r = f(1000, 100, 10, 100); 
+    assert!(r.is_ok());
+
+    let r = f(1000, 1000, 10, 10); 
+    assert!(r.is_ok());
+
+}
+
