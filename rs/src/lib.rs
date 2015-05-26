@@ -1252,6 +1252,8 @@ enum PageType {
 }
 
 impl PageType {
+
+    #[inline(always)]
     fn to_u8(self) -> u8 {
         match self {
             PageType::LEAF_NODE => 1,
@@ -1260,6 +1262,7 @@ impl PageType {
         }
     }
 
+    #[inline(always)]
     fn from_u8(v: u8) -> Result<PageType> {
         match v {
             1 => Ok(PageType::LEAF_NODE),
