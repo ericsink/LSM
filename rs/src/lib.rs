@@ -167,7 +167,7 @@ impl<'a> Index<usize> for SplitSlice<'a> {
 pub enum KeyRef<'a> {
     Overflowed(usize, Box<Read>),
     Prefixed(&'a [u8],&'a [u8]),
-    Normal(&'a [u8]),
+    Array(&'a [u8]),
 }
 
 impl<'a> std::fmt::Debug for KeyRef<'a> {
@@ -175,12 +175,20 @@ impl<'a> std::fmt::Debug for KeyRef<'a> {
         match *self {
             KeyRef::Overflowed(klen,_) => write!(f, "Overflowed, len={}", klen),
             KeyRef::Prefixed(front,back) => write!(f, "Prefixed, front={:?}, back={:?}", front, back),
-            KeyRef::Normal(a) => write!(f, "Normal, len={:?}", a),
+            KeyRef::Array(a) => write!(f, "Array, len={:?}", a),
         }
     }
 }
 
 impl<'a> KeyRef<'a> {
+    pub fn len(&self) -> usize {
+        match *self {
+            KeyRef::Overflowed(klen, _) => klen,
+            KeyRef::Array(a) => a.len(),
+            KeyRef::Prefixed(front,back) => front.len() + back.len(),
+        }
+    }
+
     pub fn into_boxed_slice(self) -> Result<Box<[u8]>> {
         match self {
             KeyRef::Overflowed(klen, mut strm) => {
@@ -188,7 +196,7 @@ impl<'a> KeyRef<'a> {
                 try!(strm.read_to_end(&mut a));
                 Ok(a.into_boxed_slice())
             },
-            KeyRef::Normal(a) => {
+            KeyRef::Array(a) => {
                 let mut k = Vec::new();
                 k.push_all(a);
                 Ok(k.into_boxed_slice())
@@ -207,14 +215,24 @@ impl<'a> KeyRef<'a> {
 pub enum ValueRef<'a> {
     Tombstone,
     Overflowed(usize, Box<Read>),
-    Normal(&'a [u8]),
+    Array(&'a [u8]),
+}
+
+impl<'a> ValueRef<'a> {
+    pub fn len(&self) -> Option<usize> {
+        match *self {
+            ValueRef::Overflowed(len, _) => Some(len),
+            ValueRef::Array(a) => Some(a.len()),
+            ValueRef::Tombstone => None,
+        }
+    }
 }
 
 impl<'a> std::fmt::Debug for ValueRef<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::result::Result<(), std::fmt::Error> {
         match *self {
             ValueRef::Overflowed(klen,_) => write!(f, "Overflowed, len={}", klen),
-            ValueRef::Normal(a) => write!(f, "Normal, len={:?}", a),
+            ValueRef::Array(a) => write!(f, "Array, len={:?}", a),
             ValueRef::Tombstone => write!(f, "Tombstone"),
         }
     }
@@ -2506,7 +2524,7 @@ impl<'a> SegmentCursor<'a> {
                     Ok(KeyRef::Prefixed(&a, self.pr.get_slice(cur, klen - a.len())))
                 },
                 None => {
-                    Ok(KeyRef::Normal(self.pr.get_slice(cur, klen)))
+                    Ok(KeyRef::Array(self.pr.get_slice(cur, klen)))
                 },
             }
         } else {
@@ -2957,7 +2975,7 @@ impl<'a> ICursor<'a> for SegmentCursor<'a> {
                         let strm = try!(myOverflowReadStream::new(&self.path, self.pr.PageSize(), pgnum, vlen));
                         Ok(ValueRef::Overflowed(vlen, box strm))
                     } else {
-                        Ok(ValueRef::Normal(self.pr.get_slice(pos, vlen)))
+                        Ok(ValueRef::Array(self.pr.get_slice(pos, vlen)))
                     }
                 }
             }
