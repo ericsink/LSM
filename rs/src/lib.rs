@@ -30,17 +30,15 @@ use std::io::Read;
 use std::io::Write;
 use std::io::SeekFrom;
 use std::cmp::Ordering;
-use std::io::ErrorKind;
 use std::fs::File;
 use std::fs::OpenOptions;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::ops::Index;
+use std::error::Error;
 
 const SIZE_32: usize = 4; // like std::mem::size_of::<u32>()
 const SIZE_16: usize = 2; // like std::mem::size_of::<u16>()
-
-const CURSOR_NOT_VALID: &'static str = "Cursor not valid";
 
 pub type PageNum = u32;
 // type PageSize = u32;
@@ -58,6 +56,63 @@ pub enum Blob {
     Array(Box<[u8]>),
     Tombstone,
 }
+
+#[derive(Debug)]
+enum LsmError {
+    // TODO remove Misc
+    Misc(&'static str),
+
+    // TODO more detail within CorruptFile
+    CorruptFile(&'static str),
+
+    Io(std::io::Error),
+
+    CursorNotValid,
+    InvalidPageNumber,
+    Poisoned,
+}
+
+impl std::fmt::Display for LsmError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match *self {
+            LsmError::Io(ref err) => write!(f, "IO error: {}", err),
+            LsmError::Misc(s) => write!(f, "Misc error: {}", s),
+            LsmError::CorruptFile(s) => write!(f, "Corrupt file: {}", s),
+            LsmError::Poisoned => write!(f, "Poisoned"),
+            LsmError::CursorNotValid => write!(f, "Cursor not valid"),
+            LsmError::InvalidPageNumber => write!(f, "Invalid page number"),
+        }
+    }
+}
+
+impl std::error::Error for LsmError {
+    fn description(&self) -> &str {
+        match *self {
+            LsmError::Io(ref err) => std::error::Error::description(err),
+            LsmError::Misc(s) => s,
+            LsmError::CorruptFile(s) => s,
+            LsmError::Poisoned => "poisoned",
+            LsmError::CursorNotValid => "cursor not valid",
+            LsmError::InvalidPageNumber => "invalid page number",
+        }
+    }
+
+    // TODO cause
+}
+
+impl From<io::Error> for LsmError {
+    fn from(err: io::Error) -> LsmError {
+        LsmError::Io(err)
+    }
+}
+
+impl<T> From<std::sync::PoisonError<T>> for LsmError {
+    fn from(_err: std::sync::PoisonError<T>) -> LsmError {
+        LsmError::Poisoned
+    }
+}
+
+pub type Result<T> = std::result::Result<T, LsmError>;
 
 // kvp is the struct used to provide key-value pairs downward,
 // for storage into the database.
@@ -120,7 +175,7 @@ enum KeyVal<'a> {
 }
 
 impl<'a> KeyVal<'a> {
-    fn into_boxed_slice(self) -> io::Result<Box<[u8]>> {
+    fn into_boxed_slice(self) -> Result<Box<[u8]>> {
         match self {
             KeyVal::Overflow(mut strm) => {
                 let klen = strm.len();
@@ -154,13 +209,11 @@ impl PageBlock {
 
 pub type SegmentNum = u64;
 
-// TODO io::Result isn't really the right type to use here,
-// but it's the Result type used everywhere else.
 trait IPages {
     fn PageSize(&self) -> usize;
-    fn Begin(&self) -> io::Result<PendingSegment>;
-    fn GetBlock(&self, token: &mut PendingSegment) -> io::Result<PageBlock>;
-    fn End(&self, token: PendingSegment, page: PageNum) -> io::Result<SegmentNum>;
+    fn Begin(&self) -> Result<PendingSegment>;
+    fn GetBlock(&self, token: &mut PendingSegment) -> Result<PageBlock>;
+    fn End(&self, token: PendingSegment, page: PageNum) -> Result<SegmentNum>;
 }
 
 #[derive(PartialEq,Copy,Clone)]
@@ -198,8 +251,8 @@ impl<'a> CursorIterator<'a> {
 }
 
 impl<'a> Iterator for CursorIterator<'a> {
-    type Item = io::Result<kvp>;
-    fn next(&mut self) -> Option<io::Result<kvp>> {
+    type Item = Result<kvp>;
+    fn next(&mut self) -> Option<Result<kvp>> {
         if self.csr.IsValid() {
             let k = self.csr.Key();
             if k.is_err() {
@@ -228,7 +281,7 @@ pub enum SeekResult {
 }
 
 impl SeekResult {
-    fn from_cursor<T: ICursor>(csr: &T, k:&[u8]) -> io::Result<SeekResult> {
+    fn from_cursor<T: ICursor>(csr: &T, k:&[u8]) -> Result<SeekResult> {
         if csr.IsValid() {
             if Ordering::Equal == try!(csr.KeyCompare(k)) {
                 Ok(SeekResult::Equal)
@@ -258,11 +311,11 @@ impl SeekResult {
 }
 
 pub trait ICursor {
-    fn Seek(&mut self, k: &[u8], sop:SeekOp) -> io::Result<SeekResult>;
-    fn First(&mut self) -> io::Result<()>;
-    fn Last(&mut self) -> io::Result<()>;
-    fn Next(&mut self) -> io::Result<()>;
-    fn Prev(&mut self) -> io::Result<()>;
+    fn Seek(&mut self, k: &[u8], sop:SeekOp) -> Result<SeekResult>;
+    fn First(&mut self) -> Result<()>;
+    fn Last(&mut self) -> Result<()>;
+    fn Next(&mut self) -> Result<()>;
+    fn Prev(&mut self) -> Result<()>;
 
     fn IsValid(&self) -> bool;
 
@@ -270,14 +323,14 @@ pub trait ICursor {
     // would need to be "until the next call", and Rust can't really
     // do that.  or at least, that model isn't compatible with Rust
     // iterators.  look for rust community discussions on "streaming iterators".
-    fn Key(&self) -> io::Result<Box<[u8]>>;
+    fn Key(&self) -> Result<Box<[u8]>>;
 
     // TODO similarly with Value().  When the Blob is an array, we would
     // prefer to return a reference to the bytes in the page.
-    fn Value(&self) -> io::Result<Blob>;
+    fn Value(&self) -> Result<Blob>;
 
-    fn ValueLength(&self) -> io::Result<Option<usize>>; // tombstone is None
-    fn KeyCompare(&self, k: &[u8]) -> io::Result<Ordering>;
+    fn ValueLength(&self) -> Result<Option<usize>>; // tombstone is None
+    fn KeyCompare(&self, k: &[u8]) -> Result<Ordering>;
 }
 
 //#[derive(Copy,Clone)]
@@ -311,17 +364,18 @@ pub mod utils {
     use std::io;
     use std::io::Seek;
     use std::io::Read;
-    use std::io::Write;
     use std::io::SeekFrom;
-    use std::io::ErrorKind;
     use super::PageNum;
+    use super::LsmError;
+    use super::Result;
 
-    pub fn SeekPage(strm: &mut Seek, pgsz: usize, pageNumber: PageNum) -> io::Result<u64> {
+    pub fn SeekPage(strm: &mut Seek, pgsz: usize, pageNumber: PageNum) -> Result<u64> {
         if 0==pageNumber { 
-            return Err(io::Error::new(ErrorKind::Other, "invalid page number"));
+            return Err(LsmError::InvalidPageNumber);
         }
         let pos = ((pageNumber as u64) - 1) * (pgsz as u64);
-        strm.seek(SeekFrom::Start(pos))
+        let v = try!(strm.seek(SeekFrom::Start(pos)));
+        Ok(v)
     }
 
     pub fn ReadFully(strm: &mut Read, buf: &mut [u8]) -> io::Result<usize> {
@@ -652,9 +706,10 @@ impl PageBuilder {
         res
     }
 
+    // TODO rm this function
     fn PutStream(&mut self, s: &mut Read, len: usize) -> io::Result<usize> {
         let n = try!(self.PutStream2(s, len));
-        // TODO if n != len fail
+        // TODO if n != len fail, which may mean a different result type here
         let res : io::Result<usize> = Ok(len);
         res
     }
@@ -809,7 +864,7 @@ struct MultiCursor<'a> {
 }
 
 impl<'a> MultiCursor<'a> {
-    fn find(&self, swap: bool) -> io::Result<Option<usize>> {
+    fn find(&self, swap: bool) -> Result<Option<usize>> {
         if self.subcursors.is_empty() {
             Ok(None)
         } else {
@@ -840,11 +895,11 @@ impl<'a> MultiCursor<'a> {
         }
     }
 
-    fn findMin(&self) -> io::Result<Option<usize>> {
+    fn findMin(&self) -> Result<Option<usize>> {
         self.find(false)
     }
 
-    fn findMax(&self) -> io::Result<Option<usize>> {
+    fn findMax(&self) -> Result<Option<usize>> {
         self.find(true)
     }
 
@@ -863,7 +918,7 @@ impl<'a> ICursor for MultiCursor<'a> {
         }
     }
 
-    fn First(&mut self) -> io::Result<()> {
+    fn First(&mut self) -> Result<()> {
         for i in 0 .. self.subcursors.len() {
             try!(self.subcursors[i].First());
         }
@@ -872,7 +927,7 @@ impl<'a> ICursor for MultiCursor<'a> {
         Ok(())
     }
 
-    fn Last(&mut self) -> io::Result<()> {
+    fn Last(&mut self) -> Result<()> {
         for i in 0 .. self.subcursors.len() {
             try!(self.subcursors[i].Last());
         }
@@ -881,37 +936,37 @@ impl<'a> ICursor for MultiCursor<'a> {
         Ok(())
     }
 
-    fn Key(&self) -> io::Result<Box<[u8]>> {
+    fn Key(&self) -> Result<Box<[u8]>> {
         match self.cur {
-            None => Err(io::Error::new(ErrorKind::Other, CURSOR_NOT_VALID)),
+            None => Err(LsmError::CursorNotValid),
             Some(icur) => self.subcursors[icur].Key(),
         }
     }
 
-    fn KeyCompare(&self, k: &[u8]) -> io::Result<Ordering> {
+    fn KeyCompare(&self, k: &[u8]) -> Result<Ordering> {
         match self.cur {
-            None => Err(io::Error::new(ErrorKind::Other, CURSOR_NOT_VALID)),
+            None => Err(LsmError::CursorNotValid),
             Some(icur) => self.subcursors[icur].KeyCompare(k),
         }
     }
 
-    fn Value(&self) -> io::Result<Blob> {
+    fn Value(&self) -> Result<Blob> {
         match self.cur {
-            None => Err(io::Error::new(ErrorKind::Other, CURSOR_NOT_VALID)),
+            None => Err(LsmError::CursorNotValid),
             Some(icur) => self.subcursors[icur].Value(),
         }
     }
 
-    fn ValueLength(&self) -> io::Result<Option<usize>> {
+    fn ValueLength(&self) -> Result<Option<usize>> {
         match self.cur {
-            None => Err(io::Error::new(ErrorKind::Other, CURSOR_NOT_VALID)),
+            None => Err(LsmError::CursorNotValid),
             Some(icur) => self.subcursors[icur].ValueLength(),
         }
     }
 
-    fn Next(&mut self) -> io::Result<()> {
+    fn Next(&mut self) -> Result<()> {
         match self.cur {
-            None => Err(io::Error::new(ErrorKind::Other, CURSOR_NOT_VALID)),
+            None => Err(LsmError::CursorNotValid),
             Some(icur) => {
                 if self.dir != Direction::FORWARD {
                     let k = try!(self.subcursors[icur].Key());
@@ -953,9 +1008,9 @@ impl<'a> ICursor for MultiCursor<'a> {
     }
 
     // TODO fix Prev like Next
-    fn Prev(&mut self) -> io::Result<()> {
+    fn Prev(&mut self) -> Result<()> {
         match self.cur {
-            None => Err(io::Error::new(ErrorKind::Other, CURSOR_NOT_VALID)),
+            None => Err(LsmError::CursorNotValid),
             Some(icur) => {
                 let k = try!(self.subcursors[icur].Key());
                 for j in 0 .. self.subcursors.len() {
@@ -974,7 +1029,7 @@ impl<'a> ICursor for MultiCursor<'a> {
         }
     }
 
-    fn Seek(&mut self, k: &[u8], sop:SeekOp) -> io::Result<SeekResult> {
+    fn Seek(&mut self, k: &[u8], sop:SeekOp) -> Result<SeekResult> {
         self.cur = None;
         self.dir = Direction::WANDERING;
         for j in 0 .. self.subcursors.len() {
@@ -1022,14 +1077,14 @@ pub struct LivingCursor<'a> {
 }
 
 impl<'a> LivingCursor<'a> {
-    fn skipTombstonesForward(&mut self) -> io::Result<()> {
+    fn skipTombstonesForward(&mut self) -> Result<()> {
         while self.chain.IsValid() && try!(self.chain.ValueLength()).is_none() {
             try!(self.chain.Next());
         }
         Ok(())
     }
 
-    fn skipTombstonesBackward(&mut self) -> io::Result<()> {
+    fn skipTombstonesBackward(&mut self) -> Result<()> {
         while self.chain.IsValid() && try!(self.chain.ValueLength()).is_none() {
             try!(self.chain.Prev());
         }
@@ -1042,27 +1097,27 @@ impl<'a> LivingCursor<'a> {
 }
 
 impl<'a> ICursor for LivingCursor<'a> {
-    fn First(&mut self) -> io::Result<()> {
+    fn First(&mut self) -> Result<()> {
         try!(self.chain.First());
         try!(self.skipTombstonesForward());
         Ok(())
     }
 
-    fn Last(&mut self) -> io::Result<()> {
+    fn Last(&mut self) -> Result<()> {
         try!(self.chain.Last());
         try!(self.skipTombstonesBackward());
         Ok(())
     }
 
-    fn Key(&self) -> io::Result<Box<[u8]>> {
+    fn Key(&self) -> Result<Box<[u8]>> {
         self.chain.Key()
     }
 
-    fn Value(&self) -> io::Result<Blob> {
+    fn Value(&self) -> Result<Blob> {
         self.chain.Value()
     }
 
-    fn ValueLength(&self) -> io::Result<Option<usize>> {
+    fn ValueLength(&self) -> Result<Option<usize>> {
         self.chain.ValueLength()
     }
 
@@ -1078,23 +1133,23 @@ impl<'a> ICursor for LivingCursor<'a> {
             }
     }
 
-    fn KeyCompare(&self, k: &[u8]) -> io::Result<Ordering> {
+    fn KeyCompare(&self, k: &[u8]) -> Result<Ordering> {
         self.chain.KeyCompare(k)
     }
 
-    fn Next(&mut self) -> io::Result<()> {
+    fn Next(&mut self) -> Result<()> {
         try!(self.chain.Next());
         try!(self.skipTombstonesForward());
         Ok(())
     }
 
-    fn Prev(&mut self) -> io::Result<()> {
+    fn Prev(&mut self) -> Result<()> {
         try!(self.chain.Prev());
         try!(self.skipTombstonesBackward());
         Ok(())
     }
 
-    fn Seek(&mut self, k: &[u8], sop:SeekOp) -> io::Result<SeekResult> {
+    fn Seek(&mut self, k: &[u8], sop:SeekOp) -> Result<SeekResult> {
         let sr = try!(self.chain.Seek(k, sop));
         match sop {
             SeekOp::SEEK_GE => {
@@ -1191,43 +1246,37 @@ struct LeafState {
 fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite, 
                                                             pageManager: &IPages, 
                                                             source: I,
-                                                           ) -> io::Result<(SegmentNum,PageNum)> where I:Iterator<Item=io::Result<kvp>>, SeekWrite : Seek+Write {
+                                                           ) -> Result<(SegmentNum,PageNum)> where I:Iterator<Item=Result<kvp>>, SeekWrite : Seek+Write {
 
     fn writeOverflow<SeekWrite>(startingBlock: PageBlock, 
                                 ba: &mut Read, 
                                 pageManager: &IPages, 
                                 fs: &mut SeekWrite
-                               ) -> io::Result<(usize,PageBlock)> where SeekWrite : Seek+Write {
+                               ) -> Result<(usize,PageBlock)> where SeekWrite : Seek+Write {
 
-        fn buildFirstPage(ba: &mut Read, pbFirstOverflow : &mut PageBuilder, pgsz: usize) -> io::Result<(usize,bool)> {
+        fn buildFirstPage(ba: &mut Read, pbFirstOverflow : &mut PageBuilder, pgsz: usize) -> Result<(usize,bool)> {
             pbFirstOverflow.Reset();
             pbFirstOverflow.PutByte(PageType::OVERFLOW_NODE);
             pbFirstOverflow.PutByte(0u8); // starts 0, may be changed later
             let room = pgsz - (2 + SIZE_32);
             // something will be put in lastInt32 later
-            match pbFirstOverflow.PutStream2(ba, room) {
-                Ok(put) => Ok((put, put<room)),
-                Err(e) => Err(e),
-            }
+            let put = try!(pbFirstOverflow.PutStream2(ba, room));
+            Ok((put, put<room))
         };
 
-        fn buildRegularPage(ba: &mut Read, pbOverflow : &mut PageBuilder, pgsz: usize) -> io::Result<(usize,bool)> {
+        fn buildRegularPage(ba: &mut Read, pbOverflow : &mut PageBuilder, pgsz: usize) -> Result<(usize,bool)> {
             pbOverflow.Reset();
             let room = pgsz;
-            match pbOverflow.PutStream2(ba, room) {
-                Ok(put) => Ok((put, put<room)),
-                Err(e) => Err(e),
-            }
+            let put = try!(pbOverflow.PutStream2(ba, room));
+            Ok((put, put<room))
         };
 
-        fn buildBoundaryPage(ba: &mut Read, pbOverflow : &mut PageBuilder, pgsz: usize) -> io::Result<(usize,bool)> {
+        fn buildBoundaryPage(ba: &mut Read, pbOverflow : &mut PageBuilder, pgsz: usize) -> Result<(usize,bool)> {
             pbOverflow.Reset();
             let room = pgsz - SIZE_32;
             // something will be put in lastInt32 before the page is written
-            match pbOverflow.PutStream2(ba, room) {
-                Ok(put) => Ok((put, put<room)),
-                Err(e) => Err(e),
-            }
+            let put = try!(pbOverflow.PutStream2(ba, room));
+            Ok((put, put<room))
         }
 
         fn writeRegularPages<SeekWrite>(max: PageNum, 
@@ -1236,7 +1285,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
                                         fs: &mut SeekWrite, 
                                         ba: &mut Read, 
                                         pgsz: usize
-                                       ) -> io::Result<(PageNum,usize,bool)> where SeekWrite : Seek+Write {
+                                       ) -> Result<(PageNum,usize,bool)> where SeekWrite : Seek+Write {
             let mut i = 0;
             let mut sofar = sofar;
             loop {
@@ -1269,7 +1318,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
                                     pbFirstOverflow: &mut PageBuilder,
                                     pageManager: &IPages,
                                     token: &mut PendingSegment
-                                   ) -> io::Result<(usize,PageBlock)> where SeekWrite : Seek+Write {
+                                   ) -> Result<(usize,PageBlock)> where SeekWrite : Seek+Write {
             // each trip through this loop will write out one
             // block, starting with the overflow first page,
             // followed by zero-or-more "regular" overflow pages,
@@ -1403,7 +1452,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
                                 fs: &mut SeekWrite, 
                                 pb: &mut PageBuilder,
                                 token: &mut PendingSegment,
-                                ) -> io::Result<(PageBlock,Vec<pgitem>,PageNum)> where I: Iterator<Item=io::Result<kvp>> , SeekWrite : Seek+Write {
+                                ) -> Result<(PageBlock,Vec<pgitem>,PageNum)> where I: Iterator<Item=Result<kvp>> , SeekWrite : Seek+Write {
         // 2 for the page type and flags
         // 4 for the prev page
         // 2 for the stored count
@@ -1475,7 +1524,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
                                 pgsz: usize,
                                 pageManager: &IPages,
                                 token: &mut PendingSegment,
-                               ) -> io::Result<()> where SeekWrite : Seek+Write { 
+                               ) -> Result<()> where SeekWrite : Seek+Write { 
             let last_key = buildLeaf(st, pb);
             assert!(st.keys_in_this_leaf.is_empty());
             let thisPageNumber = st.blk.firstPage;
@@ -1788,7 +1837,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
                                    lastLeaf: PageNum,
                                    firstLeaf: PageNum,
                                    pb: &mut PageBuilder,
-                                  ) -> io::Result<(PageBlock, Vec<pgitem>)> where SeekWrite : Seek+Write {
+                                  ) -> Result<(PageBlock, Vec<pgitem>)> where SeekWrite : Seek+Write {
         // 2 for the page type and flags
         // 2 for the stored count
         // 5 for the extra ptr we will add at the end, a varint, 5 is worst case (page num < 4294967295L)
@@ -1846,7 +1895,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
                                       pgsz: usize,
                                       token: &mut PendingSegment,
                                       firstLeaf: PageNum,
-                                     ) -> io::Result<()> where SeekWrite : Seek+Write {
+                                     ) -> Result<()> where SeekWrite : Seek+Write {
             // assert st.sofar > 0
             let thisPageNumber = st.blk.firstPage;
             buildParentPage(items, pgnum, &overflows, pb);
@@ -1974,7 +2023,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
 struct myOverflowReadStream {
     fs: File,
     len: usize, // same type as ValueLength(), max len of a single value
-    firstPage: PageNum, // will be needed for Seek trait
+    firstPage: PageNum, // TODO will be needed for Seek trait
     buf: Box<[u8]>,
     currentPage: PageNum,
     sofarOverall: usize,
@@ -1988,7 +2037,7 @@ struct myOverflowReadStream {
 }
     
 impl myOverflowReadStream {
-    fn new(path: &str, pgsz: usize, firstPage: PageNum, len: usize) -> io::Result<myOverflowReadStream> {
+    fn new(path: &str, pgsz: usize, firstPage: PageNum, len: usize) -> Result<myOverflowReadStream> {
         let f = try!(OpenOptions::new()
                 .read(true)
                 .open(path));
@@ -2018,7 +2067,7 @@ impl myOverflowReadStream {
 
     // TODO consider supporting Seek trait
 
-    fn ReadPage(&mut self) -> io::Result<()> {
+    fn ReadPage(&mut self) -> Result<()> {
         try!(utils::SeekPage(&mut self.fs, self.buf.len(), self.currentPage));
         try!(utils::ReadFully(&mut self.fs, &mut *self.buf));
         // assert PageType is OVERFLOW
@@ -2051,11 +2100,11 @@ impl myOverflowReadStream {
         0 != (self.buf[1] & f)
     }
 
-    fn ReadFirstPage(&mut self) -> io::Result<()> {
+    fn ReadFirstPage(&mut self) -> Result<()> {
         self.firstPageInBlock = self.currentPage;
         try!(self.ReadPage());
         if self.PageType() != (PageType::OVERFLOW_NODE) {
-            return Err(io::Error::new(ErrorKind::Other, "first overflow page has invalid page type"));
+            return Err(LsmError::CorruptFile("first overflow page has invalid page type"));
         }
         if self.CheckPageFlag(PageFlag::FLAG_BOUNDARY_NODE) {
             // first page landed on a boundary node
@@ -2076,7 +2125,7 @@ impl myOverflowReadStream {
         Ok(())
     }
 
-    fn Read(&mut self, ba: &mut [u8], offset: usize, wanted: usize) -> io::Result<usize> {
+    fn Read(&mut self, ba: &mut [u8], offset: usize, wanted: usize) -> Result<usize> {
         if self.sofarOverall >= self.len {
             Ok(0)
         } else {
@@ -2167,14 +2216,23 @@ impl myOverflowReadStream {
 impl Read for myOverflowReadStream {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let len = buf.len();
-        let r = self.Read(buf, 0, len);
-        r
+        match self.Read(buf, 0, len) {
+            Ok(v) => Ok(v),
+            Err(e) => {
+                // this interface requires io::Result, so we shoehorn the others into it
+                match e {
+                    LsmError::Io(e) => Err(e),
+                    _ => Err(std::io::Error::new(std::io::ErrorKind::Other, e.description())),
+                }
+            },
+        }
     }
 }
 
-fn readOverflow(path: &str, pgsz: usize, firstPage: PageNum, buf: &mut [u8]) -> io::Result<usize> {
+fn readOverflow(path: &str, pgsz: usize, firstPage: PageNum, buf: &mut [u8]) -> Result<usize> {
     let mut ostrm = try!(myOverflowReadStream::new(path, pgsz, firstPage, buf.len()));
-    utils::ReadFully(&mut ostrm, buf)
+    let res = try!(utils::ReadFully(&mut ostrm, buf));
+    Ok(res)
 }
 
 struct SegmentCursor<'a> {
@@ -2188,7 +2246,7 @@ struct SegmentCursor<'a> {
     segnum: SegmentNum,
     csrnum: u64,
 
-    blocks: Vec<PageBlock>,
+    blocks: Vec<PageBlock>, // TODO will be needed later
     fs: File,
     len: u64,
     rootPage: PageNum,
@@ -2210,11 +2268,20 @@ impl<'a> SegmentCursor<'a> {
            inner: &'a InnerPart, 
            segnum: SegmentNum, 
            csrnum: u64
-          ) -> io::Result<SegmentCursor<'a>> {
+          ) -> Result<SegmentCursor<'a>> {
+
+        // TODO consider not passsing in the path, and instead,
+        // making the cursor call back to inner.OpenForReading...
         let mut f = try!(OpenOptions::new()
                 .read(true)
                 .open(path));
+
+        // TODO the len is used for checking to make sure we don't stray
+        // to far.  This should probably be done with the blocks provided
+        // by the caller, not by looking at the full length of the file,
+        // which this cursor shouldn't care about.
         let len = try!(seek_len(&mut f));
+
         let mut res = SegmentCursor {
             path: String::from_str(path),
             fs: f,
@@ -2234,19 +2301,19 @@ impl<'a> SegmentCursor<'a> {
             lastLeaf: 0, // temporary
         };
         if ! try!(res.setCurrentPage(rootPage)) {
-            return Err(io::Error::new(ErrorKind::Other, "failed to read root page"));
+            return Err(LsmError::Misc("failed to read root page"));
         }
         if res.pr.PageType() == PageType::LEAF_NODE {
             res.firstLeaf = rootPage;
             res.lastLeaf = rootPage;
         } else if res.pr.PageType() == PageType::PARENT_NODE {
             if ! res.pr.CheckPageFlag(PageFlag::FLAG_ROOT_NODE) { 
-                return Err(io::Error::new(ErrorKind::Other, "root page lacks flag"));
+                return Err(LsmError::CorruptFile("root page lacks flag"));
             }
             res.firstLeaf = res.pr.GetSecondToLastInt32() as PageNum;
             res.lastLeaf = res.pr.GetLastInt32() as PageNum;
         } else {
-            return Err(io::Error::new(ErrorKind::Other, "root page has invalid page type"));
+            return Err(LsmError::CorruptFile("root page has invalid page type"));
         }
           
         Ok(res)
@@ -2259,7 +2326,7 @@ impl<'a> SegmentCursor<'a> {
         self.prefix = None;
     }
 
-    fn setCurrentPage(&mut self, pgnum: PageNum) -> io::Result<bool> {
+    fn setCurrentPage(&mut self, pgnum: PageNum) -> Result<bool> {
         // use self.blocks to make sure we are not straying out of bounds.
 
         // TODO if currentPage = pgnum already...
@@ -2371,9 +2438,9 @@ impl<'a> SegmentCursor<'a> {
         }
     }
 
-    fn is_key_overflowed(&self) -> io::Result<bool> {
+    fn is_key_overflowed(&self) -> Result<bool> {
         match self.currentKey {
-            None => Err(io::Error::new(ErrorKind::Other, CURSOR_NOT_VALID)),
+            None => Err(LsmError::CursorNotValid),
             Some(n) => {
                 let mut cur = self.leafKeys[n as usize];
                 let kflag = self.pr.GetByte(&mut cur);
@@ -2383,7 +2450,7 @@ impl<'a> SegmentCursor<'a> {
     }
 
     // TODO experimental
-    fn keyInLeaf2(&'a self, n: usize) -> io::Result<KeyVal<'a>> { 
+    fn keyInLeaf2(&'a self, n: usize) -> Result<KeyVal<'a>> { 
         let mut cur = self.leafKeys[n as usize];
         let kflag = self.pr.GetByte(&mut cur);
         let klen = self.pr.GetVarint(&mut cur) as usize;
@@ -2405,7 +2472,7 @@ impl<'a> SegmentCursor<'a> {
         }
     }
 
-    fn keyInLeaf(&self, n: usize) -> io::Result<Box<[u8]>> { 
+    fn keyInLeaf(&self, n: usize) -> Result<Box<[u8]>> { 
         let mut cur = self.leafKeys[n as usize];
         let kflag = self.pr.GetByte(&mut cur);
         let klen = self.pr.GetVarint(&mut cur) as usize;
@@ -2432,7 +2499,7 @@ impl<'a> SegmentCursor<'a> {
         }
     }
 
-    fn compareKeyInLeaf(&self, n: usize, other: &[u8]) -> io::Result<Ordering> {
+    fn compareKeyInLeaf(&self, n: usize, other: &[u8]) -> Result<Ordering> {
         let mut cur = self.leafKeys[n as usize];
         let kflag = self.pr.GetByte(&mut cur);
         let klen = self.pr.GetVarint(&mut cur) as usize;
@@ -2528,10 +2595,10 @@ impl<'a> SegmentCursor<'a> {
         return xlen.cmp(&ylen);
     }
 
-    fn compare_two(x: &SegmentCursor, y: &SegmentCursor) -> io::Result<Ordering> {
-        fn get_info(c: &SegmentCursor) -> io::Result<(usize, bool, usize, usize)> {
+    fn compare_two(x: &SegmentCursor, y: &SegmentCursor) -> Result<Ordering> {
+        fn get_info(c: &SegmentCursor) -> Result<(usize, bool, usize, usize)> {
             match c.currentKey {
-                None => Err(io::Error::new(ErrorKind::Other, CURSOR_NOT_VALID)),
+                None => Err(LsmError::CursorNotValid),
                 Some(n) => {
                     let mut cur = c.leafKeys[n as usize];
                     let kflag = c.pr.GetByte(&mut cur);
@@ -2578,7 +2645,7 @@ impl<'a> SegmentCursor<'a> {
         }
     }
 
-    fn searchLeaf(&mut self, k: &[u8], min:usize, max:usize, sop:SeekOp, le: Option<usize>, ge: Option<usize>) -> io::Result<(Option<usize>,bool)> {
+    fn searchLeaf(&mut self, k: &[u8], min:usize, max:usize, sop:SeekOp, le: Option<usize>, ge: Option<usize>) -> Result<(Option<usize>,bool)> {
         if max < min {
             match sop {
                 SeekOp::SEEK_EQ => Ok((None,false)),
@@ -2607,11 +2674,11 @@ impl<'a> SegmentCursor<'a> {
         }
     }
 
-    fn readParentPage(&mut self) -> io::Result<(Vec<PageNum>,Vec<Box<[u8]>>)> {
+    fn readParentPage(&mut self) -> Result<(Vec<PageNum>,Vec<Box<[u8]>>)> {
         let mut cur = 0;
         if self.pr.GetByte(&mut cur) != PageType::PARENT_NODE {
             // note that in the reafLeaf case, this is a panic.
-            return Err(io::Error::new(ErrorKind::Other, "parent page has invalid page type"));
+            return Err(LsmError::CorruptFile("parent page has invalid page type"));
         }
         cur = cur + 1; // page flags
         let count = self.pr.GetInt16(&mut cur);
@@ -2641,7 +2708,7 @@ impl<'a> SegmentCursor<'a> {
     // we need to skip any overflows.  when moving backward,
     // this is not necessary, because each leaf has a pointer to
     // the leaf before it.
-    fn searchForwardForLeaf(&mut self) -> io::Result<bool> {
+    fn searchForwardForLeaf(&mut self) -> Result<bool> {
         let pt = self.pr.PageType();
         if pt == PageType::LEAF_NODE { 
             Ok(true)
@@ -2702,7 +2769,7 @@ impl<'a> SegmentCursor<'a> {
         ok
     }
 
-    fn search(&mut self, pg: PageNum, k: &[u8], sop:SeekOp) -> io::Result<SeekResult> {
+    fn search(&mut self, pg: PageNum, k: &[u8], sop:SeekOp) -> Result<SeekResult> {
         if try!(self.setCurrentPage(pg)) {
             if PageType::LEAF_NODE == self.pr.PageType() {
                 self.readLeaf();
@@ -2782,21 +2849,21 @@ impl<'a> ICursor for SegmentCursor<'a> {
         self.leafIsValid()
     }
 
-    fn Seek(&mut self, k: &[u8], sop:SeekOp) -> io::Result<SeekResult> {
+    fn Seek(&mut self, k: &[u8], sop:SeekOp) -> Result<SeekResult> {
         let rootPage = self.rootPage;
         self.search(rootPage, k, sop)
     }
 
-    fn Key(&self) -> io::Result<Box<[u8]>> {
+    fn Key(&self) -> Result<Box<[u8]>> {
         match self.currentKey {
-            None => Err(io::Error::new(ErrorKind::Other, CURSOR_NOT_VALID)),
+            None => Err(LsmError::CursorNotValid),
             Some(currentKey) => self.keyInLeaf(currentKey),
         }
     }
 
-    fn Value(&self) -> io::Result<Blob> {
+    fn Value(&self) -> Result<Blob> {
         match self.currentKey {
-            None => Err(io::Error::new(ErrorKind::Other, CURSOR_NOT_VALID)),
+            None => Err(LsmError::CursorNotValid),
             Some(currentKey) => {
                 let mut pos = self.leafKeys[currentKey as usize];
 
@@ -2821,9 +2888,9 @@ impl<'a> ICursor for SegmentCursor<'a> {
         }
     }
 
-    fn ValueLength(&self) -> io::Result<Option<usize>> {
+    fn ValueLength(&self) -> Result<Option<usize>> {
         match self.currentKey {
-            None => Err(io::Error::new(ErrorKind::Other, CURSOR_NOT_VALID)),
+            None => Err(LsmError::CursorNotValid),
             Some(currentKey) => {
                 let mut cur = self.leafKeys[currentKey as usize];
 
@@ -2840,14 +2907,14 @@ impl<'a> ICursor for SegmentCursor<'a> {
         }
     }
 
-    fn KeyCompare(&self, k: &[u8]) -> io::Result<Ordering> {
+    fn KeyCompare(&self, k: &[u8]) -> Result<Ordering> {
         match self.currentKey {
-            None => Err(io::Error::new(ErrorKind::Other, CURSOR_NOT_VALID)),
+            None => Err(LsmError::CursorNotValid),
             Some(currentKey) => self.compareKeyInLeaf(currentKey, k)
         }
     }
 
-    fn First(&mut self) -> io::Result<()> {
+    fn First(&mut self) -> Result<()> {
         let firstLeaf = self.firstLeaf;
         if try!(self.setCurrentPage(firstLeaf)) {
             self.readLeaf();
@@ -2856,7 +2923,7 @@ impl<'a> ICursor for SegmentCursor<'a> {
         Ok(())
     }
 
-    fn Last(&mut self) -> io::Result<()> {
+    fn Last(&mut self) -> Result<()> {
         let lastLeaf = self.lastLeaf;
         if try!(self.setCurrentPage(lastLeaf)) {
             self.readLeaf();
@@ -2865,7 +2932,7 @@ impl<'a> ICursor for SegmentCursor<'a> {
         Ok(())
     }
 
-    fn Next(&mut self) -> io::Result<()> {
+    fn Next(&mut self) -> Result<()> {
         if ! self.nextInLeaf() {
             let nextPage =
                 if self.pr.CheckPageFlag(PageFlag::FLAG_BOUNDARY_NODE) { self.pr.GetLastInt32() as PageNum }
@@ -2882,7 +2949,7 @@ impl<'a> ICursor for SegmentCursor<'a> {
         Ok(())
     }
 
-    fn Prev(&mut self) -> io::Result<()> {
+    fn Prev(&mut self) -> Result<()> {
         if ! self.prevInLeaf() {
             let previousLeaf = self.previousLeaf;
             if 0 == previousLeaf {
@@ -2950,18 +3017,18 @@ impl PendingSegment {
     }
 }
 
-fn readHeader<R>(fs: &mut R) -> io::Result<(HeaderData,usize,PageNum,SegmentNum)> where R : Read+Seek {
-    fn read<R>(fs: &mut R) -> io::Result<PageBuffer> where R : Read {
+fn readHeader<R>(fs: &mut R) -> Result<(HeaderData,usize,PageNum,SegmentNum)> where R : Read+Seek {
+    fn read<R>(fs: &mut R) -> Result<PageBuffer> where R : Read {
         let mut pr = PageBuffer::new(HEADER_SIZE_IN_BYTES);
         let got = try!(pr.Read(fs));
         if got < HEADER_SIZE_IN_BYTES {
-            Err(io::Error::new(ErrorKind::Other, "invalid header"))
+            Err(LsmError::CorruptFile("invalid header"))
         } else {
             Ok(pr)
         }
     }
 
-    fn parse<R>(pr: &PageBuffer, cur: &mut usize, fs: &mut R) -> io::Result<(HeaderData, usize)> where R : Read+Seek {
+    fn parse<R>(pr: &PageBuffer, cur: &mut usize, fs: &mut R) -> Result<(HeaderData, usize)> where R : Read+Seek {
         fn readSegmentList(pr: &PageBuffer, cur: &mut usize) -> (Vec<SegmentNum>,HashMap<SegmentNum,SegmentInfo>) {
             fn readBlockList(prBlocks: &PageBuffer, cur: &mut usize) -> Vec<PageBlock> {
                 let count = prBlocks.GetVarint(cur) as usize;
@@ -3182,11 +3249,11 @@ pub struct WriteLock<'a> {
 }
 
 impl<'a> WriteLock<'a> {
-    pub fn commitSegments(&self, newSegs: Vec<SegmentNum>) -> io::Result<()> {
+    pub fn commitSegments(&self, newSegs: Vec<SegmentNum>) -> Result<()> {
         self.inner.unwrap().commitSegments(newSegs)
     }
 
-    pub fn commitMerge(&self, newSegNum:SegmentNum) -> io::Result<()> {
+    pub fn commitMerge(&self, newSegNum:SegmentNum) -> Result<()> {
         self.inner.unwrap().commitMerge(newSegNum)
     }
 }
@@ -3199,7 +3266,7 @@ pub struct db<'a> {
 }
 
 impl<'a> db<'a> {
-    pub fn new(path: String, settings : DbSettings) -> io::Result<db<'a>> {
+    pub fn new(path: String, settings : DbSettings) -> Result<db<'a>> {
 
         let mut f = try!(OpenOptions::new()
                 .read(true)
@@ -3268,37 +3335,35 @@ impl<'a> db<'a> {
         Ok(res)
     }
 
-    pub fn GetWriteLock(&'a self) -> io::Result<std::sync::MutexGuard<WriteLock<'a>>> {
-        match self.write_lock.lock() {
-            Err(_poisoned) => return Err(io::Error::new(ErrorKind::Other, "poisoned")),
-            Ok(mut lck) => {
-                // set the inner reference
-                lck.inner = Some(&self.inner);
-                Ok(lck)
-            }
-        }
+    pub fn GetWriteLock(&'a self) -> Result<std::sync::MutexGuard<WriteLock<'a>>> {
+        let mut lck = try!(self.write_lock.lock());
+        // set the inner reference
+        lck.inner = Some(&self.inner);
+        Ok(lck)
     }
 
     // the following methods are passthrus, exposing inner
     // stuff publicly.
 
-    pub fn OpenCursor(&self) -> io::Result<LivingCursor> {
+    pub fn OpenCursor(&self) -> Result<LivingCursor> {
         self.inner.OpenCursor()
     }
 
-    pub fn WriteSegmentFromSortedSequence<I>(&self, source: I) -> io::Result<SegmentNum> where I:Iterator<Item=io::Result<kvp>> {
+    pub fn WriteSegmentFromSortedSequence<I>(&self, source: I) -> Result<SegmentNum> where I:Iterator<Item=Result<kvp>> {
         self.inner.WriteSegmentFromSortedSequence(source)
     }
 
-    pub fn WriteSegment(&self, pairs: HashMap<Box<[u8]>,Box<[u8]>>) -> io::Result<SegmentNum> {
+    pub fn WriteSegment(&self, pairs: HashMap<Box<[u8]>,Box<[u8]>>) -> Result<SegmentNum> {
         self.inner.WriteSegment(pairs)
     }
 
-    pub fn WriteSegment2(&self, pairs: HashMap<Box<[u8]>,Blob>) -> io::Result<SegmentNum> {
+    pub fn WriteSegment2(&self, pairs: HashMap<Box<[u8]>,Blob>) -> Result<SegmentNum> {
         self.inner.WriteSegment2(pairs)
     }
 
-    pub fn merge(&self, segs:Vec<SegmentNum>) -> io::Result<SegmentNum> {
+    // TODO this function should go away.  the caller should not be allowed
+    // to provide an arbitrary list of segments to be merged.
+    pub fn merge(&self, segs:Vec<SegmentNum>) -> Result<SegmentNum> {
         self.inner.merge(segs)
     }
 }
@@ -3307,12 +3372,15 @@ impl InnerPart {
 
     fn cursor_dropped(&self, segnum: SegmentNum, csrnum: u64) {
         //println!("cursor_dropped");
-        let mut cursors = self.lock_cursors().unwrap(); // gotta succeed
+        let mut cursors = self.cursors.lock().unwrap(); // gotta succeed
         let seg = cursors.cursors.remove(&csrnum).expect("gotta be there");
         assert_eq!(seg, segnum);
         match cursors.zombies.remove(&segnum) {
             Some(info) => {
-                let mut space = self.lock_space().unwrap(); // gotta succeed
+                // TODO maybe allow this lock to fail with try_lock.  the
+                // worst that can happen is that these blocks don't get
+                // reclaimed until some other day.
+                let mut space = self.space.lock().unwrap(); // gotta succeed
                 self.addFreeBlocks(&mut space, info.blocks);
             },
             None => {
@@ -3371,7 +3439,7 @@ impl InnerPart {
     // this code should not be called in a release build.  it helps
     // finds problems by zeroing out pages in blocks that
     // have been freed.
-    fn stomp(&self, blocks:Vec<PageBlock>) -> io::Result<()> {
+    fn stomp(&self, blocks:Vec<PageBlock>) -> Result<()> {
         let bad = vec![0;self.pgsz as usize].into_boxed_slice();
         let mut fs = try!(OpenOptions::new()
                 .read(true)
@@ -3425,7 +3493,7 @@ impl InnerPart {
                    space: &mut Space,
                    fs: &mut File, 
                    mut hdr: HeaderData
-                  ) -> io::Result<Option<PageBlock>> {
+                  ) -> Result<Option<PageBlock>> {
         fn spaceNeededForSegmentInfo(info: &SegmentInfo) -> usize {
             let mut a = 0;
             for t in info.blocks.iter() {
@@ -3519,9 +3587,9 @@ impl InnerPart {
     fn getCursor(&self, 
                  st: &SafeHeader,
                  g: SegmentNum
-                ) -> io::Result<SegmentCursor> {
+                ) -> Result<SegmentCursor> {
         match st.header.segments.get(&g) {
-            None => Err(io::Error::new(ErrorKind::Other, "getCursor: segment not found")),
+            None => Err(LsmError::Misc("getCursor: segment not found")),
             Some(seg) => {
                 let rootPage = seg.root;
                 /* TODO
@@ -3544,7 +3612,7 @@ impl InnerPart {
                     )
                     //printfn "done with cursor %O" g 
                 */
-                let mut cursors = try!(self.lock_cursors());
+                let mut cursors = try!(self.cursors.lock());
                 let csrnum = cursors.nextCursorNum;
                 let csr = try!(SegmentCursor::new(&self.path, self.pgsz, rootPage, seg.blocks.clone(), &self, g, csrnum));
 
@@ -3557,14 +3625,14 @@ impl InnerPart {
     }
 
     // TODO we also need a way to open a cursor on segments in waiting
-    fn OpenCursor(&self) -> io::Result<LivingCursor> {
+    fn OpenCursor(&self) -> Result<LivingCursor> {
         // TODO this cursor needs to expose the changeCounter and segment list
         // on which it is based. for optimistic writes. caller can grab a cursor,
         // do their writes, then grab the writelock, and grab another cursor, then
         // compare the two cursors to see if anything important changed.  if not,
         // commit their writes.  if so, nevermind the written segments and start over.
 
-        let st = try!(self.lock_header());
+        let st = try!(self.header.lock());
         let mut clist = Vec::new();
         for g in st.header.currentState.iter() {
             clist.push(try!(self.getCursor(&*st, *g))); // TODO checkForGoneSegment
@@ -3574,59 +3642,14 @@ impl InnerPart {
         Ok(lc)
     }
 
-    fn lock_space(&self) -> io::Result<std::sync::MutexGuard<Space>> {
-        match self.space.lock() {
-            Err(_poisoned) => return Err(io::Error::new(ErrorKind::Other, "poisoned")),
-            Ok(lck) => {
-                Ok(lck)
-            }
-        }
-    }
-
-    fn lock_waiting(&self) -> io::Result<std::sync::MutexGuard<SafeSegmentsInWaiting>> {
-        match self.segmentsInWaiting.lock() {
-            Err(_poisoned) => return Err(io::Error::new(ErrorKind::Other, "poisoned")),
-            Ok(lck) => {
-                Ok(lck)
-            }
-        }
-    }
-
-    fn lock_merge_stuff(&self) -> io::Result<std::sync::MutexGuard<SafeMergeStuff>> {
-        match self.mergeStuff.lock() {
-            Err(_poisoned) => return Err(io::Error::new(ErrorKind::Other, "poisoned")),
-            Ok(lck) => {
-                Ok(lck)
-            }
-        }
-    }
-
-    fn lock_header(&self) -> io::Result<std::sync::MutexGuard<SafeHeader>> {
-        match self.header.lock() {
-            Err(_poisoned) => return Err(io::Error::new(ErrorKind::Other, "poisoned")),
-            Ok(lck) => {
-                Ok(lck)
-            }
-        }
-    }
-
-    fn lock_cursors(&self) -> io::Result<std::sync::MutexGuard<SafeCursors>> {
-        match self.cursors.lock() {
-            Err(_poisoned) => return Err(io::Error::new(ErrorKind::Other, "poisoned")),
-            Ok(lck) => {
-                Ok(lck)
-            }
-        }
-    }
-
     fn commitSegments(&self, 
                           newSegs: Vec<SegmentNum>
-                         ) -> io::Result<()> {
+                         ) -> Result<()> {
         assert_eq!(newSegs.len(), newSegs.iter().map(|g| *g).collect::<HashSet<SegmentNum>>().len());
 
-        let mut st = try!(self.lock_header());
-        let mut waiting = try!(self.lock_waiting());
-        let mut space = try!(self.lock_space());
+        let mut st = try!(self.header.lock());
+        let mut waiting = try!(self.segmentsInWaiting.lock());
+        let mut space = try!(self.space.lock());
 
         assert!({
             let mut ok = true;
@@ -3652,7 +3675,7 @@ impl InnerPart {
                     newHeader.segments.insert(*g,info);
                 },
                 None => {
-                    return Err(io::Error::new(ErrorKind::Other, "commitSegments: segment not found in segmentsInWaiting"));
+                    return Err(LsmError::Misc("commitSegments: segment not found in segmentsInWaiting"));
                 },
             }
         }
@@ -3685,14 +3708,14 @@ impl InnerPart {
     }
 
     // TODO bad fn name
-    fn WriteSegmentFromSortedSequence<I>(&self, source: I) -> io::Result<SegmentNum> where I:Iterator<Item=io::Result<kvp>> {
+    fn WriteSegmentFromSortedSequence<I>(&self, source: I) -> Result<SegmentNum> where I:Iterator<Item=Result<kvp>> {
         let mut fs = try!(self.OpenForWriting());
         let (g,_) = try!(CreateFromSortedSequenceOfKeyValuePairs(&mut fs, self, source));
         Ok(g)
     }
 
     // TODO bad fn name
-    fn WriteSegment(&self, pairs: HashMap<Box<[u8]>,Box<[u8]>>) -> io::Result<SegmentNum> {
+    fn WriteSegment(&self, pairs: HashMap<Box<[u8]>,Box<[u8]>>) -> Result<SegmentNum> {
         let mut a : Vec<(Box<[u8]>,Box<[u8]>)> = pairs.into_iter().collect();
 
         a.sort_by(|a,b| {
@@ -3710,7 +3733,7 @@ impl InnerPart {
     }
 
     // TODO bad fn name
-    fn WriteSegment2(&self, pairs: HashMap<Box<[u8]>,Blob>) -> io::Result<SegmentNum> {
+    fn WriteSegment2(&self, pairs: HashMap<Box<[u8]>,Blob>) -> Result<SegmentNum> {
         let mut a : Vec<(Box<[u8]>,Blob)> = pairs.into_iter().collect();
 
         a.sort_by(|a,b| {
@@ -3727,11 +3750,11 @@ impl InnerPart {
         Ok(g)
     }
 
-    fn merge(&self, segs:Vec<SegmentNum>) -> io::Result<SegmentNum> {
+    fn merge(&self, segs:Vec<SegmentNum>) -> Result<SegmentNum> {
         let mut clist = Vec::new();
         {
-            let mut st = try!(self.lock_header());
-            let mut mergeStuff = try!(self.lock_merge_stuff());
+            let mut st = try!(self.header.lock());
+            let mut mergeStuff = try!(self.mergeStuff.lock());
             // TODO don't allow this to happen if the any of the segs
             // are already involved in a merge.
             // TODO this is silly if segs has only one item in it
@@ -3749,7 +3772,7 @@ impl InnerPart {
         try!(mc.First());
         let (g,_) = try!(CreateFromSortedSequenceOfKeyValuePairs(&mut fs, self, CursorIterator::new(mc)));
         //printfn "merged %A to get %A" segs g
-        let mut mergeStuff = try!(self.lock_merge_stuff());
+        let mut mergeStuff = try!(self.mergeStuff.lock());
         mergeStuff.pendingMerges.insert(g, segs);
         Ok(g)
     }
@@ -3757,12 +3780,12 @@ impl InnerPart {
     // TODO maybe commitSegments and commitMerge should be the same function.
     // just check to see if the segment being committed is a merge.  if so,
     // do the extra paperwork.
-    fn commitMerge(&self, newSegNum:SegmentNum) -> io::Result<()> {
+    fn commitMerge(&self, newSegNum:SegmentNum) -> Result<()> {
 
-        let mut st = try!(self.lock_header());
-        let mut waiting = try!(self.lock_waiting());
-        let mut space = try!(self.lock_space());
-        let mut mergeStuff = try!(self.lock_merge_stuff());
+        let mut st = try!(self.header.lock());
+        let mut waiting = try!(self.segmentsInWaiting.lock());
+        let mut space = try!(self.space.lock());
+        let mut mergeStuff = try!(self.mergeStuff.lock());
 
         assert!(st.header.currentState.iter().position(|&g| g == newSegNum).is_none());
 
@@ -3773,7 +3796,7 @@ impl InnerPart {
         let old = {
             let maybe = mergeStuff.pendingMerges.get(&newSegNum);
             if maybe.is_none() {
-                return Err(io::Error::new(ErrorKind::Other, "commitMerge: segment not found in pendingMerges"));
+                return Err(LsmError::Misc("commitMerge: segment not found in pendingMerges"));
             } else {
                 maybe.expect("just checked is_none").clone()
             }
@@ -3819,7 +3842,7 @@ impl InnerPart {
         let mut newSegmentInfo = {
             let maybe = waiting.segmentsInWaiting.get(&newSegNum);
             if maybe.is_none() {
-                return Err(io::Error::new(ErrorKind::Other, "commitMerge: segment not found in segmentsInWaiting"));
+                return Err(LsmError::Misc("commitMerge: segment not found in segmentsInWaiting"));
             } else {
                 maybe.expect("seg not found").clone()
             }
@@ -3851,7 +3874,7 @@ impl InnerPart {
 
         let mut segmentsToBeFreed = segmentsBeingReplaced;
         {
-            let mut cursors = try!(self.lock_cursors());
+            let mut cursors = try!(self.cursors.lock());
             let segmentsWithACursor : HashSet<SegmentNum> = cursors.cursors.iter().map(|t| {let (_,segnum) = t; *segnum}).collect();
             for g in segmentsWithACursor {
                 // don't free anything that has a cursor
@@ -3887,30 +3910,26 @@ impl IPages for InnerPart {
         self.pgsz
     }
 
-    fn Begin(&self) -> io::Result<PendingSegment> {
-        match self.nextSeg.lock() {
-            Err(_poisoned) => Err(io::Error::new(ErrorKind::Other, "poisoned")),
-            Ok(mut st) => {
-                let p = PendingSegment::new(st.nextSeg);
-                st.nextSeg = st.nextSeg + 1;
-                Ok(p)
-            },
-        }
+    fn Begin(&self) -> Result<PendingSegment> {
+        let mut lck = try!(self.nextSeg.lock());
+        let p = PendingSegment::new(lck.nextSeg);
+        lck.nextSeg = lck.nextSeg + 1;
+        Ok(p)
     }
 
-    fn GetBlock(&self, ps: &mut PendingSegment) -> io::Result<PageBlock> {
-        let mut space = try!(self.lock_space());
+    fn GetBlock(&self, ps: &mut PendingSegment) -> Result<PageBlock> {
+        let mut space = try!(self.space.lock());
         // specificSize=0 means we don't care how big of a block we get
         let blk = self.getBlock(&mut space, 0);
         ps.AddBlock(blk);
         Ok(blk)
     }
 
-    fn End(&self, ps:PendingSegment, lastPage: PageNum) -> io::Result<SegmentNum> {
+    fn End(&self, ps:PendingSegment, lastPage: PageNum) -> Result<SegmentNum> {
         let (g, blocks, leftovers) = ps.End(lastPage);
         let info = SegmentInfo {age: 0,blocks:blocks,root:lastPage};
-        let mut waiting = try!(self.lock_waiting());
-        let mut space = try!(self.lock_space());
+        let mut waiting = try!(self.segmentsInWaiting.lock());
+        let mut space = try!(self.space.lock());
         waiting.segmentsInWaiting.insert(g,info);
         //printfn "wrote %A: %A" g blocks
         match leftovers {
@@ -4107,6 +4126,7 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
 #[cfg(test)]
 mod tests {
     use std;
+    use super::Result;
 
     #[test]
     fn it_works() {
@@ -4143,9 +4163,9 @@ mod tests {
             file
         }
 
-        fn f() -> std::io::Result<()> {
+        fn f() -> Result<()> {
             //println!("running");
-            let mut db = try!(super::db::new(tempfile("quick"), super::DEFAULT_SETTINGS));
+            let db = try!(super::db::new(tempfile("quick"), super::DEFAULT_SETTINGS));
 
             const NUM : usize = 100000;
 
@@ -4178,8 +4198,8 @@ pub struct GenerateNumbers {
 }
 
 impl Iterator for GenerateNumbers {
-    type Item = io::Result<kvp>;
-    fn next(&mut self) -> Option<io::Result<kvp>> {
+    type Item = Result<kvp>;
+    fn next(&mut self) -> Option<Result<kvp>> {
         if self.cur > self.end {
             None
         }

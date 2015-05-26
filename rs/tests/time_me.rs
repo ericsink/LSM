@@ -33,9 +33,9 @@ fn tempfile(base: &str) -> String {
 #[test]
 #[ignore]
 fn time_me() {
-    fn f() -> std::io::Result<bool> {
+    fn f() -> lsm::Result<bool> {
         //println!("running");
-        let mut db = try!(lsm::db::new(tempfile("time_me"), lsm::DEFAULT_SETTINGS));
+        let db = try!(lsm::db::new(tempfile("time_me"), lsm::DEFAULT_SETTINGS));
 
         const NUM : usize = 100000;
 
@@ -45,16 +45,16 @@ fn time_me() {
             a.push(g);
         }
         {
-            let mut lck = try!(db.GetWriteLock());
+            let lck = try!(db.GetWriteLock());
             try!(lck.commitSegments(a.clone()));
         }
         let g3 = try!(db.merge(a));
         {
-            let mut lck = try!(db.GetWriteLock());
+            let lck = try!(db.GetWriteLock());
             try!(lck.commitMerge(g3));
         }
 
-        let res : std::io::Result<bool> = Ok(true);
+        let res : lsm::Result<bool> = Ok(true);
         res
     }
     assert!(f().is_ok());

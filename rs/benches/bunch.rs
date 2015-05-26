@@ -35,7 +35,7 @@ fn tempfile(base: &str) -> String {
 
 #[bench]
 fn bunch(b: &mut test::Bencher) {
-    fn f() -> std::io::Result<bool> {
+    fn f() -> lsm::Result<bool> {
         //println!("running");
         let db = try!(lsm::db::new(tempfile("bunch"), lsm::DEFAULT_SETTINGS));
 
@@ -56,7 +56,7 @@ fn bunch(b: &mut test::Bencher) {
             try!(lck.commitMerge(g3));
         }
 
-        let res : std::io::Result<bool> = Ok(true);
+        let res : lsm::Result<bool> = Ok(true);
         res
     }
     b.iter(|| assert!(f().is_ok()) );
