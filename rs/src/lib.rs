@@ -927,32 +927,44 @@ struct MultiCursor<'a> {
 }
 
 impl<'a> MultiCursor<'a> {
-    fn find(&self, swap: bool) -> Result<Option<usize>> {
+    fn compete(&self, want_max: bool, i: usize, cur: Option<usize>) -> Result<Option<usize>> {
+        if self.subcursors[i].IsValid() {
+            match cur {
+                Some(winning) => {
+                    if i == winning {
+                        Ok(cur)
+                    } else {
+                        let x = &self.subcursors[i];
+                        let y = &self.subcursors[winning];
+                        let c =
+                            if want_max {
+                                try!(SegmentCursor::compare_two(y,x))
+                            } else {
+                                try!(SegmentCursor::compare_two(x,y))
+                            };
+                        if c==Ordering::Less {
+                            Ok(Some(i))
+                        } else {
+                            Ok(cur)
+                        }
+                    }
+                },
+                None => {
+                    Ok(Some(i))
+                }
+            }
+        } else {
+            Ok(cur)
+        }
+    }
+
+    fn find(&self, want_max: bool) -> Result<Option<usize>> {
         if self.subcursors.is_empty() {
             Ok(None)
         } else {
             let mut res = None::<usize>;
             for i in 0 .. self.subcursors.len() {
-                if self.subcursors[i].IsValid() {
-                    match res {
-                        Some(winning) => {
-                            let x = &self.subcursors[i];
-                            let y = &self.subcursors[winning];
-                            let c =
-                                if swap {
-                                    try!(SegmentCursor::compare_two(y,x))
-                                } else {
-                                    try!(SegmentCursor::compare_two(x,y))
-                                };
-                            if c==Ordering::Less {
-                                res = Some(i)
-                            }
-                        },
-                        None => {
-                            res = Some(i)
-                        }
-                    }
-                }
+                res = try!(self.compete(want_max, i, res));
             }
             Ok(res)
         }
@@ -1204,8 +1216,13 @@ impl<'a> ICursor<'a> for MultiCursor<'a> {
                 try!(self.subcursors[icur].Next());
 
                 // now find the min.
-                // TODO this is kinda awful.  we just walked through the entire cursor list,
-                // and now we're doing it again.  we shoulda just kept track as we went along.
+
+                // this seems kinda awful.  we just walked through the entire cursor list,
+                // and now we're doing it again.  should we have just kept track along
+                // the way?  maybe, but it doesn't save any key comparisons.  it just
+                // moves those compares from a separate loop into the loops above.  still
+                // might be a good idea.  TODO.
+
                 self.cur = try!(self.findMin());
                 self.dir = Direction::FORWARD;
                 Ok(())
