@@ -50,9 +50,11 @@ fn bunch(b: &mut test::Bencher) {
             let lck = try!(db.GetWriteLock());
             try!(lck.commitSegments(a.clone()));
         }
-        let g3 = try!(db.merge(a));
+        let g3 = try!(db.merge(0, 2, None));
+        assert!(g3.is_some());
+        let g3 = g3.unwrap();
         {
-            let mut lck = try!(db.GetWriteLock());
+            let lck = try!(db.GetWriteLock());
             try!(lck.commitMerge(g3));
         }
 

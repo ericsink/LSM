@@ -92,3 +92,8 @@ allocation if they want.
 
 multiple passes, number of errors jumps up and down
 
+what if db goes out of scope with pending segments?
+
+problem:
+    assert!(f().is_ok());
+

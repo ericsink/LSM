@@ -3663,10 +3663,25 @@ impl<'a> db<'a> {
         self.inner.WriteSegment2(pairs)
     }
 
-    // TODO this function should go away.  the caller should not be allowed
-    // to provide an arbitrary list of segments to be merged.
-    pub fn merge(&self, segs:Vec<SegmentNum>) -> Result<SegmentNum> {
-        self.inner.merge(segs)
+    pub fn merge(&self, level: u32, min: usize, max: Option<usize>) -> Result<Option<SegmentNum>> {
+        self.inner.merge(level, min, max)
+    }
+}
+
+// TODO this could be generic
+fn slice_within(sub: &[SegmentNum], within: &[SegmentNum]) -> Result<usize> {
+    match within.iter().position(|&g| g == sub[0]) {
+        Some(ndx_first) => {
+            let count = sub.len();
+            if sub == &within[ndx_first .. ndx_first + count] {
+                Ok(ndx_first)
+            } else {
+                Err(LsmError::Misc("not contiguous"))
+            }
+        },
+        None => {
+            Err(LsmError::Misc("not contiguous"))
+        },
     }
 }
 
@@ -4032,31 +4047,83 @@ impl InnerPart {
         Ok(g)
     }
 
-    fn merge(&self, segs:Vec<SegmentNum>) -> Result<SegmentNum> {
-        let mut clist = Vec::new();
-        {
-            let mut st = try!(self.header.lock());
+    fn merge(&self, level: u32, min: usize, max: Option<usize>) -> Result<Option<SegmentNum>> {
+        let mrg = {
+            let st = try!(self.header.lock());
+
+            if st.header.currentState.len() == 0 {
+                return Ok(None)
+            }
+
+            println!("age for merge: {}", level);
+            println!("currentState: {:?}", st.header.currentState);
+
+            let age_group = st.header.currentState.iter().filter(|g| {
+                let info = st.header.segments.get(&g).unwrap();
+                info.age == level
+            }).map(|g| *g).collect::<Vec<SegmentNum>>();
+
+            println!("age_group: {:?}", age_group);
+
+            if age_group.len() == 0 {
+                return Ok(None)
+            }
+
+            // make sure this is contiguous
+            assert!(slice_within(age_group.as_slice(), st.header.currentState.as_slice()).is_ok());
+
+            let mut segs = Vec::new();
+
             let mut mergeStuff = try!(self.mergeStuff.lock());
-            // TODO don't allow this to happen if the any of the segs
-            // are already involved in a merge.
-            // TODO this is silly if segs has only one item in it
-            //printfn "merge getting cursors: %A" segs
-            // TODO these should probably be for g in &segs
-            for g in segs.iter() {
-                clist.push(try!(self.getCursor(&mut st, *g))); // TODO checkForGoneSegment
+
+            // we can merge any contiguous set of not-already-being-merged 
+            // segments at the end of the group.  if we merge something
+            // that is not at the end of the group, we could end up with
+            // age groups not being contiguous.
+
+            for g in age_group.iter().rev() {
+                if mergeStuff.merging.contains(g) {
+                    break;
+                } else {
+                    segs.push(*g);
+                }
             }
-            for g in segs.iter() {
-                mergeStuff.merging.insert(*g);
+
+            if segs.len() >= min {
+                match max {
+                    Some(max) => {
+                        segs.truncate(max);
+                    },
+                    None => (),
+                }
+                segs.reverse();
+                let mut clist = Vec::new();
+                for g in segs.iter() {
+                    clist.push(try!(self.getCursor(&st, *g)));
+                }
+                for g in segs.iter() {
+                    mergeStuff.merging.insert(*g);
+                }
+                Some((segs,clist))
+            } else {
+                None
             }
+        };
+        match mrg {
+            Some((segs,clist)) => {
+                let mut mc = MultiCursor::Create(clist);
+                let mut fs = try!(self.OpenForWriting());
+                try!(mc.First());
+                let (g,_) = try!(CreateFromSortedSequenceOfKeyValuePairs(&mut fs, self, CursorIterator::new(mc)));
+                //printfn "merged %A to get %A" segs g
+                let mut mergeStuff = try!(self.mergeStuff.lock());
+                mergeStuff.pendingMerges.insert(g, segs);
+                Ok(Some(g))
+            },
+            None => {
+                Ok(None)
+            },
         }
-        let mut mc = MultiCursor::Create(clist);
-        let mut fs = try!(self.OpenForWriting());
-        try!(mc.First());
-        let (g,_) = try!(CreateFromSortedSequenceOfKeyValuePairs(&mut fs, self, CursorIterator::new(mc)));
-        //printfn "merged %A to get %A" segs g
-        let mut mergeStuff = try!(self.mergeStuff.lock());
-        mergeStuff.pendingMerges.insert(g, segs);
-        Ok(g)
     }
 
     // TODO maybe commitSegments and commitMerge should be the same function.
@@ -4090,15 +4157,7 @@ impl InnerPart {
         // now we need to verify that the segments being replaced are in currentState
         // and contiguous.
 
-        let ndxFirstOld = st.header.currentState.iter()
-            .position(|&g| g == old[0]).expect("first segment being replaced not found in currentState");
-
-        // if the next line fails, it probably means that somebody tried to merge a set
-        // of segments that are not contiguous in currentState.
-        let countOld = old.len();
-        if old.as_slice() != &st.header.currentState.as_slice()[ndxFirstOld .. ndxFirstOld + countOld] {
-            panic!("segments not found");
-        }
+        let ndxFirstOld = try!(slice_within(old.as_slice(), st.header.currentState.as_slice()));
 
         // now we construct a newHeader
 
@@ -4229,65 +4288,6 @@ impl IPages for InnerPart {
 
 type Database(_io:IDatabaseFile, _settings:DbSettings) =
 
-    let checkForGoneSegment g seg =
-        if not (Map.containsKey g header.segments) then
-            // this segment no longer exists
-            //printfn "cursor done, segment %O is gone: %A" g seg
-            addFreeBlocks seg.blocks
-
-    let mutable inTransaction = false 
-    let mutable waiting = Deque.empty
-
-    let getPossibleMerge level min all =
-        let h = header
-        let segmentsOfAge = List.filter (fun g -> (Map.find g h.segments).age=level) h.currentState
-        // TODO it would be nice to be able to have more than one merge happening in a level
-
-        // TODO we are trusting segmentsOfAge to be contiguous.  need test cases to
-        // verify that currentState always ends up with monotonically increasing age.
-        let count = List.length segmentsOfAge
-        if count > min then 
-            //printfn "NEED MERGE %d -- %d" level count
-            // (List.skip) we always merge the stuff at the end of the level so things
-            // don't get split up when more segments get prepended to the
-            // beginning.
-            // TODO if we only do partial here, we might want to schedule a job to do more.
-            let grp = if all then segmentsOfAge else List.skip (count - min) segmentsOfAge
-            tryMerge grp
-        else
-            //printfn "no merge needed %d -- %d" level count
-            None
-
-    let wrapMergeForLater f = async {
-        let g = f()
-        //printfn "now waiting for writeLock"
-        // merges go to the front of the queue
-        use! tx = getWriteLock true (-1) None
-        tx.CommitMerge g
-        return [ g ]
-    }
-
-    let critSectionBackgroundMergeJobs = obj()
-    let mutable backgroundMergeJobs = List.empty
-
-    let startBackgroundMergeJob f =
-        //printfn "starting background job"
-        // TODO this is starving.
-        async {
-            //printfn "inside start background job"
-            let! completor = Async.StartChild f
-            lock critSectionBackgroundMergeJobs (fun () -> 
-                backgroundMergeJobs <- completor :: backgroundMergeJobs 
-                )
-            //printfn "inside start background job step 2"
-            let! result = completor
-            //printfn "inside start background job step 3"
-            ignore result
-            lock critSectionBackgroundMergeJobs (fun () -> 
-                backgroundMergeJobs <- List.filter (fun x -> not (Object.ReferenceEquals(x,completor))) backgroundMergeJobs
-                )
-        } |> Async.Start
-
     let doAutoMerge() = 
         if settings.AutoMergeEnabled then
             for level in 0 .. 3 do // TODO max merge level immediate
@@ -4303,44 +4303,6 @@ type Database(_io:IDatabaseFile, _settings:DbSettings) =
                     f |> wrapMergeForLater |> startBackgroundMergeJob
                 | None -> 
                     () // printfn "cannot merge level %d" level
-
-    let dispose itIsSafeToAlsoFreeManagedObjects =
-        //let blocks = consolidateBlockList header
-        //printfn "%A" blocks
-        if itIsSafeToAlsoFreeManagedObjects then
-            // we don't want to close fsMine until all background jobs
-            // are completed.
-            let bg = backgroundMergeJobs
-            if not (List.isEmpty bg) then
-                bg |> Async.Parallel |> Async.RunSynchronously |> ignore
-
-            fsMine.Close()
-
-    override this.Finalize() =
-        dispose false
-
-    interface IDatabase with
-        member this.Dispose() =
-            dispose true
-            // TODO what happens if there are open cursors?
-            // we could throw.  but why?  maybe we should just
-            // let them live until they're done.  does the db
-            // object care?  this would be more tricky if we were
-            // pooling and reusing read streams.  similar issues
-            // for background writes as well.
-            GC.SuppressFinalize(this)
-
-        member this.Merge(level:int, howMany:int, all:bool) =
-            let maybe = getPossibleMerge level howMany all
-            match maybe with
-            | Some f ->
-                let blk = wrapMergeForLater f
-                Some blk
-            | None -> 
-                None
-
-        member this.BackgroundMergeJobs() = 
-            backgroundMergeJobs
 
         member this.ForgetWaitingSegments(guids:seq<Guid>) =
             // TODO need a test case for this
@@ -4460,7 +4422,9 @@ mod tests {
                 let lck = try!(db.GetWriteLock());
                 try!(lck.commitSegments(a.clone()));
             }
-            let g3 = try!(db.merge(a));
+            let g3 = try!(db.merge(0, 2, None));
+            assert!(g3.is_some());
+            let g3 = g3.unwrap();
             {
                 let lck = try!(db.GetWriteLock());
                 try!(lck.commitMerge(g3));

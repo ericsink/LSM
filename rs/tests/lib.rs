@@ -1001,3 +1001,111 @@ fn threads_with_weird_pairs() {
 
 }
 
+#[test]
+fn no_merge_needed() {
+    fn f() -> lsm::Result<()> {
+        let db = try!(lsm::db::new(tempfile("no_merge_needed"), lsm::DEFAULT_SETTINGS));
+        let g = try!(db.WriteSegmentFromSortedSequence(lsm::GenerateNumbers {cur: 0, end: 100, step: 1}));
+        {
+            let lck = try!(db.GetWriteLock());
+            try!(lck.commitSegments(vec![g]));
+        }
+
+        let r = try!(db.merge(0, 2, None));
+        assert!(r.is_none());
+
+        let r = try!(db.merge(1, 2, None));
+        assert!(r.is_none());
+
+        Ok(())
+    }
+    assert!(f().is_ok());
+}
+
+#[test]
+fn simple_merge() {
+    fn f() -> lsm::Result<()> {
+        let db = try!(lsm::db::new(tempfile("simple_merge"), lsm::DEFAULT_SETTINGS));
+
+        // no merges needed yet at levels 0, 1, 2
+        let r = try!(db.merge(0, 2, None));
+        assert!(r.is_none());
+
+        let r = try!(db.merge(1, 2, None));
+        assert!(r.is_none());
+
+        let r = try!(db.merge(2, 2, None));
+        assert!(r.is_none());
+
+        // write two level 0 segments
+        let g1 = try!(db.WriteSegmentFromSortedSequence(lsm::GenerateNumbers {cur: 0, end: 100, step: 1}));
+        let g2 = try!(db.WriteSegmentFromSortedSequence(lsm::GenerateNumbers {cur: 100, end: 200, step: 2}));
+        {
+            let lck = try!(db.GetWriteLock());
+            try!(lck.commitSegments(vec![g1, g2]));
+        }
+
+        // level 1 still needs no merge
+        let r = try!(db.merge(1, 2, None));
+        assert!(r.is_none());
+
+        // but level 0 does
+        let r = try!(db.merge(0, 2, None));
+        assert!(r.is_some());
+        {
+            let lck = try!(db.GetWriteLock());
+            try!(lck.commitMerge(r.unwrap()));
+        }
+
+        // but now it doesn't because we just did it
+        let r = try!(db.merge(0, 2, None));
+        assert!(r.is_none());
+
+        // level 1 still needs no merge
+        let r = try!(db.merge(1, 2, None));
+        assert!(r.is_none());
+
+        // write two more level 0 segments
+        let g1 = try!(db.WriteSegmentFromSortedSequence(lsm::GenerateNumbers {cur: 300, end: 400, step: 1}));
+        let g2 = try!(db.WriteSegmentFromSortedSequence(lsm::GenerateNumbers {cur: 400, end: 500, step: 2}));
+        {
+            let lck = try!(db.GetWriteLock());
+            try!(lck.commitSegments(vec![g1, g2]));
+        }
+
+        // level 1 still needs no merge
+        let r = try!(db.merge(1, 2, None));
+        assert!(r.is_none());
+
+        // but level 0 does
+        let r = try!(db.merge(0, 2, None));
+        assert!(r.is_some());
+        {
+            let lck = try!(db.GetWriteLock());
+            try!(lck.commitMerge(r.unwrap()));
+        }
+
+
+        // and now level 1 does
+        let r = try!(db.merge(1, 2, None));
+        assert!(r.is_some());
+        {
+            let lck = try!(db.GetWriteLock());
+            try!(lck.commitMerge(r.unwrap()));
+        }
+
+
+        // but not anymore, since we just did it
+        let r = try!(db.merge(1, 2, None));
+        assert!(r.is_none());
+
+        // and level 2 does not need a merge
+        let r = try!(db.merge(2, 2, None));
+        assert!(r.is_none());
+
+        Ok(())
+    }
+    assert!(f().is_ok());
+}
+
+
