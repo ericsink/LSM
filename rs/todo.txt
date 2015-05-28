@@ -97,3 +97,19 @@ what if db goes out of scope with pending segments?
 problem:
     assert!(f().is_ok());
 
+let's not panic (int underflow) when we try to write a segment
+but the source iterator provides no pairs
+
+https://github.com/zslayton/lifeguard
+
+stray, block list, etc
+
+automerge?  in a thread?
+
+cleanup bcmp and friends
+
+vbuf reuse write leaves
+
+review lock ordering
+
+

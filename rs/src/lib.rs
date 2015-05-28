@@ -1172,6 +1172,7 @@ impl<'a> ICursor<'a> for MultiCursor<'a> {
                         // require making a copy of the icur Key.
 
                         if !invalids.is_empty() {
+                            // see comment below about Key/KeyRef/alloc/etc
                             let k = try!(self.subcursors[icur].Key());
                             for j in invalids {
                                 assert!(icur != j);
@@ -1195,9 +1196,11 @@ impl<'a> ICursor<'a> for MultiCursor<'a> {
                         // and because we don't handle the case where icur == j,
                         // there should be no mutability conflict, in theory.
                         // But Rust doesn't know that.  It knows that both
-                        // cursors are in the same array, so we cannoy have a
+                        // cursors are in the same array, so we cannot have a
                         // mutable reference (to seek) into that array while 
                         // there is any other reference (the icur key).
+
+                        // also, KeyRef gives a KeyVal, which Seek can't handle.
 
                         let k = try!(self.subcursors[icur].Key());
                         for j in 0 .. self.subcursors.len() {
