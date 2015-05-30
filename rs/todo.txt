@@ -1,4 +1,6 @@
 
+msbuild
+warning vs error on match incomplete
 awkward comparison.  apples/oranges.  unfair.  wrong lens.  etc.
 derive debug with :? is %A
 [u8] is not on the heap.  it's like a primitive that is N bytes long.  it's a value type.

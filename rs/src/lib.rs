@@ -19,6 +19,7 @@
 #![feature(box_syntax)]
 #![feature(convert)]
 #![feature(collections_drain)]
+#![feature(associated_consts)]
 
 // TODO turn the following warnings back on later
 #![allow(non_snake_case)]
@@ -4504,5 +4505,183 @@ impl Iterator for GenerateWeirdPairs {
             Some(Ok(r))
         }
     }
+}
+
+pub struct sqlite4_num {
+    neg: bool,
+    approx: bool,
+    e: i16,
+    m: u64,
+}
+
+impl sqlite4_num {
+    const SQLITE4_MX_EXP: i16 = 999;
+    const SQLITE4_NAN_EXP: i16 = 2000;
+
+    const NAN: sqlite4_num =
+        sqlite4_num
+        {
+            neg: false,
+            approx: true,
+            e: sqlite4_num::SQLITE4_NAN_EXP,
+            m: 0,
+        };
+    const POS_INF: sqlite4_num = sqlite4_num {m: 1, .. sqlite4_num::NAN};
+    const NEG_INF: sqlite4_num = sqlite4_num {neg: true, .. sqlite4_num::POS_INF};
+    const ZERO: sqlite4_num =
+        sqlite4_num
+        {
+            neg: false,
+            approx: false,
+            e: 0,
+            m: 0,
+        };
+
+    fn from_f64(d: f64) -> sqlite4_num {
+        // TODO probably this function should be done by decoding the bits
+        if d.is_nan() {
+            sqlite4_num::NAN
+        } else if d.is_sign_positive() && d.is_infinite() {
+            sqlite4_num::POS_INF
+        } else if d.is_sign_negative() && d.is_infinite() {
+            sqlite4_num::NEG_INF
+        } else if d==0.0 {
+            sqlite4_num::ZERO
+        } else {
+            let LARGEST_UINT64 = u64::max_value();
+            let TENTH_MAX = LARGEST_UINT64 / 10;
+            let large = LARGEST_UINT64 as f64;
+            let large10 = TENTH_MAX as f64;
+            let neg = d<0.0;
+            let mut d = if neg { -d } else { d };
+            let mut e = 0;
+            while d>large || (d>1.0 && d==((d as i64) as f64)) {
+                d = d / 10.0;
+                e = e + 1;
+            }
+            while d<large10 && d != ((d as i64) as f64) {
+                d = d * 10.0;
+                e = e - 1;
+            }
+            sqlite4_num
+            {
+                neg: neg,
+                approx: true,
+                e: e as i16,
+                m: d as u64,
+            }
+        }
+    }
+
+    fn is_inf(&self) -> bool {
+        (self.e > sqlite4_num::SQLITE4_MX_EXP) && (self.m != 0)
+    }
+
+    fn is_nan(&self) -> bool{
+        (self.e > sqlite4_num::SQLITE4_MX_EXP) && (self.m == 0)
+    }
+
+    fn from_i64(n: i64) -> sqlite4_num {
+        sqlite4_num
+        {
+            neg: n<0,
+            approx: false,
+            m: if n>=0 { (n as u64) } else if n != i64::min_value() { ((-n) as u64) } else { 1 + (i64::max_value() as u64) },
+            e: 0,
+        }
+    }
+
+    fn normalize(&self) -> sqlite4_num {
+        let mut m = self.m;
+        let mut e = self.e;
+
+        while (m % 10) == 0 {
+            e = e + 1;
+            m = m / 10;
+        }
+
+        sqlite4_num {m: m, e: e, .. *self}
+    }
+
+    fn encode_for_index(&self, w: &mut Vec<u8>) {
+        // TODO in sqlite4, the first byte of this encoding 
+        // is designed to mesh with the
+        // overall type order byte.
+
+        if self.m == 0 {
+            if self.is_nan() {
+                w.push(0x06u8);
+            } else {
+                w.push(0x15u8);
+            }
+        } else if self.is_inf() {
+            if self.neg {
+                w.push(0x07u8);
+            } else {
+                w.push(0x23u8);
+            }
+        } else {
+            let num = self.normalize();
+            let mut m = num.m;
+            let mut e = num.e;
+            let mut iDigit;
+            let mut aDigit = [0; 12];
+
+            if (num.e%2) != 0 {
+                aDigit[0] = (10 * (m % 10)) as u8;
+                m = m / 10;
+                e = e - 1;
+                iDigit = 1;
+            } else {
+                iDigit = 0;
+            }
+
+            while m != 0 {
+                aDigit[iDigit] = (m % 100) as u8;
+                iDigit = iDigit + 1;
+                m = m / 100;
+            }
+
+            e = (iDigit as i16) + (e/2);
+
+            fn push_u16_be(w: &mut Vec<u8>, e: u16) {
+                w.push(((e>>8) & 0xff_u16) as u8);
+                w.push(((e>>0) & 0xff_u16) as u8);
+            }
+
+            if e>= 11 {
+                if ! num.neg {
+                    w.push(0x22u8);
+                    push_u16_be(w, e as u16);
+                } else {
+                    w.push(0x08u8);
+                    push_u16_be(w, !e as u16);
+                }
+            } else if e>=0 {
+                if ! num.neg {
+                    w.push(0x17u8+(e as u8));
+                } else {
+                    w.push(0x13u8-(e as u8));
+                }
+            } else {
+                if ! num.neg {
+                    w.push(0x16u8);
+                    push_u16_be(w, !((-e) as u16));
+                } else {
+                    w.push(0x14u8);
+                    push_u16_be(w, (-e) as u16);
+                }
+            }
+
+            while iDigit>0 {
+                iDigit = iDigit - 1;
+                let mut d = aDigit[iDigit] * 2u8;
+                if iDigit != 0 { d = d | 0x01u8; }
+                if num.neg { d = !d; }
+                w.push(d)
+            }
+        }
+    }
+
 }
 
