@@ -36,6 +36,7 @@ try! vs SG_ERROR_CHECK
 currently avoiding Rc,Arc,Cell,RefCell until I need them.
 test harness is quite cool
 I like integers without suffixes being more flexible
+multiple passes, number of errors jumps up and down
 
 really cool using valgrind.  
 and really cool that valgrind shouldn't be as useful.
@@ -74,10 +75,9 @@ tempted to limit key size.  no overflows for keys.  key is limited by
 the page size (minus overhead).  if you need a bigger key, then use a
 bigger page size.
 
-currently no tests for an overflowed key?
-
 currently using trait objects Seek+Write for writing to the db.  the overhead
-of dynamic dispatch is negligible compared to the IO, right?
+of dynamic dispatch is negligible compared to the IO, right?  lack of
+inline optimization?  verify this.
 
 annoying that I can't have a mut reference to one element of an array
 while holding any reference to any other element of the array.
@@ -92,12 +92,7 @@ I wonder if Key() and Value() should just go away, replacing them
 with KeyRef() and ValueRef().  The caller is always free to do the
 allocation if they want.
 
-multiple passes, number of errors jumps up and down
-
 what if db goes out of scope with pending segments?
-
-problem:
-    assert!(f().is_ok());
 
 let's not panic (int underflow) when we try to write a segment
 but the source iterator provides no pairs

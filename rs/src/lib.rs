@@ -1201,7 +1201,7 @@ impl<'a> ICursor<'a> for MultiCursor<'a> {
                         // mutable reference (to seek) into that array while 
                         // there is any other reference (the icur key).
 
-                        // also, KeyRef gives a KeyVal, which Seek can't handle.
+                        // also, KeyRef() gives a KeyRef, which Seek can't handle.
 
                         let k = try!(self.subcursors[icur].Key());
                         for j in 0 .. self.subcursors.len() {
