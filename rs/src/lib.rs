@@ -219,12 +219,12 @@ impl<'a> KeyRef<'a> {
                 a
             },
             KeyRef::Array(a) => {
-                let mut k = Vec::new();
+                let mut k = Vec::with_capacity(a.len());
                 k.push_all(a);
                 k.into_boxed_slice()
             },
             KeyRef::Prefixed(front,back) => {
-                let mut k = Vec::new();
+                let mut k = Vec::with_capacity(front.len() + back.len());
                 k.push_all(front);
                 k.push_all(back);
                 k.into_boxed_slice()
