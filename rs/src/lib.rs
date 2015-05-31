@@ -171,6 +171,12 @@ impl<'a> Index<usize> for SplitSlice<'a> {
     }
 }
 
+fn split3<T>(a: &mut [T], i: usize) -> (&mut [T], &mut [T], &mut [T]) {
+    let (before, a2) = a.split_at_mut(i);
+    let (islice, after) = a2.split_at_mut(1);
+    (before, islice, after)
+}
+
 pub enum KeyRef<'a> {
     // for an overflowed key, we just punt and read it into memory
     Overflowed(Box<[u8]>),
@@ -207,21 +213,21 @@ impl<'a> KeyRef<'a> {
         KeyRef::Array(k)
     }
 
-    pub fn into_boxed_slice(self) -> Result<Box<[u8]>> {
+    pub fn into_boxed_slice(self) -> Box<[u8]> {
         match self {
             KeyRef::Overflowed(a) => {
-                Ok(a)
+                a
             },
             KeyRef::Array(a) => {
                 let mut k = Vec::new();
                 k.push_all(a);
-                Ok(k.into_boxed_slice())
+                k.into_boxed_slice()
             },
             KeyRef::Prefixed(front,back) => {
                 let mut k = Vec::new();
                 k.push_all(front);
                 k.push_all(back);
-                Ok(k.into_boxed_slice())
+                k.into_boxed_slice()
             },
         }
     }
@@ -294,34 +300,34 @@ impl<'a> KeyRef<'a> {
         return xlen.cmp(&ylen);
     }
 
-    pub fn cmp(x: &KeyRef, y: &KeyRef) -> Result<Ordering> {
+    pub fn cmp(x: &KeyRef, y: &KeyRef) -> Ordering {
         match (x,y) {
             (&KeyRef::Overflowed(ref x_k), &KeyRef::Overflowed(ref y_k)) => {
-                Ok(bcmp::Compare(&x_k, &y_k))
+                bcmp::Compare(&x_k, &y_k)
             },
             (&KeyRef::Overflowed(ref x_k), &KeyRef::Prefixed(ref y_p, ref y_k)) => {
-                Ok(Self::compare_x_py(&x_k, y_p, y_k))
+                Self::compare_x_py(&x_k, y_p, y_k)
             },
             (&KeyRef::Overflowed(ref x_k), &KeyRef::Array(ref y_k)) => {
-                Ok(bcmp::Compare(&x_k, &y_k))
+                bcmp::Compare(&x_k, &y_k)
             },
             (&KeyRef::Prefixed(ref x_p, ref x_k), &KeyRef::Overflowed(ref y_k)) => {
-                Ok(Self::compare_px_y(x_p, x_k, &y_k))
+                Self::compare_px_y(x_p, x_k, &y_k)
             },
             (&KeyRef::Array(ref x_k), &KeyRef::Overflowed(ref y_k)) => {
-                Ok(bcmp::Compare(&x_k, &y_k))
+                bcmp::Compare(&x_k, &y_k)
             },
             (&KeyRef::Prefixed(ref x_p, ref x_k), &KeyRef::Prefixed(ref y_p, ref y_k)) => {
-                Ok(Self::compare_px_py(x_p, x_k, y_p, y_k))
+                Self::compare_px_py(x_p, x_k, y_p, y_k)
             },
             (&KeyRef::Prefixed(ref x_p, ref x_k), &KeyRef::Array(ref y_k)) => {
-                Ok(Self::compare_px_y(x_p, x_k, y_k))
+                Self::compare_px_y(x_p, x_k, y_k)
             },
             (&KeyRef::Array(ref x_k), &KeyRef::Prefixed(ref y_p, ref y_k)) => {
-                Ok(Self::compare_x_py(x_k, y_p, y_k))
+                Self::compare_x_py(x_k, y_p, y_k)
             },
             (&KeyRef::Array(ref x_k), &KeyRef::Array(ref y_k)) => {
-                Ok(bcmp::Compare(&x_k, &y_k))
+                bcmp::Compare(&x_k, &y_k)
             },
         }
     }
@@ -448,10 +454,6 @@ impl<'a> Iterator for CursorIterator<'a> {
                     return Some(Err(k.err().unwrap()));
                 }
                 let k = k.unwrap().into_boxed_slice();
-                if k.is_err() {
-                    return Some(Err(k.err().unwrap()));
-                }
-                let k = k.unwrap();
                 k
             };
             let v = {
@@ -481,7 +483,7 @@ pub enum SeekResult {
 }
 
 impl SeekResult {
-    fn from_cursor<'a, T: ICursor<'a>>(csr: &T, k:&[u8]) -> Result<SeekResult> {
+    fn from_cursor<'a, T: ICursor<'a>>(csr: &T, k: &KeyRef) -> Result<SeekResult> {
         if csr.IsValid() {
             if Ordering::Equal == try!(csr.KeyCompare(k)) {
                 Ok(SeekResult::Equal)
@@ -511,7 +513,7 @@ impl SeekResult {
 }
 
 pub trait ICursor<'a> {
-    fn Seek(&mut self, k: &[u8], sop:SeekOp) -> Result<SeekResult>;
+    fn SeekRef(&mut self, k: &KeyRef, sop: SeekOp) -> Result<SeekResult>;
     fn First(&mut self) -> Result<()>;
     fn Last(&mut self) -> Result<()>;
     fn Next(&mut self) -> Result<()>;
@@ -523,7 +525,7 @@ pub trait ICursor<'a> {
     fn ValueRef(&'a self) -> Result<ValueRef<'a>>;
 
     fn ValueLength(&self) -> Result<Option<usize>>; // tombstone is None
-    fn KeyCompare(&self, k: &[u8]) -> Result<Ordering>;
+    fn KeyCompare(&self, k: &KeyRef) -> Result<Ordering>;
 }
 
 //#[derive(Copy,Clone)]
@@ -1027,7 +1029,7 @@ impl PageBuffer {
     }
 
     fn get_slice(&self, start: usize, len: usize) -> &[u8] {
-        &self.buf[start .. len + start]
+        &self.buf[start .. start + len]
     }
 
     fn GetIntoArray(&self, cur: &mut usize,  a : &mut [u8]) {
@@ -1156,7 +1158,7 @@ impl<'a> ICursor<'a> for MultiCursor<'a> {
         }
     }
 
-    fn KeyCompare(&self, k: &[u8]) -> Result<Ordering> {
+    fn KeyCompare(&self, k: &KeyRef) -> Result<Ordering> {
         match self.cur {
             None => Err(LsmError::CursorNotValid),
             Some(icur) => self.subcursors[icur].KeyCompare(k),
@@ -1195,151 +1197,162 @@ impl<'a> ICursor<'a> for MultiCursor<'a> {
                 // the current direction of the multicursor tells us
                 // something about the state of all the others.
 
-                match self.dir {
-                    Direction::FORWARD => {
-                        // this is the happy case.  each cursor is at most
-                        // one step away.
+                fn half(dir: Direction, ki: &KeyRef, subs: &mut [SegmentCursor]) -> Result<()> {
+                    match dir {
+                        Direction::FORWARD => {
+                            // this is the happy case.  each cursor is at most
+                            // one step away.
 
-                        // direction is FORWARD, so we know that every valid cursor
-                        // is pointing at a key which is either == to icur, or
-                        // it is already the min key > icur.
-                        for j in 0 .. self.subcursors.len() {
-                            if (icur != j) && self.subcursors[j].IsValid() {
-                                let cmp = try!(SegmentCursor::compare_two(&self.subcursors[j], &self.subcursors[icur]));
-                                match cmp {
-                                    Ordering::Less => {
-                                        // should never happen, because FORWARD
-                                        unreachable!();
-                                    },
-                                    Ordering::Greater => {
-                                        // TODO assert that j.Prev is <= icur?
-                                        // done
-                                    },
-                                    Ordering::Equal => {
-                                        let csr = &mut self.subcursors[j];
-                                        try!(csr.Next());
-                                    },
-                                }
-                            }
-                        }
-                    },
-                    Direction::BACKWARD => {
-                        // this case isn't too bad.  each cursor is either
-                        // one step away or two.
-                        
-                        // every other cursor is either == icur or it is the
-                        // max value < icur.
-
-                        // find the invalid cursors first.  we have to call seek
-                        // on these, because we don't know if they might have
-                        // a valid value which is > icur.  we save the list and
-                        // deal with them after the others.
-
-                        let mut invalids = Vec::new();
-                        for j in 0 .. self.subcursors.len() {
-                            if (icur != j) && !self.subcursors[j].IsValid() {
-                                invalids.push(j);
-                            }
-                        }
-
-                        for j in 0 .. self.subcursors.len() {
-                            if (icur != j) && self.subcursors[j].IsValid() {
-                                let cmp = try!(SegmentCursor::compare_two(&self.subcursors[j], &self.subcursors[icur]));
-                                match cmp {
-                                    Ordering::Less => {
-                                        {
-                                            let csr = &mut self.subcursors[j];
+                            // direction is FORWARD, so we know that every valid cursor
+                            // is pointing at a key which is either == to icur, or
+                            // it is already the min key > icur.
+                            for csr in subs {
+                                if csr.IsValid() {
+                                    let cmp = {
+                                        let k = try!(csr.KeyRef());
+                                        let cmp = KeyRef::cmp(&k, ki);
+                                        cmp
+                                    };
+                                    match cmp {
+                                        Ordering::Less => {
+                                            // should never happen, because FORWARD
+                                            unreachable!();
+                                        },
+                                        Ordering::Greater => {
+                                            // TODO assert that j.Prev is <= icur?
+                                            // done
+                                        },
+                                        Ordering::Equal => {
                                             try!(csr.Next());
-                                        }
-                                        // we moved one step.  let's see if we need to move one more.
-                                        if self.subcursors[j].IsValid() {
-                                            let cmp = try!(SegmentCursor::compare_two(&self.subcursors[j], &self.subcursors[icur]));
-                                            match cmp {
-                                                Ordering::Less => {
-                                                    // should never happen.  we should not have
-                                                    // been more than one step away from icur.
-                                                    unreachable!();
-                                                },
-                                                Ordering::Greater => {
-                                                    // done
-                                                },
-                                                Ordering::Equal => {
-                                                    // and one more step
-                                                    let csr = &mut self.subcursors[j];
-                                                    try!(csr.Next());
-                                                },
-                                            }
-                                        }
-                                    },
-                                    Ordering::Greater => {
-                                        // should never happen, because BACKWARD
-                                        unreachable!();
-                                    },
-                                    Ordering::Equal => {
-                                        // one step away
-                                        let csr = &mut self.subcursors[j];
-                                        try!(csr.Next());
-                                    },
-                                }
-                            }
-                        }
-
-                        // now do a Seek on any cursor that was invalid before we
-                        // did the loop.  we do these separately because they
-                        // require making a copy of the icur Key.
-
-                        if !invalids.is_empty() {
-                            // see comment below about Key/KeyRef/alloc/etc
-                            let k = {
-                                let k = try!(self.subcursors[icur].KeyRef());
-                                // TODO if Seek() could take a KeyRef, we wouldn't need to alloc here
-                                let k = try!(k.into_boxed_slice());
-                            k
-                            };
-                            for j in invalids {
-                                assert!(icur != j);
-                                if !self.subcursors[j].IsValid() {
-                                    let csr = &mut self.subcursors[j];
-                                    let sr = try!(csr.Seek(&*k, SeekOp::SEEK_GE));
-                                    if sr.is_valid_and_equal() {
-                                        try!(csr.Next());
+                                        },
                                     }
                                 }
                             }
-                        }
+                            Ok(())
+                        },
+                        Direction::BACKWARD => {
+                            // this case isn't too bad.  each cursor is either
+                            // one step away or two.
+                            
+                            // every other cursor is either == icur or it is the
+                            // max value < icur.
 
-                    },
-                    Direction::WANDERING => {
-                        // we have no idea where all the other cursors are.
-                        // so we have to do a seek on each one.
+                            // find the invalid cursors first.  we have to call seek
+                            // on these, because we don't know if they might have
+                            // a valid value which is > icur.  we save the list and
+                            // deal with them after the others.
 
-                        // unfortunately, we have to make a copy of the icur Key.
-                        // Seek only needs a reference to a slice for the key,
-                        // and because we don't handle the case where icur == j,
-                        // there should be no mutability conflict, in theory.
-                        // But Rust doesn't know that.  It knows that both
-                        // cursors are in the same array, so we cannot have a
-                        // mutable reference (to seek) into that array while 
-                        // there is any other reference (the icur key).
+    // TODO just split this into two
 
-                        // also, KeyRef() gives a KeyRef, which Seek can't handle.
+                            let mut invalids = Vec::new();
+                            for j in 0 .. subs.len() {
+                                if !subs[j].IsValid() {
+                                    invalids.push(j);
+                                }
+                            }
 
-                        let k = {
-                            let k = try!(self.subcursors[icur].KeyRef());
-                            // TODO if Seek() could take a KeyRef, we wouldn't need to alloc here
-                            let k = try!(k.into_boxed_slice());
-                            k
-                        };
-                        for j in 0 .. self.subcursors.len() {
-                            if icur != j { 
-                                let csr = &mut self.subcursors[j];
-                                let sr = try!(csr.Seek(&*k, SeekOp::SEEK_GE));
+                            for j in 0 .. subs.len() {
+                                if subs[j].IsValid() {
+                                    let cmp = {
+                                        let k = try!(subs[j].KeyRef());
+                                        let cmp = KeyRef::cmp(&k, ki);
+                                        cmp
+                                    };
+                                    match cmp {
+                                        Ordering::Less => {
+                                            {
+                                                let csr = &mut subs[j];
+                                                try!(csr.Next());
+                                            }
+                                            // we moved one step.  let's see if we need to move one more.
+                                            if subs[j].IsValid() {
+                                                let cmp = {
+                                                    let k = try!(subs[j].KeyRef());
+                                                    let cmp = KeyRef::cmp(&k, ki);
+                                                    cmp
+                                                };
+                                                match cmp {
+                                                    Ordering::Less => {
+                                                        // should never happen.  we should not have
+                                                        // been more than one step away from icur.
+                                                        unreachable!();
+                                                    },
+                                                    Ordering::Greater => {
+                                                        // done
+                                                    },
+                                                    Ordering::Equal => {
+                                                        // and one more step
+                                                        let csr = &mut subs[j];
+                                                        try!(csr.Next());
+                                                    },
+                                                }
+                                            }
+                                        },
+                                        Ordering::Greater => {
+                                            // should never happen, because BACKWARD
+                                            unreachable!();
+                                        },
+                                        Ordering::Equal => {
+                                            // one step away
+                                            let csr = &mut subs[j];
+                                            try!(csr.Next());
+                                        },
+                                    }
+                                }
+                            }
+
+                            // now do a Seek on any cursor that was invalid before we
+                            // did the loop.  we do these separately because they
+                            // require making a copy of the icur Key.
+
+                            if !invalids.is_empty() {
+                                // see comment below about Key/KeyRef/alloc/etc
+                                for j in invalids {
+                                    if !subs[j].IsValid() {
+                                        let csr = &mut subs[j];
+                                        let sr = try!(csr.SeekRef(&ki, SeekOp::SEEK_GE));
+                                        if sr.is_valid_and_equal() {
+                                            try!(csr.Next());
+                                        }
+                                    }
+                                }
+                            }
+
+                            Ok(())
+                        },
+                        Direction::WANDERING => {
+                            // we have no idea where all the other cursors are.
+                            // so we have to do a seek on each one.
+
+                            // unfortunately, we have to make a copy of the icur Key.
+                            // Seek only needs a reference to a slice for the key,
+                            // and because we don't handle the case where icur == j,
+                            // there should be no mutability conflict, in theory.
+                            // But Rust doesn't know that.  It knows that both
+                            // cursors are in the same array, so we cannot have a
+                            // mutable reference (to seek) into that array while 
+                            // there is any other reference (the icur key).
+
+                            // also, KeyRef() gives a KeyRef, which Seek can't handle.
+
+                            for j in 0 .. subs.len() {
+                                let csr = &mut subs[j];
+                                let sr = try!(csr.SeekRef(&ki, SeekOp::SEEK_GE));
                                 if sr.is_valid_and_equal() {
                                     try!(csr.Next());
                                 }
                             }
-                        }
-                    },
+                            Ok(())
+                        },
+                    }
+                }
+
+                {
+                    let (before, middle, after) = split3(&mut *self.subcursors, icur);
+                    let icsr = &middle[0];
+                    let ki = try!(icsr.KeyRef());
+                    half(self.dir, &ki, before);
+                    half(self.dir, &ki, after);
                 }
 
                 // now the current cursor
@@ -1367,15 +1380,16 @@ impl<'a> ICursor<'a> for MultiCursor<'a> {
             Some(icur) => {
                 let k = {
                     let k = try!(self.subcursors[icur].KeyRef());
-                    let k = try!(k.into_boxed_slice());
+                    let k = k.into_boxed_slice();
+                    let k = KeyRef::from_boxed_slice(k);
                     k
                 };
                 for j in 0 .. self.subcursors.len() {
                     let csr = &mut self.subcursors[j];
                     if (self.dir != Direction::BACKWARD) && (icur != j) { 
-                        try!(csr.Seek (&*k, SeekOp::SEEK_LE));
+                        try!(csr.SeekRef(&k, SeekOp::SEEK_LE));
                     }
-                    if csr.IsValid() && (Ordering::Equal == try!(csr.KeyCompare(&*k))) { 
+                    if csr.IsValid() && (Ordering::Equal == try!(csr.KeyCompare(&k))) { 
                         try!(csr.Prev());
                     }
                 }
@@ -1386,11 +1400,11 @@ impl<'a> ICursor<'a> for MultiCursor<'a> {
         }
     }
 
-    fn Seek(&mut self, k: &[u8], sop:SeekOp) -> Result<SeekResult> {
+    fn SeekRef(&mut self, k: &KeyRef, sop:SeekOp) -> Result<SeekResult> {
         self.cur = None;
         self.dir = Direction::WANDERING;
         for j in 0 .. self.subcursors.len() {
-            let sr = try!(self.subcursors[j].Seek(k, sop));
+            let sr = try!(self.subcursors[j].SeekRef(k, sop));
             if sr.is_valid_and_equal() { 
                 self.cur = Some(j);
                 return Ok(sr);
@@ -1490,7 +1504,7 @@ impl<'a> ICursor<'a> for LivingCursor<'a> {
             }
     }
 
-    fn KeyCompare(&self, k: &[u8]) -> Result<Ordering> {
+    fn KeyCompare(&self, k: &KeyRef) -> Result<Ordering> {
         self.chain.KeyCompare(k)
     }
 
@@ -1506,8 +1520,8 @@ impl<'a> ICursor<'a> for LivingCursor<'a> {
         Ok(())
     }
 
-    fn Seek(&mut self, k: &[u8], sop:SeekOp) -> Result<SeekResult> {
-        let sr = try!(self.chain.Seek(k, sop));
+    fn SeekRef(&mut self, k: &KeyRef, sop:SeekOp) -> Result<SeekResult> {
+        let sr = try!(self.chain.SeekRef(k, sop));
         match sop {
             SeekOp::SEEK_GE => {
                 if sr.is_valid() && self.chain.ValueLength().unwrap().is_none() {
@@ -2917,30 +2931,34 @@ impl<'a> SegmentCursor<'a> {
         let x_k = try!(x.KeyRef());
         let y_k = try!(y.KeyRef());
         let c = KeyRef::cmp(&x_k, &y_k);
-        c
+        Ok(c)
     }
 
-    fn searchLeaf(&mut self, k: &[u8], min:usize, max:usize, sop:SeekOp, le: Option<usize>, ge: Option<usize>) -> Result<(Option<usize>,bool)> {
+    fn searchLeaf(&mut self, k: &KeyRef, min:usize, max:usize, sop:SeekOp, le: Option<usize>, ge: Option<usize>) -> Result<(Option<usize>,bool)> {
         if max < min {
             match sop {
-                SeekOp::SEEK_EQ => Ok((None,false)),
+                SeekOp::SEEK_EQ => Ok((None, false)),
                 SeekOp::SEEK_LE => Ok((le, false)),
                 SeekOp::SEEK_GE => Ok((ge, false)),
             }
         } else {
             let mid = (max + min) / 2;
             // assert mid >= 0
-            match try!(self.compareKeyInLeaf(mid, k)){
-                Ordering::Equal => Ok((Some(mid),true)),
+            let cmp = {
+                let q = try!(self.keyInLeaf2(mid));
+                KeyRef::cmp(&q, k)
+            };
+            match cmp {
+                Ordering::Equal => Ok((Some(mid), true)),
                 Ordering::Less => self.searchLeaf(k, (mid+1), max, sop, Some(mid), ge),
                 Ordering::Greater => 
                     // we could just recurse with mid-1, but that would overflow if
                     // mod is 0, so we catch that case here.
                     if mid==0 { 
                         match sop {
-                            SeekOp::SEEK_EQ => Ok((None,false)),
-                            SeekOp::SEEK_LE => Ok((le,false)),
-                            SeekOp::SEEK_GE => Ok((Some(mid),false)),
+                            SeekOp::SEEK_EQ => Ok((None, false)),
+                            SeekOp::SEEK_LE => Ok((le, false)),
+                            SeekOp::SEEK_GE => Ok((Some(mid), false)),
                         }
                     } else { 
                         self.searchLeaf(k, min, (mid-1), sop, le, Some(mid))
@@ -2949,7 +2967,7 @@ impl<'a> SegmentCursor<'a> {
         }
     }
 
-    fn readParentPage(&mut self) -> Result<(Vec<PageNum>,Vec<Box<[u8]>>)> {
+    fn readParentPage(&mut self) -> Result<(Vec<PageNum>, Vec<KeyRef>)> {
         let mut cur = 0;
         let pt = try!(PageType::from_u8(self.pr.GetByte(&mut cur)));
         if  pt != PageType::PARENT_NODE {
@@ -2966,14 +2984,16 @@ impl<'a> SegmentCursor<'a> {
             let kflag = self.pr.GetByte(&mut cur);
             let klen = self.pr.GetVarint(&mut cur) as usize;
             if 0 == (kflag & ValueFlag::FLAG_OVERFLOW) {
-                let mut a = vec![0;klen].into_boxed_slice();
-                self.pr.GetIntoArray(&mut cur, &mut a);
-                keys.push(a);
+                keys.push(KeyRef::Array(self.pr.get_slice(cur, klen)));
+                cur = cur + klen;
             } else {
-                let pgnum = self.pr.GetInt32(&mut cur) as PageNum;
-                let mut k = vec![0;klen].into_boxed_slice();
-                try!(readOverflow(&self.path, self.pr.PageSize(), pgnum, &mut k));
-                keys.push(k);
+                let firstPage = self.pr.GetInt32(&mut cur) as PageNum;
+                let pgsz = self.pr.PageSize();
+                let mut ostrm = try!(myOverflowReadStream::new(&self.path, pgsz, firstPage, klen));
+                let mut x_k = Vec::new();
+                try!(ostrm.read_to_end(&mut x_k));
+                let x_k = x_k.into_boxed_slice();
+                keys.push(KeyRef::Overflowed(x_k));
             }
         }
         Ok((ptrs,keys))
@@ -3052,7 +3072,7 @@ impl<'a> SegmentCursor<'a> {
         ok
     }
 
-    fn search(&mut self, pg: PageNum, k: &[u8], sop:SeekOp) -> Result<SeekResult> {
+    fn search(&mut self, pg: PageNum, k: &KeyRef, sop:SeekOp) -> Result<SeekResult> {
         if try!(self.setCurrentPage(pg)) {
             let pt = try!(self.pr.PageType());
             if PageType::LEAF_NODE == pt {
@@ -3092,11 +3112,14 @@ impl<'a> SegmentCursor<'a> {
                     Ok(SeekResult::Unequal)
                 }
             } else if PageType::PARENT_NODE == pt {
-                let (ptrs,keys) = try!(self.readParentPage());
-                match Self::searchInParentPage(k, &ptrs, &keys, 0) {
-                    Some(found) => return self.search(found, k, sop),
-                    None => return self.search(ptrs[ptrs.len() - 1], k, sop),
-                }
+                let next = {
+                    let (ptrs, keys) = try!(self.readParentPage());
+                    match Self::searchInParentPage(k, &ptrs, &keys, 0) {
+                        Some(found) => found,
+                        None => ptrs[ptrs.len() - 1],
+                    }
+                };
+                self.search(next, k, sop)
             } else {
                 unreachable!();
             }
@@ -3105,11 +3128,11 @@ impl<'a> SegmentCursor<'a> {
         }
     }
 
-    fn searchInParentPage(k: &[u8], ptrs: &Vec<PageNum>, keys: &Vec<Box<[u8]>>, i: usize) -> Option<PageNum> {
+    fn searchInParentPage(k: &KeyRef, ptrs: &Vec<PageNum>, keys: &Vec<KeyRef>, i: usize) -> Option<PageNum> {
         // TODO linear search?  really?
         // TODO also, this doesn't need to be recursive
         if i < keys.len() {
-            let cmp = bcmp::Compare(k, &*keys[i]);
+            let cmp = KeyRef::cmp(k, &keys[i]);
             if cmp==Ordering::Greater {
                 Self::searchInParentPage(k, ptrs, keys, i+1)
             } else {
@@ -3133,7 +3156,7 @@ impl<'a> ICursor<'a> for SegmentCursor<'a> {
         self.leafIsValid()
     }
 
-    fn Seek(&mut self, k: &[u8], sop:SeekOp) -> Result<SeekResult> {
+    fn SeekRef(&mut self, k: &KeyRef, sop:SeekOp) -> Result<SeekResult> {
         let rootPage = self.rootPage;
         self.search(rootPage, k, sop)
     }
@@ -3189,10 +3212,9 @@ impl<'a> ICursor<'a> for SegmentCursor<'a> {
         }
     }
 
-    fn KeyCompare(&self, k: &[u8]) -> Result<Ordering> {
+    fn KeyCompare(&self, k_other: &KeyRef) -> Result<Ordering> {
         let k_me = try!(self.KeyRef());
-        let k_other = KeyRef::for_slice(k);
-        let c = try!(KeyRef::cmp(&k_me, &k_other));
+        let c = KeyRef::cmp(&k_me, &k_other);
         Ok(c)
     }
 
@@ -4671,7 +4693,7 @@ impl sqlite4_num {
 impl<'a> LivingCursor<'a> {
     pub fn Key(&self) -> Result<Box<[u8]>> {
         let k = try!(self.KeyRef());
-        let k = try!(k.into_boxed_slice());
+        let k = k.into_boxed_slice();
         Ok(k)
     }
 
@@ -4680,5 +4702,13 @@ impl<'a> LivingCursor<'a> {
         let v = v.into_blob();
         Ok(v)
     }
+    
+    pub fn Seek(&mut self, k: &[u8], sop:SeekOp) -> Result<SeekResult> {
+        let k2 = KeyRef::for_slice(k);
+        let r = self.SeekRef(&k2, sop);
+        println!("{:?}", r);
+        r
+    }
+
 }
 
