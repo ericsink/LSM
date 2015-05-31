@@ -172,7 +172,10 @@ impl<'a> Index<usize> for SplitSlice<'a> {
 }
 
 pub enum KeyRef<'a> {
-    Overflowed(usize, Box<Read>),
+    // for an overflowed key, we just punt and read it into memory
+    Overflowed(Box<[u8]>),
+
+    // the other two are references into the page
     Prefixed(&'a [u8],&'a [u8]),
     Array(&'a [u8]),
 }
@@ -180,7 +183,7 @@ pub enum KeyRef<'a> {
 impl<'a> std::fmt::Debug for KeyRef<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::result::Result<(), std::fmt::Error> {
         match *self {
-            KeyRef::Overflowed(klen,_) => write!(f, "Overflowed, len={}", klen),
+            KeyRef::Overflowed(ref a) => write!(f, "Overflowed, a={:?}", a),
             KeyRef::Prefixed(front,back) => write!(f, "Prefixed, front={:?}, back={:?}", front, back),
             KeyRef::Array(a) => write!(f, "Array, len={:?}", a),
         }
@@ -190,7 +193,7 @@ impl<'a> std::fmt::Debug for KeyRef<'a> {
 impl<'a> KeyRef<'a> {
     pub fn len(&self) -> usize {
         match *self {
-            KeyRef::Overflowed(klen, _) => klen,
+            KeyRef::Overflowed(ref a) => a.len(),
             KeyRef::Array(a) => a.len(),
             KeyRef::Prefixed(front,back) => front.len() + back.len(),
         }
@@ -202,10 +205,8 @@ impl<'a> KeyRef<'a> {
 
     pub fn into_boxed_slice(self) -> Result<Box<[u8]>> {
         match self {
-            KeyRef::Overflowed(klen, mut strm) => {
-                let mut a = Vec::new();
-                try!(strm.read_to_end(&mut a));
-                Ok(a.into_boxed_slice())
+            KeyRef::Overflowed(a) => {
+                Ok(a)
             },
             KeyRef::Array(a) => {
                 let mut k = Vec::new();
@@ -291,54 +292,19 @@ impl<'a> KeyRef<'a> {
 
     pub fn cmp(x: KeyRef, y: KeyRef) -> Result<Ordering> {
         match (x,y) {
-            // if either of these keys is overflowed, don't bother
-            // trying to do anything clever.  just read both keys
-            // into memory and compare them.
-            (KeyRef::Overflowed(_, mut x_strm), KeyRef::Overflowed(_, mut y_strm)) => {
-                let mut x_k = Vec::new();
-                try!(x_strm.read_to_end(&mut x_k));
-                let x_k = x_k.into_boxed_slice();
-
-                let mut y_k = Vec::new();
-                try!(y_strm.read_to_end(&mut y_k));
-                let y_k = y_k.into_boxed_slice();
-
+            (KeyRef::Overflowed(x_k), KeyRef::Overflowed(y_k)) => {
                 Ok(bcmp::Compare(&x_k, &y_k))
             },
-            (KeyRef::Overflowed(_, mut x_strm), KeyRef::Prefixed(y_front, y_back)) => {
-                let mut x_k = Vec::new();
-                try!(x_strm.read_to_end(&mut x_k));
-                let x_k = x_k.into_boxed_slice();
-
-                let mut y_k = Vec::new();
-                y_k.push_all(y_front);
-                y_k.push_all(y_back);
-
+            (KeyRef::Overflowed(x_k), KeyRef::Prefixed(y_p, y_k)) => {
+                Ok(Self::compare_x_py(&x_k, y_p, y_k))
+            },
+            (KeyRef::Overflowed(x_k), KeyRef::Array(y_k)) => {
                 Ok(bcmp::Compare(&x_k, &y_k))
             },
-            (KeyRef::Overflowed(_, mut x_strm), KeyRef::Array(y_k)) => {
-                let mut x_k = Vec::new();
-                try!(x_strm.read_to_end(&mut x_k));
-                let x_k = x_k.into_boxed_slice();
-
-                Ok(bcmp::Compare(&x_k, &y_k))
+            (KeyRef::Prefixed(x_p, x_k), KeyRef::Overflowed(y_k)) => {
+                Ok(Self::compare_px_y(x_p, x_k, &y_k))
             },
-            (KeyRef::Prefixed(x_front, x_back), KeyRef::Overflowed(_, mut y_strm)) => {
-                let mut x_k = Vec::new();
-                x_k.push_all(x_front);
-                x_k.push_all(x_back);
-
-                let mut y_k = Vec::new();
-                try!(y_strm.read_to_end(&mut y_k));
-                let y_k = y_k.into_boxed_slice();
-
-                Ok(bcmp::Compare(&x_k, &y_k))
-            },
-            (KeyRef::Array(x_k), KeyRef::Overflowed(_, mut y_strm)) => {
-                let mut y_k = Vec::new();
-                try!(y_strm.read_to_end(&mut y_k));
-                let y_k = y_k.into_boxed_slice();
-
+            (KeyRef::Array(x_k), KeyRef::Overflowed(y_k)) => {
                 Ok(bcmp::Compare(&x_k, &y_k))
             },
             (KeyRef::Prefixed(ref x_p, ref x_k), KeyRef::Prefixed(ref y_p, ref y_k)) => {
@@ -2880,8 +2846,11 @@ impl<'a> SegmentCursor<'a> {
             }
         } else {
             let pgnum = self.pr.GetInt32(&mut cur) as PageNum;
-            let ostrm = try!(myOverflowReadStream::new(&self.path, self.pr.PageSize(), pgnum, klen));
-            Ok(KeyRef::Overflowed(klen, box ostrm))
+            let mut ostrm = try!(myOverflowReadStream::new(&self.path, self.pr.PageSize(), pgnum, klen));
+            let mut x_k = Vec::new();
+            try!(ostrm.read_to_end(&mut x_k));
+            let x_k = x_k.into_boxed_slice();
+            Ok(KeyRef::Overflowed(x_k))
         }
     }
 
@@ -4066,15 +4035,15 @@ impl InnerPart {
                 return Ok(None)
             }
 
-            println!("age for merge: {}", level);
-            println!("currentState: {:?}", st.header.currentState);
+            //println!("age for merge: {}", level);
+            //println!("currentState: {:?}", st.header.currentState);
 
             let age_group = st.header.currentState.iter().filter(|g| {
                 let info = st.header.segments.get(&g).unwrap();
                 info.age == level
             }).map(|g| *g).collect::<Vec<SegmentNum>>();
 
-            println!("age_group: {:?}", age_group);
+            //println!("age_group: {:?}", age_group);
 
             if age_group.len() == 0 {
                 return Ok(None)
