@@ -216,6 +216,141 @@ impl<'a> KeyRef<'a> {
             },
         }
     }
+
+    // TODO move this to the bcmp module?
+    fn compare_px_py(px: &[u8], x: &[u8], py: &[u8], y: &[u8]) -> Ordering {
+        let xlen = px.len() + x.len();
+        let ylen = py.len() + y.len();
+        let len = std::cmp::min(xlen, ylen);
+        for i in 0 .. len {
+            let xval = 
+                if i<px.len() {
+                    px[i]
+                } else {
+                    x[i - px.len()]
+                };
+            let yval = 
+                if i<py.len() {
+                    py[i]
+                } else {
+                    y[i - py.len()]
+                };
+            let c = xval.cmp(&yval);
+            if c != Ordering::Equal {
+                return c;
+            }
+        }
+        return xlen.cmp(&ylen);
+    }
+
+    // TODO move this to the bcmp module?
+    fn compare_px_y(px: &[u8], x: &[u8], y: &[u8]) -> Ordering {
+        let xlen = px.len() + x.len();
+        let ylen = y.len();
+        let len = std::cmp::min(xlen, ylen);
+        for i in 0 .. len {
+            let xval = 
+                if i<px.len() {
+                    px[i]
+                } else {
+                    x[i - px.len()]
+                };
+            let yval = y[i];
+            let c = xval.cmp(&yval);
+            if c != Ordering::Equal {
+                return c;
+            }
+        }
+        return xlen.cmp(&ylen);
+    }
+
+    // TODO move this to the bcmp module?
+    fn compare_x_py(x: &[u8], py: &[u8], y: &[u8]) -> Ordering {
+        let xlen = x.len();
+        let ylen = py.len() + y.len();
+        let len = std::cmp::min(xlen, ylen);
+        for i in 0 .. len {
+            let xval = x[i];
+            let yval = 
+                if i<py.len() {
+                    py[i]
+                } else {
+                    y[i - py.len()]
+                };
+            let c = xval.cmp(&yval);
+            if c != Ordering::Equal {
+                return c;
+            }
+        }
+        return xlen.cmp(&ylen);
+    }
+
+    pub fn cmp(x: KeyRef, y: KeyRef) -> Result<Ordering> {
+        match (x,y) {
+            // if either of these keys is overflowed, don't bother
+            // trying to do anything clever.  just read both keys
+            // into memory and compare them.
+            (KeyRef::Overflowed(_, mut x_strm), KeyRef::Overflowed(_, mut y_strm)) => {
+                let mut x_k = Vec::new();
+                try!(x_strm.read_to_end(&mut x_k));
+                let x_k = x_k.into_boxed_slice();
+
+                let mut y_k = Vec::new();
+                try!(y_strm.read_to_end(&mut y_k));
+                let y_k = y_k.into_boxed_slice();
+
+                Ok(bcmp::Compare(&x_k, &y_k))
+            },
+            (KeyRef::Overflowed(_, mut x_strm), KeyRef::Prefixed(y_front, y_back)) => {
+                let mut x_k = Vec::new();
+                try!(x_strm.read_to_end(&mut x_k));
+                let x_k = x_k.into_boxed_slice();
+
+                let mut y_k = Vec::new();
+                y_k.push_all(y_front);
+                y_k.push_all(y_back);
+
+                Ok(bcmp::Compare(&x_k, &y_k))
+            },
+            (KeyRef::Overflowed(_, mut x_strm), KeyRef::Array(y_k)) => {
+                let mut x_k = Vec::new();
+                try!(x_strm.read_to_end(&mut x_k));
+                let x_k = x_k.into_boxed_slice();
+
+                Ok(bcmp::Compare(&x_k, &y_k))
+            },
+            (KeyRef::Prefixed(x_front, x_back), KeyRef::Overflowed(_, mut y_strm)) => {
+                let mut x_k = Vec::new();
+                x_k.push_all(x_front);
+                x_k.push_all(x_back);
+
+                let mut y_k = Vec::new();
+                try!(y_strm.read_to_end(&mut y_k));
+                let y_k = y_k.into_boxed_slice();
+
+                Ok(bcmp::Compare(&x_k, &y_k))
+            },
+            (KeyRef::Array(x_k), KeyRef::Overflowed(_, mut y_strm)) => {
+                let mut y_k = Vec::new();
+                try!(y_strm.read_to_end(&mut y_k));
+                let y_k = y_k.into_boxed_slice();
+
+                Ok(bcmp::Compare(&x_k, &y_k))
+            },
+            (KeyRef::Prefixed(ref x_p, ref x_k), KeyRef::Prefixed(ref y_p, ref y_k)) => {
+                Ok(Self::compare_px_py(x_p, x_k, y_p, y_k))
+            },
+            (KeyRef::Prefixed(ref x_p, ref x_k), KeyRef::Array(ref y_k)) => {
+                Ok(Self::compare_px_y(x_p, x_k, y_k))
+            },
+            (KeyRef::Array(ref x_k), KeyRef::Prefixed(ref y_p, ref y_k)) => {
+                Ok(Self::compare_x_py(x_k, y_p, y_k))
+            },
+            (KeyRef::Array(ref x_k), KeyRef::Array(ref y_k)) => {
+                Ok(bcmp::Compare(&x_k, &y_k))
+            },
+        }
+    }
 }
 
 
@@ -2801,122 +2936,11 @@ impl<'a> SegmentCursor<'a> {
         }
     }
 
-    // TODO move this to the bcmp module?
-    pub fn compare_px_py(px: &[u8], x: &[u8], py: &[u8], y: &[u8]) -> Ordering {
-        let xlen = px.len() + x.len();
-        let ylen = py.len() + y.len();
-        let len = std::cmp::min(xlen, ylen);
-        for i in 0 .. len {
-            let xval = 
-                if i<px.len() {
-                    px[i]
-                } else {
-                    x[i - px.len()]
-                };
-            let yval = 
-                if i<py.len() {
-                    py[i]
-                } else {
-                    y[i - py.len()]
-                };
-            let c = xval.cmp(&yval);
-            if c != Ordering::Equal {
-                return c;
-            }
-        }
-        return xlen.cmp(&ylen);
-    }
-
-    // TODO move this to the bcmp module?
-    pub fn compare_px_y(px: &[u8], x: &[u8], y: &[u8]) -> Ordering {
-        let xlen = px.len() + x.len();
-        let ylen = y.len();
-        let len = std::cmp::min(xlen, ylen);
-        for i in 0 .. len {
-            let xval = 
-                if i<px.len() {
-                    px[i]
-                } else {
-                    x[i - px.len()]
-                };
-            let yval = y[i];
-            let c = xval.cmp(&yval);
-            if c != Ordering::Equal {
-                return c;
-            }
-        }
-        return xlen.cmp(&ylen);
-    }
-
-    // TODO move this to the bcmp module?
-    pub fn compare_x_py(x: &[u8], py: &[u8], y: &[u8]) -> Ordering {
-        let xlen = x.len();
-        let ylen = py.len() + y.len();
-        let len = std::cmp::min(xlen, ylen);
-        for i in 0 .. len {
-            let xval = x[i];
-            let yval = 
-                if i<py.len() {
-                    py[i]
-                } else {
-                    y[i - py.len()]
-                };
-            let c = xval.cmp(&yval);
-            if c != Ordering::Equal {
-                return c;
-            }
-        }
-        return xlen.cmp(&ylen);
-    }
-
     fn compare_two(x: &SegmentCursor, y: &SegmentCursor) -> Result<Ordering> {
-        fn get_info(c: &SegmentCursor) -> Result<(usize, bool, usize, usize)> {
-            match c.currentKey {
-                None => Err(LsmError::CursorNotValid),
-                Some(n) => {
-                    let mut cur = c.leafKeys[n as usize];
-                    let kflag = c.pr.GetByte(&mut cur);
-                    let klen = c.pr.GetVarint(&mut cur) as usize;
-                    let overflowed = 0 != (kflag & ValueFlag::FLAG_OVERFLOW);
-                    Ok((n, overflowed, cur, klen))
-                },
-            }
-        }
-
-        let (x_n, x_over, x_cur, x_klen) = try!(get_info(x));
-        let (y_n, y_over, y_cur, y_klen) = try!(get_info(y));
-
-        if x_over || y_over {
-            // if either of these keys is overflowed, don't bother
-            // trying to do anything clever.  just read both keys
-            // into memory and compare them.
-            let x_k = try!(x.keyInLeaf(x_n));
-            let y_k = try!(y.keyInLeaf(y_n));
-            Ok(bcmp::Compare(&x_k, &y_k))
-        } else {
-            match (&x.prefix, &y.prefix) {
-                (&Some(ref x_p), &Some(ref y_p)) => {
-                    let x_k = x.pr.get_slice(x_cur, x_klen - x_p.len());
-                    let y_k = y.pr.get_slice(y_cur, y_klen - y_p.len());
-                    Ok(Self::compare_px_py(x_p, x_k, y_p, y_k))
-                },
-                (&Some(ref x_p), &None) => {
-                    let x_k = x.pr.get_slice(x_cur, x_klen - x_p.len());
-                    let y_k = y.pr.get_slice(y_cur, y_klen);
-                    Ok(Self::compare_px_y(x_p, x_k, y_k))
-                },
-                (&None, &Some(ref y_p)) => {
-                    let x_k = x.pr.get_slice(x_cur, x_klen);
-                    let y_k = y.pr.get_slice(y_cur, y_klen - y_p.len());
-                    Ok(Self::compare_x_py(x_k, y_p, y_k))
-                },
-                (&None, &None) => {
-                    let x_k = x.pr.get_slice(x_cur, x_klen);
-                    let y_k = y.pr.get_slice(y_cur, y_klen);
-                    Ok(bcmp::Compare(&x_k, &y_k))
-                },
-            }
-        }
+        let x_k = try!(x.KeyRef());
+        let y_k = try!(y.KeyRef());
+        let c = KeyRef::cmp(x_k, y_k);
+        c
     }
 
     fn searchLeaf(&mut self, k: &[u8], min:usize, max:usize, sop:SeekOp, le: Option<usize>, ge: Option<usize>) -> Result<(Option<usize>,bool)> {
