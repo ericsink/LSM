@@ -41,12 +41,20 @@ multiple passes, number of errors jumps up and down
 really cool using valgrind.  
 and really cool that valgrind shouldn't be as useful.
 
-too much usize?  use a more specific, smaller unsigned type.
-
 why do usize and u64 require a cast?  usize is not an alias.
 
 cargo bench is very cool.
 wish I could control the units (always ns) or get them to display with commas or something
+
+in theory, rust should be able to infer types for functions and their
+arguments, plus lifetimes.  but this would require far more analysis,
+so currently, the programmer is required to make these things explicit
+at the function boundaries.  i wonder if this kind of analysis will
+be possible later.
+
+----
+
+too much usize?  use a more specific, smaller unsigned type.
 
 make pgnum a u64?
 same for pgnum but then storage is wasteful,
@@ -79,18 +87,10 @@ currently using trait objects Seek+Write for writing to the db.  the overhead
 of dynamic dispatch is negligible compared to the IO, right?  lack of
 inline optimization?  verify this.
 
-annoying that I can't have a mut reference to one element of an array
-while holding any reference to any other element of the array.
-
-in theory, rust should be able to infer types for functions and their
-arguments, plus lifetimes.  but this would require far more analysis,
-so currently, the programmer is required to make these things explicit
-at the function boundaries.  i wonder if this kind of analysis will
-be possible later.
-
-I wonder if Key() and Value() should just go away, replacing them
-with KeyRef() and ValueRef().  The caller is always free to do the
-allocation if they want.
+maybe page manager should own the file (or Seek+Write) as well, and should
+have a method called WritePage which the bt code would call?  this might
+make it easier later to do things like witholding 16 bytes at the end for
+crypto.
 
 what if db goes out of scope with pending segments?
 
