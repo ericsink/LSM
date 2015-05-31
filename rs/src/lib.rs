@@ -196,6 +196,10 @@ impl<'a> KeyRef<'a> {
         }
     }
 
+    pub fn from(k: &[u8]) -> KeyRef {
+        KeyRef::Array(k)
+    }
+
     pub fn into_boxed_slice(self) -> Result<Box<[u8]>> {
         match self {
             KeyRef::Overflowed(klen, mut strm) => {
@@ -3213,10 +3217,10 @@ impl<'a> ICursor<'a> for SegmentCursor<'a> {
     }
 
     fn KeyCompare(&self, k: &[u8]) -> Result<Ordering> {
-        match self.currentKey {
-            None => Err(LsmError::CursorNotValid),
-            Some(currentKey) => self.compareKeyInLeaf(currentKey, k)
-        }
+        let k_me = try!(self.KeyRef());
+        let k_other = KeyRef::from(k);
+        let c = try!(KeyRef::cmp(k_me, k_other));
+        Ok(c)
     }
 
     fn First(&mut self) -> Result<()> {
