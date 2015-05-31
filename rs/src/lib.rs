@@ -199,7 +199,11 @@ impl<'a> KeyRef<'a> {
         }
     }
 
-    pub fn from(k: &[u8]) -> KeyRef {
+    pub fn from_boxed_slice(k: Box<[u8]>) -> KeyRef<'a> {
+        KeyRef::Overflowed(k)
+    }
+
+    pub fn for_slice(k: &[u8]) -> KeyRef {
         KeyRef::Array(k)
     }
 
@@ -290,33 +294,33 @@ impl<'a> KeyRef<'a> {
         return xlen.cmp(&ylen);
     }
 
-    pub fn cmp(x: KeyRef, y: KeyRef) -> Result<Ordering> {
+    pub fn cmp(x: &KeyRef, y: &KeyRef) -> Result<Ordering> {
         match (x,y) {
-            (KeyRef::Overflowed(x_k), KeyRef::Overflowed(y_k)) => {
+            (&KeyRef::Overflowed(ref x_k), &KeyRef::Overflowed(ref y_k)) => {
                 Ok(bcmp::Compare(&x_k, &y_k))
             },
-            (KeyRef::Overflowed(x_k), KeyRef::Prefixed(y_p, y_k)) => {
+            (&KeyRef::Overflowed(ref x_k), &KeyRef::Prefixed(ref y_p, ref y_k)) => {
                 Ok(Self::compare_x_py(&x_k, y_p, y_k))
             },
-            (KeyRef::Overflowed(x_k), KeyRef::Array(y_k)) => {
+            (&KeyRef::Overflowed(ref x_k), &KeyRef::Array(ref y_k)) => {
                 Ok(bcmp::Compare(&x_k, &y_k))
             },
-            (KeyRef::Prefixed(x_p, x_k), KeyRef::Overflowed(y_k)) => {
+            (&KeyRef::Prefixed(ref x_p, ref x_k), &KeyRef::Overflowed(ref y_k)) => {
                 Ok(Self::compare_px_y(x_p, x_k, &y_k))
             },
-            (KeyRef::Array(x_k), KeyRef::Overflowed(y_k)) => {
+            (&KeyRef::Array(ref x_k), &KeyRef::Overflowed(ref y_k)) => {
                 Ok(bcmp::Compare(&x_k, &y_k))
             },
-            (KeyRef::Prefixed(ref x_p, ref x_k), KeyRef::Prefixed(ref y_p, ref y_k)) => {
+            (&KeyRef::Prefixed(ref x_p, ref x_k), &KeyRef::Prefixed(ref y_p, ref y_k)) => {
                 Ok(Self::compare_px_py(x_p, x_k, y_p, y_k))
             },
-            (KeyRef::Prefixed(ref x_p, ref x_k), KeyRef::Array(ref y_k)) => {
+            (&KeyRef::Prefixed(ref x_p, ref x_k), &KeyRef::Array(ref y_k)) => {
                 Ok(Self::compare_px_y(x_p, x_k, y_k))
             },
-            (KeyRef::Array(ref x_k), KeyRef::Prefixed(ref y_p, ref y_k)) => {
+            (&KeyRef::Array(ref x_k), &KeyRef::Prefixed(ref y_p, ref y_k)) => {
                 Ok(Self::compare_x_py(x_k, y_p, y_k))
             },
-            (KeyRef::Array(ref x_k), KeyRef::Array(ref y_k)) => {
+            (&KeyRef::Array(ref x_k), &KeyRef::Array(ref y_k)) => {
                 Ok(bcmp::Compare(&x_k, &y_k))
             },
         }
@@ -2912,7 +2916,7 @@ impl<'a> SegmentCursor<'a> {
     fn compare_two(x: &SegmentCursor, y: &SegmentCursor) -> Result<Ordering> {
         let x_k = try!(x.KeyRef());
         let y_k = try!(y.KeyRef());
-        let c = KeyRef::cmp(x_k, y_k);
+        let c = KeyRef::cmp(&x_k, &y_k);
         c
     }
 
@@ -3187,8 +3191,8 @@ impl<'a> ICursor<'a> for SegmentCursor<'a> {
 
     fn KeyCompare(&self, k: &[u8]) -> Result<Ordering> {
         let k_me = try!(self.KeyRef());
-        let k_other = KeyRef::from(k);
-        let c = try!(KeyRef::cmp(k_me, k_other));
+        let k_other = KeyRef::for_slice(k);
+        let c = try!(KeyRef::cmp(&k_me, &k_other));
         Ok(c)
     }
 
