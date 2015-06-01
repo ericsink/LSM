@@ -1251,32 +1251,20 @@ impl<'a> ICursor<'a> for MultiCursor<'a> {
                             // a valid value which is > icur.  we save the list and
                             // deal with them after the others.
 
-    // TODO just split this into two
-
-                            let mut invalids = Vec::new();
-                            for j in 0 .. subs.len() {
-                                if !subs[j].IsValid() {
-                                    invalids.push(j);
-                                }
-                            }
-
-                            for j in 0 .. subs.len() {
-                                if subs[j].IsValid() {
+                            for csr in subs {
+                                if csr.IsValid() {
                                     let cmp = {
-                                        let k = try!(subs[j].KeyRef());
+                                        let k = try!(csr.KeyRef());
                                         let cmp = KeyRef::cmp(&k, ki);
                                         cmp
                                     };
                                     match cmp {
                                         Ordering::Less => {
-                                            {
-                                                let csr = &mut subs[j];
-                                                try!(csr.Next());
-                                            }
+                                            try!(csr.Next());
                                             // we moved one step.  let's see if we need to move one more.
-                                            if subs[j].IsValid() {
+                                            if csr.IsValid() {
                                                 let cmp = {
-                                                    let k = try!(subs[j].KeyRef());
+                                                    let k = try!(csr.KeyRef());
                                                     let cmp = KeyRef::cmp(&k, ki);
                                                     cmp
                                                 };
@@ -1291,7 +1279,6 @@ impl<'a> ICursor<'a> for MultiCursor<'a> {
                                                     },
                                                     Ordering::Equal => {
                                                         // and one more step
-                                                        let csr = &mut subs[j];
                                                         try!(csr.Next());
                                                     },
                                                 }
@@ -1303,26 +1290,13 @@ impl<'a> ICursor<'a> for MultiCursor<'a> {
                                         },
                                         Ordering::Equal => {
                                             // one step away
-                                            let csr = &mut subs[j];
                                             try!(csr.Next());
                                         },
                                     }
-                                }
-                            }
-
-                            // now do a Seek on any cursor that was invalid before we
-                            // did the loop.  we do these separately because they
-                            // require making a copy of the icur Key.
-
-                            if !invalids.is_empty() {
-                                // see comment below about Key/KeyRef/alloc/etc
-                                for j in invalids {
-                                    if !subs[j].IsValid() {
-                                        let csr = &mut subs[j];
-                                        let sr = try!(csr.SeekRef(&ki, SeekOp::SEEK_GE));
-                                        if sr.is_valid_and_equal() {
-                                            try!(csr.Next());
-                                        }
+                                } else {
+                                    let sr = try!(csr.SeekRef(&ki, SeekOp::SEEK_GE));
+                                    if sr.is_valid_and_equal() {
+                                        try!(csr.Next());
                                     }
                                 }
                             }
