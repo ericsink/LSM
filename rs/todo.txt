@@ -109,4 +109,18 @@ vbuf reuse write leaves
 
 review lock ordering
 
+multicursor::find is still such a problem.  there should be a better
+algorithm for this.  keep the list sorted as each subcursor moves?
+
+fix the alloc-related comments in mc.Next
+
+keyInLeafs should share code.
+
+same for Value and ValueRef code
+
+wonder:  cargo bench and callgrind quick() are not the same test.
+bunch is cross-crate  quick() is not.  quick() is the one that
+shows the weird arena_avail calls.  bunch is the one that shows
+the perf degradation.
+
 
