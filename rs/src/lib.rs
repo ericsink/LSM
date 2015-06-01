@@ -1060,34 +1060,30 @@ struct MultiCursor<'a> {
 }
 
 impl<'a> MultiCursor<'a> {
-    fn compete(&self, want_max: bool, i: usize, cur: Option<usize>) -> Result<Option<usize>> {
-        if self.subcursors[i].IsValid() {
-            match cur {
-                Some(winning) => {
-                    if i == winning {
-                        Ok(cur)
-                    } else {
-                        let x = &self.subcursors[i];
-                        let y = &self.subcursors[winning];
-                        let c =
-                            if want_max {
-                                try!(SegmentCursor::compare_two(y,x))
-                            } else {
-                                try!(SegmentCursor::compare_two(x,y))
-                            };
-                        if c==Ordering::Less {
-                            Ok(Some(i))
+    fn compete(keys: &[KeyRef], want_max: bool, i: usize, cur: Option<usize>) -> Result<Option<usize>> {
+        match cur {
+            Some(winning) => {
+                if i == winning {
+                    Ok(cur)
+                } else {
+                    let x = &keys[i];
+                    let y = &keys[winning];
+                    let c =
+                        if want_max {
+                            KeyRef::cmp(y,x)
                         } else {
-                            Ok(cur)
-                        }
+                            KeyRef::cmp(x,y)
+                        };
+                    if c==Ordering::Less {
+                        Ok(Some(i))
+                    } else {
+                        Ok(cur)
                     }
-                },
-                None => {
-                    Ok(Some(i))
                 }
+            },
+            None => {
+                Ok(Some(i))
             }
-        } else {
-            Ok(cur)
         }
     }
 
@@ -1095,10 +1091,23 @@ impl<'a> MultiCursor<'a> {
         if self.subcursors.is_empty() {
             Ok(None)
         } else {
-            let mut res = None::<usize>;
-            for i in 0 .. self.subcursors.len() {
-                res = try!(self.compete(want_max, i, res));
+            let mut valids = Vec::new();
+            let mut ndx = Vec::new();
+            for (i,c) in self.subcursors.iter().enumerate() {
+                if c.IsValid() {
+                    ndx.push(i);
+                    valids.push(try!(c.KeyRef()));
+                }
             }
+
+            let mut res = None::<usize>;
+            for i in 0 .. valids.len() {
+                res = try!(Self::compete(&valids, want_max, i, res));
+            }
+            let res = match res {
+                Some(i) => Some(ndx[i]),
+                None => None,
+            };
             Ok(res)
         }
     }
@@ -2925,13 +2934,6 @@ impl<'a> SegmentCursor<'a> {
             let res = bcmp::Compare(&*k, other);
             Ok(res)
         }
-    }
-
-    fn compare_two(x: &SegmentCursor, y: &SegmentCursor) -> Result<Ordering> {
-        let x_k = try!(x.KeyRef());
-        let y_k = try!(y.KeyRef());
-        let c = KeyRef::cmp(&x_k, &y_k);
-        Ok(c)
     }
 
     fn searchLeaf(&mut self, k: &KeyRef, min:usize, max:usize, sop:SeekOp, le: Option<usize>, ge: Option<usize>) -> Result<(Option<usize>,bool)> {
