@@ -12,3 +12,11 @@ rpath = false
 lto = false
 debug-assertions = true
 
+# The testing profile, used for `cargo bench`
+[profile.bench]
+opt-level = 3
+debug = false
+rpath = false
+lto = true
+debug-assertions = false
+

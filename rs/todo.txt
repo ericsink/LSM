@@ -123,4 +123,13 @@ bunch is cross-crate  quick() is not.  quick() is the one that
 shows the weird arena_avail calls.  bunch is the one that shows
 the perf degradation.
 
+compare_two makes far more difference than Key() and Value()
+
+removing Overflowed from KeyRef doesn't help.  also removing
+Result wrapper around KeyRef (with Overflowed removed) doesn't
+help.
+
+lto in Cargo.toml doesn't help (and no longer crashes in current
+nightly)
+
 
