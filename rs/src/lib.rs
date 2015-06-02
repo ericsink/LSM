@@ -1055,7 +1055,7 @@ enum Direction {
 
 struct MultiCursor<'a> { 
     subcursors: Box<[SegmentCursor<'a>]>, 
-    sorted: Box<[(usize,Ordering)]>,
+    sorted: Box<[(usize,Option<Ordering>)]>,
     cur: Option<usize>, 
     dir: Direction,
 }
@@ -1066,6 +1066,7 @@ impl<'a> MultiCursor<'a> {
             return Ok(())
         }
 
+        // get a KeyRef for all the cursors
         let mut ka = Vec::new();
         for c in self.subcursors.iter() {
             if c.IsValid() {
@@ -1075,14 +1076,18 @@ impl<'a> MultiCursor<'a> {
             }
         }
 
-        self.sorted[0].1 = Ordering::Equal;
+        // init the orderings to None.
+        // the invalid cursors will stay that way.
+        for i in 0 .. self.sorted.len() {
+            self.sorted[i].1 = None;
+        }
 
         for i in 1 .. ka.len() {
             let mut j = i;
             while j > 0 {
                 let nj = self.sorted[j].0;
                 let nprev = self.sorted[j - 1].0;
-                let c = match (&ka[nj], &ka[nprev]) {
+                match (&ka[nj], &ka[nprev]) {
                     (&Some(ref kj), &Some(ref kprev)) => {
                         let c = {
                             if want_max {
@@ -1091,40 +1096,74 @@ impl<'a> MultiCursor<'a> {
                                 KeyRef::cmp(kj, kprev)
                             }
                         };
-                        if c == Ordering::Equal {
-                            nj.cmp(&nprev)
-                        } else {
-                            c
+                        match c {
+                            Ordering::Greater => {
+                                self.sorted[j].1 = Some(Ordering::Greater);
+                                break;
+                            },
+                            Ordering::Equal => {
+                                match nj.cmp(&nprev) {
+                                    Ordering::Equal => {
+                                        unreachable!();
+                                    },
+                                    Ordering::Greater => {
+                                        self.sorted[j].1 = Some(Ordering::Equal);
+                                        break;
+                                    },
+                                    Ordering::Less => {
+                                        self.sorted[j - 1].1 = Some(Ordering::Equal);
+                                        // keep going
+                                    },
+                                }
+                            },
+                            Ordering::Less => {
+                                // keep going
+                                self.sorted[j - 1].1 = Some(Ordering::Greater);
+                            },
                         }
                     },
                     (&Some(ref kj), &None) => {
-                        Ordering::Less
+                        // keep going
                     },
                     (&None, &Some(ref kprev)) => {
-                        Ordering::Greater
-                    },
-                    (&None, &None) => {
-                        Ordering::Equal
-                    }
-                };
-                match c {
-                    Ordering::Equal | Ordering::Greater => {
-                        self.sorted[j].1 = c;
                         break;
                     },
-                    Ordering::Less => {
-                        self.sorted.swap(j, j - 1);
-                        j = j - 1;
-                    },
-                }
+                    (&None, &None) => {
+                        match nj.cmp(&nprev) {
+                            Ordering::Equal => {
+                                unreachable!();
+                            },
+                            Ordering::Greater => {
+                                break;
+                            },
+                            Ordering::Less => {
+                                // keep going
+                            },
+                        }
+                    }
+                };
+                self.sorted.swap(j, j - 1);
+                j = j - 1;
+            }
+        }
+
+        // fix the first one
+        if self.sorted.len() > 0 {
+            let n = self.sorted[0].0;
+            match &ka[n] {
+                &Some(_) => {
+                    self.sorted[0].1 = Some(Ordering::Equal);
+                },
+                &None => {
+                },
             }
         }
 
         /*
-        println!("{:?}", self.sorted);
+        println!("{:?} : {}", self.sorted, if want_max { "backward" } else {"forward"} );
         for i in 0 .. self.sorted.len() {
             let (n, ord) = self.sorted[i];
-            println!("    {:?}: {:?}", i, ka[n]);
+            println!("    {:?}", ka[n]);
         }
         */
         Ok(())
@@ -1132,7 +1171,7 @@ impl<'a> MultiCursor<'a> {
 
     fn sorted_first(&self) -> Option<usize> {
         let n = self.sorted[0].0;
-        if self.subcursors[n].IsValid() {
+        if self.sorted[0].1.is_some() {
             Some(n)
         } else {
             None
@@ -1161,9 +1200,14 @@ impl<'a> MultiCursor<'a> {
         let s = subs.into_boxed_slice();
         let mut sorted = Vec::new();
         for i in 0 .. s.len() {
-            sorted.push((i, Ordering::Equal));
+            sorted.push((i, None));
         }
-        MultiCursor { subcursors: s, sorted: sorted.into_boxed_slice(), cur: None, dir: Direction::WANDERING }
+        MultiCursor { 
+            subcursors: s, 
+            sorted: sorted.into_boxed_slice(), 
+            cur: None, 
+            dir: Direction::WANDERING,
+        }
     }
 
 }
@@ -1226,6 +1270,34 @@ impl<'a> ICursor<'a> for MultiCursor<'a> {
         match self.cur {
             None => Err(LsmError::CursorNotValid),
             Some(icur) => {
+                if (self.dir == Direction::FORWARD) {
+                    // TODO self.sorted[0] is cur.
+                    // immediately after that, there may (or may not be) some
+                    // entries which were Ordering:Equal to cur.  call Next on
+                    // each of these.
+
+                    assert!(icur == self.sorted[0].0);
+                    for i in 1 .. self.sorted.len() {
+                        //println!("sorted[{}] : {:?}", i, self.sorted[i]);
+                        let (n,c) = self.sorted[i];
+                        match c {
+                            None => {
+                                break;
+                            },
+                            Some(c) => {
+                                if c == Ordering::Equal {
+                                    try!(self.subcursors[n].Next());
+                                } else {
+                                    break;
+                                }
+                            },
+                        }
+                    }
+
+                } else {
+// TODO consider simplifying all the stuff below.
+// all this complexity may not be worth it.
+
                 // we need to fix every cursor to point to its min
                 // value > icur.
 
@@ -1252,11 +1324,6 @@ impl<'a> ICursor<'a> for MultiCursor<'a> {
                         Direction::FORWARD => {
                             // this is the happy case.  each cursor is at most
                             // one step away.
-
-                            // TODO self.sorted[0] is cur.
-                            // immediately after that, there may (or may not be) some
-                            // entries which were Ordering:Equal to cur.  call Next on
-                            // each of these.
 
                             // direction is FORWARD, so we know that every valid cursor
                             // is pointing at a key which is either == to icur, or
@@ -1382,6 +1449,7 @@ impl<'a> ICursor<'a> for MultiCursor<'a> {
                     let ki = try!(icsr.KeyRef());
                     half(self.dir, &ki, before);
                     half(self.dir, &ki, after);
+                }
                 }
 
                 // now the current cursor
