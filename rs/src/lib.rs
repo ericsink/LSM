@@ -1066,34 +1066,24 @@ impl<'a> MultiCursor<'a> {
             return Ok(())
         }
 
-        // get a KeyRef for all the cursors
-        let mut ka = Vec::new();
-        for c in self.subcursors.iter() {
-            if c.IsValid() {
-                ka.push(Some(try!(c.KeyRef())));
-            } else {
-                ka.push(None);
-            }
-        }
-
         // init the orderings to None.
         // the invalid cursors will stay that way.
         for i in 0 .. self.sorted.len() {
             self.sorted[i].1 = None;
         }
 
-        for i in 1 .. ka.len() {
+        for i in 1 .. self.sorted.len() {
             let mut j = i;
             while j > 0 {
                 let nj = self.sorted[j].0;
                 let nprev = self.sorted[j - 1].0;
-                match (&ka[nj], &ka[nprev]) {
-                    (&Some(ref kj), &Some(ref kprev)) => {
+                match (self.subcursors[nj].IsValid(), self.subcursors[nprev].IsValid()) {
+                    (true,true) => {
                         let c = {
                             if want_max {
-                                KeyRef::cmp(kprev, kj)
+                                try!(SegmentCursor::compare_two(&self.subcursors[nprev],&self.subcursors[nj]))
                             } else {
-                                KeyRef::cmp(kj, kprev)
+                                try!(SegmentCursor::compare_two(&self.subcursors[nj],&self.subcursors[nprev]))
                             }
                         };
                         match c {
@@ -1122,13 +1112,13 @@ impl<'a> MultiCursor<'a> {
                             },
                         }
                     },
-                    (&Some(ref kj), &None) => {
+                    (true,false) => {
                         // keep going
                     },
-                    (&None, &Some(ref kprev)) => {
+                    (false,true) => {
                         break;
                     },
-                    (&None, &None) => {
+                    (false,false) => {
                         match nj.cmp(&nprev) {
                             Ordering::Equal => {
                                 unreachable!();
@@ -1150,12 +1140,8 @@ impl<'a> MultiCursor<'a> {
         // fix the first one
         if self.sorted.len() > 0 {
             let n = self.sorted[0].0;
-            match &ka[n] {
-                &Some(_) => {
-                    self.sorted[0].1 = Some(Ordering::Equal);
-                },
-                &None => {
-                },
+            if self.subcursors[n].IsValid() {
+                self.sorted[0].1 = Some(Ordering::Equal);
             }
         }
 
@@ -3021,6 +3007,56 @@ impl<'a> SegmentCursor<'a> {
             try!(readOverflow(&self.path, self.pr.PageSize(), pgnum, &mut k));
             let res = bcmp::Compare(&*k, other);
             Ok(res)
+        }
+    }
+
+    fn compare_two(x: &SegmentCursor, y: &SegmentCursor) -> Result<Ordering> {
+        fn get_info(c: &SegmentCursor) -> Result<(usize, bool, usize, usize)> {
+            match c.currentKey {
+                None => Err(LsmError::CursorNotValid),
+                Some(n) => {
+                    let mut cur = c.leafKeys[n as usize];
+                    let kflag = c.pr.GetByte(&mut cur);
+                    let klen = c.pr.GetVarint(&mut cur) as usize;
+                    let overflowed = 0 != (kflag & ValueFlag::FLAG_OVERFLOW);
+                    Ok((n, overflowed, cur, klen))
+                },
+            }
+        }
+
+        let (x_n, x_over, x_cur, x_klen) = try!(get_info(x));
+        let (y_n, y_over, y_cur, y_klen) = try!(get_info(y));
+
+        if x_over || y_over {
+            // if either of these keys is overflowed, don't bother
+            // trying to do anything clever.  just read both keys
+            // into memory and compare them.
+            let x_k = try!(x.keyInLeaf(x_n));
+            let y_k = try!(y.keyInLeaf(y_n));
+            Ok(bcmp::Compare(&x_k, &y_k))
+        } else {
+            match (&x.prefix, &y.prefix) {
+                (&Some(ref x_p), &Some(ref y_p)) => {
+                    let x_k = x.pr.get_slice(x_cur, x_klen - x_p.len());
+                    let y_k = y.pr.get_slice(y_cur, y_klen - y_p.len());
+                    Ok(KeyRef::compare_px_py(x_p, x_k, y_p, y_k))
+                },
+                (&Some(ref x_p), &None) => {
+                    let x_k = x.pr.get_slice(x_cur, x_klen - x_p.len());
+                    let y_k = y.pr.get_slice(y_cur, y_klen);
+                    Ok(KeyRef::compare_px_y(x_p, x_k, y_k))
+                },
+                (&None, &Some(ref y_p)) => {
+                    let x_k = x.pr.get_slice(x_cur, x_klen);
+                    let y_k = y.pr.get_slice(y_cur, y_klen - y_p.len());
+                    Ok(KeyRef::compare_x_py(x_k, y_p, y_k))
+                },
+                (&None, &None) => {
+                    let x_k = x.pr.get_slice(x_cur, x_klen);
+                    let y_k = y.pr.get_slice(y_cur, y_klen);
+                    Ok(bcmp::Compare(&x_k, &y_k))
+                },
+            }
         }
     }
 
