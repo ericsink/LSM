@@ -448,16 +448,22 @@ impl<'a> Iterator for CursorIterator<'a> {
     type Item = Result<kvp>;
     fn next(&mut self) -> Option<Result<kvp>> {
         if self.csr.IsValid() {
-            let k = self.csr.Key();
-            if k.is_err() {
-                return Some(Err(k.err().unwrap()));
-            }
-            let k = k.unwrap();
-            let v = self.csr.Value();
-            if v.is_err() {
-                return Some(Err(v.err().unwrap()));
-            }
-            let v = v.unwrap();
+            let k = {
+                let k = self.csr.KeyRef();
+                if k.is_err() {
+                    return Some(Err(k.err().unwrap()));
+                }
+                let k = k.unwrap().into_boxed_slice();
+                k
+            };
+            let v = {
+                let v = self.csr.ValueRef();
+                if v.is_err() {
+                    return Some(Err(v.err().unwrap()));
+                }
+                let v = v.unwrap().into_blob();
+                v
+            };
             let r = self.csr.Next();
             if r.is_err() {
                 return Some(Err(r.err().unwrap()));
@@ -517,11 +523,6 @@ pub trait ICursor<'a> {
 
     fn KeyRef(&'a self) -> Result<KeyRef<'a>>;
     fn ValueRef(&'a self) -> Result<ValueRef<'a>>;
-
-    // TODO we wish to remove these.  but they're
-    // faster for the merge iterator, which is sad.
-    fn Key(&self) -> Result<Box<[u8]>>;
-    fn Value(&self) -> Result<Blob>;
 
     fn ValueLength(&self) -> Result<Option<usize>>; // tombstone is None
     fn KeyCompare(&self, k: &KeyRef) -> Result<Ordering>;
@@ -1065,24 +1066,34 @@ impl<'a> MultiCursor<'a> {
             return Ok(())
         }
 
+        // get a KeyRef for all the cursors
+        let mut ka = Vec::new();
+        for c in self.subcursors.iter() {
+            if c.IsValid() {
+                ka.push(Some(try!(c.KeyRef())));
+            } else {
+                ka.push(None);
+            }
+        }
+
         // init the orderings to None.
         // the invalid cursors will stay that way.
         for i in 0 .. self.sorted.len() {
             self.sorted[i].1 = None;
         }
 
-        for i in 1 .. self.sorted.len() {
+        for i in 1 .. ka.len() {
             let mut j = i;
             while j > 0 {
                 let nj = self.sorted[j].0;
                 let nprev = self.sorted[j - 1].0;
-                match (self.subcursors[nj].IsValid(), self.subcursors[nprev].IsValid()) {
-                    (true,true) => {
+                match (&ka[nj], &ka[nprev]) {
+                    (&Some(ref kj), &Some(ref kprev)) => {
                         let c = {
                             if want_max {
-                                try!(SegmentCursor::compare_two(&self.subcursors[nprev],&self.subcursors[nj]))
+                                KeyRef::cmp(kprev, kj)
                             } else {
-                                try!(SegmentCursor::compare_two(&self.subcursors[nj],&self.subcursors[nprev]))
+                                KeyRef::cmp(kj, kprev)
                             }
                         };
                         match c {
@@ -1111,13 +1122,13 @@ impl<'a> MultiCursor<'a> {
                             },
                         }
                     },
-                    (true,false) => {
+                    (&Some(ref kj), &None) => {
                         // keep going
                     },
-                    (false,true) => {
+                    (&None, &Some(ref kprev)) => {
                         break;
                     },
-                    (false,false) => {
+                    (&None, &None) => {
                         match nj.cmp(&nprev) {
                             Ordering::Equal => {
                                 unreachable!();
@@ -1139,8 +1150,12 @@ impl<'a> MultiCursor<'a> {
         // fix the first one
         if self.sorted.len() > 0 {
             let n = self.sorted[0].0;
-            if self.subcursors[n].IsValid() {
-                self.sorted[0].1 = Some(Ordering::Equal);
+            match &ka[n] {
+                &Some(_) => {
+                    self.sorted[0].1 = Some(Ordering::Equal);
+                },
+                &None => {
+                },
             }
         }
 
@@ -1223,13 +1238,6 @@ impl<'a> ICursor<'a> for MultiCursor<'a> {
         Ok(())
     }
 
-    fn Key(&self) -> Result<Box<[u8]>> {
-        match self.cur {
-            None => Err(LsmError::CursorNotValid),
-            Some(icur) => self.subcursors[icur].Key(),
-        }
-    }
-
     fn KeyRef(&'a self) -> Result<KeyRef<'a>> {
         match self.cur {
             None => Err(LsmError::CursorNotValid),
@@ -1248,13 +1256,6 @@ impl<'a> ICursor<'a> for MultiCursor<'a> {
         match self.cur {
             None => Err(LsmError::CursorNotValid),
             Some(icur) => self.subcursors[icur].KeyCompare(k),
-        }
-    }
-
-    fn Value(&self) -> Result<Blob> {
-        match self.cur {
-            None => Err(LsmError::CursorNotValid),
-            Some(icur) => self.subcursors[icur].Value(),
         }
     }
 
@@ -1576,20 +1577,12 @@ impl<'a> ICursor<'a> for LivingCursor<'a> {
         Ok(())
     }
 
-    fn Key(&self) -> Result<Box<[u8]>> {
-        self.chain.Key()
-    }
-
     fn KeyRef(&'a self) -> Result<KeyRef<'a>> {
         self.chain.KeyRef()
     }
 
     fn ValueRef(&'a self) -> Result<ValueRef<'a>> {
         self.chain.ValueRef()
-    }
-
-    fn Value(&self) -> Result<Blob> {
-        self.chain.Value()
     }
 
     fn ValueLength(&self) -> Result<Option<usize>> {
@@ -3031,56 +3024,6 @@ impl<'a> SegmentCursor<'a> {
         }
     }
 
-    fn compare_two(x: &SegmentCursor, y: &SegmentCursor) -> Result<Ordering> {
-        fn get_info(c: &SegmentCursor) -> Result<(usize, bool, usize, usize)> {
-            match c.currentKey {
-                None => Err(LsmError::CursorNotValid),
-                Some(n) => {
-                    let mut cur = c.leafKeys[n as usize];
-                    let kflag = c.pr.GetByte(&mut cur);
-                    let klen = c.pr.GetVarint(&mut cur) as usize;
-                    let overflowed = 0 != (kflag & ValueFlag::FLAG_OVERFLOW);
-                    Ok((n, overflowed, cur, klen))
-                },
-            }
-        }
-
-        let (x_n, x_over, x_cur, x_klen) = try!(get_info(x));
-        let (y_n, y_over, y_cur, y_klen) = try!(get_info(y));
-
-        if x_over || y_over {
-            // if either of these keys is overflowed, don't bother
-            // trying to do anything clever.  just read both keys
-            // into memory and compare them.
-            let x_k = try!(x.keyInLeaf(x_n));
-            let y_k = try!(y.keyInLeaf(y_n));
-            Ok(bcmp::Compare(&x_k, &y_k))
-        } else {
-            match (&x.prefix, &y.prefix) {
-                (&Some(ref x_p), &Some(ref y_p)) => {
-                    let x_k = x.pr.get_slice(x_cur, x_klen - x_p.len());
-                    let y_k = y.pr.get_slice(y_cur, y_klen - y_p.len());
-                    Ok(KeyRef::compare_px_py(x_p, x_k, y_p, y_k))
-                },
-                (&Some(ref x_p), &None) => {
-                    let x_k = x.pr.get_slice(x_cur, x_klen - x_p.len());
-                    let y_k = y.pr.get_slice(y_cur, y_klen);
-                    Ok(KeyRef::compare_px_y(x_p, x_k, y_k))
-                },
-                (&None, &Some(ref y_p)) => {
-                    let x_k = x.pr.get_slice(x_cur, x_klen);
-                    let y_k = y.pr.get_slice(y_cur, y_klen - y_p.len());
-                    Ok(KeyRef::compare_x_py(x_k, y_p, y_k))
-                },
-                (&None, &None) => {
-                    let x_k = x.pr.get_slice(x_cur, x_klen);
-                    let y_k = y.pr.get_slice(y_cur, y_klen);
-                    Ok(bcmp::Compare(&x_k, &y_k))
-                },
-            }
-        }
-    }
-
     fn searchLeaf(&mut self, k: &KeyRef, min:usize, max:usize, sop:SeekOp, le: Option<usize>, ge: Option<usize>) -> Result<(Option<usize>,bool)> {
         if max < min {
             match sop {
@@ -3308,44 +3251,10 @@ impl<'a> ICursor<'a> for SegmentCursor<'a> {
         self.search(rootPage, k, sop)
     }
 
-    fn Key(&self) -> Result<Box<[u8]>> {
-        match self.currentKey {
-            None => Err(LsmError::CursorNotValid),
-            Some(currentKey) => self.keyInLeaf(currentKey),
-        }
-    }
-
     fn KeyRef(&'a self) -> Result<KeyRef<'a>> {
         match self.currentKey {
             None => Err(LsmError::CursorNotValid),
             Some(currentKey) => self.keyInLeaf2(currentKey),
-        }
-    }
-
-    fn Value(&self) -> Result<Blob> {
-        match self.currentKey {
-            None => Err(LsmError::CursorNotValid),
-            Some(currentKey) => {
-                let mut pos = self.leafKeys[currentKey as usize];
-
-                self.skipKey(&mut pos);
-
-                let vflag = self.pr.GetByte(&mut pos);
-                if 0 != (vflag & ValueFlag::FLAG_TOMBSTONE) {
-                    Ok(Blob::Tombstone)
-                } else {
-                    let vlen = self.pr.GetVarint(&mut pos) as usize;
-                    if 0 != (vflag & ValueFlag::FLAG_OVERFLOW) {
-                        let pgnum = self.pr.GetInt32(&mut pos) as PageNum;
-                        let strm = try!(myOverflowReadStream::new(&self.path, self.pr.PageSize(), pgnum, vlen));
-                        Ok(Blob::Stream(box strm))
-                    } else {
-                        let mut a = vec![0;vlen as usize].into_boxed_slice();
-                        self.pr.GetIntoArray(&mut pos, &mut a);
-                        Ok(Blob::Array(a))
-                    }
-                }
-            }
         }
     }
 
@@ -4872,6 +4781,18 @@ impl sqlite4_num {
 // now only because the test suite has not yet been adapted to use
 // KeyRef/ValueRef.
 impl<'a> LivingCursor<'a> {
+    pub fn Key(&self) -> Result<Box<[u8]>> {
+        let k = try!(self.KeyRef());
+        let k = k.into_boxed_slice();
+        Ok(k)
+    }
+
+    pub fn Value(&self) -> Result<Blob> {
+        let v = try!(self.ValueRef());
+        let v = v.into_blob();
+        Ok(v)
+    }
+    
     pub fn Seek(&mut self, k: &[u8], sop:SeekOp) -> Result<SeekResult> {
         let k2 = KeyRef::for_slice(k);
         let r = self.SeekRef(&k2, sop);
