@@ -191,7 +191,7 @@ impl<'a> std::fmt::Debug for KeyRef<'a> {
         match *self {
             KeyRef::Overflowed(ref a) => write!(f, "Overflowed, a={:?}", a),
             KeyRef::Prefixed(front,back) => write!(f, "Prefixed, front={:?}, back={:?}", front, back),
-            KeyRef::Array(a) => write!(f, "Array, len={:?}", a),
+            KeyRef::Array(a) => write!(f, "Array, val={:?}", a),
         }
     }
 }
@@ -1054,75 +1054,116 @@ enum Direction {
 }
 
 struct MultiCursor<'a> { 
-    subcursors : Box<[SegmentCursor<'a>]>, 
-    cur : Option<usize>, 
-    dir : Direction,
+    subcursors: Box<[SegmentCursor<'a>]>, 
+    sorted: Box<[(usize,Ordering)]>,
+    cur: Option<usize>, 
+    dir: Direction,
 }
 
 impl<'a> MultiCursor<'a> {
-    fn compete(keys: &[KeyRef], want_max: bool, i: usize, cur: Option<usize>) -> Result<Option<usize>> {
-        match cur {
-            Some(winning) => {
-                if i == winning {
-                    Ok(cur)
-                } else {
-                    let x = &keys[i];
-                    let y = &keys[winning];
-                    let c =
-                        if want_max {
-                            KeyRef::cmp(y,x)
-                        } else {
-                            KeyRef::cmp(x,y)
-                        };
-                    if c==Ordering::Less {
-                        Ok(Some(i))
-                    } else {
-                        Ok(cur)
-                    }
-                }
-            },
-            None => {
-                Ok(Some(i))
+    fn sort(&mut self, want_max: bool) -> Result<()> {
+        if self.subcursors.is_empty() {
+            return Ok(())
+        }
+
+        let mut ka = Vec::new();
+        for c in self.subcursors.iter() {
+            if c.IsValid() {
+                ka.push(Some(try!(c.KeyRef())));
+            } else {
+                ka.push(None);
             }
+        }
+
+        self.sorted[0].1 = Ordering::Equal;
+
+        for i in 1 .. ka.len() {
+            let mut j = i;
+            while j > 0 {
+                let nj = self.sorted[j].0;
+                let nprev = self.sorted[j - 1].0;
+                let c = match (&ka[nj], &ka[nprev]) {
+                    (&Some(ref kj), &Some(ref kprev)) => {
+                        let c = {
+                            if want_max {
+                                KeyRef::cmp(kprev, kj)
+                            } else {
+                                KeyRef::cmp(kj, kprev)
+                            }
+                        };
+                        if c == Ordering::Equal {
+                            nj.cmp(&nprev)
+                        } else {
+                            c
+                        }
+                    },
+                    (&Some(ref kj), &None) => {
+                        Ordering::Less
+                    },
+                    (&None, &Some(ref kprev)) => {
+                        Ordering::Greater
+                    },
+                    (&None, &None) => {
+                        Ordering::Equal
+                    }
+                };
+                match c {
+                    Ordering::Equal | Ordering::Greater => {
+                        self.sorted[j].1 = c;
+                        break;
+                    },
+                    Ordering::Less => {
+                        self.sorted.swap(j, j - 1);
+                        j = j - 1;
+                    },
+                }
+            }
+        }
+
+        /*
+        println!("{:?}", self.sorted);
+        for i in 0 .. self.sorted.len() {
+            let (n, ord) = self.sorted[i];
+            println!("    {:?}: {:?}", i, ka[n]);
+        }
+        */
+        Ok(())
+    }
+
+    fn sorted_first(&self) -> Option<usize> {
+        let n = self.sorted[0].0;
+        if self.subcursors[n].IsValid() {
+            Some(n)
+        } else {
+            None
         }
     }
 
-    fn find(&self, want_max: bool) -> Result<Option<usize>> {
+    fn findMin(&mut self) -> Result<Option<usize>> {
         if self.subcursors.is_empty() {
             Ok(None)
         } else {
-            let mut valids = Vec::new();
-            let mut ndx = Vec::new();
-            for (i,c) in self.subcursors.iter().enumerate() {
-                if c.IsValid() {
-                    ndx.push(i);
-                    valids.push(try!(c.KeyRef()));
-                }
-            }
-
-            let mut res = None::<usize>;
-            for i in 0 .. valids.len() {
-                res = try!(Self::compete(&valids, want_max, i, res));
-            }
-            let res = match res {
-                Some(i) => Some(ndx[i]),
-                None => None,
-            };
-            Ok(res)
+            try!(self.sort(false));
+            Ok(self.sorted_first())
         }
     }
 
-    fn findMin(&self) -> Result<Option<usize>> {
-        self.find(false)
-    }
-
-    fn findMax(&self) -> Result<Option<usize>> {
-        self.find(true)
+    fn findMax(&mut self) -> Result<Option<usize>> {
+        if self.subcursors.is_empty() {
+            Ok(None)
+        } else {
+            try!(self.sort(true));
+            Ok(self.sorted_first())
+        }
     }
 
     fn Create(subs: Vec<SegmentCursor>) -> MultiCursor {
         let s = subs.into_boxed_slice();
-        MultiCursor { subcursors: s, cur: None, dir: Direction::WANDERING }
+        let mut sorted = Vec::new();
+        for i in 0 .. s.len() {
+            sorted.push((i, Ordering::Equal));
+        }
+        MultiCursor { subcursors: s, sorted: sorted.into_boxed_slice(), cur: None, dir: Direction::WANDERING }
     }
 
 }
@@ -1211,6 +1252,11 @@ impl<'a> ICursor<'a> for MultiCursor<'a> {
                         Direction::FORWARD => {
                             // this is the happy case.  each cursor is at most
                             // one step away.
+
+                            // TODO self.sorted[0] is cur.
+                            // immediately after that, there may (or may not be) some
+                            // entries which were Ordering:Equal to cur.  call Next on
+                            // each of these.
 
                             // direction is FORWARD, so we know that every valid cursor
                             // is pointing at a key which is either == to icur, or
