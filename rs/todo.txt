@@ -132,4 +132,14 @@ help.
 lto in Cargo.toml doesn't help (and no longer crashes in current
 nightly)
 
+FWIW, switching the new multicursor sort algo to compare_two makes
+a big difference in perf.  compare_two is still way faster than
+KeyRef, and the main difference seems to be in extra work being
+done by jemalloc, for whatever reason.  also, I tried changing KeyRef
+to be smaller by changing Prefixed to store a ref to the page buffer
+and a cur and a len, the latter both as u16, instead of the two
+bytes slices before.  this should have changed the size of that
+enum case from 32 bytes to 12.  and this made very little difference
+in perf, so I never committed it.
+
 
