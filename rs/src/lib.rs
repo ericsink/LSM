@@ -1176,6 +1176,7 @@ impl<'a> MultiCursor<'a> {
     }
 
     fn findMin(&mut self) -> Result<Option<usize>> {
+        self.dir = Direction::FORWARD;
         if self.subcursors.is_empty() {
             Ok(None)
         } else {
@@ -1185,6 +1186,7 @@ impl<'a> MultiCursor<'a> {
     }
 
     fn findMax(&mut self) -> Result<Option<usize>> {
+        self.dir = Direction::BACKWARD; 
         if self.subcursors.is_empty() {
             Ok(None)
         } else {
@@ -1222,7 +1224,6 @@ impl<'a> ICursor<'a> for MultiCursor<'a> {
             try!(self.subcursors[i].First());
         }
         self.cur = try!(self.findMin());
-        self.dir = Direction::FORWARD;
         Ok(())
     }
 
@@ -1231,7 +1232,6 @@ impl<'a> ICursor<'a> for MultiCursor<'a> {
             try!(self.subcursors[i].Last());
         }
         self.cur = try!(self.findMax());
-        self.dir = Direction::BACKWARD;
         Ok(())
     }
 
@@ -1267,34 +1267,6 @@ impl<'a> ICursor<'a> for MultiCursor<'a> {
         match self.cur {
             None => Err(LsmError::CursorNotValid),
             Some(icur) => {
-                if (self.dir == Direction::FORWARD) {
-                    // TODO self.sorted[0] is cur.
-                    // immediately after that, there may (or may not be) some
-                    // entries which were Ordering:Equal to cur.  call Next on
-                    // each of these.
-
-                    assert!(icur == self.sorted[0].0);
-                    for i in 1 .. self.sorted.len() {
-                        //println!("sorted[{}] : {:?}", i, self.sorted[i]);
-                        let (n,c) = self.sorted[i];
-                        match c {
-                            None => {
-                                break;
-                            },
-                            Some(c) => {
-                                if c == Ordering::Equal {
-                                    try!(self.subcursors[n].Next());
-                                } else {
-                                    break;
-                                }
-                            },
-                        }
-                    }
-
-                } else {
-// TODO consider simplifying all the stuff below.
-// all this complexity may not be worth it.
-
                 // we need to fix every cursor to point to its min
                 // value > icur.
 
@@ -1316,152 +1288,134 @@ impl<'a> ICursor<'a> for MultiCursor<'a> {
                 // the current direction of the multicursor tells us
                 // something about the state of all the others.
 
-                fn half(dir: Direction, ki: &KeyRef, subs: &mut [SegmentCursor]) -> Result<()> {
-                    match dir {
-                        Direction::FORWARD => {
-                            // this is the happy case.  each cursor is at most
-                            // one step away.
+                if (self.dir == Direction::FORWARD) {
+                    // this is the happy case.  each cursor is at most
+                    // one step away.
 
-                            // direction is FORWARD, so we know that every valid cursor
-                            // is pointing at a key which is either == to icur, or
-                            // it is already the min key > icur.
-                            for csr in subs {
-                                if csr.IsValid() {
-                                    let cmp = {
-                                        let k = try!(csr.KeyRef());
-                                        let cmp = KeyRef::cmp(&k, ki);
-                                        cmp
-                                    };
-                                    match cmp {
-                                        Ordering::Less => {
-                                            // should never happen, because FORWARD
-                                            unreachable!();
-                                        },
-                                        Ordering::Greater => {
-                                            // TODO assert that j.Prev is <= icur?
-                                            // done
-                                        },
-                                        Ordering::Equal => {
+                    // direction is FORWARD, so we know that every valid cursor
+                    // is pointing at a key which is either == to icur, or
+                    // it is already the min key > icur.
+
+                    assert!(icur == self.sorted[0].0);
+                    // immediately after that, there may (or may not be) some
+                    // entries which were Ordering:Equal to cur.  call Next on
+                    // each of these.
+
+                    for i in 1 .. self.sorted.len() {
+                        //println!("sorted[{}] : {:?}", i, self.sorted[i]);
+                        let (n,c) = self.sorted[i];
+                        match c {
+                            None => {
+                                break;
+                            },
+                            Some(c) => {
+                                if c == Ordering::Equal {
+                                    try!(self.subcursors[n].Next());
+                                } else {
+                                    break;
+                                }
+                            },
+                        }
+                    }
+
+                } else {
+                    // TODO consider simplifying all the stuff below.
+                    // all this complexity may not be worth it.
+
+                    fn half(dir: Direction, ki: &KeyRef, subs: &mut [SegmentCursor]) -> Result<()> {
+                        match dir {
+                            Direction::FORWARD => {
+                                unreachable!();
+                            },
+                            Direction::BACKWARD => {
+                                // this case isn't too bad.  each cursor is either
+                                // one step away or two.
+                                
+                                // every other cursor is either == icur or it is the
+                                // max value < icur.
+
+                                for csr in subs {
+                                    if csr.IsValid() {
+                                        let cmp = {
+                                            let k = try!(csr.KeyRef());
+                                            let cmp = KeyRef::cmp(&k, ki);
+                                            cmp
+                                        };
+                                        match cmp {
+                                            Ordering::Less => {
+                                                try!(csr.Next());
+                                                // we moved one step.  let's see if we need to move one more.
+                                                if csr.IsValid() {
+                                                    let cmp = {
+                                                        let k = try!(csr.KeyRef());
+                                                        let cmp = KeyRef::cmp(&k, ki);
+                                                        cmp
+                                                    };
+                                                    match cmp {
+                                                        Ordering::Less => {
+                                                            // should never happen.  we should not have
+                                                            // been more than one step away from icur.
+                                                            unreachable!();
+                                                        },
+                                                        Ordering::Greater => {
+                                                            // done
+                                                        },
+                                                        Ordering::Equal => {
+                                                            // and one more step
+                                                            try!(csr.Next());
+                                                        },
+                                                    }
+                                                }
+                                            },
+                                            Ordering::Greater => {
+                                                // should never happen, because BACKWARD
+                                                unreachable!();
+                                            },
+                                            Ordering::Equal => {
+                                                // one step away
+                                                try!(csr.Next());
+                                            },
+                                        }
+                                    } else {
+                                        let sr = try!(csr.SeekRef(&ki, SeekOp::SEEK_GE));
+                                        if sr.is_valid_and_equal() {
                                             try!(csr.Next());
-                                        },
+                                        }
                                     }
                                 }
-                            }
-                            Ok(())
-                        },
-                        Direction::BACKWARD => {
-                            // this case isn't too bad.  each cursor is either
-                            // one step away or two.
-                            
-                            // every other cursor is either == icur or it is the
-                            // max value < icur.
 
-                            // find the invalid cursors first.  we have to call seek
-                            // on these, because we don't know if they might have
-                            // a valid value which is > icur.  we save the list and
-                            // deal with them after the others.
+                                Ok(())
+                            },
+                            Direction::WANDERING => {
+                                // we have no idea where all the other cursors are.
+                                // so we have to do a seek on each one.
 
-                            for csr in subs {
-                                if csr.IsValid() {
-                                    let cmp = {
-                                        let k = try!(csr.KeyRef());
-                                        let cmp = KeyRef::cmp(&k, ki);
-                                        cmp
-                                    };
-                                    match cmp {
-                                        Ordering::Less => {
-                                            try!(csr.Next());
-                                            // we moved one step.  let's see if we need to move one more.
-                                            if csr.IsValid() {
-                                                let cmp = {
-                                                    let k = try!(csr.KeyRef());
-                                                    let cmp = KeyRef::cmp(&k, ki);
-                                                    cmp
-                                                };
-                                                match cmp {
-                                                    Ordering::Less => {
-                                                        // should never happen.  we should not have
-                                                        // been more than one step away from icur.
-                                                        unreachable!();
-                                                    },
-                                                    Ordering::Greater => {
-                                                        // done
-                                                    },
-                                                    Ordering::Equal => {
-                                                        // and one more step
-                                                        try!(csr.Next());
-                                                    },
-                                                }
-                                            }
-                                        },
-                                        Ordering::Greater => {
-                                            // should never happen, because BACKWARD
-                                            unreachable!();
-                                        },
-                                        Ordering::Equal => {
-                                            // one step away
-                                            try!(csr.Next());
-                                        },
-                                    }
-                                } else {
+                                for j in 0 .. subs.len() {
+                                    let csr = &mut subs[j];
                                     let sr = try!(csr.SeekRef(&ki, SeekOp::SEEK_GE));
                                     if sr.is_valid_and_equal() {
                                         try!(csr.Next());
                                     }
                                 }
-                            }
-
-                            Ok(())
-                        },
-                        Direction::WANDERING => {
-                            // we have no idea where all the other cursors are.
-                            // so we have to do a seek on each one.
-
-                            // unfortunately, we have to make a copy of the icur Key.
-                            // Seek only needs a reference to a slice for the key,
-                            // and because we don't handle the case where icur == j,
-                            // there should be no mutability conflict, in theory.
-                            // But Rust doesn't know that.  It knows that both
-                            // cursors are in the same array, so we cannot have a
-                            // mutable reference (to seek) into that array while 
-                            // there is any other reference (the icur key).
-
-                            // also, KeyRef() gives a KeyRef, which Seek can't handle.
-
-                            for j in 0 .. subs.len() {
-                                let csr = &mut subs[j];
-                                let sr = try!(csr.SeekRef(&ki, SeekOp::SEEK_GE));
-                                if sr.is_valid_and_equal() {
-                                    try!(csr.Next());
-                                }
-                            }
-                            Ok(())
-                        },
+                                Ok(())
+                            },
+                        }
                     }
-                }
 
-                {
-                    let (before, middle, after) = split3(&mut *self.subcursors, icur);
-                    let icsr = &middle[0];
-                    let ki = try!(icsr.KeyRef());
-                    half(self.dir, &ki, before);
-                    half(self.dir, &ki, after);
-                }
+                    {
+                        let (before, middle, after) = split3(&mut *self.subcursors, icur);
+                        let icsr = &middle[0];
+                        let ki = try!(icsr.KeyRef());
+                        half(self.dir, &ki, before);
+                        half(self.dir, &ki, after);
+                    }
                 }
 
                 // now the current cursor
                 try!(self.subcursors[icur].Next());
 
-                // now find the min.
-
-                // this seems kinda awful.  we just walked through the entire cursor list,
-                // and now we're doing it again.  should we have just kept track along
-                // the way?  maybe, but it doesn't save any key comparisons.  it just
-                // moves those compares from a separate loop into the loops above.  still
-                // might be a good idea.  TODO.
-
+                // now re-sort
                 self.cur = try!(self.findMin());
-                self.dir = Direction::FORWARD;
                 Ok(())
             },
         }
@@ -1488,7 +1442,6 @@ impl<'a> ICursor<'a> for MultiCursor<'a> {
                     }
                 }
                 self.cur = try!(self.findMax());
-                self.dir = Direction::BACKWARD;
                 Ok(())
             },
         }
@@ -1509,7 +1462,6 @@ impl<'a> ICursor<'a> for MultiCursor<'a> {
                 self.cur = try!(self.findMin());
                 match self.cur {
                     Some(i) => {
-                        self.dir = Direction::FORWARD; 
                         SeekResult::from_cursor(&self.subcursors[i], k)
                     },
                     None => {
@@ -1521,7 +1473,6 @@ impl<'a> ICursor<'a> for MultiCursor<'a> {
                 self.cur = try!(self.findMax());
                 match self.cur {
                     Some(i) => {
-                        self.dir = Direction::BACKWARD; 
                         SeekResult::from_cursor(&self.subcursors[i], k)
                     },
                     None => {
