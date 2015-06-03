@@ -352,7 +352,7 @@ impl<'a> ValueRef<'a> {
     pub fn into_blob(self) -> Blob {
         match self {
             ValueRef::Array(a) => {
-                let mut k = Vec::new();
+                let mut k = Vec::with_capacity(a.len());
                 k.push_all(a);
                 Blob::Array(k.into_boxed_slice())
             },
@@ -1067,7 +1067,7 @@ impl<'a> MultiCursor<'a> {
         }
 
         // get a KeyRef for all the cursors
-        let mut ka = Vec::new();
+        let mut ka = Vec::with_capacity(self.subcursors.len());
         for c in self.subcursors.iter() {
             if c.IsValid() {
                 ka.push(Some(try!(c.KeyRef())));
@@ -1075,6 +1075,7 @@ impl<'a> MultiCursor<'a> {
                 ka.push(None);
             }
         }
+        // TODO consider converting ka to a boxed slice here?
 
         // init the orderings to None.
         // the invalid cursors will stay that way.
@@ -1194,7 +1195,7 @@ impl<'a> MultiCursor<'a> {
 
     fn Create(subs: Vec<SegmentCursor>) -> MultiCursor {
         let s = subs.into_boxed_slice();
-        let mut sorted = Vec::new();
+        let mut sorted = Vec::with_capacity(s.len());
         for i in 0 .. s.len() {
             sorted.push((i, None));
         }
@@ -2192,7 +2193,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
                                         let vbuf = &vbuf[0 .. vread];
                                         if vread < maxValueInline {
                                             // TODO this alloc+copy is unfortunate
-                                            let mut va = Vec::new();
+                                            let mut va = Vec::with_capacity(vbuf.len());
                                             for i in 0 .. vbuf.len() {
                                                 va.push(vbuf[i]);
                                             }
@@ -2958,7 +2959,7 @@ impl<'a> SegmentCursor<'a> {
         } else {
             let pgnum = self.pr.GetInt32(&mut cur) as PageNum;
             let mut ostrm = try!(myOverflowReadStream::new(&self.path, self.pr.PageSize(), pgnum, klen));
-            let mut x_k = Vec::new();
+            let mut x_k = Vec::with_capacity(klen);
             try!(ostrm.read_to_end(&mut x_k));
             let x_k = x_k.into_boxed_slice();
             Ok(KeyRef::Overflowed(x_k))
@@ -3111,8 +3112,8 @@ impl<'a> SegmentCursor<'a> {
         }
         cur = cur + 1; // page flags
         let count = self.pr.GetInt16(&mut cur);
-        let mut ptrs = Vec::new();
-        let mut keys = Vec::new();
+        let mut ptrs = Vec::with_capacity((count + 1) as usize);
+        let mut keys = Vec::with_capacity(count as usize);
         for _ in 0 .. count+1 {
             ptrs.push(self.pr.GetVarint(&mut cur) as PageNum);
         }
@@ -3126,7 +3127,7 @@ impl<'a> SegmentCursor<'a> {
                 let firstPage = self.pr.GetInt32(&mut cur) as PageNum;
                 let pgsz = self.pr.PageSize();
                 let mut ostrm = try!(myOverflowReadStream::new(&self.path, pgsz, firstPage, klen));
-                let mut x_k = Vec::new();
+                let mut x_k = Vec::with_capacity(klen);
                 try!(ostrm.read_to_end(&mut x_k));
                 let x_k = x_k.into_boxed_slice();
                 keys.push(KeyRef::Overflowed(x_k));
@@ -3472,7 +3473,7 @@ fn readHeader<R>(fs: &mut R) -> Result<(HeaderData,usize,PageNum,SegmentNum)> wh
         fn readSegmentList(pr: &PageBuffer, cur: &mut usize) -> Result<(Vec<SegmentNum>,HashMap<SegmentNum,SegmentInfo>)> {
             fn readBlockList(prBlocks: &PageBuffer, cur: &mut usize) -> Vec<PageBlock> {
                 let count = prBlocks.GetVarint(cur) as usize;
-                let mut a = Vec::new();
+                let mut a = Vec::with_capacity(count);
                 for _ in 0 .. count {
                     let firstPage = prBlocks.GetVarint(cur) as PageNum;
                     let countPages = prBlocks.GetVarint(cur) as PageNum;
@@ -3485,7 +3486,7 @@ fn readHeader<R>(fs: &mut R) -> Result<(HeaderData,usize,PageNum,SegmentNum)> wh
             }
 
             let count = pr.GetVarint(cur) as usize;
-            let mut a = Vec::new(); // TODO capacity count
+            let mut a = Vec::with_capacity(count);
             let mut m = HashMap::new(); // TODO capacity count
             for _ in 0 .. count {
                 let g = pr.GetVarint(cur) as SegmentNum;
@@ -3607,7 +3608,7 @@ fn consolidateBlockList(blocks: &mut Vec<PageBlock>) {
 
 fn invertBlockList(blocks: &Vec<PageBlock>) -> Vec<PageBlock> {
     let len = blocks.len();
-    let mut result = Vec::new();
+    let mut result = Vec::with_capacity(len);
     for i in 0 .. len {
         result.push(blocks[i]);
     }
