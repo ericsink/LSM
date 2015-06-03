@@ -152,7 +152,7 @@ impl<'a> SplitSlice<'a> {
     }
 
     fn into_boxed_slice(self) -> Box<[u8]> {
-        let mut k = Vec::new();
+        let mut k = Vec::with_capacity(self.front.len() + self.back.len());
         k.push_all(&self.front);
         k.push_all(&self.back);
         k.into_boxed_slice()
@@ -2775,7 +2775,6 @@ impl<'a> SegmentCursor<'a> {
     fn setCurrentPage(&mut self, pgnum: PageNum) -> Result<bool> {
         // TODO use self.blocks to make sure we are not straying out of bounds.
 
-
         // TODO so I think this function actually should be Result<()>.
         // it used to return Ok(false) in situations that I think should
         // actually have been errors.  not 100% sure yet.  still trying
@@ -2882,6 +2881,7 @@ impl<'a> SegmentCursor<'a> {
         }
         let countLeafKeys = self.pr.GetInt16(&mut cur) as usize;
         // assert countLeafKeys>0
+        // TODO might need to extend capacity here, not just truncate
         self.leafKeys.truncate(countLeafKeys);
         while self.leafKeys.len() < countLeafKeys {
             self.leafKeys.push(0);
@@ -2917,6 +2917,7 @@ impl<'a> SegmentCursor<'a> {
         }
     }
 
+    // TODO this function will probably go away eventually
     fn keyInLeaf(&self, n: usize) -> Result<Box<[u8]>> { 
         let mut cur = self.leafKeys[n as usize];
         let kflag = self.pr.GetByte(&mut cur);
@@ -2944,6 +2945,7 @@ impl<'a> SegmentCursor<'a> {
         }
     }
 
+    // TODO this function will probably go away eventually
     fn compareKeyInLeaf(&self, n: usize, other: &[u8]) -> Result<Ordering> {
         let mut cur = self.leafKeys[n as usize];
         let kflag = self.pr.GetByte(&mut cur);
@@ -2972,6 +2974,7 @@ impl<'a> SegmentCursor<'a> {
         }
     }
 
+    // TODO this function will probably go away eventually
     fn compare_two(x: &SegmentCursor, y: &SegmentCursor) -> Result<Ordering> {
         fn get_info(c: &SegmentCursor) -> Result<(usize, bool, usize, usize)> {
             match c.currentKey {
@@ -3372,6 +3375,7 @@ const HEADER_SIZE_IN_BYTES: usize = 4096;
 
 impl PendingSegment {
     fn new(num: SegmentNum) -> PendingSegment {
+        // TODO maybe set capacity of the blocklist vec to something low
         PendingSegment {blockList: Vec::new(), segnum: num}
     }
 
@@ -3438,7 +3442,7 @@ fn readHeader<R>(fs: &mut R) -> Result<(HeaderData,usize,PageNum,SegmentNum)> wh
 
             let count = pr.GetVarint(cur) as usize;
             let mut a = Vec::with_capacity(count);
-            let mut m = HashMap::new(); // TODO capacity count
+            let mut m = HashMap::with_capacity(count);
             for _ in 0 .. count {
                 let g = pr.GetVarint(cur) as SegmentNum;
                 a.push(g);
@@ -4024,7 +4028,7 @@ impl InnerPart {
         // commit their writes.  if so, nevermind the written segments and start over.
 
         let st = try!(self.header.lock());
-        let mut clist = Vec::new();
+        let mut clist = Vec::with_capacity(st.header.currentState.len());
         for g in st.header.currentState.iter() {
             clist.push(try!(self.getCursor(&*st, *g)));
         }
@@ -4191,7 +4195,7 @@ impl InnerPart {
                     None => (),
                 }
                 segs.reverse();
-                let mut clist = Vec::new();
+                let mut clist = Vec::with_capacity(segs.len());
                 for g in segs.iter() {
                     clist.push(try!(self.getCursor(&st, *g)));
                 }
@@ -4266,7 +4270,7 @@ impl InnerPart {
 
         // remove the old segmentinfos, keeping them for later
 
-        let mut segmentsBeingReplaced = HashMap::new();
+        let mut segmentsBeingReplaced = HashMap::with_capacity(oldAsSet.len());
         for g in &oldAsSet {
             let info = newHeader.segments.remove(g).expect("old seg not found in header.segments");
             segmentsBeingReplaced.insert(g, info);
