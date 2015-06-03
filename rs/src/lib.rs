@@ -807,7 +807,6 @@ mod Varint {
     }
 }
 
-/*
 fn write_u32_le(v: &mut [u8], i: u32)
 {
     v[0] = ((i>> 0) & 0xff_u32) as u8;
@@ -815,10 +814,27 @@ fn write_u32_le(v: &mut [u8], i: u32)
     v[2] = ((i>>16) & 0xff_u32) as u8;
     v[3] = ((i>>24) & 0xff_u32) as u8;
 }
-*/
+
+fn write_f64_le(v: &mut [u8], f: f64)
+{
+    // TODO
+}
+
+fn write_i32_le(v: &mut [u8], f: i32)
+{
+    // TODO
+}
+
+fn write_i64_le(v: &mut [u8], f: i64)
+{
+    // TODO
+}
 
 fn write_u32_be(v: &mut [u8], i: u32)
 {
+    // TODO can this assert be checked at compile time?
+    // TODO do this kind of assert in other places too.
+    assert!(v.len() == 4);
     v[0] = ((i>>24) & 0xff_u32) as u8;
     v[1] = ((i>>16) & 0xff_u32) as u8;
     v[2] = ((i>> 8) & 0xff_u32) as u8;
@@ -1043,7 +1059,8 @@ impl PageBuffer {
     }
 
     // TODO this function shows up a lot in the profiler
-    // TODO inline hint?
+    // TODO inline hint?  Varint::read() gets inlined here,
+    // but this one does not seem to get inlined anywhere.
     fn GetVarint(&self, cur: &mut usize) -> u64 {
         Varint::read(&*self.buf, cur)
     }
@@ -1081,6 +1098,7 @@ impl<'a> MultiCursor<'a> {
                 ka.push(None);
             }
         }
+
         // TODO consider converting ka to a boxed slice here?
 
         // init the orderings to None.
@@ -4608,6 +4626,52 @@ impl Iterator for GenerateWeirdPairs {
     }
 }
 
+// TODO the following can be removed at some point.  it is here
+// now only because the test suite has not yet been adapted to use
+// KeyRef/ValueRef.
+impl<'a> LivingCursor<'a> {
+    pub fn Key(&self) -> Result<Box<[u8]>> {
+        let k = try!(self.KeyRef());
+        let k = k.into_boxed_slice();
+        Ok(k)
+    }
+
+    pub fn Value(&self) -> Result<Blob> {
+        let v = try!(self.ValueRef());
+        let v = v.into_blob();
+        Ok(v)
+    }
+    
+    pub fn Seek(&mut self, k: &[u8], sop:SeekOp) -> Result<SeekResult> {
+        let k2 = KeyRef::for_slice(k);
+        let r = self.SeekRef(&k2, sop);
+        println!("{:?}", r);
+        r
+    }
+
+}
+
+// ----------------------------------------------------------------
+// Stuff below is the beginning of porting stuff from Elmo
+// ----------------------------------------------------------------
+
+/*
+    Copyright 2015 Zumero, LLC
+
+    This program is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+*/
+
 pub struct sqlite4_num {
     neg: bool,
     approx: bool,
@@ -4786,28 +4850,156 @@ impl sqlite4_num {
 
 }
 
-// TODO the following can be removed at some point.  it is here
-// now only because the test suite has not yet been adapted to use
-// KeyRef/ValueRef.
-impl<'a> LivingCursor<'a> {
-    pub fn Key(&self) -> Result<Box<[u8]>> {
-        let k = try!(self.KeyRef());
-        let k = k.into_boxed_slice();
-        Ok(k)
+enum BsonValue {
+    BDouble(f64),
+    BString(String),
+    BInt64(i64),
+    BInt32(i32),
+    BUndefined,
+    BObjectID([u8; 12]),
+    BNull,
+    BRegex(String, String),
+    BJSCode(String),
+    BJSCodeWithScope(String),
+    BBinary(u8, Box<[u8]>),
+    BMinKey,
+    BMaxKey,
+    BDateTime(i64),
+    BTimeStamp(i64),
+    BBoolean(bool),
+    BArray(Vec<BsonValue>),
+    BDocument(Vec<(String, BsonValue)>),
+}
+
+fn vec_push_f64_le(v: &mut Vec<u8>, f: f64) {
+    let mut buf = [0; 8];
+    write_f64_le(&mut buf, f);
+    v.push_all(&buf);
+}
+
+fn vec_push_i64_le(v: &mut Vec<u8>, f: i64) {
+    let mut buf = [0; 8];
+    write_i64_le(&mut buf, f);
+    v.push_all(&buf);
+}
+
+fn vec_push_i32_le(v: &mut Vec<u8>, f: i32) {
+    let mut buf = [0; 4];
+    write_i32_le(&mut buf, f);
+    v.push_all(&buf);
+}
+
+fn vec_push_c_string(v: &mut Vec<u8>, s: &str) {
+    // TODO
+}
+
+fn vec_push_bson_string(v: &mut Vec<u8>, s: &str) {
+    // TODO
+}
+
+impl BsonValue {
+    fn getTypeNumber_u8(&self) -> u8 {
+        match self {
+            &BsonValue::BDouble(_) => 1,
+            &BsonValue::BString(_) => 2,
+            &BsonValue::BDocument(_) => 3,
+            &BsonValue::BArray(_) => 4,
+            &BsonValue::BBinary(_, _) => 5,
+            &BsonValue::BUndefined => 6,
+            &BsonValue::BObjectID(_) => 7,
+            &BsonValue::BBoolean(_) => 8,
+            &BsonValue::BDateTime(_) => 9,
+            &BsonValue::BNull => 10,
+            &BsonValue::BRegex(_, _) => 11,
+            &BsonValue::BJSCode(_) => 13,
+            &BsonValue::BJSCodeWithScope(_) => 15,
+            &BsonValue::BInt32(_) => 16,
+            &BsonValue::BTimeStamp(_) => 17,
+            &BsonValue::BInt64(_) => 18,
+            &BsonValue::BMinKey => 255, // NOTE
+            &BsonValue::BMaxKey => 127,
+        }
     }
 
-    pub fn Value(&self) -> Result<Blob> {
-        let v = try!(self.ValueRef());
-        let v = v.into_blob();
-        Ok(v)
-    }
-    
-    pub fn Seek(&mut self, k: &[u8], sop:SeekOp) -> Result<SeekResult> {
-        let k2 = KeyRef::for_slice(k);
-        let r = self.SeekRef(&k2, sop);
-        println!("{:?}", r);
-        r
+    fn getTypeOrder(&self) -> i32 {
+        // same numbers as canonicalizeBSONType()
+        match self {
+            &BsonValue::BUndefined => 0,
+            &BsonValue::BNull => 5,
+            &BsonValue::BDouble(_) => 10,
+            &BsonValue::BInt64(_) => 10,
+            &BsonValue::BInt32(_) => 10,
+            &BsonValue::BString(_) => 15,
+            &BsonValue::BDocument(_) => 20,
+            &BsonValue::BArray(_) => 25,
+            &BsonValue::BBinary(_, _) => 30,
+            &BsonValue::BObjectID(_) => 35,
+            &BsonValue::BBoolean(_) => 40,
+            &BsonValue::BDateTime(_) => 45,
+            &BsonValue::BTimeStamp(_) => 47,
+            &BsonValue::BRegex(_, _) => 50,
+            &BsonValue::BJSCode(_) => 60,
+            &BsonValue::BJSCodeWithScope(_) => 65,
+            &BsonValue::BMinKey => -1,
+            &BsonValue::BMaxKey => 127,
+        }
     }
 
+    //#[cfg(bson)]
+    fn toBinary(&self, w: &mut Vec<u8>) {
+        match self {
+            &BsonValue::BDouble(f) => vec_push_f64_le(w, f),
+            &BsonValue::BInt32(n) => vec_push_i32_le(w, n),
+            &BsonValue::BDateTime(n) => vec_push_i64_le(w, n),
+            &BsonValue::BTimeStamp(n) => vec_push_i64_le(w, n),
+            &BsonValue::BInt64(n) => vec_push_i64_le(w, n),
+            &BsonValue::BString(ref s) => vec_push_bson_string(w, &s),
+            &BsonValue::BObjectID(ref a) => w.push_all(a),
+            &BsonValue::BBoolean(b) => if b { w.push(1u8) } else { w.push(0u8) },
+            &BsonValue::BNull => (),
+            &BsonValue::BMinKey => (),
+            &BsonValue::BMaxKey => (),
+            &BsonValue::BRegex(ref expr, ref opt) => {
+                vec_push_c_string(w, &expr); 
+                vec_push_c_string(w, &opt);
+            },
+            &BsonValue::BUndefined => (),
+            &BsonValue::BJSCode(ref s) => vec_push_bson_string(w, &s),
+            &BsonValue::BJSCodeWithScope(ref s) => panic!("TODO write BJSCodeWithScope"),
+            &BsonValue::BBinary(subtype, ref ba) => {
+                vec_push_i32_le(w, ba.len() as i32);
+                w.push(subtype);
+                w.push_all(&ba);
+            },
+            &BsonValue::BArray(ref vals) => {
+                let start = w.len();
+                // placeholder for length
+                vec_push_i32_le(w, 0);
+                for (i, vsub) in vals.iter().enumerate() {
+                    w.push(vsub.getTypeNumber_u8());
+                    let s = format!("{}", i);
+                    vec_push_c_string(w, &s);
+                    vsub.toBinary(w);
+                }
+                w.push(0u8);
+                let len = w.len() - start;
+                write_i32_le(&mut w[start .. start + 4], len as i32);
+            },
+            &BsonValue::BDocument(ref pairs) => {
+                // placeholder for length
+                let start = w.len();
+                vec_push_i32_le(w, 0);
+                for t in pairs.iter() {
+                    let (ref ksub, ref vsub) = *t;
+                    w.push(vsub.getTypeNumber_u8());
+                    vec_push_c_string(w, &ksub);;
+                    vsub.toBinary(w);
+                }
+                w.push(0u8);
+                let len = w.len() - start;
+                write_i32_le(&mut w[start .. start + 4], len as i32);
+            },
+        }
+    }
 }
 

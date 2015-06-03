@@ -37,6 +37,7 @@ currently avoiding Rc,Arc,Cell,RefCell until I need them.
 test harness is quite cool
 I like integers without suffixes being more flexible
 multiple passes, number of errors jumps up and down
+have to rethink error handling from the beginning
 
 really cool using valgrind.  
 and really cool that valgrind shouldn't be as useful.
@@ -141,4 +142,14 @@ in perf, so I never committed it.
 
 interesting to compare differences between the original compare_two
 and one that simply gets two KeyRefs and calls KeyRef::cmp.
+
+shouldn't it warn if a function returns Result but it cannot return Err?
+
+want to write lint to disallow tabs
+
+fix the test suite to use KeyRef etc
+
+clean up organization of this code into modules
+
+
 
