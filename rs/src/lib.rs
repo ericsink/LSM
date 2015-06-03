@@ -524,7 +524,11 @@ pub trait ICursor<'a> {
     fn KeyRef(&'a self) -> Result<KeyRef<'a>>;
     fn ValueRef(&'a self) -> Result<ValueRef<'a>>;
 
+    // TODO maybe rm ValueLength.  but LivingCursor uses it as a fast
+    // way to detect whether a value is a tombstone or not.
     fn ValueLength(&self) -> Result<Option<usize>>; // tombstone is None
+
+    // TODO maybe rm KeyCompare
     fn KeyCompare(&self, k: &KeyRef) -> Result<Ordering>;
 }
 
@@ -1065,6 +1069,8 @@ impl<'a> MultiCursor<'a> {
         if self.subcursors.is_empty() {
             return Ok(())
         }
+
+        // TODO this memory allocation is expensive.
 
         // get a KeyRef for all the cursors
         let mut ka = Vec::with_capacity(self.subcursors.len());
@@ -2873,6 +2879,7 @@ impl<'a> SegmentCursor<'a> {
         self.previousLeaf = self.pr.GetInt32(&mut cur) as PageNum;
         let prefixLen = self.pr.GetByte(&mut cur) as usize;
         if prefixLen > 0 {
+            // TODO should we just remember prefix as a reference instead of box/copy?
             let mut a = vec![0;prefixLen].into_boxed_slice();
             self.pr.GetIntoArray(&mut cur, &mut a);
             self.prefix = Some(a);

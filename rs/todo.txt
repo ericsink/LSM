@@ -54,7 +54,9 @@ be possible later.
 
 ----
 
-too much usize?  use a more specific, smaller unsigned type.
+we're using usize all over the place for cases size and index into a page.
+this is sad, because a page will never exceed 32 bits, and probably will
+not exceed 16 bits.
 
 make pgnum a u64?
 same for pgnum but then storage is wasteful,
