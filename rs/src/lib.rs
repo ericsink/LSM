@@ -35,7 +35,6 @@ use std::fs::File;
 use std::fs::OpenOptions;
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::ops::Index;
 use std::error::Error;
 
 const SIZE_32: usize = 4; // like std::mem::size_of::<u32>()
@@ -137,11 +136,13 @@ struct PendingSegment {
 // it can be used everywhere a regular slice can be used.  but we
 // obviously don't want to just pass around an Index<Output=u8>
 // trait object if that forces us into dynamic dispatch everywhere.
+#[cfg(remove_me)]
 struct SplitSlice<'a> {
     front: &'a [u8],
     back: &'a [u8],
 }
 
+#[cfg(remove_me)]
 impl<'a> SplitSlice<'a> {
     fn new(front: &'a [u8], back: &'a [u8]) -> SplitSlice<'a> {
         SplitSlice {front: front, back: back}
@@ -159,6 +160,7 @@ impl<'a> SplitSlice<'a> {
     }
 }
 
+#[cfg(remove_me)]
 impl<'a> Index<usize> for SplitSlice<'a> {
     type Output = u8;
 
@@ -600,25 +602,14 @@ mod bcmp {
     use std::cmp::Ordering;
     use std::cmp::min;
 
-    // TODO get rid of this function.  regular cmp() is apparently lexicographic.
+    // this fn is actually kinda handy to make sure that we are comparing
+    // what we are supposed to be comparing.  if we just use cmp, we
+    // can end up comparing two things that happen to match each other's
+    // type but which do not match &[u8].  this function makes the type
+    // checking more explicit.
     #[inline(always)]
     pub fn Compare(x: &[u8], y: &[u8]) -> Ordering {
         x.cmp(y)
-    }
-
-    #[inline(always)]
-    pub fn CompareWithPrefix(prefix: &[u8], x: &[u8], y: &[u8]) -> Ordering {
-        assert!(prefix.len() > 0);
-        if y.len() <= prefix.len() {
-            prefix.cmp(y)
-        } else {
-            let c = prefix.cmp(&y[0 .. prefix.len()]);
-            if c != Ordering::Equal {
-                c
-            } else {
-                x.cmp(&y[prefix.len() .. y.len()])
-            }
-        }
     }
 
     pub fn PrefixMatch(x: &[u8], y: &[u8], max: usize) -> usize {
@@ -631,7 +622,7 @@ mod bcmp {
         i
     }
 
-    // TODO rm
+    #[cfg(remove_me)]
     fn StartsWith(x: &[u8], y: &[u8], max: usize) -> bool {
         if x.len() < y.len() {
             false
@@ -889,6 +880,7 @@ impl PageBuilder {
         strm.write_all(&*self.buf)
     }
 
+    #[cfg(remove_me)]
     fn PageSize(&self) -> usize {
         self.buf.len()
     }
@@ -897,6 +889,7 @@ impl PageBuilder {
         &self.buf
     }
     
+    #[cfg(remove_me)]
     fn Position(&self) -> usize {
         self.cur
     }
@@ -921,7 +914,7 @@ impl PageBuilder {
         res
     }
 
-    // TODO rm this function
+    #[cfg(remove_me)]
     fn PutStream(&mut self, s: &mut Read, len: usize) -> io::Result<usize> {
         let n = try!(self.PutStream2(s, len));
         // TODO if n != len fail, which may mean a different result type here
@@ -960,7 +953,7 @@ impl PageBuilder {
         self.cur = self.cur + SIZE_16;
     }
 
-    // TODO rm
+    #[cfg(remove_me)]
     fn PutInt16At(&mut self, at: usize, ov: u16) {
         write_u16_be(&mut self.buf[at .. at + SIZE_16], ov);
     }
@@ -994,14 +987,10 @@ impl PageBuffer {
         utils::ReadFully(strm, &mut self.buf[off .. len-off])
     }
 
+    #[cfg(remove_me)]
     fn Compare(&self, cur: usize, len: usize, other: &[u8]) -> Ordering {
         let slice = &self.buf[cur .. cur + len];
         bcmp::Compare(slice, other)
-    }
-
-    fn CompareWithPrefix(&self, cur: usize, prefix: &[u8], len: usize, other: &[u8]) -> Ordering {
-        let slice = &self.buf[cur .. cur + len - prefix.len()];
-        bcmp::CompareWithPrefix(prefix, slice, other)
     }
 
     fn PageType(&self) -> Result<PageType> {
@@ -1147,10 +1136,10 @@ impl<'a> MultiCursor<'a> {
                             },
                         }
                     },
-                    (&Some(ref kj), &None) => {
+                    (&Some(_), &None) => {
                         // keep going
                     },
-                    (&None, &Some(ref kprev)) => {
+                    (&None, &Some(_)) => {
                         break;
                     },
                     (&None, &None) => {
@@ -2696,6 +2685,7 @@ impl Read for myOverflowReadStream {
     }
 }
 
+#[cfg(remove_me)]
 fn readOverflow(path: &str, pgsz: usize, firstPage: PageNum, buf: &mut [u8]) -> Result<usize> {
     let mut ostrm = try!(myOverflowReadStream::new(path, pgsz, firstPage, buf.len()));
     let res = try!(utils::ReadFully(&mut ostrm, buf));
@@ -2942,7 +2932,7 @@ impl<'a> SegmentCursor<'a> {
         }
     }
 
-    // TODO this function will probably go away eventually
+    #[cfg(remove_me)]
     fn keyInLeaf(&self, n: usize) -> Result<Box<[u8]>> { 
         let mut cur = self.leafKeys[n as usize];
         let kflag = self.pr.GetByte(&mut cur);
@@ -2970,7 +2960,7 @@ impl<'a> SegmentCursor<'a> {
         }
     }
 
-    // TODO this function will probably go away eventually
+    #[cfg(remove_me)]
     fn compareKeyInLeaf(&self, n: usize, other: &[u8]) -> Result<Ordering> {
         let mut cur = self.leafKeys[n as usize];
         let kflag = self.pr.GetByte(&mut cur);
@@ -2999,7 +2989,7 @@ impl<'a> SegmentCursor<'a> {
         }
     }
 
-    // TODO this function will probably go away eventually
+    #[cfg(remove_me)]
     fn compare_two(x: &SegmentCursor, y: &SegmentCursor) -> Result<Ordering> {
         fn get_info(c: &SegmentCursor) -> Result<(usize, bool, usize, usize)> {
             match c.currentKey {

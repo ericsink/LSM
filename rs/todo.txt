@@ -151,5 +151,7 @@ fix the test suite to use KeyRef etc
 
 clean up organization of this code into modules
 
+perhaps, when reading stuff from a buffer, instead of using a cur variable,
+we should use the Read impl of slice
 
 
