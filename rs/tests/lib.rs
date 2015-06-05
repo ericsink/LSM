@@ -73,15 +73,19 @@ fn count_keys_backward(csr: &mut lsm::LivingCursor) -> lsm::Result<usize> {
     Ok(r)
 }
 
-fn read_value(b: lsm::Blob) -> lsm::Result<Box<[u8]>> {
+fn read_value(b: lsm::ValueRef) -> lsm::Result<Box<[u8]>> {
     match b {
-        lsm::Blob::Stream(mut strm) => {
-            let mut a = Vec::new();
+        lsm::ValueRef::Overflowed(len, mut strm) => {
+            let mut a = Vec::with_capacity(len);
             try!(strm.read_to_end(&mut a));
             Ok(a.into_boxed_slice())
         },
-        lsm::Blob::Array(a) => Ok(a),
-        lsm::Blob::Tombstone => panic!(),
+        lsm::ValueRef::Array(a) => {
+            let mut k = Vec::with_capacity(a.len());
+            k.push_all(a);
+            Ok(k.into_boxed_slice())
+        },
+        lsm::ValueRef::Tombstone => panic!(),
     }
 }
 
@@ -539,13 +543,13 @@ fn one_blob() {
         try!(csr.First());
         assert!(csr.IsValid());
         assert_eq!(LEN, csr.ValueLength().unwrap().unwrap());
-        let mut q = csr.Value().unwrap();
+        let mut q = csr.ValueRef().unwrap();
 
         match q {
-            lsm::Blob::Tombstone => assert!(false),
-            lsm::Blob::Array(ref a) => assert_eq!(LEN, a.len()),
-            lsm::Blob::Stream(ref mut r) => {
-                let mut a = Vec::new();
+            lsm::ValueRef::Tombstone => assert!(false),
+            lsm::ValueRef::Array(ref a) => assert_eq!(LEN, a.len()),
+            lsm::ValueRef::Overflowed(len, ref mut r) => {
+                let mut a = Vec::with_capacity(len);
                 try!(r.read_to_end(&mut a));
                 assert_eq!(LEN, a.len());
             },
@@ -691,17 +695,17 @@ fn tombstone() {
         try!(csr.First());
         assert!(csr.IsValid());
         assert_eq!("a", from_utf8(csr.Key().unwrap()));
-        assert_eq!("1", from_utf8(read_value(csr.Value().unwrap()).unwrap()));
+        assert_eq!("1", from_utf8(read_value(csr.ValueRef().unwrap()).unwrap()));
 
         try!(csr.Next());
         assert!(csr.IsValid());
         assert_eq!("c", from_utf8(csr.Key().unwrap()));
-        assert_eq!("3", from_utf8(read_value(csr.Value().unwrap()).unwrap()));
+        assert_eq!("3", from_utf8(read_value(csr.ValueRef().unwrap()).unwrap()));
 
         try!(csr.Next());
         assert!(csr.IsValid());
         assert_eq!("d", from_utf8(csr.Key().unwrap()));
-        assert_eq!("4", from_utf8(read_value(csr.Value().unwrap()).unwrap()));
+        assert_eq!("4", from_utf8(read_value(csr.ValueRef().unwrap()).unwrap()));
 
         try!(csr.Next());
         assert!(!csr.IsValid());
@@ -747,7 +751,7 @@ fn overwrite() {
         fn getb(db: &lsm::db) -> lsm::Result<String> {
             let mut csr = try!(db.OpenCursor());
             try!(csr.Seek(&to_utf8("b"), lsm::SeekOp::SEEK_EQ));
-            Ok(from_utf8(read_value(csr.Value().unwrap()).unwrap()))
+            Ok(from_utf8(read_value(csr.ValueRef().unwrap()).unwrap()))
         }
         assert_eq!("2", getb(&db).unwrap());
         let mut t2 = std::collections::HashMap::new();
@@ -799,7 +803,7 @@ fn blobs_of_many_sizes() {
             try!(csr.Seek(&k, lsm::SeekOp::SEEK_EQ));
             assert!(csr.IsValid());
             assert_eq!(v.len(), csr.ValueLength().unwrap().unwrap());
-            assert_eq!(v, read_value(csr.Value().unwrap()).unwrap());
+            assert_eq!(v, read_value(csr.ValueRef().unwrap()).unwrap());
         }
         Ok(())
     }

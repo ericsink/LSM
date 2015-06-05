@@ -2494,6 +2494,10 @@ struct myOverflowReadStream {
     
 impl myOverflowReadStream {
     fn new(path: &str, pgsz: usize, firstPage: PageNum, len: usize) -> Result<myOverflowReadStream> {
+        // TODO I wonder if maybe we should defer the opening of the file until
+        // somebody actually tries to read from it?  so that constructing a
+        // ValueRef object (which contains one of these) would be a lighter-weight
+        // operation.
         let f = try!(OpenOptions::new()
                 .read(true)
                 .open(path));
@@ -4626,12 +4630,6 @@ impl<'a> LivingCursor<'a> {
         Ok(k)
     }
 
-    pub fn Value(&self) -> Result<Blob> {
-        let v = try!(self.ValueRef());
-        let v = v.into_blob();
-        Ok(v)
-    }
-    
     pub fn Seek(&mut self, k: &[u8], sop:SeekOp) -> Result<SeekResult> {
         let k2 = KeyRef::for_slice(k);
         let r = self.SeekRef(&k2, sop);
