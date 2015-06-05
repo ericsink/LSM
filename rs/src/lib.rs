@@ -4620,19 +4620,6 @@ impl Iterator for GenerateWeirdPairs {
     }
 }
 
-// TODO the following can be removed at some point.  it is here
-// now only because the test suite has not yet been adapted to use
-// KeyRef/ValueRef.
-impl<'a> LivingCursor<'a> {
-    pub fn Seek(&mut self, k: &[u8], sop:SeekOp) -> Result<SeekResult> {
-        let k2 = KeyRef::for_slice(k);
-        let r = self.SeekRef(&k2, sop);
-        println!("{:?}", r);
-        r
-    }
-
-}
-
 // ----------------------------------------------------------------
 // Stuff below is the beginning of porting stuff from Elmo
 // ----------------------------------------------------------------
