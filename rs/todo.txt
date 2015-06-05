@@ -1,60 +1,4 @@
 
-msbuild
-warning vs error on match incomplete
-awkward comparison.  apples/oranges.  unfair.  wrong lens.  etc.
-derive debug with :? is %A
-[u8] is not on the heap.  it's like a primitive that is N bytes long.  it's a value type.
-no each(), which is fs is iter(), but in rs that is something else.
-no exceptions.  use Result<>
-no currying, no partial application
-no significant whitespace
-tabs allowed.  :-(
-strings are utf8, no converting things
-seriously miss full type inference
-weird that it's safe to use unsigned
-porting from fs is probably not a way to get good rust code
-don't avoid mutability.  in rust, it's safe, and avoiding it is painful.
-braces vim %
-semicolons vim A ;, end-of-line comments
-typing tetris
-miss sprintf syntax
-Read,Write,Seek traits so much better design than .NET streams
-lots more for loops. but they're usually safer.  iter.  not numeric bounds.  but sometimes.
-the stricter the compiler, the more I like it.
-correlation of idiomatic and perf
-optimizer makes a HUGE difference.
-integer overflow checks not that expensive
-type inference:  do I have the item or a reference to it?
-vim mode SO much faster.  except sometimes it gets stuck.
-rs is definitely more verbose and cluttered than fs
-fs more productive, more pleasant
-casts are never checked for overflow.  :-(
-rust is unique, and it never feels like it inherits dorkiness from the platform it is built on.
-f# is an ML on .NET.  feels kind of hybrid sometimes.  null but not.
-considering the CLR has better support for value types than its peers, fs doesn't use them as much as it could
-try! vs SG_ERROR_CHECK
-currently avoiding Rc,Arc,Cell,RefCell until I need them.
-test harness is quite cool
-I like integers without suffixes being more flexible
-multiple passes, number of errors jumps up and down
-have to rethink error handling from the beginning
-
-really cool using valgrind.  
-and really cool that valgrind shouldn't be as useful.
-
-why do usize and u64 require a cast?  usize is not an alias.
-
-cargo bench is very cool.
-wish I could control the units (always ns) or get them to display with commas or something
-
-in theory, rust should be able to infer types for functions and their
-arguments, plus lifetimes.  but this would require far more analysis,
-so currently, the programmer is required to make these things explicit
-at the function boundaries.  i wonder if this kind of analysis will
-be possible later.
-
-----
-
 we're using usize all over the place for cases size and index into a page.
 this is sad, because a page will never exceed 32 bits, and probably will
 not exceed 16 bits.
@@ -146,8 +90,6 @@ and one that simply gets two KeyRefs and calls KeyRef::cmp.
 shouldn't it warn if a function returns Result but it cannot return Err?
 
 want to write lint to disallow tabs
-
-fix the test suite to use KeyRef etc
 
 clean up organization of this code into modules
 
