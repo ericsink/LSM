@@ -4624,12 +4624,6 @@ impl Iterator for GenerateWeirdPairs {
 // now only because the test suite has not yet been adapted to use
 // KeyRef/ValueRef.
 impl<'a> LivingCursor<'a> {
-    pub fn Key(&self) -> Result<Box<[u8]>> {
-        let k = try!(self.KeyRef());
-        let k = k.into_boxed_slice();
-        Ok(k)
-    }
-
     pub fn Seek(&mut self, k: &[u8], sop:SeekOp) -> Result<SeekResult> {
         let k2 = KeyRef::for_slice(k);
         let r = self.SeekRef(&k2, sop);
