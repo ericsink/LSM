@@ -419,15 +419,15 @@ pub enum SeekOp {
     SEEK_GE = 2,
 }
 
-// this code was ported from F# which assumes that any Stream
+// This code was ported from F# which assumes that any Stream
 // that supports Seek also can give you its Length.  That method
 // isn't part of the Seek trait, but this implementation should
 // suffice.
 fn seek_len<R>(fs: &mut R) -> io::Result<u64> where R : Seek {
-    // remember where we are
+    // remember where we started (like Tell)
     let pos = try!(fs.seek(SeekFrom::Current(0)));
 
-    // seek the end
+    // seek to the end
     let len = try!(fs.seek(SeekFrom::End(0)));
 
     // restore to where we were
