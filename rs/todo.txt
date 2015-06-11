@@ -96,4 +96,15 @@ clean up organization of this code into modules
 perhaps, when reading stuff from a buffer, instead of using a cur variable,
 we should use the Read impl of slice
 
+the benefit of getting a reference to the key or value bytes directly
+in the page will be diminished when the bytes are compressed or encrypted.
+
+chg names back to Key and Value?
+
+read bson value without alloc?  but then we need to give references into
+the buffer, which might be big.  that's basically read bson value with
+only one (big) alloc for the object itself.
+
+
+
 

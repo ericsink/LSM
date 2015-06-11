@@ -66,6 +66,7 @@ enum LsmError {
     CorruptFile(&'static str),
 
     Io(std::io::Error),
+    Utf8(std::str::Utf8Error),
 
     CursorNotValid,
     InvalidPageNumber,
@@ -78,6 +79,7 @@ impl std::fmt::Display for LsmError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match *self {
             LsmError::Io(ref err) => write!(f, "IO error: {}", err),
+            LsmError::Utf8(ref err) => write!(f, "Utf8 error: {}", err),
             LsmError::Misc(s) => write!(f, "Misc error: {}", s),
             LsmError::CorruptFile(s) => write!(f, "Corrupt file: {}", s),
             LsmError::Poisoned => write!(f, "Poisoned"),
@@ -93,6 +95,7 @@ impl std::error::Error for LsmError {
     fn description(&self) -> &str {
         match *self {
             LsmError::Io(ref err) => std::error::Error::description(err),
+            LsmError::Utf8(ref err) => std::error::Error::description(err),
             LsmError::Misc(s) => s,
             LsmError::CorruptFile(s) => s,
             LsmError::Poisoned => "poisoned",
@@ -109,6 +112,12 @@ impl std::error::Error for LsmError {
 impl From<io::Error> for LsmError {
     fn from(err: io::Error) -> LsmError {
         LsmError::Io(err)
+    }
+}
+
+impl From<std::str::Utf8Error> for LsmError {
+    fn from(err: std::str::Utf8Error) -> LsmError {
+        LsmError::Utf8(err)
     }
 }
 
@@ -673,7 +682,7 @@ mod Varint {
             let a1 = buf[c+1] as u64;
             let a2 = buf[c+2] as u64;
             let a3 = buf[c+3] as u64;
-            let r = (a1<<16) | (a2<<8) | a3;
+            let r = (a1 << 16) | (a2 << 8) | a3;
             *cur = *cur + 4;
             r
         } else if a0 == 251u64 {
@@ -681,7 +690,7 @@ mod Varint {
             let a2 = buf[c+2] as u64;
             let a3 = buf[c+3] as u64;
             let a4 = buf[c+4] as u64;
-            let r = (a1<<24) | (a2<<16) | (a3<<8) | a4;
+            let r = (a1 << 24) | (a2 << 16) | (a3 << 8) | a4;
             *cur = *cur + 5;
             r
         } else if a0 == 252u64 {
@@ -690,7 +699,7 @@ mod Varint {
             let a3 = buf[c+3] as u64;
             let a4 = buf[c+4] as u64;
             let a5 = buf[c+5] as u64;
-            let r = (a1<<32) | (a2<<24) | (a3<<16) | (a4<<8) | a5;
+            let r = (a1 << 32) | (a2 << 24) | (a3 << 16) | (a4 << 8) | a5;
             *cur = *cur + 6;
             r
         } else if a0 == 253u64 {
@@ -700,7 +709,7 @@ mod Varint {
             let a4 = buf[c+4] as u64;
             let a5 = buf[c+5] as u64;
             let a6 = buf[c+6] as u64;
-            let r = (a1<<40) | (a2<<32) | (a3<<24) | (a4<<16) | (a5<<8) | a6;
+            let r = (a1 << 40) | (a2 << 32) | (a3 << 24) | (a4 << 16) | (a5 << 8) | a6;
             *cur = *cur + 7;
             r
         } else if a0 == 254u64 {
@@ -711,7 +720,7 @@ mod Varint {
             let a5 = buf[c+5] as u64;
             let a6 = buf[c+6] as u64;
             let a7 = buf[c+7] as u64;
-            let r = (a1<<48) | (a2<<40) | (a3<<32) | (a4<<24) | (a5<<16) | (a6<<8) | a7;
+            let r = (a1 << 48) | (a2 << 40) | (a3 << 32) | (a4 << 24) | (a5 << 16) | (a6 << 8) | a7;
             *cur = *cur + 8;
             r
         } else {
@@ -723,7 +732,7 @@ mod Varint {
             let a6 = buf[c+6] as u64;
             let a7 = buf[c+7] as u64;
             let a8 = buf[c+8] as u64;
-            let r = (a1<<56) | (a2<<48) | (a3<<40) | (a4<<32) | (a5<<24) | (a6<<16) | (a7<<8) | a8;
+            let r = (a1 << 56) | (a2 << 48) | (a3 << 40) | (a4 << 32) | (a5 << 24) | (a6 << 16) | (a7 << 8) | a8;
             *cur = *cur + 9;
             r
         }
@@ -798,64 +807,190 @@ mod Varint {
     }
 }
 
-fn write_u32_le(v: &mut [u8], i: u32)
-{
-    v[0] = ((i>> 0) & 0xff_u32) as u8;
-    v[1] = ((i>> 8) & 0xff_u32) as u8;
-    v[2] = ((i>>16) & 0xff_u32) as u8;
-    v[3] = ((i>>24) & 0xff_u32) as u8;
+fn f64_to_bytes_le(i: f64) -> [u8; 8] {
+    let mut a: [u8; 8] = unsafe {std::mem::transmute(i)};
+    if cfg!(target_endian = "little") {
+    } else {
+        a.reverse();
+    }
+    a
 }
 
-fn write_f64_le(v: &mut [u8], f: f64)
-{
-    // TODO
+fn f64_to_bytes_be(i: f64) -> [u8; 8] {
+    let mut a: [u8; 8] = unsafe {std::mem::transmute(i)};
+    if cfg!(target_endian = "little") {
+        a.reverse();
+    } else {
+    }
+    a
 }
 
-fn write_i32_le(v: &mut [u8], f: i32)
-{
-    // TODO
+fn i64_to_bytes_le(i: i64) -> [u8; 8] {
+    let a: [u8; 8] = unsafe {std::mem::transmute(i64::to_le(i))};
+    a
 }
 
-fn write_i64_le(v: &mut [u8], f: i64)
-{
-    // TODO
+fn i64_to_bytes_be(i: i64) -> [u8; 8] {
+    let a: [u8; 8] = unsafe {std::mem::transmute(i64::to_be(i))};
+    a
 }
 
-fn write_u32_be(v: &mut [u8], i: u32)
-{
-    // TODO can this assert be checked at compile time?
-    // TODO do this kind of assert in other places too.
-    assert!(v.len() == 4);
-    v[0] = ((i>>24) & 0xff_u32) as u8;
-    v[1] = ((i>>16) & 0xff_u32) as u8;
-    v[2] = ((i>> 8) & 0xff_u32) as u8;
-    v[3] = ((i>> 0) & 0xff_u32) as u8;
+fn u64_to_bytes_le(i: u64) -> [u8; 8] {
+    let a: [u8; 8] = unsafe {std::mem::transmute(u64::to_le(i))};
+    a
 }
 
-fn read_u32_be(v: &[u8]) -> u32
-{
-    let a0 = v[0] as u64;
-    let a1 = v[1] as u64;
-    let a2 = v[2] as u64;
-    let a3 = v[3] as u64;
-    let r = (a0 << 24) | (a1 << 16) | (a2 << 8) | (a3 << 0);
-    // assert r fits
-    r as u32
+fn u64_to_bytes_be(i: u64) -> [u8; 8] {
+    let a: [u8; 8] = unsafe {std::mem::transmute(u64::to_be(i))};
+    a
 }
 
-fn read_u16_be(v: &[u8]) -> u16
-{
-    let a0 = v[0] as u64;
-    let a1 = v[1] as u64;
-    let r = (a0 << 8) | (a1 << 0);
-    // assert r fits
-    r as u16
+fn i32_to_bytes_le(i: i32) -> [u8; 4] {
+    let a: [u8; 4] = unsafe {std::mem::transmute(i32::to_le(i))};
+    a
 }
 
-fn write_u16_be(v: &mut [u8], i: u16)
+fn i32_to_bytes_be(i: i32) -> [u8; 4] {
+    let a: [u8; 4] = unsafe {std::mem::transmute(i32::to_be(i))};
+    a
+}
+
+fn u32_to_bytes_le(i: u32) -> [u8; 4] {
+    let a: [u8; 4] = unsafe {std::mem::transmute(u32::to_le(i))};
+    a
+}
+
+fn u32_to_bytes_be(i: u32) -> [u8; 4] {
+    let a: [u8; 4] = unsafe {std::mem::transmute(u32::to_be(i))};
+    a
+}
+
+fn i16_to_bytes_le(i: i16) -> [u8; 2] {
+    let a: [u8; 2] = unsafe {std::mem::transmute(i16::to_le(i))};
+    a
+}
+
+fn i16_to_bytes_be(i: i16) -> [u8; 2] {
+    let a: [u8; 2] = unsafe {std::mem::transmute(i16::to_be(i))};
+    a
+}
+
+fn u16_to_bytes_le(i: u16) -> [u8; 2] {
+    let a: [u8; 2] = unsafe {std::mem::transmute(u16::to_le(i))};
+    a
+}
+
+fn u16_to_bytes_be(i: u16) -> [u8; 2] {
+    let a: [u8; 2] = unsafe {std::mem::transmute(u16::to_be(i))};
+    a
+}
+
+fn f64_from_bytes_le(mut a: [u8; 8]) -> f64 {
+    if cfg!(target_endian = "little") {
+    } else {
+        a.reverse();
+    }
+
+    let i: f64 = unsafe {std::mem::transmute(a)};
+    // TODO we wish we had f64::from_le(i)
+    i
+}
+
+fn f64_from_bytes_be(mut a: [u8; 8]) -> f64 {
+    if cfg!(target_endian = "little") {
+        a.reverse();
+    } else {
+    }
+
+    let i: f64 = unsafe {std::mem::transmute(a)};
+    // TODO we wish we had f64::from_le(i)
+    i
+}
+
+fn i64_from_bytes_le(a: [u8; 8]) -> i64 {
+    let i: i64 = unsafe {std::mem::transmute(a)};
+    i64::from_le(i)
+}
+
+fn i64_from_bytes_be(a: [u8; 8]) -> i64 {
+    let i: i64 = unsafe {std::mem::transmute(a)};
+    i64::from_be(i)
+}
+
+fn u64_from_bytes_le(a: [u8; 8]) -> u64 {
+    let i: u64 = unsafe {std::mem::transmute(a)};
+    u64::from_le(i)
+}
+
+fn u64_from_bytes_be(a: [u8; 8]) -> u64 {
+    let i: u64 = unsafe {std::mem::transmute(a)};
+    u64::from_be(i)
+}
+
+fn i32_from_bytes_le(a: [u8; 4]) -> i32 {
+    let i: i32 = unsafe {std::mem::transmute(a)};
+    i32::from_le(i)
+}
+
+fn i32_from_bytes_be(a: [u8; 4]) -> i32 {
+    let i: i32 = unsafe {std::mem::transmute(a)};
+    i32::from_be(i)
+}
+
+fn u32_from_bytes_le(a: [u8; 4]) -> u32 {
+    let i: u32 = unsafe {std::mem::transmute(a)};
+    u32::from_le(i)
+}
+
+fn u32_from_bytes_be(a: [u8; 4]) -> u32 {
+    let i: u32 = unsafe {std::mem::transmute(a)};
+    u32::from_be(i)
+}
+
+fn i16_from_bytes_le(a: [u8; 2]) -> i16 {
+    let i: i16 = unsafe {std::mem::transmute(a)};
+    i16::from_le(i)
+}
+
+fn i16_from_bytes_be(a: [u8; 2]) -> i16 {
+    let i: i16 = unsafe {std::mem::transmute(a)};
+    i16::from_be(i)
+}
+
+fn u16_from_bytes_le(a: [u8; 2]) -> u16 {
+    let i: u16 = unsafe {std::mem::transmute(a)};
+    u16::from_le(i)
+}
+
+fn u16_from_bytes_be(a: [u8; 2]) -> u16 {
+    let i: u16 = unsafe {std::mem::transmute(a)};
+    u16::from_be(i)
+}
+
+fn copy_into(src: &[u8], dst: &mut [u8]) {
+    let len = dst.clone_from_slice(src);
+    assert_eq!(len, src.len());
+}
+
+fn extract_2(v: &[u8]) -> [u8; 2]
 {
-    v[0] = ((i>>8) & 0xff_u16) as u8;
-    v[1] = ((i>>0) & 0xff_u16) as u8;
+    let mut a = [0; 2];
+    copy_into(v, &mut a);
+    a
+}
+
+fn extract_4(v: &[u8]) -> [u8; 4]
+{
+    let mut a = [0; 4];
+    copy_into(v, &mut a);
+    a
+}
+
+fn extract_8(v: &[u8]) -> [u8; 8]
+{
+    let mut a = [0; 8];
+    copy_into(v, &mut a);
+    a
 }
 
 struct PageBuilder {
@@ -929,7 +1064,8 @@ impl PageBuilder {
 
     fn PutInt32(&mut self, ov: u32) {
         let at = self.cur;
-        write_u32_be(&mut self.buf[at .. at + SIZE_32], ov);
+        // TODO just self.buf?  instead of making 4-byte slice.
+        copy_into(&u32_to_bytes_be(ov), &mut self.buf[at .. at + SIZE_32]);
         self.cur = self.cur + SIZE_32;
     }
 
@@ -937,19 +1073,22 @@ impl PageBuilder {
         let len = self.buf.len();
         let at = len - 2 * SIZE_32;
         if self.cur > at { panic!("SetSecondToLastInt32 is squashing data"); }
-        write_u32_be(&mut self.buf[at .. at + SIZE_32], page);
+        // TODO just self.buf?  instead of making 4-byte slice.
+        copy_into(&u32_to_bytes_be(page), &mut self.buf[at .. at + SIZE_32]);
     }
 
     fn SetLastInt32(&mut self, page: u32) {
         let len = self.buf.len();
         let at = len - 1 * SIZE_32;
         if self.cur > at { panic!("SetLastInt32 is squashing data"); }
-        write_u32_be(&mut self.buf[at .. at + SIZE_32], page);
+        // TODO just self.buf?  instead of making 4-byte slice.
+        copy_into(&u32_to_bytes_be(page), &mut self.buf[at .. at + SIZE_32]);
     }
 
     fn PutInt16(&mut self, ov: u16) {
         let at = self.cur;
-        write_u16_be(&mut self.buf[at .. at + SIZE_16], ov);
+        // TODO just self.buf?  instead of making 2-byte slice.
+        copy_into(&u16_to_bytes_be(ov), &mut self.buf[at .. at + SIZE_16]);
         self.cur = self.cur + SIZE_16;
     }
 
@@ -1005,13 +1144,16 @@ impl PageBuffer {
 
     fn GetInt32(&self, cur: &mut usize) -> u32 {
         let at = *cur;
-        let r = read_u32_be(&self.buf[at .. at + SIZE_32]);
+        // TODO just self.buf?  instead of making 4-byte slice.
+        let a = extract_4(&self.buf[at .. at + SIZE_32]);
         *cur = *cur + SIZE_32;
-        r
+        u32_from_bytes_be(a)
     }
 
     fn GetInt32At(&self, at: usize) -> u32 {
-        read_u32_be(&self.buf[at .. at + SIZE_32])
+        // TODO just self.buf?  instead of making 4-byte slice.
+        let a = extract_4(&self.buf[at .. at + SIZE_32]);
+        u32_from_bytes_be(a)
     }
 
     fn CheckPageFlag(&self, f: u8) -> bool {
@@ -1032,7 +1174,9 @@ impl PageBuffer {
 
     fn GetInt16(&self, cur: &mut usize) -> u16 {
         let at = *cur;
-        let r = read_u16_be(&self.buf[at .. at + SIZE_16]);
+        // TODO just self.buf?  instead of making 2-byte slice.
+        let a = extract_2(&self.buf[at .. at + SIZE_16]);
+        let r = u16_from_bytes_be(a);
         *cur = *cur + SIZE_16;
         r
     }
@@ -2549,7 +2693,9 @@ impl myOverflowReadStream {
 
     fn GetLastInt32(&self) -> u32 {
         let at = self.buf.len() - SIZE_32;
-        read_u32_be(&self.buf[at .. at+4])
+        // TODO just self.buf?  instead of making 4-byte slice.
+        let a = extract_4(&self.buf[at .. at+4]);
+        u32_from_bytes_be(a)
     }
 
     fn PageType(&self) -> Result<PageType> {
@@ -4819,7 +4965,7 @@ impl sqlite4_num {
 
 }
 
-enum BsonValue {
+pub enum BsonValue {
     BDouble(f64),
     BString(String),
     BInt64(i64),
@@ -4840,30 +4986,15 @@ enum BsonValue {
     BDocument(Vec<(String, BsonValue)>),
 }
 
-fn vec_push_f64_le(v: &mut Vec<u8>, f: f64) {
-    let mut buf = [0; 8];
-    write_f64_le(&mut buf, f);
-    v.push_all(&buf);
-}
-
-fn vec_push_i64_le(v: &mut Vec<u8>, f: i64) {
-    let mut buf = [0; 8];
-    write_i64_le(&mut buf, f);
-    v.push_all(&buf);
-}
-
-fn vec_push_i32_le(v: &mut Vec<u8>, f: i32) {
-    let mut buf = [0; 4];
-    write_i32_le(&mut buf, f);
-    v.push_all(&buf);
-}
-
 fn vec_push_c_string(v: &mut Vec<u8>, s: &str) {
-    // TODO
+    v.push_all(s.as_bytes());
+    v.push(0);
 }
 
 fn vec_push_bson_string(v: &mut Vec<u8>, s: &str) {
-    // TODO
+    v.push_all(&i32_to_bytes_le( (s.len() + 1) as i32 ));
+    v.push_all(s.as_bytes());
+    v.push(0);
 }
 
 impl BsonValue {
@@ -4915,13 +5046,13 @@ impl BsonValue {
     }
 
     //#[cfg(bson)]
-    fn toBinary(&self, w: &mut Vec<u8>) {
+    pub fn to_bson(&self, w: &mut Vec<u8>) {
         match self {
-            &BsonValue::BDouble(f) => vec_push_f64_le(w, f),
-            &BsonValue::BInt32(n) => vec_push_i32_le(w, n),
-            &BsonValue::BDateTime(n) => vec_push_i64_le(w, n),
-            &BsonValue::BTimeStamp(n) => vec_push_i64_le(w, n),
-            &BsonValue::BInt64(n) => vec_push_i64_le(w, n),
+            &BsonValue::BDouble(f) => w.push_all(&f64_to_bytes_le(f)),
+            &BsonValue::BInt32(n) => w.push_all(&i32_to_bytes_le(n)),
+            &BsonValue::BDateTime(n) => w.push_all(&i64_to_bytes_le(n)),
+            &BsonValue::BTimeStamp(n) => w.push_all(&i64_to_bytes_le(n)),
+            &BsonValue::BInt64(n) => w.push_all(&i64_to_bytes_le(n)),
             &BsonValue::BString(ref s) => vec_push_bson_string(w, &s),
             &BsonValue::BObjectID(ref a) => w.push_all(a),
             &BsonValue::BBoolean(b) => if b { w.push(1u8) } else { w.push(0u8) },
@@ -4936,39 +5067,204 @@ impl BsonValue {
             &BsonValue::BJSCode(ref s) => vec_push_bson_string(w, &s),
             &BsonValue::BJSCodeWithScope(ref s) => panic!("TODO write BJSCodeWithScope"),
             &BsonValue::BBinary(subtype, ref ba) => {
-                vec_push_i32_le(w, ba.len() as i32);
+                w.push_all(&i32_to_bytes_le(ba.len() as i32));
                 w.push(subtype);
                 w.push_all(&ba);
             },
             &BsonValue::BArray(ref vals) => {
                 let start = w.len();
                 // placeholder for length
-                vec_push_i32_le(w, 0);
+                w.push_all(&i32_to_bytes_le(0));
                 for (i, vsub) in vals.iter().enumerate() {
                     w.push(vsub.getTypeNumber_u8());
                     let s = format!("{}", i);
                     vec_push_c_string(w, &s);
-                    vsub.toBinary(w);
+                    vsub.to_bson(w);
                 }
                 w.push(0u8);
                 let len = w.len() - start;
-                write_i32_le(&mut w[start .. start + 4], len as i32);
+                copy_into(&i32_to_bytes_le(len as i32), &mut w[start .. start + 4]);
             },
             &BsonValue::BDocument(ref pairs) => {
-                // placeholder for length
                 let start = w.len();
-                vec_push_i32_le(w, 0);
+                // placeholder for length
+                w.push_all(&i32_to_bytes_le(0));
                 for t in pairs.iter() {
                     let (ref ksub, ref vsub) = *t;
                     w.push(vsub.getTypeNumber_u8());
                     vec_push_c_string(w, &ksub);;
-                    vsub.toBinary(w);
+                    vsub.to_bson(w);
                 }
                 w.push(0u8);
                 let len = w.len() - start;
-                write_i32_le(&mut w[start .. start + 4], len as i32);
+                copy_into(&i32_to_bytes_le(len as i32), &mut w[start .. start + 4]);
             },
         }
+    }
+
+    //#[cfg(bson)]
+    pub fn from_bson(w: &[u8]) -> Result<BsonValue> {
+        fn read_bson_value(ba: &[u8], i: &mut usize, valtype: u8) -> Result<BsonValue> {
+            let bv =
+                match valtype {
+                    1 => BsonValue::BDouble(read_f64(ba, i)),
+                    2 => BsonValue::BString(try!(read_bson_string(ba, i))),
+                    3 => try!(read_document(ba, i)),
+                    4 => try!(read_array(ba, i)),
+                    5 => read_binary(ba, i),
+                    6 => BsonValue::BUndefined,
+                    7 => read_objectid(ba, i),
+                    8 => read_boolean(ba, i),
+                    9 => BsonValue::BDateTime(read_i64(ba, i)),
+                    10 => BsonValue::BNull,
+                    11 => try!(read_regex(ba, i)),
+                    12 => try!(read_deprecated_12(ba, i)),
+                    13 => try!(read_js(ba, i)),
+                    15 => try!(read_js_with_scope(ba, i)),
+                    16 => BsonValue::BInt32(read_i32(ba, i)),
+                    17 => BsonValue::BTimeStamp(read_i64(ba, i)),
+                    18 => BsonValue::BInt64(read_i64(ba, i)),
+                    127 => BsonValue::BMaxKey,
+                    255 => BsonValue::BMinKey,
+                    _ => panic!("invalid BSON value type"),
+                };
+            Ok(bv)
+        }
+
+        fn read_8(ba: &[u8], i: &mut usize) -> [u8; 8] {
+            let a = extract_8(&ba[*i .. *i + 8]);
+            *i = *i + 8;
+            a
+        }
+
+        fn read_4(ba: &[u8], i: &mut usize) -> [u8; 4] {
+            let a = extract_4(&ba[*i .. *i + 4]);
+            *i = *i + 4;
+            a
+        }
+
+        fn read_i32(ba: &[u8], i: &mut usize) -> i32 {
+            i32_from_bytes_le(read_4(ba, i))
+        }
+
+        fn read_u32(ba: &[u8], i: &mut usize) -> u32 {
+            u32_from_bytes_le(read_4(ba, i))
+        }
+
+        fn read_i64(ba: &[u8], i: &mut usize) -> i64 {
+            i64_from_bytes_le(read_8(ba, i))
+        }
+
+        fn read_f64(ba: &[u8], i: &mut usize) -> f64 {
+            f64_from_bytes_le(read_8(ba, i))
+        }
+
+        fn read_deprecated_12(ba: &[u8], i: &mut usize) -> Result<BsonValue> {
+            // deprecated
+            let a = try!(read_bson_string(ba, i));
+            Ok(read_objectid(ba, i))
+        }
+
+        fn read_js(ba: &[u8], i: &mut usize) -> Result<BsonValue> {
+            let a = try!(read_bson_string(ba, i));
+            Ok(BsonValue::BJSCode(a))
+        }
+
+        fn read_js_with_scope(ba: &[u8], i: &mut usize) -> Result<BsonValue> {
+            // TODO the spec says the len here is a signed number, but that's silly
+            let len = read_u32(ba, i);
+
+            let a = try!(read_bson_string(ba, i));
+            let scope = try!(read_document(ba, i));
+            Ok(BsonValue::BJSCodeWithScope(a))
+        }
+
+        fn read_regex(ba: &[u8], i: &mut usize) -> Result<BsonValue> {
+            let expr = try!(read_cstring(ba, i));
+            let options = try!(read_cstring(ba, i));
+            Ok(BsonValue::BRegex(expr, options))
+        }
+
+        fn read_binary(ba: &[u8], i: &mut usize) -> BsonValue {
+            // TODO the spec says the len here is a signed number, but that's silly
+            let len = read_u32(ba, i) as usize;
+
+            let subtype = ba[*i];
+            *i = *i + 1;
+            let mut b = Vec::with_capacity(len);
+            b.push_all(&ba[*i .. *i + len]);
+            *i = *i + len;
+            BsonValue::BBinary(subtype, b.into_boxed_slice())
+        }
+
+        fn read_objectid(ba: &[u8], i: &mut usize) -> BsonValue {
+            let mut b = [0; 12];
+            b.clone_from_slice(&ba[*i .. *i + 12]);
+            *i = *i + 12;
+            BsonValue::BObjectID(b)
+        }
+
+        fn read_boolean(ba: &[u8], i: &mut usize) -> BsonValue {
+            let b = ba[*i] != 0;
+            *i = *i + 1;
+            BsonValue::BBoolean(b)
+        }
+
+        fn read_cstring(ba: &[u8], i: &mut usize) -> Result<String> {
+            let mut len = 0;
+            while ba[*i + len] != 0 {
+                len = len + 1;
+            }
+            let s = try!(std::str::from_utf8(&ba[*i .. *i + len]));
+            *i = *i + len + 1;
+            Ok(String::from_str(s))
+        }
+
+        fn read_bson_string(ba: &[u8], i: &mut usize) -> Result<String> {
+            // TODO the spec says the len here is a signed number, but that's silly
+            let len = read_u32(ba, i) as usize;
+
+            let s = try!(std::str::from_utf8(&ba[*i .. *i + len - 1]));
+            *i = *i + len;
+            Ok(String::from_str(s))
+        }
+
+        fn read_document_pairs(ba: &[u8], i: &mut usize) -> Result<Vec<(String, BsonValue)>> {
+            // TODO the spec says the len here is a signed number, but that's silly
+            let len = read_u32(ba, i) as usize;
+
+            let mut pairs = Vec::new();
+            while ba[*i] != 0 {
+                let valtype = ba[*i];
+                *i = *i + 1;
+                let k = try!(read_cstring(ba, i));
+                let v = try!(read_bson_value(ba, i, valtype));
+                pairs.push((k,v));
+            }
+            assert!(ba[*i] == 0);
+            *i = *i + 1;
+            // TODO verify len
+            Ok(pairs)
+        }
+
+        fn read_document(ba: &[u8], i: &mut usize) -> Result<BsonValue> {
+            let pairs = try!(read_document_pairs(ba, i));
+            Ok(BsonValue::BDocument(pairs))
+        }
+
+        fn read_array(ba: &[u8], i: &mut usize) -> Result<BsonValue> {
+            let pairs = try!(read_document_pairs(ba, i));
+            // TODO verify that the keys are correct, integers, ascending, etc?
+            let a = pairs.into_iter().map(|t| {
+                let (k,v) = t;
+                v
+            }).collect();
+            Ok(BsonValue::BArray(a))
+        }
+
+        let mut cur = 0;
+        let d = try!(read_document(w, &mut cur));
+        Ok(d)
     }
 }
 
