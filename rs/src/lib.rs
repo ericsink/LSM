@@ -605,6 +605,26 @@ pub mod utils {
         let res : io::Result<usize> = Ok(sofar);
         res
     }
+
+    pub fn read_4(strm: &mut Read) -> Result<[u8; 4]> {
+        let mut a = [0; 4];
+        let got = try!(ReadFully(strm, &mut a));
+        if got != 4 {
+            return Err(LsmError::CorruptFile("end of file at the wrong time"));
+        }
+        Ok(a)
+    }
+
+    pub fn read_u32_le(strm: &mut Read) -> Result<u32> {
+        let ba = try!(read_4(strm));
+        Ok(super::u32_from_bytes_le(ba))
+    }
+
+    pub fn read_i32_le(strm: &mut Read) -> Result<i32> {
+        let ba = try!(read_4(strm));
+        Ok(super::i32_from_bytes_le(ba))
+    }
+
 }
 
 mod bcmp {
@@ -991,6 +1011,164 @@ fn extract_8(v: &[u8]) -> [u8; 8]
     let mut a = [0; 8];
     copy_into(v, &mut a);
     a
+}
+
+fn slurp_8(ba: &[u8], i: &mut usize) -> [u8; 8] {
+    let a = extract_8(&ba[*i .. *i + 8]);
+    *i = *i + 8;
+    a
+}
+
+fn slurp_4(ba: &[u8], i: &mut usize) -> [u8; 4] {
+    let a = extract_4(&ba[*i .. *i + 4]);
+    *i = *i + 4;
+    a
+}
+
+fn slurp_i32_le(ba: &[u8], i: &mut usize) -> i32 {
+    i32_from_bytes_le(slurp_4(ba, i))
+}
+
+fn slurp_u32_le(ba: &[u8], i: &mut usize) -> u32 {
+    u32_from_bytes_le(slurp_4(ba, i))
+}
+
+fn slurp_i64_le(ba: &[u8], i: &mut usize) -> i64 {
+    i64_from_bytes_le(slurp_8(ba, i))
+}
+
+fn slurp_f64_le(ba: &[u8], i: &mut usize) -> f64 {
+    f64_from_bytes_le(slurp_8(ba, i))
+}
+
+fn slurp_cstring(ba: &[u8], i: &mut usize) -> Result<String> {
+    let mut len = 0;
+    while ba[*i + len] != 0 {
+        len = len + 1;
+    }
+    let s = try!(std::str::from_utf8(&ba[*i .. *i + len]));
+    *i = *i + len + 1;
+    Ok(String::from_str(s))
+}
+
+fn slurp_bson_string(ba: &[u8], i: &mut usize) -> Result<String> {
+    // TODO the spec says the len here is a signed number, but that's silly
+    let len = slurp_u32_le(ba, i) as usize;
+
+    let s = try!(std::str::from_utf8(&ba[*i .. *i + len - 1]));
+    *i = *i + len;
+    Ok(String::from_str(s))
+}
+
+fn slurp_bson_value(ba: &[u8], i: &mut usize, valtype: u8) -> Result<BsonValue> {
+    let bv =
+        match valtype {
+            1 => BsonValue::BDouble(slurp_f64_le(ba, i)),
+            2 => BsonValue::BString(try!(slurp_bson_string(ba, i))),
+            3 => try!(slurp_document(ba, i)),
+            4 => try!(slurp_array(ba, i)),
+            5 => slurp_binary(ba, i),
+            6 => BsonValue::BUndefined,
+            7 => slurp_objectid(ba, i),
+            8 => slurp_boolean(ba, i),
+            9 => BsonValue::BDateTime(slurp_i64_le(ba, i)),
+            10 => BsonValue::BNull,
+            11 => try!(slurp_regex(ba, i)),
+            12 => try!(slurp_deprecated_12(ba, i)),
+            13 => try!(slurp_js(ba, i)),
+            15 => try!(slurp_js_with_scope(ba, i)),
+            16 => BsonValue::BInt32(slurp_i32_le(ba, i)),
+            17 => BsonValue::BTimeStamp(slurp_i64_le(ba, i)),
+            18 => BsonValue::BInt64(slurp_i64_le(ba, i)),
+            127 => BsonValue::BMaxKey,
+            255 => BsonValue::BMinKey,
+            _ => panic!("invalid BSON value type"),
+        };
+    Ok(bv)
+}
+
+fn slurp_deprecated_12(ba: &[u8], i: &mut usize) -> Result<BsonValue> {
+    // deprecated
+    let a = try!(slurp_bson_string(ba, i));
+    Ok(slurp_objectid(ba, i))
+}
+
+fn slurp_js(ba: &[u8], i: &mut usize) -> Result<BsonValue> {
+    let a = try!(slurp_bson_string(ba, i));
+    Ok(BsonValue::BJSCode(a))
+}
+
+fn slurp_js_with_scope(ba: &[u8], i: &mut usize) -> Result<BsonValue> {
+    // TODO the spec says the len here is a signed number, but that's silly
+    let len = slurp_u32_le(ba, i);
+
+    let a = try!(slurp_bson_string(ba, i));
+    let scope = try!(slurp_document(ba, i));
+    Ok(BsonValue::BJSCodeWithScope(a))
+}
+
+fn slurp_regex(ba: &[u8], i: &mut usize) -> Result<BsonValue> {
+    let expr = try!(slurp_cstring(ba, i));
+    let options = try!(slurp_cstring(ba, i));
+    Ok(BsonValue::BRegex(expr, options))
+}
+
+fn slurp_binary(ba: &[u8], i: &mut usize) -> BsonValue {
+    // TODO the spec says the len here is a signed number, but that's silly
+    let len = slurp_u32_le(ba, i) as usize;
+
+    let subtype = ba[*i];
+    *i = *i + 1;
+    let mut b = Vec::with_capacity(len);
+    b.push_all(&ba[*i .. *i + len]);
+    *i = *i + len;
+    BsonValue::BBinary(subtype, b.into_boxed_slice())
+}
+
+fn slurp_objectid(ba: &[u8], i: &mut usize) -> BsonValue {
+    let mut b = [0; 12];
+    b.clone_from_slice(&ba[*i .. *i + 12]);
+    *i = *i + 12;
+    BsonValue::BObjectID(b)
+}
+
+fn slurp_boolean(ba: &[u8], i: &mut usize) -> BsonValue {
+    let b = ba[*i] != 0;
+    *i = *i + 1;
+    BsonValue::BBoolean(b)
+}
+
+fn slurp_document_pairs(ba: &[u8], i: &mut usize) -> Result<Vec<(String, BsonValue)>> {
+    // TODO the spec says the len here is a signed number, but that's silly
+    let len = slurp_u32_le(ba, i) as usize;
+
+    let mut pairs = Vec::new();
+    while ba[*i] != 0 {
+        let valtype = ba[*i];
+        *i = *i + 1;
+        let k = try!(slurp_cstring(ba, i));
+        let v = try!(slurp_bson_value(ba, i, valtype));
+        pairs.push((k,v));
+    }
+    assert!(ba[*i] == 0);
+    *i = *i + 1;
+    // TODO verify len
+    Ok(pairs)
+}
+
+fn slurp_document(ba: &[u8], i: &mut usize) -> Result<BsonValue> {
+    let pairs = try!(slurp_document_pairs(ba, i));
+    Ok(BsonValue::BDocument(pairs))
+}
+
+fn slurp_array(ba: &[u8], i: &mut usize) -> Result<BsonValue> {
+    let pairs = try!(slurp_document_pairs(ba, i));
+    // TODO verify that the keys are correct, integers, ascending, etc?
+    let a = pairs.into_iter().map(|t| {
+        let (k,v) = t;
+        v
+    }).collect();
+    Ok(BsonValue::BArray(a))
 }
 
 struct PageBuilder {
@@ -4992,6 +5170,7 @@ fn vec_push_c_string(v: &mut Vec<u8>, s: &str) {
 }
 
 fn vec_push_bson_string(v: &mut Vec<u8>, s: &str) {
+    // TODO i32 vs u32.  silly.
     v.push_all(&i32_to_bytes_le( (s.len() + 1) as i32 ));
     v.push_all(s.as_bytes());
     v.push(0);
@@ -5045,7 +5224,6 @@ impl BsonValue {
         }
     }
 
-    //#[cfg(bson)]
     pub fn to_bson(&self, w: &mut Vec<u8>) {
         match self {
             &BsonValue::BDouble(f) => w.push_all(&f64_to_bytes_le(f)),
@@ -5102,169 +5280,150 @@ impl BsonValue {
         }
     }
 
-    //#[cfg(bson)]
     pub fn from_bson(w: &[u8]) -> Result<BsonValue> {
-        fn read_bson_value(ba: &[u8], i: &mut usize, valtype: u8) -> Result<BsonValue> {
-            let bv =
-                match valtype {
-                    1 => BsonValue::BDouble(read_f64(ba, i)),
-                    2 => BsonValue::BString(try!(read_bson_string(ba, i))),
-                    3 => try!(read_document(ba, i)),
-                    4 => try!(read_array(ba, i)),
-                    5 => read_binary(ba, i),
-                    6 => BsonValue::BUndefined,
-                    7 => read_objectid(ba, i),
-                    8 => read_boolean(ba, i),
-                    9 => BsonValue::BDateTime(read_i64(ba, i)),
-                    10 => BsonValue::BNull,
-                    11 => try!(read_regex(ba, i)),
-                    12 => try!(read_deprecated_12(ba, i)),
-                    13 => try!(read_js(ba, i)),
-                    15 => try!(read_js_with_scope(ba, i)),
-                    16 => BsonValue::BInt32(read_i32(ba, i)),
-                    17 => BsonValue::BTimeStamp(read_i64(ba, i)),
-                    18 => BsonValue::BInt64(read_i64(ba, i)),
-                    127 => BsonValue::BMaxKey,
-                    255 => BsonValue::BMinKey,
-                    _ => panic!("invalid BSON value type"),
-                };
-            Ok(bv)
-        }
-
-        fn read_8(ba: &[u8], i: &mut usize) -> [u8; 8] {
-            let a = extract_8(&ba[*i .. *i + 8]);
-            *i = *i + 8;
-            a
-        }
-
-        fn read_4(ba: &[u8], i: &mut usize) -> [u8; 4] {
-            let a = extract_4(&ba[*i .. *i + 4]);
-            *i = *i + 4;
-            a
-        }
-
-        fn read_i32(ba: &[u8], i: &mut usize) -> i32 {
-            i32_from_bytes_le(read_4(ba, i))
-        }
-
-        fn read_u32(ba: &[u8], i: &mut usize) -> u32 {
-            u32_from_bytes_le(read_4(ba, i))
-        }
-
-        fn read_i64(ba: &[u8], i: &mut usize) -> i64 {
-            i64_from_bytes_le(read_8(ba, i))
-        }
-
-        fn read_f64(ba: &[u8], i: &mut usize) -> f64 {
-            f64_from_bytes_le(read_8(ba, i))
-        }
-
-        fn read_deprecated_12(ba: &[u8], i: &mut usize) -> Result<BsonValue> {
-            // deprecated
-            let a = try!(read_bson_string(ba, i));
-            Ok(read_objectid(ba, i))
-        }
-
-        fn read_js(ba: &[u8], i: &mut usize) -> Result<BsonValue> {
-            let a = try!(read_bson_string(ba, i));
-            Ok(BsonValue::BJSCode(a))
-        }
-
-        fn read_js_with_scope(ba: &[u8], i: &mut usize) -> Result<BsonValue> {
-            // TODO the spec says the len here is a signed number, but that's silly
-            let len = read_u32(ba, i);
-
-            let a = try!(read_bson_string(ba, i));
-            let scope = try!(read_document(ba, i));
-            Ok(BsonValue::BJSCodeWithScope(a))
-        }
-
-        fn read_regex(ba: &[u8], i: &mut usize) -> Result<BsonValue> {
-            let expr = try!(read_cstring(ba, i));
-            let options = try!(read_cstring(ba, i));
-            Ok(BsonValue::BRegex(expr, options))
-        }
-
-        fn read_binary(ba: &[u8], i: &mut usize) -> BsonValue {
-            // TODO the spec says the len here is a signed number, but that's silly
-            let len = read_u32(ba, i) as usize;
-
-            let subtype = ba[*i];
-            *i = *i + 1;
-            let mut b = Vec::with_capacity(len);
-            b.push_all(&ba[*i .. *i + len]);
-            *i = *i + len;
-            BsonValue::BBinary(subtype, b.into_boxed_slice())
-        }
-
-        fn read_objectid(ba: &[u8], i: &mut usize) -> BsonValue {
-            let mut b = [0; 12];
-            b.clone_from_slice(&ba[*i .. *i + 12]);
-            *i = *i + 12;
-            BsonValue::BObjectID(b)
-        }
-
-        fn read_boolean(ba: &[u8], i: &mut usize) -> BsonValue {
-            let b = ba[*i] != 0;
-            *i = *i + 1;
-            BsonValue::BBoolean(b)
-        }
-
-        fn read_cstring(ba: &[u8], i: &mut usize) -> Result<String> {
-            let mut len = 0;
-            while ba[*i + len] != 0 {
-                len = len + 1;
-            }
-            let s = try!(std::str::from_utf8(&ba[*i .. *i + len]));
-            *i = *i + len + 1;
-            Ok(String::from_str(s))
-        }
-
-        fn read_bson_string(ba: &[u8], i: &mut usize) -> Result<String> {
-            // TODO the spec says the len here is a signed number, but that's silly
-            let len = read_u32(ba, i) as usize;
-
-            let s = try!(std::str::from_utf8(&ba[*i .. *i + len - 1]));
-            *i = *i + len;
-            Ok(String::from_str(s))
-        }
-
-        fn read_document_pairs(ba: &[u8], i: &mut usize) -> Result<Vec<(String, BsonValue)>> {
-            // TODO the spec says the len here is a signed number, but that's silly
-            let len = read_u32(ba, i) as usize;
-
-            let mut pairs = Vec::new();
-            while ba[*i] != 0 {
-                let valtype = ba[*i];
-                *i = *i + 1;
-                let k = try!(read_cstring(ba, i));
-                let v = try!(read_bson_value(ba, i, valtype));
-                pairs.push((k,v));
-            }
-            assert!(ba[*i] == 0);
-            *i = *i + 1;
-            // TODO verify len
-            Ok(pairs)
-        }
-
-        fn read_document(ba: &[u8], i: &mut usize) -> Result<BsonValue> {
-            let pairs = try!(read_document_pairs(ba, i));
-            Ok(BsonValue::BDocument(pairs))
-        }
-
-        fn read_array(ba: &[u8], i: &mut usize) -> Result<BsonValue> {
-            let pairs = try!(read_document_pairs(ba, i));
-            // TODO verify that the keys are correct, integers, ascending, etc?
-            let a = pairs.into_iter().map(|t| {
-                let (k,v) = t;
-                v
-            }).collect();
-            Ok(BsonValue::BArray(a))
-        }
-
         let mut cur = 0;
-        let d = try!(read_document(w, &mut cur));
+        let d = try!(slurp_document(w, &mut cur));
         Ok(d)
     }
 }
+
+struct BsonMsgReply {
+    r_requestID : i32,
+    r_responseTo : i32,
+    r_responseFlags : i32,
+    r_cursorID : i64,
+    r_startingFrom : i32,
+    r_documents : Vec<BsonValue>,
+}
+
+struct BsonMsgQuery {
+    q_requestID : i32,
+    q_flags : i32,
+    q_fullCollectionName : String,
+    q_numberToSkip : i32,
+    q_numberToReturn : i32,
+    q_query : BsonValue,
+    q_returnFieldsSelector : Option<BsonValue>,
+}
+
+struct BsonMsgGetMore {
+    m_requestID : i32,
+    m_fullCollectionName : String,
+    m_numberToReturn : i32,
+    m_cursorID : i64,
+}
+
+struct BsonMsgKillCursors {
+    k_requestID : i32,
+    k_cursorIDs : Vec<i64>,
+}
+
+enum BsonClientMsg {
+    BsonMsgQuery(BsonMsgQuery),
+    BsonMsgGetMore(BsonMsgGetMore),
+    BsonMsgKillCursors(BsonMsgKillCursors),
+}
+
+impl BsonMsgReply {
+    fn encodeReply(&self) -> Box<[u8]> {
+        let mut w = Vec::new();
+        // length placeholder
+        w.push_all(&[0u8; 4]);
+        w.push_all(&i32_to_bytes_le(self.r_requestID));
+        w.push_all(&i32_to_bytes_le(self.r_responseTo));
+        w.push_all(&u32_to_bytes_le(1u32)); 
+        w.push_all(&i32_to_bytes_le(self.r_responseFlags));
+        w.push_all(&i64_to_bytes_le(self.r_cursorID));
+        w.push_all(&i32_to_bytes_le(self.r_startingFrom));
+        w.push_all(&u32_to_bytes_le(self.r_documents.len() as u32));
+        for doc in &self.r_documents {
+            doc.to_bson(&mut w);
+        }
+        copy_into(&u32_to_bytes_be(w.len() as u32), &mut w[0 .. 4]);
+        w.into_boxed_slice()
+    }
+}
+
+fn parseMessageFromClient(ba: &[u8]) -> Result<BsonClientMsg> {
+    let mut i = 0;
+    let (messageLength,requestID,resonseTo,opCode) = slurp_header(ba, &mut i);
+    match opCode {
+        2004 => {
+            let flags = slurp_i32_le(ba, &mut i);
+            let fullCollectionName = try!(slurp_cstring(ba, &mut i));
+            let numberToSkip = slurp_i32_le(ba, &mut i);
+            let numberToReturn = slurp_i32_le(ba, &mut i);
+            let query = try!(slurp_document(ba, &mut i));
+            let returnFieldsSelector = if i < ba.len() { Some(try!(slurp_document(ba, &mut i))) } else { None };
+
+            let msg = BsonMsgQuery {
+                q_requestID: requestID,
+                q_flags: flags,
+                q_fullCollectionName: fullCollectionName,
+                q_numberToSkip: numberToSkip,
+                q_numberToReturn: numberToReturn,
+                q_query: query,
+                q_returnFieldsSelector: returnFieldsSelector,
+            };
+            Ok(BsonClientMsg::BsonMsgQuery(msg))
+        },
+
+        2005 => {
+            let flags = slurp_i32_le(ba, &mut i);
+            let fullCollectionName = try!(slurp_cstring(ba, &mut i));
+            let numberToReturn = slurp_i32_le(ba, &mut i);
+            let cursorID = slurp_i64_le(ba, &mut i);
+
+            let msg = BsonMsgGetMore {
+                m_requestID: requestID,
+                m_fullCollectionName: fullCollectionName,
+                m_numberToReturn: numberToReturn,
+                m_cursorID: cursorID,
+            };
+            Ok(BsonClientMsg::BsonMsgGetMore(msg))
+        },
+
+        2007 => {
+            let flags = slurp_i32_le(ba, &mut i);
+            let numberOfCursorIDs = slurp_i32_le(ba, &mut i);
+            let mut cursorIDs = Vec::new();
+            for _ in 0 .. numberOfCursorIDs {
+                cursorIDs.push(slurp_i64_le(ba, &mut i));
+            }
+
+            let msg = BsonMsgKillCursors {
+                k_requestID: requestID,
+                k_cursorIDs: cursorIDs,
+            };
+            Ok(BsonClientMsg::BsonMsgKillCursors(msg))
+        },
+
+        _ => {
+            Err(LsmError::CorruptFile("unknown message opcode TODO"))
+        },
+    }
+}
+
+// TODO do these really need to be signed?
+fn slurp_header(ba: &[u8], i: &mut usize) -> (i32,i32,i32,i32) {
+    let messageLength = slurp_i32_le(ba, i);
+    let requestID = slurp_i32_le(ba, i);
+    let responseTo = slurp_i32_le(ba, i);
+    let opCode = slurp_i32_le(ba, i);
+    let v = (messageLength,requestID,responseTo,opCode);
+    v
+}
+
+fn readMessage(stream: &mut Read) -> Result<Box<[u8]>> {
+    let ba = try!(utils::read_4(stream));
+    let messageLength = u32_from_bytes_le(ba) as usize;
+    let mut msg = vec![0; messageLength]; 
+    copy_into(&ba, &mut msg[0 .. 4]);
+    let got = try!(utils::ReadFully(stream, &mut msg[4 .. messageLength]));
+    if got != messageLength - 4 {
+        return Err(LsmError::CorruptFile("end of file at the wrong time"));
+    }
+    Ok(msg.into_boxed_slice())
+}
+    
 
