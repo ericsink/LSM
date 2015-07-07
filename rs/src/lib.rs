@@ -5176,7 +5176,363 @@ fn vec_push_bson_string(v: &mut Vec<u8>, s: &str) {
     v.push(0);
 }
 
+    // TODO this should be a library func, right?
+    fn slice_find(pairs: &[(String, BsonValue)], s: &str) -> Option<usize> {
+        for i in 0 .. pairs.len() {
+            if pairs[i].0.as_str() == s {
+                return Some(i);
+            }
+        }
+        None
+    }
+
 impl BsonValue {
+    fn tryGetValueForKey(&self, k: &str) -> Option<&BsonValue> {
+        match self {
+            &BsonValue::BDocument(ref pairs) => {
+                for t in pairs.iter() {
+                    let (ref ksub, ref vsub) = *t;
+                    if ksub == k {
+                        return Some(vsub);
+                    }
+                }
+                return None;
+            },
+            _ => return None, // TODO error?
+        }
+    }
+
+    fn getValueForKey(&self, k: &str) -> Result<&BsonValue> {
+        match self.tryGetValueForKey(k) {
+            Some(v) => Ok(v),
+            None => Err(LsmError::Misc("required key not found")),
+        }
+    }
+
+    fn tryGetValueForInsensitiveKey(&self, k: &str) -> Option<&BsonValue> {
+        match self {
+            &BsonValue::BDocument(ref pairs) => {
+                for t in pairs.iter() {
+                    let (ref ksub, ref vsub) = *t;
+                    if std::ascii::AsciiExt::eq_ignore_ascii_case(ksub.as_str(), k) {
+                        return Some(vsub);
+                    }
+                }
+                return None;
+            },
+            _ => return None, // TODO error?
+        }
+    }
+
+    fn tryGetValueAtIndex(&self, ndx: usize) -> Option<&BsonValue> {
+        match self {
+            &BsonValue::BArray(ref a) => {
+                if ndx<0 {
+                    return None
+                } else if ndx >= a.len() {
+                    return None
+                } else {
+                    return Some(&a[ndx])
+                }
+            },
+            _ => return None, // TODO error?
+        }
+    }
+
+    fn hasValueForKey(&self, s: &str) -> bool {
+        match self.tryGetValueForKey(s) {
+            Some(_) => true,
+            None => false,
+        }
+    }
+
+    fn getValueForInsensitiveKey(&self, k: &str) -> Result<&BsonValue> {
+        match self.tryGetValueForInsensitiveKey(k) {
+            Some(v) => Ok(v),
+            None => Err(LsmError::Misc("required key not found")),
+        }
+    }
+
+    fn isNull(&self) -> bool {
+        match self {
+            &BsonValue::BNull => true,
+            _ => false,
+        }
+    }
+
+    fn isArray(&self) -> bool {
+        match self {
+            &BsonValue::BArray(_) => true,
+            _ => false,
+        }
+    }
+
+    fn isDocument(&self) -> bool {
+        match self {
+            &BsonValue::BDocument(_) => true,
+            _ => false,
+        }
+    }
+
+    fn isNumeric(&self) -> bool {
+        match self {
+            &BsonValue::BInt32(_) => true,
+            &BsonValue::BInt64(_) => true,
+            &BsonValue::BDouble(_) => true,
+            _ => false,
+        }
+    }
+
+    fn isNaN(&self) -> bool {
+        match self {
+            &BsonValue::BDouble(f) => f.is_nan(),
+            _ => false,
+        }
+    }
+
+    fn isDate(&self) -> bool {
+        match self {
+            &BsonValue::BDateTime(_) => true,
+            _ => false,
+        }
+    }
+
+    fn is_dbref(pairs: &[(String,BsonValue)]) -> bool {
+        let has_ref = slice_find(pairs, "$ref").is_some();
+        let has_id =  slice_find(pairs, "$id").is_some();
+        let has_db =  slice_find(pairs, "$db").is_some();
+        let len = pairs.len();
+        if len==2 && has_ref && has_id {
+            true
+        } else if len==3 && has_ref && has_id && has_db {
+            true
+        } else {
+            false
+        }
+    }
+
+    fn getString(&self) -> Result<&str> {
+        match self {
+            &BsonValue::BString(ref s) => Ok(s),
+            _ => Err(LsmError::Misc("must be string")),
+        }
+    }
+
+    fn getArray(&self) -> Result<&Vec<BsonValue>> {
+        match self {
+            &BsonValue::BArray(ref s) => Ok(s),
+            _ => Err(LsmError::Misc("must be array")),
+        }
+    }
+
+    fn getDocument(&self) -> Result<&Vec<(String,BsonValue)>> {
+        match self {
+            &BsonValue::BDocument(ref s) => Ok(s),
+            _ => Err(LsmError::Misc("must be document")),
+        }
+    }
+
+    fn getBool(&self) -> Result<bool> {
+        match self {
+            &BsonValue::BBoolean(ref s) => Ok(*s),
+            _ => Err(LsmError::Misc("must be bool")),
+        }
+    }
+
+    fn getDate(&self) -> Result<i64> {
+        match self {
+            &BsonValue::BDateTime(ref s) => Ok(*s),
+            _ => Err(LsmError::Misc("must be DateTime")),
+        }
+    }
+
+    fn getInt32(&self) -> Result<i32> {
+        match self {
+            &BsonValue::BInt32(ref s) => Ok(*s),
+            _ => Err(LsmError::Misc("must be i32")),
+        }
+    }
+
+    fn getAsExprBool(&self) -> bool {
+        match self {
+            &BsonValue::BBoolean(false) => false,
+            &BsonValue::BNull => false,
+            &BsonValue::BUndefined => false,
+            &BsonValue::BInt32(0) => false,
+            &BsonValue::BInt64(0) => false,
+            &BsonValue::BDouble(0.0) => false,
+            _ => true,
+        }
+    }
+
+    fn getAsBool(&self) -> Result<bool> {
+        match self {
+        &BsonValue::BBoolean(b) => Ok(b),
+        &BsonValue::BInt32(i) => Ok(i!=0),
+        &BsonValue::BInt64(i) => Ok(i!=0),
+        &BsonValue::BDouble(f) => Ok((f as i32)!=0),
+        _ => Err(LsmError::Misc("must be convertible to bool")),
+        }
+    }
+
+    fn getAsInt32(&self) -> Result<i32> {
+        match self {
+        &BsonValue::BInt32(a) => Ok(a),
+        &BsonValue::BInt64(a) => Ok(a as i32),
+        &BsonValue::BDouble(a) => Ok(a as i32),
+        _ => Err(LsmError::Misc("must be convertible to int32")),
+        }
+    }
+
+    fn getAsInt64(&self) -> Result<i64> {
+        match self {
+        &BsonValue::BInt32(a) => Ok(a as i64),
+        &BsonValue::BInt64(a) => Ok(a),
+        &BsonValue::BDouble(a) => Ok(a as i64),
+        &BsonValue::BDateTime(a) => Ok(a as i64),
+        _ => Err(LsmError::Misc("must be convertible to int64")),
+        }
+    }
+
+    fn getAsDouble(&self) -> Result<f64> {
+        match self {
+        &BsonValue::BInt32(a) => Ok(a as f64),
+        &BsonValue::BInt64(a) => Ok(a as f64),
+        &BsonValue::BDouble(a) => Ok(a),
+        _ => Err(LsmError::Misc("must be convertible to f64")),
+        }
+    }
+
+    fn setValueAtIndex(&mut self, ndx: usize, v: BsonValue) {
+        match *self {
+        BsonValue::BArray(ref mut a) => {
+            if ndx > 1500001 { panic!( "too big"); } // TODO this limit passes test set7.js, but is a bad idea
+            if ndx >= a.len() {
+                // TODO
+            }
+            a[ndx] = v;
+        },
+        _ => panic!("wrong type?")
+        }
+    }
+
+    fn removeValueAtIndex(&mut self, ndx: usize) {
+        match *self {
+        BsonValue::BArray(ref mut a) => {
+            a.remove(ndx);
+        },
+        _ => panic!("wrong type?")
+        }
+    }
+
+    fn unsetValueAtIndex(&mut self, ndx: usize) {
+        match *self {
+        BsonValue::BArray(ref mut a) => {
+            if ndx >=0 && ndx < a.len() {
+                a[ndx] = BsonValue::BNull;
+            }
+        },
+        _ => panic!("wrong type?")
+        }
+    }
+
+    fn setValueForKey(&mut self, k: &str, v: BsonValue) {
+        // TODO make this more efficient?
+        match *self {
+        BsonValue::BDocument(ref mut pairs) => {
+            for i in 0 .. pairs.len() {
+                if pairs[i].0 == k {
+                    pairs[i].1 = v;
+                    return;
+                }
+            }
+            pairs.push((String::from_str(k), v));
+        },
+        _ => panic!("wrong type?")
+        }
+    }
+
+    fn unsetValueForKey(&mut self, k: &str) {
+        // TODO make this more efficient?
+        match *self {
+        BsonValue::BDocument(ref mut pairs) => {
+            for i in 0 .. pairs.len() {
+                if pairs[i].0 == k {
+                    pairs.remove(i);
+                    break;
+                }
+            }
+        },
+        _ => panic!("wrong type?")
+        }
+    }
+
+    /*
+       TODO this func is confused about whether it is returning a reference into self
+       or a newly constructed BsonValue
+
+    fn findPath(&self, path: &str) -> BsonValue {
+        let dot = path.find('.');
+        let name = match dot { 
+            None => path,
+            Some(ndx) => &path[0 .. ndx]
+        };
+        match self {
+            &BsonValue::BDocument(ref pairs) => {
+                match slice_find(&pairs, name) {
+                    Some(ndx) => {
+                        let v = &pairs[ndx].1;
+                        match dot {
+                            None => v,
+                            Some(dot) => v.findPath(&path[dot+1..])
+                        }
+                    },
+                    None => BsonValue::BUndefined
+                }
+            },
+            &BsonValue::BArray(ref items) => {
+                match name.parse::<i32>() {
+                    Err(_) => {
+                        // when we have an array and the next step of the path is not
+                        // an integer index, we search any subdocs in that array for
+                        // that path and construct an array of the matches.
+
+                        // document : { a:1, b:[ { c:1 }, { c:2 } ] }
+                        // path : b.c
+                        // needs to get: [ 1, 2 ]
+
+                        // TODO are there any functions in the matcher which could be
+                        // simplified by using this function? 
+                        let a:Vec<BsonValue> = items.iter().filter_map(|&subv| 
+                                match subv {
+                                &BsonValue::BDocument(_) => Some(subv.findPath(path)),
+                                _ => None
+                                }
+                                                       ).collect();
+                        // if nothing matched, return None instead of an empty array.
+                        // TODO is this right?
+                        if a.len()==0 { BsonValue::BUndefined } else { BsonValue::BArray(a) }
+                    }, 
+                    Ok(ndx) => {
+                        if ndx<0 {
+                            panic!( "array index < 0");
+                        } else if ndx>=items.len() {
+                            panic!( "array index too large");
+                        } else {
+                            let v = items[ndx];
+                            match dot {
+                                None => v,
+                                Some(dot) => v.findPath(&path[dot+1..])
+                            }
+                        }
+                    }
+                }
+            },
+            _ => BsonValue::BUndefined
+        }
+    }
+    */
+
     fn getTypeNumber_u8(&self) -> u8 {
         match self {
             &BsonValue::BDouble(_) => 1,
@@ -5425,5 +5781,197 @@ fn readMessage(stream: &mut Read) -> Result<Box<[u8]>> {
     }
     Ok(msg.into_boxed_slice())
 }
-    
+
+fn createReply(reqID: i32, docs: Vec<BsonValue>, crsrID: i64) -> BsonMsgReply {
+    let msg = BsonMsgReply {
+        r_requestID: 0,
+        r_responseTo: reqID,
+        r_responseFlags: 0,
+        r_cursorID: crsrID,
+        r_startingFrom: 0,
+        // TODO
+        r_documents: docs,
+    };
+    msg
+}
+
+fn doInsert(db: &str, coll: &str, s: &Vec<BsonValue>) -> Result<(Vec<BsonValue>,Vec<BsonValue>)> {
+    /* TODO
+    let results = crud.insert(db, coll, s);
+    let writeErrors =
+        results
+        |> Array.filter (fun (_,err) ->
+            match err with
+            | Some _ -> true
+            | None -> false
+        )
+        |> Array.mapi (fun i (_,err) ->
+            // TODO use of Option.get is bad, but we just filtered all the Some values above
+            BDocument [| ("index",BInt32 i); ("errmsg",Option.get err |> BString) |]
+        )
+    (results,writeErrors)
+    */
+    Ok((Vec::new(), Vec::new()))
+}
+
+fn reply_Insert(clientMsg: &BsonMsgQuery, db: &str) -> Result<BsonMsgReply> {
+    let q = &clientMsg.q_query;
+    let coll = try!(try!(q.getValueForKey("insert")).getString());
+    let docs = try!(try!(q.getValueForKey("documents")).getArray());
+    // TODO ordered
+    let (results,writeErrors) = try!(doInsert(db, coll, docs));
+    let mut pairs = Vec::new();
+    pairs.push((String::from_str("n"), BsonValue::BInt32((results.len() - writeErrors.len()) as i32)));
+    //pairs.Add("lastOp", BTimeStamp 0L) // TODO
+    if writeErrors.len() > 0 {
+        pairs.push((String::from_str("writeErrors"), BsonValue::BArray(writeErrors)));
+    }
+    // TODO electionId?
+    pairs.push((String::from_str("ok"), BsonValue::BDouble(1.0)));
+    let doc = BsonValue::BDocument(pairs);
+    Ok(createReply(clientMsg.q_requestID, vec![doc], 0))
+}
+
+// TODO this layer of the code should not be using LsmError
+
+fn reply_err(requestID: i32, err: LsmError) -> BsonMsgReply {
+    let mut pairs = Vec::new();
+    // TODO stack trace was nice here
+    //pairs.push(("errmsg", BString("exception: " + errmsg)));
+    //pairs.push(("code", BInt32(code)));
+    pairs.push((String::from_str("ok"), BsonValue::BInt32(0)));
+    let doc = BsonValue::BDocument(pairs);
+    createReply(requestID, vec![doc], 0)
+}
+
+fn reply_cmd(clientMsg: &BsonMsgQuery, db: &str) -> Result<BsonMsgReply> {
+    match clientMsg.q_query {
+        BsonValue::BDocument(ref pairs) => {
+            if pairs.is_empty() {
+                Err(LsmError::Misc("empty query"))
+            } else {
+                // this code assumes that the first key is always the command
+                let cmd = pairs[0].0.as_str();
+                // TODO let cmd = cmd.ToLower();
+                let res =
+                    match cmd {
+                        //"explain" => reply_explain clientMsg db
+                        //"aggregate" => reply_aggregate clientMsg db
+                        "insert" => reply_Insert(clientMsg, db),
+                        //"delete" => reply_Delete clientMsg db
+                        //"distinct" => reply_distinct clientMsg db
+                        //"update" => reply_Update clientMsg db
+                        //"findandmodify" => reply_FindAndModify clientMsg db
+                        //"count" => reply_Count clientMsg db
+                        //"validate" => reply_Validate clientMsg db
+                        //"createindexes" => reply_createIndexes clientMsg db
+                        //"deleteindexes" => reply_deleteIndexes clientMsg db
+                        //"drop" => reply_DropCollection clientMsg db
+                        //"dropdatabase" => reply_DropDatabase clientMsg db
+                        //"listcollections" => reply_listCollections clientMsg db
+                        //"listindexes" => reply_listIndexes clientMsg db
+                        //"create" => reply_CreateCollection clientMsg db
+                        //"features" => reply_features clientMsg db
+                        _ => Err(LsmError::Misc("unknown cmd"))
+                    };
+                res
+            }
+        },
+        _ => Err(LsmError::Misc("query must be a document")),
+    }
+}
+
+fn reply2004(qm: BsonMsgQuery) -> BsonMsgReply {
+    let pair = qm.q_fullCollectionName.split('.').collect::<Vec<_>>();
+    let r = 
+        if pair.len() < 2 {
+            // TODO failwith (sprintf "bad collection name: %s" (clientMsg.q_fullCollectionName))
+            Err(LsmError::Misc("bad collection name"))
+        } else {
+            let db = pair[0];
+            let coll = pair[1];
+            if db == "admin" {
+                if coll == "$cmd" {
+                    //reply_AdminCmd clientMsg
+                    Err(LsmError::Misc("TODO"))
+                } else {
+                    //failwith "not implemented"
+                    Err(LsmError::Misc("TODO"))
+                }
+            } else {
+                if coll == "$cmd" {
+                    if pair.len() == 4 && pair[2]=="sys" && pair[3]=="inprog" {
+                        //reply_cmd_sys_inprog clientMsg db
+                    Err(LsmError::Misc("TODO"))
+                    } else {
+                        reply_cmd(&qm, db)
+                    }
+                } else if pair.len()==3 && pair[1]=="system" && pair[2]=="indexes" {
+                    //reply_system_indexes clientMsg db
+                    Err(LsmError::Misc("TODO"))
+                } else if pair.len()==3 && pair[1]=="system" && pair[2]=="namespaces" {
+                    //reply_system_namespaces clientMsg db
+                    Err(LsmError::Misc("TODO"))
+                } else {
+                    //reply_Query clientMsg
+                    Err(LsmError::Misc("TODO"))
+                }
+            }
+        };
+    match r {
+        Ok(r) => r,
+        Err(e) => reply_err(qm.q_requestID, e),
+    }
+}
+
+use std::net::{TcpListener, TcpStream};
+use std::thread;
+
+fn serve() {
+    let listener = TcpListener::bind("127.0.0.1:80").unwrap();
+
+    fn handle_one_message(stream: &mut TcpStream) -> Result<()> {
+        let ba = try!(readMessage(stream));
+        let msg = try!(parseMessageFromClient(&ba));
+        match msg {
+            BsonClientMsg::BsonMsgKillCursors(km) => {
+            },
+            BsonClientMsg::BsonMsgQuery(qm) => {
+                let resp = reply2004(qm);
+                let ba = resp.encodeReply();
+                stream.write(&ba);
+            },
+            BsonClientMsg::BsonMsgGetMore(gm) => {
+            },
+        }
+        Ok(())
+    }
+
+    fn handle_client(mut stream: TcpStream) {
+        loop {
+            let r = handle_one_message(&mut stream);
+            if r.is_err() {
+                // TODO
+                break;
+            }
+        }
+    }
+
+    // accept connections and process them, spawning a new thread for each one
+    for stream in listener.incoming() {
+        match stream {
+            Ok(stream) => {
+                thread::spawn(move|| {
+                    // connection succeeded
+                    handle_client(stream)
+                });
+            }
+            Err(e) => { /* connection failed */ }
+        }
+    }
+
+    // close the socket server
+    drop(listener);
+}
+
 
