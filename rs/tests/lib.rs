@@ -1,5 +1,6 @@
 
 #![feature(collections)]
+#![feature(vec_push_all)]
 
 extern crate lsm;
 

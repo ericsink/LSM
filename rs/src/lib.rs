@@ -20,6 +20,10 @@
 #![feature(convert)]
 #![feature(collections_drain)]
 #![feature(associated_consts)]
+#![feature(vec_push_all)]
+#![feature(clone_from_slice)]
+#![feature(drain)]
+#![feature(iter_arith)]
 
 // TODO turn the following warnings back on later
 #![allow(non_snake_case)]
