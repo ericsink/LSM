@@ -5978,4 +5978,45 @@ fn serve() {
     drop(listener);
 }
 
+trait ElmoWriter {
+    // TODO database
+    // TODO collection
+    fn insert(&self, v: BsonValue) -> Result<()>;
+    fn update(&self, v: BsonValue) -> Result<()>;
+    fn delete(&self, v: BsonValue) -> Result<bool>;
+    // TODO getSelect
+    // TODO getIndexes
+    fn commit(&self) -> Result<()>;
+    fn rollback(&self) -> Result<()>;
+}
+
+trait ElmoStorage {
+    fn createCollection(&self, db: &str, coll: &str, options: BsonValue) -> Result<bool>;
+    fn beginWrite(&self, db: &str, coll: &str) -> Result<Box<ElmoWriter>>;
+}
+
+#[cfg(TODO)]
+mod kv {
+    extern crate sqlite3;
+
+    struct ConnStuff {
+        conn: sqlite3::DatabaseConnection,
+    }
+
+    //#[cfg(TODO)]
+    impl super::ElmoStorage for ConnStuff {
+    }
+
+    fn connect() -> sqlite3::SqliteResult<()> {
+        // TODO allow a different filename to be specified
+        let access = sqlite3::access::ByFilename { flags: sqlite3::access::flags::OPEN_READWRITE, filename: "elmodata.db" };
+        let mut conn = try!(sqlite3::DatabaseConnection::new(access));
+        try!(conn.exec("PRAGMA journal_mode=WAL"));
+        try!(conn.exec("PRAGMA foreign_keys=ON"));
+        try!(conn.exec("CREATE TABLE IF NOT EXISTS \"collections\" (dbName TEXT NOT NULL, collName TEXT NOT NULL, options BLOB NOT NULL, PRIMARY KEY (dbName,collName))"));
+        try!(conn.exec("CREATE TABLE IF NOT EXISTS \"indexes\" (dbName TEXT NOT NULL, collName TEXT NOT NULL, ndxName TEXT NOT NULL, spec BLOB NOT NULL, options BLOB NOT NULL, PRIMARY KEY (dbName, collName, ndxName), FOREIGN KEY (dbName,collName) REFERENCES \"collections\" ON DELETE CASCADE ON UPDATE CASCADE, UNIQUE (spec,dbName,collName))"));
+
+        Ok(())
+    }
+}
 
