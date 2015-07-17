@@ -31,7 +31,7 @@
 
 extern crate misc;
 
-use misc::endian::*;
+use misc::endian;
 use misc::bufndx;
 use misc::varint;
 
@@ -708,7 +708,7 @@ impl PageBuilder {
     fn PutInt32(&mut self, ov: u32) {
         let at = self.cur;
         // TODO just self.buf?  instead of making 4-byte slice.
-        misc::bytes::copy_into(&u32_to_bytes_be(ov), &mut self.buf[at .. at + SIZE_32]);
+        misc::bytes::copy_into(&endian::u32_to_bytes_be(ov), &mut self.buf[at .. at + SIZE_32]);
         self.cur = self.cur + SIZE_32;
     }
 
@@ -717,7 +717,7 @@ impl PageBuilder {
         let at = len - 2 * SIZE_32;
         if self.cur > at { panic!("SetSecondToLastInt32 is squashing data"); }
         // TODO just self.buf?  instead of making 4-byte slice.
-        misc::bytes::copy_into(&u32_to_bytes_be(page), &mut self.buf[at .. at + SIZE_32]);
+        misc::bytes::copy_into(&endian::u32_to_bytes_be(page), &mut self.buf[at .. at + SIZE_32]);
     }
 
     fn SetLastInt32(&mut self, page: u32) {
@@ -725,13 +725,13 @@ impl PageBuilder {
         let at = len - 1 * SIZE_32;
         if self.cur > at { panic!("SetLastInt32 is squashing data"); }
         // TODO just self.buf?  instead of making 4-byte slice.
-        misc::bytes::copy_into(&u32_to_bytes_be(page), &mut self.buf[at .. at + SIZE_32]);
+        misc::bytes::copy_into(&endian::u32_to_bytes_be(page), &mut self.buf[at .. at + SIZE_32]);
     }
 
     fn PutInt16(&mut self, ov: u16) {
         let at = self.cur;
         // TODO just self.buf?  instead of making 2-byte slice.
-        misc::bytes::copy_into(&u16_to_bytes_be(ov), &mut self.buf[at .. at + SIZE_16]);
+        misc::bytes::copy_into(&endian::u16_to_bytes_be(ov), &mut self.buf[at .. at + SIZE_16]);
         self.cur = self.cur + SIZE_16;
     }
 
@@ -790,13 +790,13 @@ impl PageBuffer {
         // TODO just self.buf?  instead of making 4-byte slice.
         let a = misc::bytes::extract_4(&self.buf[at .. at + SIZE_32]);
         *cur = *cur + SIZE_32;
-        u32_from_bytes_be(a)
+        endian::u32_from_bytes_be(a)
     }
 
     fn GetInt32At(&self, at: usize) -> u32 {
         // TODO just self.buf?  instead of making 4-byte slice.
         let a = misc::bytes::extract_4(&self.buf[at .. at + SIZE_32]);
-        u32_from_bytes_be(a)
+        endian::u32_from_bytes_be(a)
     }
 
     fn CheckPageFlag(&self, f: u8) -> bool {
@@ -819,7 +819,7 @@ impl PageBuffer {
         let at = *cur;
         // TODO just self.buf?  instead of making 2-byte slice.
         let a = misc::bytes::extract_2(&self.buf[at .. at + SIZE_16]);
-        let r = u16_from_bytes_be(a);
+        let r = endian::u16_from_bytes_be(a);
         *cur = *cur + SIZE_16;
         r
     }
@@ -2338,7 +2338,7 @@ impl myOverflowReadStream {
         let at = self.buf.len() - SIZE_32;
         // TODO just self.buf?  instead of making 4-byte slice.
         let a = misc::bytes::extract_4(&self.buf[at .. at+4]);
-        u32_from_bytes_be(a)
+        endian::u32_from_bytes_be(a)
     }
 
     fn PageType(&self) -> Result<PageType> {
@@ -4455,17 +4455,17 @@ impl BsonMsgReply {
         let mut w = Vec::new();
         // length placeholder
         w.push_all(&[0u8; 4]);
-        w.push_all(&i32_to_bytes_le(self.r_requestID));
-        w.push_all(&i32_to_bytes_le(self.r_responseTo));
-        w.push_all(&u32_to_bytes_le(1u32)); 
-        w.push_all(&i32_to_bytes_le(self.r_responseFlags));
-        w.push_all(&i64_to_bytes_le(self.r_cursorID));
-        w.push_all(&i32_to_bytes_le(self.r_startingFrom));
-        w.push_all(&u32_to_bytes_le(self.r_documents.len() as u32));
+        w.push_all(&endian::i32_to_bytes_le(self.r_requestID));
+        w.push_all(&endian::i32_to_bytes_le(self.r_responseTo));
+        w.push_all(&endian::u32_to_bytes_le(1u32)); 
+        w.push_all(&endian::i32_to_bytes_le(self.r_responseFlags));
+        w.push_all(&endian::i64_to_bytes_le(self.r_cursorID));
+        w.push_all(&endian::i32_to_bytes_le(self.r_startingFrom));
+        w.push_all(&endian::u32_to_bytes_le(self.r_documents.len() as u32));
         for doc in &self.r_documents {
             doc.to_bson(&mut w);
         }
-        misc::bytes::copy_into(&u32_to_bytes_be(w.len() as u32), &mut w[0 .. 4]);
+        misc::bytes::copy_into(&endian::u32_to_bytes_be(w.len() as u32), &mut w[0 .. 4]);
         w.into_boxed_slice()
     }
 }
@@ -4542,7 +4542,7 @@ fn slurp_header(ba: &[u8], i: &mut usize) -> (i32,i32,i32,i32) {
 
 fn readMessage(stream: &mut Read) -> Result<Box<[u8]>> {
     let ba = try!(misc::io::read_4(stream));
-    let messageLength = u32_from_bytes_le(ba) as usize;
+    let messageLength = endian::u32_from_bytes_le(ba) as usize;
     let mut msg = vec![0; messageLength]; 
     misc::bytes::copy_into(&ba, &mut msg[0 .. 4]);
     let got = try!(misc::io::read_fully(stream, &mut msg[4 .. messageLength]));
