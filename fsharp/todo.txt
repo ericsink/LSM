@@ -1,0 +1,59 @@
+
+writeOverflow could maybe be smarter in cases where the
+data is coming from a byte[] or even from a stream where
+length works?
+
+what if a zero-length value gets overflowed?
+
+seek in myOverflowReadStream
+
+still lots of automerge issues
+
+opencursor issues, info for optimistic merge
+
+more test cases
+
+hooks for page level encryption plugins
+
+need to actually design the file header
+    checksums for data integrity
+    format version number
+
+do we need IDatabase if there is only one implementation
+of it?  same for IWriteLock.  no.  rs version eliminates
+them.
+
+range splitting
+
+fractional cascading
+
+range deletes.  graveyard.
+
+bloom filters?
+
+try to improve the performance of multicursor.  more like
+rs version?
+
+lz4 stream
+
+experiment with inline for certain functions
+
+consider nessos streams instead of seq<kvp> ?
+
+need something to make sure that only one Database object
+exists for a given file
+
+chg fs version to have multicursor assume segment cursor subs,
+and livecursor assume multicursor sub.
+
+#if integrity_checks
+
+look at reducing memory allocations in writeLeaves.  (done?)
+
+still concerned about how much we are copying byte[] for keys
+
+what are the embedded pointers in the runs in SQLite4 LSM?
+
+create shorter synthetic keys in the parent nodes?
+
+

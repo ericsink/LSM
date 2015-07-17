@@ -7,6 +7,11 @@ storage layer of SQLite4.
 
 This is not ready for production use.
 
+UPDATE:  Since this README was written, this repo changed a bit, and
+the README has not been updated.  I ported the F# implementation to Rust.
+The F# code is still here, in the "fsharp" directory.  The stuff at the
+top level is the Rust implementation.
+
 # What is a log structured merge tree?
 
 The basic idea of an LSM tree is that a database is implemented as

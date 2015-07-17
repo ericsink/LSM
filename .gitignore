@@ -5,6 +5,8 @@
 */*/obj/**
 */*/*/bin/**
 */*/*/obj/**
+*/*/*/*/bin/**
+*/*/*/*/obj/**
 *.userprefs
-/packages/**
+/fsharp/packages/**
 
