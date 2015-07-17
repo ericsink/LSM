@@ -1,15 +1,11 @@
 [package]
 
-name = "lsm"
+name = "bson"
 version = "0.0.1"
 authors = [ "Eric Sink <eric@zumero.com>" ]
 
 [dependencies.misc]
 path = "../misc"
-
-# TODO remove this
-[dependencies.bson]
-path = "../bson"
 
 # The testing profile, used for `cargo test`
 [profile.test]

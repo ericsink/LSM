@@ -211,9 +211,8 @@ pub fn u16_from_bytes_be(a: [u8; 2]) -> u16 {
 
 pub mod bytes {
 
-    // TODO pub?
     #[inline]
-    fn copy_into(src: &[u8], dst: &mut [u8]) {
+    pub fn copy_into(src: &[u8], dst: &mut [u8]) {
         let len = dst.clone_from_slice(src);
         assert_eq!(len, src.len());
     }

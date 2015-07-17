@@ -13,3 +13,4 @@ Cargo.lock
 /lsm/target
 /misc/target
 /lsm/tmp
+/bson/target
