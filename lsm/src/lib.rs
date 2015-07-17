@@ -29,6 +29,12 @@
 #![allow(non_snake_case)]
 #![allow(non_camel_case_types)]
 
+extern crate misc;
+
+use misc::endian::*;
+use misc::bufndx;
+use misc::varint;
+
 use std::io;
 use std::io::Seek;
 use std::io::Read;
@@ -432,23 +438,6 @@ pub enum SeekOp {
     SEEK_GE = 2,
 }
 
-// This code was ported from F# which assumes that any Stream
-// that supports Seek also can give you its Length.  That method
-// isn't part of the Seek trait, but this implementation should
-// suffice.
-fn seek_len<R>(fs: &mut R) -> io::Result<u64> where R : Seek {
-    // remember where we started (like Tell)
-    let pos = try!(fs.seek(SeekFrom::Current(0)));
-
-    // seek to the end
-    let len = try!(fs.seek(SeekFrom::End(0)));
-
-    // restore to where we were
-    let _ = try!(fs.seek(SeekFrom::Start(pos)));
-
-    Ok(len)
-}
-
 struct CursorIterator<'a> {
     csr: MultiCursor<'a>
 }
@@ -582,6 +571,7 @@ pub mod utils {
     use super::PageNum;
     use super::LsmError;
     use super::Result;
+    use super::misc;
 
     pub fn SeekPage(strm: &mut Seek, pgsz: usize, pageNumber: PageNum) -> Result<u64> {
         if 0==pageNumber { 
@@ -590,43 +580,6 @@ pub mod utils {
         let pos = ((pageNumber as u64) - 1) * (pgsz as u64);
         let v = try!(strm.seek(SeekFrom::Start(pos)));
         Ok(v)
-    }
-
-    pub fn ReadFully(strm: &mut Read, buf: &mut [u8]) -> io::Result<usize> {
-        let mut sofar = 0;
-        let len = buf.len();
-        loop {
-            let cur = &mut buf[sofar..len];
-            let n = try!(strm.read(cur));
-            if n==0 {
-                break;
-            }
-            sofar += n;
-            if sofar==len {
-                break;
-            }
-        }
-        let res : io::Result<usize> = Ok(sofar);
-        res
-    }
-
-    pub fn read_4(strm: &mut Read) -> Result<[u8; 4]> {
-        let mut a = [0; 4];
-        let got = try!(ReadFully(strm, &mut a));
-        if got != 4 {
-            return Err(LsmError::CorruptFile("end of file at the wrong time"));
-        }
-        Ok(a)
-    }
-
-    pub fn read_u32_le(strm: &mut Read) -> Result<u32> {
-        let ba = try!(read_4(strm));
-        Ok(super::u32_from_bytes_le(ba))
-    }
-
-    pub fn read_i32_le(strm: &mut Read) -> Result<i32> {
-        let ba = try!(read_4(strm));
-        Ok(super::i32_from_bytes_le(ba))
     }
 
 }
@@ -670,509 +623,10 @@ mod bcmp {
     }
 }
 
-mod Varint {
-    // TODO this doesn't need to be usize.  u8 is enough.
-    pub fn SpaceNeededFor(v: u64) -> usize {
-        if v<=240 { 1 }
-        else if v<=2287 { 2 }
-        else if v<=67823 { 3 }
-        else if v<=16777215 { 4 }
-        else if v<=4294967295 { 5 }
-        else if v<=1099511627775 { 6 }
-        else if v<=281474976710655 { 7 }
-        else if v<=72057594037927935 { 8 }
-        else { 9 }
-    }
-
-    // TODO stronger inline hint?
-    pub fn read(buf: &[u8], cur: &mut usize) -> u64 {
-        let c = *cur;
-        let a0 = buf[c] as u64;
-        if a0 <= 240u64 { 
-            *cur = *cur + 1;
-            a0
-        } else if a0 <= 248u64 {
-            let a1 = buf[c+1] as u64;
-            let r = 240u64 + 256u64 * (a0 - 241u64) + a1;
-            *cur = *cur + 2;
-            r
-        } else if a0 == 249u64 {
-            let a1 = buf[c+1] as u64;
-            let a2 = buf[c+2] as u64;
-            let r = 2288u64 + 256u64 * a1 + a2;
-            *cur = *cur + 3;
-            r
-        } else if a0 == 250u64 {
-            let a1 = buf[c+1] as u64;
-            let a2 = buf[c+2] as u64;
-            let a3 = buf[c+3] as u64;
-            let r = (a1 << 16) | (a2 << 8) | a3;
-            *cur = *cur + 4;
-            r
-        } else if a0 == 251u64 {
-            let a1 = buf[c+1] as u64;
-            let a2 = buf[c+2] as u64;
-            let a3 = buf[c+3] as u64;
-            let a4 = buf[c+4] as u64;
-            let r = (a1 << 24) | (a2 << 16) | (a3 << 8) | a4;
-            *cur = *cur + 5;
-            r
-        } else if a0 == 252u64 {
-            let a1 = buf[c+1] as u64;
-            let a2 = buf[c+2] as u64;
-            let a3 = buf[c+3] as u64;
-            let a4 = buf[c+4] as u64;
-            let a5 = buf[c+5] as u64;
-            let r = (a1 << 32) | (a2 << 24) | (a3 << 16) | (a4 << 8) | a5;
-            *cur = *cur + 6;
-            r
-        } else if a0 == 253u64 {
-            let a1 = buf[c+1] as u64;
-            let a2 = buf[c+2] as u64;
-            let a3 = buf[c+3] as u64;
-            let a4 = buf[c+4] as u64;
-            let a5 = buf[c+5] as u64;
-            let a6 = buf[c+6] as u64;
-            let r = (a1 << 40) | (a2 << 32) | (a3 << 24) | (a4 << 16) | (a5 << 8) | a6;
-            *cur = *cur + 7;
-            r
-        } else if a0 == 254u64 {
-            let a1 = buf[c+1] as u64;
-            let a2 = buf[c+2] as u64;
-            let a3 = buf[c+3] as u64;
-            let a4 = buf[c+4] as u64;
-            let a5 = buf[c+5] as u64;
-            let a6 = buf[c+6] as u64;
-            let a7 = buf[c+7] as u64;
-            let r = (a1 << 48) | (a2 << 40) | (a3 << 32) | (a4 << 24) | (a5 << 16) | (a6 << 8) | a7;
-            *cur = *cur + 8;
-            r
-        } else {
-            let a1 = buf[c+1] as u64;
-            let a2 = buf[c+2] as u64;
-            let a3 = buf[c+3] as u64;
-            let a4 = buf[c+4] as u64;
-            let a5 = buf[c+5] as u64;
-            let a6 = buf[c+6] as u64;
-            let a7 = buf[c+7] as u64;
-            let a8 = buf[c+8] as u64;
-            let r = (a1 << 56) | (a2 << 48) | (a3 << 40) | (a4 << 32) | (a5 << 24) | (a6 << 16) | (a7 << 8) | a8;
-            *cur = *cur + 9;
-            r
-        }
-    }
-
-    pub fn write(buf: &mut [u8], cur: &mut usize, v: u64) {
-        let c = *cur;
-        if v<=240u64 { 
-            buf[c] = v as u8;
-            *cur = *cur + 1;
-        } else if v<=2287u64 { 
-            buf[c] = ((v - 240u64) / 256u64 + 241u64) as u8;
-            buf[c+1] = ((v - 240u64) % 256u64) as u8;
-            *cur = *cur + 2;
-        } else if v<=67823u64 { 
-            buf[c] = 249u8;
-            buf[c+1] = ((v - 2288u64) / 256u64) as u8;
-            buf[c+2] = ((v - 2288u64) % 256u64) as u8;
-            *cur = *cur + 3;
-        } else if v<=16777215u64 { 
-            buf[c] = 250u8;
-            buf[c+1] = (v >> 16) as u8;
-            buf[c+2] = (v >>  8) as u8;
-            buf[c+3] = (v >>  0) as u8;
-            *cur = *cur + 4;
-        } else if v<=4294967295u64 { 
-            buf[c] = 251u8;
-            buf[c+1] = (v >> 24) as u8;
-            buf[c+2] = (v >> 16) as u8;
-            buf[c+3] = (v >>  8) as u8;
-            buf[c+4] = (v >>  0) as u8;
-            *cur = *cur + 5;
-        } else if v<=1099511627775u64 { 
-            buf[c] = 252u8;
-            buf[c+1] = (v >> 32) as u8;
-            buf[c+2] = (v >> 24) as u8;
-            buf[c+3] = (v >> 16) as u8;
-            buf[c+4] = (v >>  8) as u8;
-            buf[c+5] = (v >>  0) as u8;
-            *cur = *cur + 6;
-        } else if v<=281474976710655u64 { 
-            buf[c] = 253u8;
-            buf[c+1] = (v >> 40) as u8;
-            buf[c+2] = (v >> 32) as u8;
-            buf[c+3] = (v >> 24) as u8;
-            buf[c+4] = (v >> 16) as u8;
-            buf[c+5] = (v >>  8) as u8;
-            buf[c+6] = (v >>  0) as u8;
-            *cur = *cur + 7;
-        } else if v<=72057594037927935u64 { 
-            buf[c] = 254u8;
-            buf[c+1] = (v >> 48) as u8;
-            buf[c+2] = (v >> 40) as u8;
-            buf[c+3] = (v >> 32) as u8;
-            buf[c+4] = (v >> 24) as u8;
-            buf[c+5] = (v >> 16) as u8;
-            buf[c+6] = (v >>  8) as u8;
-            buf[c+7] = (v >>  0) as u8;
-            *cur = *cur + 8;
-        } else {
-            buf[c] = 255u8;
-            buf[c+1] = (v >> 56) as u8;
-            buf[c+2] = (v >> 48) as u8;
-            buf[c+3] = (v >> 40) as u8;
-            buf[c+4] = (v >> 32) as u8;
-            buf[c+5] = (v >> 24) as u8;
-            buf[c+6] = (v >> 16) as u8;
-            buf[c+7] = (v >>  8) as u8;
-            buf[c+8] = (v >>  0) as u8;
-            *cur = *cur + 9;
-        }
-    }
-}
-
-fn f64_to_bytes_le(i: f64) -> [u8; 8] {
-    let mut a: [u8; 8] = unsafe {std::mem::transmute(i)};
-    if cfg!(target_endian = "little") {
-    } else {
-        a.reverse();
-    }
-    a
-}
-
-fn f64_to_bytes_be(i: f64) -> [u8; 8] {
-    let mut a: [u8; 8] = unsafe {std::mem::transmute(i)};
-    if cfg!(target_endian = "little") {
-        a.reverse();
-    } else {
-    }
-    a
-}
-
-fn i64_to_bytes_le(i: i64) -> [u8; 8] {
-    let a: [u8; 8] = unsafe {std::mem::transmute(i64::to_le(i))};
-    a
-}
-
-fn i64_to_bytes_be(i: i64) -> [u8; 8] {
-    let a: [u8; 8] = unsafe {std::mem::transmute(i64::to_be(i))};
-    a
-}
-
-fn u64_to_bytes_le(i: u64) -> [u8; 8] {
-    let a: [u8; 8] = unsafe {std::mem::transmute(u64::to_le(i))};
-    a
-}
-
-fn u64_to_bytes_be(i: u64) -> [u8; 8] {
-    let a: [u8; 8] = unsafe {std::mem::transmute(u64::to_be(i))};
-    a
-}
-
-fn i32_to_bytes_le(i: i32) -> [u8; 4] {
-    let a: [u8; 4] = unsafe {std::mem::transmute(i32::to_le(i))};
-    a
-}
-
-fn i32_to_bytes_be(i: i32) -> [u8; 4] {
-    let a: [u8; 4] = unsafe {std::mem::transmute(i32::to_be(i))};
-    a
-}
-
-fn u32_to_bytes_le(i: u32) -> [u8; 4] {
-    let a: [u8; 4] = unsafe {std::mem::transmute(u32::to_le(i))};
-    a
-}
-
-fn u32_to_bytes_be(i: u32) -> [u8; 4] {
-    let a: [u8; 4] = unsafe {std::mem::transmute(u32::to_be(i))};
-    a
-}
-
-fn i16_to_bytes_le(i: i16) -> [u8; 2] {
-    let a: [u8; 2] = unsafe {std::mem::transmute(i16::to_le(i))};
-    a
-}
-
-fn i16_to_bytes_be(i: i16) -> [u8; 2] {
-    let a: [u8; 2] = unsafe {std::mem::transmute(i16::to_be(i))};
-    a
-}
-
-fn u16_to_bytes_le(i: u16) -> [u8; 2] {
-    let a: [u8; 2] = unsafe {std::mem::transmute(u16::to_le(i))};
-    a
-}
-
-fn u16_to_bytes_be(i: u16) -> [u8; 2] {
-    let a: [u8; 2] = unsafe {std::mem::transmute(u16::to_be(i))};
-    a
-}
-
-fn f64_from_bytes_le(mut a: [u8; 8]) -> f64 {
-    if cfg!(target_endian = "little") {
-    } else {
-        a.reverse();
-    }
-
-    let i: f64 = unsafe {std::mem::transmute(a)};
-    // TODO we wish we had f64::from_le(i)
-    i
-}
-
-fn f64_from_bytes_be(mut a: [u8; 8]) -> f64 {
-    if cfg!(target_endian = "little") {
-        a.reverse();
-    } else {
-    }
-
-    let i: f64 = unsafe {std::mem::transmute(a)};
-    // TODO we wish we had f64::from_le(i)
-    i
-}
-
-fn i64_from_bytes_le(a: [u8; 8]) -> i64 {
-    let i: i64 = unsafe {std::mem::transmute(a)};
-    i64::from_le(i)
-}
-
-fn i64_from_bytes_be(a: [u8; 8]) -> i64 {
-    let i: i64 = unsafe {std::mem::transmute(a)};
-    i64::from_be(i)
-}
-
-fn u64_from_bytes_le(a: [u8; 8]) -> u64 {
-    let i: u64 = unsafe {std::mem::transmute(a)};
-    u64::from_le(i)
-}
-
-fn u64_from_bytes_be(a: [u8; 8]) -> u64 {
-    let i: u64 = unsafe {std::mem::transmute(a)};
-    u64::from_be(i)
-}
-
-fn i32_from_bytes_le(a: [u8; 4]) -> i32 {
-    let i: i32 = unsafe {std::mem::transmute(a)};
-    i32::from_le(i)
-}
-
-fn i32_from_bytes_be(a: [u8; 4]) -> i32 {
-    let i: i32 = unsafe {std::mem::transmute(a)};
-    i32::from_be(i)
-}
-
-fn u32_from_bytes_le(a: [u8; 4]) -> u32 {
-    let i: u32 = unsafe {std::mem::transmute(a)};
-    u32::from_le(i)
-}
-
-fn u32_from_bytes_be(a: [u8; 4]) -> u32 {
-    let i: u32 = unsafe {std::mem::transmute(a)};
-    u32::from_be(i)
-}
-
-fn i16_from_bytes_le(a: [u8; 2]) -> i16 {
-    let i: i16 = unsafe {std::mem::transmute(a)};
-    i16::from_le(i)
-}
-
-fn i16_from_bytes_be(a: [u8; 2]) -> i16 {
-    let i: i16 = unsafe {std::mem::transmute(a)};
-    i16::from_be(i)
-}
-
-fn u16_from_bytes_le(a: [u8; 2]) -> u16 {
-    let i: u16 = unsafe {std::mem::transmute(a)};
-    u16::from_le(i)
-}
-
-fn u16_from_bytes_be(a: [u8; 2]) -> u16 {
-    let i: u16 = unsafe {std::mem::transmute(a)};
-    u16::from_be(i)
-}
-
+// TODO rm and use misc:bytes::copy_into ?
 fn copy_into(src: &[u8], dst: &mut [u8]) {
     let len = dst.clone_from_slice(src);
     assert_eq!(len, src.len());
-}
-
-fn extract_2(v: &[u8]) -> [u8; 2]
-{
-    let mut a = [0; 2];
-    copy_into(v, &mut a);
-    a
-}
-
-fn extract_4(v: &[u8]) -> [u8; 4]
-{
-    let mut a = [0; 4];
-    copy_into(v, &mut a);
-    a
-}
-
-fn extract_8(v: &[u8]) -> [u8; 8]
-{
-    let mut a = [0; 8];
-    copy_into(v, &mut a);
-    a
-}
-
-fn slurp_8(ba: &[u8], i: &mut usize) -> [u8; 8] {
-    let a = extract_8(&ba[*i .. *i + 8]);
-    *i = *i + 8;
-    a
-}
-
-fn slurp_4(ba: &[u8], i: &mut usize) -> [u8; 4] {
-    let a = extract_4(&ba[*i .. *i + 4]);
-    *i = *i + 4;
-    a
-}
-
-fn slurp_i32_le(ba: &[u8], i: &mut usize) -> i32 {
-    i32_from_bytes_le(slurp_4(ba, i))
-}
-
-fn slurp_u32_le(ba: &[u8], i: &mut usize) -> u32 {
-    u32_from_bytes_le(slurp_4(ba, i))
-}
-
-fn slurp_i64_le(ba: &[u8], i: &mut usize) -> i64 {
-    i64_from_bytes_le(slurp_8(ba, i))
-}
-
-fn slurp_f64_le(ba: &[u8], i: &mut usize) -> f64 {
-    f64_from_bytes_le(slurp_8(ba, i))
-}
-
-fn slurp_cstring(ba: &[u8], i: &mut usize) -> Result<String> {
-    let mut len = 0;
-    while ba[*i + len] != 0 {
-        len = len + 1;
-    }
-    let s = try!(std::str::from_utf8(&ba[*i .. *i + len]));
-    *i = *i + len + 1;
-    Ok(String::from_str(s))
-}
-
-fn slurp_bson_string(ba: &[u8], i: &mut usize) -> Result<String> {
-    // TODO the spec says the len here is a signed number, but that's silly
-    let len = slurp_u32_le(ba, i) as usize;
-
-    let s = try!(std::str::from_utf8(&ba[*i .. *i + len - 1]));
-    *i = *i + len;
-    Ok(String::from_str(s))
-}
-
-fn slurp_bson_value(ba: &[u8], i: &mut usize, valtype: u8) -> Result<BsonValue> {
-    let bv =
-        match valtype {
-            1 => BsonValue::BDouble(slurp_f64_le(ba, i)),
-            2 => BsonValue::BString(try!(slurp_bson_string(ba, i))),
-            3 => try!(slurp_document(ba, i)),
-            4 => try!(slurp_array(ba, i)),
-            5 => slurp_binary(ba, i),
-            6 => BsonValue::BUndefined,
-            7 => slurp_objectid(ba, i),
-            8 => slurp_boolean(ba, i),
-            9 => BsonValue::BDateTime(slurp_i64_le(ba, i)),
-            10 => BsonValue::BNull,
-            11 => try!(slurp_regex(ba, i)),
-            12 => try!(slurp_deprecated_12(ba, i)),
-            13 => try!(slurp_js(ba, i)),
-            15 => try!(slurp_js_with_scope(ba, i)),
-            16 => BsonValue::BInt32(slurp_i32_le(ba, i)),
-            17 => BsonValue::BTimeStamp(slurp_i64_le(ba, i)),
-            18 => BsonValue::BInt64(slurp_i64_le(ba, i)),
-            127 => BsonValue::BMaxKey,
-            255 => BsonValue::BMinKey,
-            _ => panic!("invalid BSON value type"),
-        };
-    Ok(bv)
-}
-
-fn slurp_deprecated_12(ba: &[u8], i: &mut usize) -> Result<BsonValue> {
-    // deprecated
-    let a = try!(slurp_bson_string(ba, i));
-    Ok(slurp_objectid(ba, i))
-}
-
-fn slurp_js(ba: &[u8], i: &mut usize) -> Result<BsonValue> {
-    let a = try!(slurp_bson_string(ba, i));
-    Ok(BsonValue::BJSCode(a))
-}
-
-fn slurp_js_with_scope(ba: &[u8], i: &mut usize) -> Result<BsonValue> {
-    // TODO the spec says the len here is a signed number, but that's silly
-    let len = slurp_u32_le(ba, i);
-
-    let a = try!(slurp_bson_string(ba, i));
-    let scope = try!(slurp_document(ba, i));
-    Ok(BsonValue::BJSCodeWithScope(a))
-}
-
-fn slurp_regex(ba: &[u8], i: &mut usize) -> Result<BsonValue> {
-    let expr = try!(slurp_cstring(ba, i));
-    let options = try!(slurp_cstring(ba, i));
-    Ok(BsonValue::BRegex(expr, options))
-}
-
-fn slurp_binary(ba: &[u8], i: &mut usize) -> BsonValue {
-    // TODO the spec says the len here is a signed number, but that's silly
-    let len = slurp_u32_le(ba, i) as usize;
-
-    let subtype = ba[*i];
-    *i = *i + 1;
-    let mut b = Vec::with_capacity(len);
-    b.push_all(&ba[*i .. *i + len]);
-    *i = *i + len;
-    BsonValue::BBinary(subtype, b.into_boxed_slice())
-}
-
-fn slurp_objectid(ba: &[u8], i: &mut usize) -> BsonValue {
-    let mut b = [0; 12];
-    b.clone_from_slice(&ba[*i .. *i + 12]);
-    *i = *i + 12;
-    BsonValue::BObjectID(b)
-}
-
-fn slurp_boolean(ba: &[u8], i: &mut usize) -> BsonValue {
-    let b = ba[*i] != 0;
-    *i = *i + 1;
-    BsonValue::BBoolean(b)
-}
-
-fn slurp_document_pairs(ba: &[u8], i: &mut usize) -> Result<Vec<(String, BsonValue)>> {
-    // TODO the spec says the len here is a signed number, but that's silly
-    let len = slurp_u32_le(ba, i) as usize;
-
-    let mut pairs = Vec::new();
-    while ba[*i] != 0 {
-        let valtype = ba[*i];
-        *i = *i + 1;
-        let k = try!(slurp_cstring(ba, i));
-        let v = try!(slurp_bson_value(ba, i, valtype));
-        pairs.push((k,v));
-    }
-    assert!(ba[*i] == 0);
-    *i = *i + 1;
-    // TODO verify len
-    Ok(pairs)
-}
-
-fn slurp_document(ba: &[u8], i: &mut usize) -> Result<BsonValue> {
-    let pairs = try!(slurp_document_pairs(ba, i));
-    Ok(BsonValue::BDocument(pairs))
-}
-
-fn slurp_array(ba: &[u8], i: &mut usize) -> Result<BsonValue> {
-    let pairs = try!(slurp_document_pairs(ba, i));
-    // TODO verify that the keys are correct, integers, ascending, etc?
-    let a = pairs.into_iter().map(|t| {
-        let (k,v) = t;
-        v
-    }).collect();
-    Ok(BsonValue::BArray(a))
 }
 
 struct PageBuilder {
@@ -1225,7 +679,7 @@ impl PageBuilder {
     }
 
     fn PutStream2(&mut self, s: &mut Read, len: usize) -> io::Result<usize> {
-        let n = try!(utils::ReadFully(s, &mut self.buf[self.cur .. self.cur + len]));
+        let n = try!(misc::io::read_fully(s, &mut self.buf[self.cur .. self.cur + len]));
         self.cur = self.cur + n;
         let res : io::Result<usize> = Ok(n);
         res
@@ -1280,7 +734,7 @@ impl PageBuilder {
     }
 
     fn PutVarint(&mut self, ov: u64) {
-        Varint::write(&mut *self.buf, &mut self.cur, ov);
+        varint::write(&mut *self.buf, &mut self.cur, ov);
     }
 
 }
@@ -1301,11 +755,11 @@ impl PageBuffer {
     }
 
     fn Read(&mut self, strm: &mut Read) -> io::Result<usize> {
-        utils::ReadFully(strm, &mut self.buf)
+        misc::io::read_fully(strm, &mut self.buf)
     }
 
     fn ReadPart(&mut self, strm: &mut Read, off: usize, len: usize) -> io::Result<usize> {
-        utils::ReadFully(strm, &mut self.buf[off .. len-off])
+        misc::io::read_fully(strm, &mut self.buf[off .. len-off])
     }
 
     #[cfg(remove_me)]
@@ -1327,14 +781,14 @@ impl PageBuffer {
     fn GetInt32(&self, cur: &mut usize) -> u32 {
         let at = *cur;
         // TODO just self.buf?  instead of making 4-byte slice.
-        let a = extract_4(&self.buf[at .. at + SIZE_32]);
+        let a = misc::bytes::extract_4(&self.buf[at .. at + SIZE_32]);
         *cur = *cur + SIZE_32;
         u32_from_bytes_be(a)
     }
 
     fn GetInt32At(&self, at: usize) -> u32 {
         // TODO just self.buf?  instead of making 4-byte slice.
-        let a = extract_4(&self.buf[at .. at + SIZE_32]);
+        let a = misc::bytes::extract_4(&self.buf[at .. at + SIZE_32]);
         u32_from_bytes_be(a)
     }
 
@@ -1357,7 +811,7 @@ impl PageBuffer {
     fn GetInt16(&self, cur: &mut usize) -> u16 {
         let at = *cur;
         // TODO just self.buf?  instead of making 2-byte slice.
-        let a = extract_2(&self.buf[at .. at + SIZE_16]);
+        let a = misc::bytes::extract_2(&self.buf[at .. at + SIZE_16]);
         let r = u16_from_bytes_be(a);
         *cur = *cur + SIZE_16;
         r
@@ -1374,10 +828,10 @@ impl PageBuffer {
     }
 
     // TODO this function shows up a lot in the profiler
-    // TODO inline hint?  Varint::read() gets inlined here,
+    // TODO inline hint?  varint::read() gets inlined here,
     // but this one does not seem to get inlined anywhere.
     fn GetVarint(&self, cur: &mut usize) -> u64 {
-        Varint::read(&*self.buf, cur)
+        varint::read(&*self.buf, cur)
     }
 
 }
@@ -2345,7 +1799,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
             - LEAF_PAGE_OVERHEAD 
             - 1 // prefixLen
             - 1 // key flags
-            - Varint::SpaceNeededFor(pgsz as u64) // approx worst case inline key len
+            - varint::space_needed_for(pgsz as u64) // approx worst case inline key len
             - 1 // value flags
             - 9 // worst case varint value len
             - NEEDED_FOR_OVERFLOW_PAGE_NUMBER; // overflowed value page
@@ -2354,10 +1808,10 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
             let klen = k.len();
             match *kloc {
                 KeyLocation::Inline => {
-                    1 + Varint::SpaceNeededFor(klen as u64) + klen - prefixLen
+                    1 + varint::space_needed_for(klen as u64) + klen - prefixLen
                 },
                 KeyLocation::Overflowed(_) => {
-                    1 + Varint::SpaceNeededFor(klen as u64) + NEEDED_FOR_OVERFLOW_PAGE_NUMBER
+                    1 + varint::space_needed_for(klen as u64) + NEEDED_FOR_OVERFLOW_PAGE_NUMBER
                 },
             }
         }
@@ -2369,10 +1823,10 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
                 },
                 ValueLocation::Buffer(ref vbuf) => {
                     let vlen = vbuf.len();
-                    1 + Varint::SpaceNeededFor(vlen as u64) + vlen
+                    1 + varint::space_needed_for(vlen as u64) + vlen
                 },
                 ValueLocation::Overflowed(vlen,_) => {
-                    1 + Varint::SpaceNeededFor(vlen as u64) + NEEDED_FOR_OVERFLOW_PAGE_NUMBER
+                    1 + varint::space_needed_for(vlen as u64) + NEEDED_FOR_OVERFLOW_PAGE_NUMBER
                 },
             }
         }
@@ -2424,7 +1878,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
                 - LEAF_PAGE_OVERHEAD 
                 - 1 // prefixLen
                 - 1 // key flags
-                - Varint::SpaceNeededFor(k.len() as u64)
+                - varint::space_needed_for(k.len() as u64)
                 - k.len() 
                 - 1 // value flags
                 ;
@@ -2434,7 +1888,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
 
             let maxValueInline = 
                 if availableOnNewPageAfterKey > 0 {
-                    let neededForVarintLen = Varint::SpaceNeededFor(availableOnNewPageAfterKey as u64);
+                    let neededForVarintLen = varint::space_needed_for(availableOnNewPageAfterKey as u64);
                     let avail2 = availableOnNewPageAfterKey - neededForVarintLen;
                     if avail2 > 0 { avail2 } else { 0 }
                 } else {
@@ -2479,7 +1933,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
                                         // not sure reusing vbuf is worth it.  maybe we should just
                                         // alloc here.  ownership will get passed into the
                                         // ValueLocation when it fits.
-                                        let vread = try!(utils::ReadFully(&mut *strm, &mut vbuf[0 .. maxValueInline+1]));
+                                        let vread = try!(misc::io::read_fully(&mut *strm, &mut vbuf[0 .. maxValueInline+1]));
                                         let vbuf = &vbuf[0 .. vread];
                                         if vread < maxValueInline {
                                             // TODO this alloc+copy is unfortunate
@@ -2714,7 +2168,7 @@ fn CreateFromSortedSequenceOfKeyValuePairs<I,SeekWrite>(fs: &mut SeekWrite,
         for pair in children.drain(0 .. count_children-1) {
             let pgnum = pair.page;
 
-            let neededEitherWay = 1 + Varint::SpaceNeededFor(pair.key.len() as u64) + Varint::SpaceNeededFor(pgnum as u64);
+            let neededEitherWay = 1 + varint::space_needed_for(pair.key.len() as u64) + varint::space_needed_for(pgnum as u64);
             let neededForInline = neededEitherWay + pair.key.len();
             let neededForOverflow = neededEitherWay + SIZE_32;
             let couldBeRoot = st.nextGeneration.is_empty();
@@ -2855,7 +2309,7 @@ impl myOverflowReadStream {
 
     fn ReadPage(&mut self) -> Result<()> {
         try!(utils::SeekPage(&mut self.fs, self.buf.len(), self.currentPage));
-        try!(utils::ReadFully(&mut self.fs, &mut *self.buf));
+        try!(misc::io::read_fully(&mut self.fs, &mut *self.buf));
         // assert PageType is OVERFLOW
         self.sofarThisPage = 0;
         if self.currentPage == self.firstPageInBlock {
@@ -2876,7 +2330,7 @@ impl myOverflowReadStream {
     fn GetLastInt32(&self) -> u32 {
         let at = self.buf.len() - SIZE_32;
         // TODO just self.buf?  instead of making 4-byte slice.
-        let a = extract_4(&self.buf[at .. at+4]);
+        let a = misc::bytes::extract_4(&self.buf[at .. at+4]);
         u32_from_bytes_be(a)
     }
 
@@ -2982,7 +2436,7 @@ impl myOverflowReadStream {
                 // assert bytesToFetch <= wanted
 
                 try!(utils::SeekPage(&mut self.fs, self.buf.len(), theDataPage));
-                try!(utils::ReadFully(&mut self.fs, &mut ba[offset .. offset + bytesToFetch]));
+                try!(misc::io::read_fully(&mut self.fs, &mut ba[offset .. offset + bytesToFetch]));
                 self.sofarOverall = self.sofarOverall + bytesToFetch;
                 self.currentPage = self.currentPage + numPagesToFetch;
                 self.sofarThisPage = self.buf.len();
@@ -3020,7 +2474,7 @@ impl Read for myOverflowReadStream {
 #[cfg(remove_me)]
 fn readOverflow(path: &str, pgsz: usize, firstPage: PageNum, buf: &mut [u8]) -> Result<usize> {
     let mut ostrm = try!(myOverflowReadStream::new(path, pgsz, firstPage, buf.len()));
-    let res = try!(utils::ReadFully(&mut ostrm, buf));
+    let res = try!(misc::io::read_fully(&mut ostrm, buf));
     Ok(res)
 }
 
@@ -3069,7 +2523,7 @@ impl<'a> SegmentCursor<'a> {
         // to far.  This should probably be done with the blocks provided
         // by the caller, not by looking at the full length of the file,
         // which this cursor shouldn't care about.
-        let len = try!(seek_len(&mut f));
+        let len = try!(misc::io::seek_len(&mut f));
 
         let mut res = SegmentCursor {
             path: String::from_str(path),
@@ -3857,7 +3311,7 @@ fn readHeader<R>(fs: &mut R) -> Result<(HeaderData,usize,PageNum,SegmentNum)> wh
 
     // --------
 
-    let len = try!(seek_len(fs));
+    let len = try!(misc::io::seek_len(fs));
     if len > 0 {
         try!(fs.seek(SeekFrom::Start(0 as u64)));
         let pr = try!(read(fs));
@@ -4259,21 +3713,21 @@ impl InnerPart {
         fn spaceNeededForSegmentInfo(info: &SegmentInfo) -> usize {
             let mut a = 0;
             for t in info.blocks.iter() {
-                a = a + Varint::SpaceNeededFor(t.firstPage as u64);
-                a = a + Varint::SpaceNeededFor(t.count_pages() as u64);
+                a = a + varint::space_needed_for(t.firstPage as u64);
+                a = a + varint::space_needed_for(t.count_pages() as u64);
             }
-            a = a + Varint::SpaceNeededFor(info.root as u64);
-            a = a + Varint::SpaceNeededFor(info.age as u64);
-            a = a + Varint::SpaceNeededFor(info.blocks.len() as u64);
+            a = a + varint::space_needed_for(info.root as u64);
+            a = a + varint::space_needed_for(info.age as u64);
+            a = a + varint::space_needed_for(info.blocks.len() as u64);
             a
         }
 
         fn spaceForHeader(h: &HeaderData) -> usize {
-            let mut a = Varint::SpaceNeededFor(h.currentState.len() as u64);
+            let mut a = varint::space_needed_for(h.currentState.len() as u64);
             // TODO use currentState with a lookup into h.segments instead?
             // should be the same, right?
             for (g,info) in h.segments.iter() {
-                a = a + spaceNeededForSegmentInfo(&info) + Varint::SpaceNeededFor(*g);
+                a = a + spaceNeededForSegmentInfo(&info) + varint::space_needed_for(*g);
             }
             a
         }
@@ -4832,7 +4286,7 @@ mod tests {
                             .read(true)
                             .open("/dev/urandom"));
                     let mut ba = [0;16];
-                    try!(super::utils::ReadFully(&mut f, &mut ba));
+                    try!(super::misc::io::read_fully(&mut f, &mut ba));
                     Ok(ba)
                 }
 
@@ -4952,201 +4406,6 @@ impl Iterator for GenerateWeirdPairs {
 // Stuff below is the beginning of porting stuff from Elmo
 // ----------------------------------------------------------------
 
-/*
-    Copyright 2015 Zumero, LLC
-
-    This program is free software: you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation, either version 3 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-*/
-
-pub struct sqlite4_num {
-    neg: bool,
-    approx: bool,
-    e: i16,
-    m: u64,
-}
-
-impl sqlite4_num {
-    const SQLITE4_MX_EXP: i16 = 999;
-    const SQLITE4_NAN_EXP: i16 = 2000;
-
-    const NAN: sqlite4_num =
-        sqlite4_num
-        {
-            neg: false,
-            approx: true,
-            e: sqlite4_num::SQLITE4_NAN_EXP,
-            m: 0,
-        };
-    const POS_INF: sqlite4_num = sqlite4_num {m: 1, .. sqlite4_num::NAN};
-    const NEG_INF: sqlite4_num = sqlite4_num {neg: true, .. sqlite4_num::POS_INF};
-    const ZERO: sqlite4_num =
-        sqlite4_num
-        {
-            neg: false,
-            approx: false,
-            e: 0,
-            m: 0,
-        };
-
-    fn from_f64(d: f64) -> sqlite4_num {
-        // TODO probably this function should be done by decoding the bits
-        if d.is_nan() {
-            sqlite4_num::NAN
-        } else if d.is_sign_positive() && d.is_infinite() {
-            sqlite4_num::POS_INF
-        } else if d.is_sign_negative() && d.is_infinite() {
-            sqlite4_num::NEG_INF
-        } else if d==0.0 {
-            sqlite4_num::ZERO
-        } else {
-            let LARGEST_UINT64 = u64::max_value();
-            let TENTH_MAX = LARGEST_UINT64 / 10;
-            let large = LARGEST_UINT64 as f64;
-            let large10 = TENTH_MAX as f64;
-            let neg = d<0.0;
-            let mut d = if neg { -d } else { d };
-            let mut e = 0;
-            while d>large || (d>1.0 && d==((d as i64) as f64)) {
-                d = d / 10.0;
-                e = e + 1;
-            }
-            while d<large10 && d != ((d as i64) as f64) {
-                d = d * 10.0;
-                e = e - 1;
-            }
-            sqlite4_num
-            {
-                neg: neg,
-                approx: true,
-                e: e as i16,
-                m: d as u64,
-            }
-        }
-    }
-
-    fn is_inf(&self) -> bool {
-        (self.e > sqlite4_num::SQLITE4_MX_EXP) && (self.m != 0)
-    }
-
-    fn is_nan(&self) -> bool{
-        (self.e > sqlite4_num::SQLITE4_MX_EXP) && (self.m == 0)
-    }
-
-    fn from_i64(n: i64) -> sqlite4_num {
-        sqlite4_num
-        {
-            neg: n<0,
-            approx: false,
-            m: if n>=0 { (n as u64) } else if n != i64::min_value() { ((-n) as u64) } else { 1 + (i64::max_value() as u64) },
-            e: 0,
-        }
-    }
-
-    fn normalize(&self) -> sqlite4_num {
-        let mut m = self.m;
-        let mut e = self.e;
-
-        while (m % 10) == 0 {
-            e = e + 1;
-            m = m / 10;
-        }
-
-        sqlite4_num {m: m, e: e, .. *self}
-    }
-
-    fn encode_for_index(&self, w: &mut Vec<u8>) {
-        // TODO in sqlite4, the first byte of this encoding 
-        // is designed to mesh with the
-        // overall type order byte.
-
-        if self.m == 0 {
-            if self.is_nan() {
-                w.push(0x06u8);
-            } else {
-                w.push(0x15u8);
-            }
-        } else if self.is_inf() {
-            if self.neg {
-                w.push(0x07u8);
-            } else {
-                w.push(0x23u8);
-            }
-        } else {
-            let num = self.normalize();
-            let mut m = num.m;
-            let mut e = num.e;
-            let mut iDigit;
-            let mut aDigit = [0; 12];
-
-            if (num.e%2) != 0 {
-                aDigit[0] = (10 * (m % 10)) as u8;
-                m = m / 10;
-                e = e - 1;
-                iDigit = 1;
-            } else {
-                iDigit = 0;
-            }
-
-            while m != 0 {
-                aDigit[iDigit] = (m % 100) as u8;
-                iDigit = iDigit + 1;
-                m = m / 100;
-            }
-
-            e = (iDigit as i16) + (e/2);
-
-            fn push_u16_be(w: &mut Vec<u8>, e: u16) {
-                w.push(((e>>8) & 0xff_u16) as u8);
-                w.push(((e>>0) & 0xff_u16) as u8);
-            }
-
-            if e>= 11 {
-                if ! num.neg {
-                    w.push(0x22u8);
-                    push_u16_be(w, e as u16);
-                } else {
-                    w.push(0x08u8);
-                    push_u16_be(w, !e as u16);
-                }
-            } else if e>=0 {
-                if ! num.neg {
-                    w.push(0x17u8+(e as u8));
-                } else {
-                    w.push(0x13u8-(e as u8));
-                }
-            } else {
-                if ! num.neg {
-                    w.push(0x16u8);
-                    push_u16_be(w, !((-e) as u16));
-                } else {
-                    w.push(0x14u8);
-                    push_u16_be(w, (-e) as u16);
-                }
-            }
-
-            while iDigit>0 {
-                iDigit = iDigit - 1;
-                let mut d = aDigit[iDigit] * 2u8;
-                if iDigit != 0 { d = d | 0x01u8; }
-                if num.neg { d = !d; }
-                w.push(d)
-            }
-        }
-    }
-
-}
-
 pub enum BsonValue {
     BDouble(f64),
     BString(String),
@@ -5180,15 +4439,135 @@ fn vec_push_bson_string(v: &mut Vec<u8>, s: &str) {
     v.push(0);
 }
 
-    // TODO this should be a library func, right?
-    fn slice_find(pairs: &[(String, BsonValue)], s: &str) -> Option<usize> {
-        for i in 0 .. pairs.len() {
-            if pairs[i].0.as_str() == s {
-                return Some(i);
-            }
+// TODO this should be a library func, right?
+fn slice_find(pairs: &[(String, BsonValue)], s: &str) -> Option<usize> {
+    for i in 0 .. pairs.len() {
+        if pairs[i].0.as_str() == s {
+            return Some(i);
         }
-        None
     }
+    None
+}
+
+fn slurp_bson_string(ba: &[u8], i: &mut usize) -> Result<String> {
+    // TODO the spec says the len here is a signed number, but that's silly
+    let len = bufndx::slurp_u32_le(ba, i) as usize;
+
+    let s = try!(std::str::from_utf8(&ba[*i .. *i + len - 1]));
+    *i = *i + len;
+    Ok(String::from_str(s))
+}
+
+fn slurp_bson_value(ba: &[u8], i: &mut usize, valtype: u8) -> Result<BsonValue> {
+    let bv =
+        match valtype {
+            1 => BsonValue::BDouble(bufndx::slurp_f64_le(ba, i)),
+            2 => BsonValue::BString(try!(slurp_bson_string(ba, i))),
+            3 => try!(slurp_document(ba, i)),
+            4 => try!(slurp_array(ba, i)),
+            5 => slurp_binary(ba, i),
+            6 => BsonValue::BUndefined,
+            7 => slurp_objectid(ba, i),
+            8 => slurp_boolean(ba, i),
+            9 => BsonValue::BDateTime(bufndx::slurp_i64_le(ba, i)),
+            10 => BsonValue::BNull,
+            11 => try!(slurp_regex(ba, i)),
+            12 => try!(slurp_deprecated_12(ba, i)),
+            13 => try!(slurp_js(ba, i)),
+            15 => try!(slurp_js_with_scope(ba, i)),
+            16 => BsonValue::BInt32(bufndx::slurp_i32_le(ba, i)),
+            17 => BsonValue::BTimeStamp(bufndx::slurp_i64_le(ba, i)),
+            18 => BsonValue::BInt64(bufndx::slurp_i64_le(ba, i)),
+            127 => BsonValue::BMaxKey,
+            255 => BsonValue::BMinKey,
+            _ => panic!("invalid BSON value type"),
+        };
+    Ok(bv)
+}
+
+fn slurp_deprecated_12(ba: &[u8], i: &mut usize) -> Result<BsonValue> {
+    // deprecated
+    let a = try!(slurp_bson_string(ba, i));
+    Ok(slurp_objectid(ba, i))
+}
+
+fn slurp_js(ba: &[u8], i: &mut usize) -> Result<BsonValue> {
+    let a = try!(slurp_bson_string(ba, i));
+    Ok(BsonValue::BJSCode(a))
+}
+
+fn slurp_js_with_scope(ba: &[u8], i: &mut usize) -> Result<BsonValue> {
+    // TODO the spec says the len here is a signed number, but that's silly
+    let len = bufndx::slurp_u32_le(ba, i);
+
+    let a = try!(slurp_bson_string(ba, i));
+    let scope = try!(slurp_document(ba, i));
+    Ok(BsonValue::BJSCodeWithScope(a))
+}
+
+fn slurp_regex(ba: &[u8], i: &mut usize) -> Result<BsonValue> {
+    let expr = try!(bufndx::slurp_cstring(ba, i));
+    let options = try!(bufndx::slurp_cstring(ba, i));
+    Ok(BsonValue::BRegex(expr, options))
+}
+
+fn slurp_binary(ba: &[u8], i: &mut usize) -> BsonValue {
+    // TODO the spec says the len here is a signed number, but that's silly
+    let len = bufndx::slurp_u32_le(ba, i) as usize;
+
+    let subtype = ba[*i];
+    *i = *i + 1;
+    let mut b = Vec::with_capacity(len);
+    b.push_all(&ba[*i .. *i + len]);
+    *i = *i + len;
+    BsonValue::BBinary(subtype, b.into_boxed_slice())
+}
+
+fn slurp_objectid(ba: &[u8], i: &mut usize) -> BsonValue {
+    let mut b = [0; 12];
+    b.clone_from_slice(&ba[*i .. *i + 12]);
+    *i = *i + 12;
+    BsonValue::BObjectID(b)
+}
+
+fn slurp_boolean(ba: &[u8], i: &mut usize) -> BsonValue {
+    let b = ba[*i] != 0;
+    *i = *i + 1;
+    BsonValue::BBoolean(b)
+}
+
+fn slurp_document_pairs(ba: &[u8], i: &mut usize) -> Result<Vec<(String, BsonValue)>> {
+    // TODO the spec says the len here is a signed number, but that's silly
+    let len = misc::bufndx::slurp_u32_le(ba, i) as usize;
+
+    let mut pairs = Vec::new();
+    while ba[*i] != 0 {
+        let valtype = ba[*i];
+        *i = *i + 1;
+        let k = try!(bufndx::slurp_cstring(ba, i));
+        let v = try!(slurp_bson_value(ba, i, valtype));
+        pairs.push((k,v));
+    }
+    assert!(ba[*i] == 0);
+    *i = *i + 1;
+    // TODO verify len
+    Ok(pairs)
+}
+
+fn slurp_document(ba: &[u8], i: &mut usize) -> Result<BsonValue> {
+    let pairs = try!(slurp_document_pairs(ba, i));
+    Ok(BsonValue::BDocument(pairs))
+}
+
+fn slurp_array(ba: &[u8], i: &mut usize) -> Result<BsonValue> {
+    let pairs = try!(slurp_document_pairs(ba, i));
+    // TODO verify that the keys are correct, integers, ascending, etc?
+    let a = pairs.into_iter().map(|t| {
+        let (k,v) = t;
+        v
+    }).collect();
+    Ok(BsonValue::BArray(a))
+}
 
 impl BsonValue {
     fn tryGetValueForKey(&self, k: &str) -> Option<&BsonValue> {
@@ -5709,10 +5088,10 @@ fn parseMessageFromClient(ba: &[u8]) -> Result<BsonClientMsg> {
     let (messageLength,requestID,resonseTo,opCode) = slurp_header(ba, &mut i);
     match opCode {
         2004 => {
-            let flags = slurp_i32_le(ba, &mut i);
-            let fullCollectionName = try!(slurp_cstring(ba, &mut i));
-            let numberToSkip = slurp_i32_le(ba, &mut i);
-            let numberToReturn = slurp_i32_le(ba, &mut i);
+            let flags = bufndx::slurp_i32_le(ba, &mut i);
+            let fullCollectionName = try!(bufndx::slurp_cstring(ba, &mut i));
+            let numberToSkip = bufndx::slurp_i32_le(ba, &mut i);
+            let numberToReturn = bufndx::slurp_i32_le(ba, &mut i);
             let query = try!(slurp_document(ba, &mut i));
             let returnFieldsSelector = if i < ba.len() { Some(try!(slurp_document(ba, &mut i))) } else { None };
 
@@ -5729,10 +5108,10 @@ fn parseMessageFromClient(ba: &[u8]) -> Result<BsonClientMsg> {
         },
 
         2005 => {
-            let flags = slurp_i32_le(ba, &mut i);
-            let fullCollectionName = try!(slurp_cstring(ba, &mut i));
-            let numberToReturn = slurp_i32_le(ba, &mut i);
-            let cursorID = slurp_i64_le(ba, &mut i);
+            let flags = bufndx::slurp_i32_le(ba, &mut i);
+            let fullCollectionName = try!(bufndx::slurp_cstring(ba, &mut i));
+            let numberToReturn = bufndx::slurp_i32_le(ba, &mut i);
+            let cursorID = bufndx::slurp_i64_le(ba, &mut i);
 
             let msg = BsonMsgGetMore {
                 m_requestID: requestID,
@@ -5744,11 +5123,11 @@ fn parseMessageFromClient(ba: &[u8]) -> Result<BsonClientMsg> {
         },
 
         2007 => {
-            let flags = slurp_i32_le(ba, &mut i);
-            let numberOfCursorIDs = slurp_i32_le(ba, &mut i);
+            let flags = bufndx::slurp_i32_le(ba, &mut i);
+            let numberOfCursorIDs = bufndx::slurp_i32_le(ba, &mut i);
             let mut cursorIDs = Vec::new();
             for _ in 0 .. numberOfCursorIDs {
-                cursorIDs.push(slurp_i64_le(ba, &mut i));
+                cursorIDs.push(bufndx::slurp_i64_le(ba, &mut i));
             }
 
             let msg = BsonMsgKillCursors {
@@ -5766,20 +5145,20 @@ fn parseMessageFromClient(ba: &[u8]) -> Result<BsonClientMsg> {
 
 // TODO do these really need to be signed?
 fn slurp_header(ba: &[u8], i: &mut usize) -> (i32,i32,i32,i32) {
-    let messageLength = slurp_i32_le(ba, i);
-    let requestID = slurp_i32_le(ba, i);
-    let responseTo = slurp_i32_le(ba, i);
-    let opCode = slurp_i32_le(ba, i);
+    let messageLength = bufndx::slurp_i32_le(ba, i);
+    let requestID = bufndx::slurp_i32_le(ba, i);
+    let responseTo = bufndx::slurp_i32_le(ba, i);
+    let opCode = bufndx::slurp_i32_le(ba, i);
     let v = (messageLength,requestID,responseTo,opCode);
     v
 }
 
 fn readMessage(stream: &mut Read) -> Result<Box<[u8]>> {
-    let ba = try!(utils::read_4(stream));
+    let ba = try!(misc::io::read_4(stream));
     let messageLength = u32_from_bytes_le(ba) as usize;
     let mut msg = vec![0; messageLength]; 
     copy_into(&ba, &mut msg[0 .. 4]);
-    let got = try!(utils::ReadFully(stream, &mut msg[4 .. messageLength]));
+    let got = try!(misc::io::read_fully(stream, &mut msg[4 .. messageLength]));
     if got != messageLength - 4 {
         return Err(LsmError::CorruptFile("end of file at the wrong time"));
     }

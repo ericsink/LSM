@@ -9,4 +9,7 @@
 */*/*/*/obj/**
 *.userprefs
 /fsharp/packages/**
-
+Cargo.lock
+/lsm/target
+/misc/target
+/lsm/tmp

@@ -2,6 +2,7 @@
 #![feature(collections)]
 #![feature(vec_push_all)]
 
+extern crate misc;
 extern crate lsm;
 
 use lsm::ICursor;
@@ -14,7 +15,7 @@ fn tid() -> String {
                 .read(true)
                 .open("/dev/urandom"));
         let mut ba = [0;16];
-        try!(lsm::utils::ReadFully(&mut f, &mut ba));
+        try!(misc::io::read_fully(&mut f, &mut ba));
         Ok(ba)
     }
 
@@ -823,7 +824,7 @@ fn blobs_of_many_sizes() {
 fn write_then_read() {
     fn f() -> lsm::Result<()> {
         fn write(name: &str) -> lsm::Result<()> {
-            let db = try!(lsm::db::new(String::from_str(name), lsm::DEFAULT_SETTINGS));
+            let db = try!(lsm::db::new(String::from(name), lsm::DEFAULT_SETTINGS));
             let mut d = std::collections::HashMap::new();
             for i in 1 .. 100 {
                 let s = format!("{}", i);
@@ -845,7 +846,7 @@ fn write_then_read() {
         }
 
         fn read(name: &str) -> lsm::Result<()> {
-            let db = try!(lsm::db::new(String::from_str(name), lsm::DEFAULT_SETTINGS));
+            let db = try!(lsm::db::new(String::from(name), lsm::DEFAULT_SETTINGS));
             let mut csr = try!(db.OpenCursor());
             try!(csr.SeekRef(&lsm::KeyRef::from_boxed_slice(into_utf8(format!("{}", 42))), lsm::SeekOp::SEEK_EQ));
             assert!(csr.IsValid());
@@ -1125,13 +1126,13 @@ fn simple_merge() {
 fn bson_simple() {
     fn f() -> lsm::Result<()> {
         let mut pairs = Vec::new();
-        pairs.push((String::from_str("i32"), lsm::BsonValue::BInt32(40)));
-        pairs.push((String::from_str("string"), lsm::BsonValue::BString(String::from_str("forty"))));
+        pairs.push((String::from("i32"), lsm::BsonValue::BInt32(40)));
+        pairs.push((String::from("string"), lsm::BsonValue::BString(String::from("forty"))));
         let mut a = Vec::new();
         a.push(lsm::BsonValue::BInt64(40));
         a.push(lsm::BsonValue::BDouble(40.0));
         a.push(lsm::BsonValue::BNull);
-        pairs.push((String::from_str("array"), lsm::BsonValue::BArray(a)));
+        pairs.push((String::from("array"), lsm::BsonValue::BArray(a)));
         let bv = lsm::BsonValue::BDocument(pairs);
         let mut buf = Vec::new();
         bv.to_bson(&mut buf);

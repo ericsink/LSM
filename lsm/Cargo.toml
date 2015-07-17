@@ -4,8 +4,8 @@ name = "lsm"
 version = "0.0.1"
 authors = [ "Eric Sink <eric@zumero.com>" ]
 
-#[dependencies.rust-sqlite]
-#git = "https://github.com/dckc/rust-sqlite3"
+[dependencies.misc]
+path = "../misc"
 
 # The testing profile, used for `cargo test`
 [profile.test]

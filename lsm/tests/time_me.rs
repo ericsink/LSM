@@ -1,8 +1,6 @@
 
-#![feature(test)]
-
+extern crate misc;
 extern crate lsm;
-extern crate test;
 
 fn tid() -> String {
     // TODO use the rand crate
@@ -12,7 +10,7 @@ fn tid() -> String {
                 .read(true)
                 .open("/dev/urandom"));
         let mut ba = [0;16];
-        try!(lsm::utils::ReadFully(&mut f, &mut ba));
+        try!(misc::io::read_fully(&mut f, &mut ba));
         Ok(ba)
     }
 
@@ -33,13 +31,14 @@ fn tempfile(base: &str) -> String {
     file
 }
 
-#[bench]
-fn bunch(b: &mut test::Bencher) {
+#[test]
+#[ignore]
+fn time_me() {
     fn f() -> lsm::Result<bool> {
         //println!("running");
-        let db = try!(lsm::db::new(tempfile("bunch"), lsm::DEFAULT_SETTINGS));
+        let db = try!(lsm::db::new(tempfile("time_me"), lsm::DEFAULT_SETTINGS));
 
-        const NUM : usize = 10000;
+        const NUM : usize = 100000;
 
         let mut a = Vec::new();
         for i in 0 .. 10 {
@@ -61,6 +60,6 @@ fn bunch(b: &mut test::Bencher) {
         let res : lsm::Result<bool> = Ok(true);
         res
     }
-    b.iter(|| assert!(f().is_ok()) );
+    assert!(f().is_ok());
 }
 
