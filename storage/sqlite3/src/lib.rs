@@ -35,7 +35,6 @@ use misc::endian;
 use misc::bufndx;
 use misc::varint;
 
-// this is only here because the temp Elmo server stuff is still below
 extern crate bson;
 use bson::BsonValue;
 
@@ -53,27 +52,25 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::error::Error;
 
-mod kv {
-    extern crate sqlite3;
+extern crate sqlite3;
 
-    struct ConnStuff {
-        conn: sqlite3::DatabaseConnection,
-    }
+struct ConnStuff {
+    conn: sqlite3::DatabaseConnection,
+}
 
-    //#[cfg(TODO)]
-    impl super::ElmoStorage for ConnStuff {
-    }
+#[cfg(TODO)]
+impl elmo::ElmoStorage for ConnStuff {
+}
 
-    fn connect() -> sqlite3::SqliteResult<()> {
-        // TODO allow a different filename to be specified
-        let access = sqlite3::access::ByFilename { flags: sqlite3::access::flags::OPEN_READWRITE, filename: "elmodata.db" };
-        let mut conn = try!(sqlite3::DatabaseConnection::new(access));
-        try!(conn.exec("PRAGMA journal_mode=WAL"));
-        try!(conn.exec("PRAGMA foreign_keys=ON"));
-        try!(conn.exec("CREATE TABLE IF NOT EXISTS \"collections\" (dbName TEXT NOT NULL, collName TEXT NOT NULL, options BLOB NOT NULL, PRIMARY KEY (dbName,collName))"));
-        try!(conn.exec("CREATE TABLE IF NOT EXISTS \"indexes\" (dbName TEXT NOT NULL, collName TEXT NOT NULL, ndxName TEXT NOT NULL, spec BLOB NOT NULL, options BLOB NOT NULL, PRIMARY KEY (dbName, collName, ndxName), FOREIGN KEY (dbName,collName) REFERENCES \"collections\" ON DELETE CASCADE ON UPDATE CASCADE, UNIQUE (spec,dbName,collName))"));
+fn connect() -> sqlite3::SqliteResult<()> {
+    // TODO allow a different filename to be specified
+    let access = sqlite3::access::ByFilename { flags: sqlite3::access::flags::OPEN_READWRITE, filename: "elmodata.db" };
+    let mut conn = try!(sqlite3::DatabaseConnection::new(access));
+    try!(conn.exec("PRAGMA journal_mode=WAL"));
+    try!(conn.exec("PRAGMA foreign_keys=ON"));
+    try!(conn.exec("CREATE TABLE IF NOT EXISTS \"collections\" (dbName TEXT NOT NULL, collName TEXT NOT NULL, options BLOB NOT NULL, PRIMARY KEY (dbName,collName))"));
+    try!(conn.exec("CREATE TABLE IF NOT EXISTS \"indexes\" (dbName TEXT NOT NULL, collName TEXT NOT NULL, ndxName TEXT NOT NULL, spec BLOB NOT NULL, options BLOB NOT NULL, PRIMARY KEY (dbName, collName, ndxName), FOREIGN KEY (dbName,collName) REFERENCES \"collections\" ON DELETE CASCADE ON UPDATE CASCADE, UNIQUE (spec,dbName,collName))"));
 
-        Ok(())
-    }
+    Ok(())
 }
 

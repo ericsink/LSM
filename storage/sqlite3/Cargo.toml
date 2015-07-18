@@ -13,6 +13,9 @@ path = "../../bson"
 [dependencies.elmo]
 path = "../../elmo"
 
+[dependencies.rust-sqlite]
+git = "https://github.com/dckc/rust-sqlite3"
+
 # The testing profile, used for `cargo test`
 [profile.test]
 opt-level = 3
