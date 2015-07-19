@@ -58,11 +58,45 @@ struct ConnStuff {
     conn: sqlite3::DatabaseConnection,
 }
 
-#[cfg(TODO)]
-impl elmo::ElmoStorage for ConnStuff {
+impl ConnStuff {
+    fn base_create_collection(&mut self, db: &str, coll: &str, options: BsonValue) -> elmo::Result<bool> {
+        // TODO
+        Ok(true)
+    }
+
+    // TODO not sure this func is worth the trouble
+    fn exec(&mut self, sql: &str) -> elmo::Result<()> {
+        self.conn.exec(sql).map_err(elmo::wrap_err)
+    }
+
+    fn begin_tx(&mut self) -> elmo::Result<()> {
+        try!(self.conn.exec("BEGIN TRANSACTION").map_err(elmo::wrap_err));
+        Ok(())
+    }
+
+    fn finish_tx<T>(&mut self, r: elmo::Result<T>) -> elmo::Result<T> {
+        if r.is_ok() {
+            try!(self.conn.exec("COMMIT TRANSACTION").map_err(elmo::wrap_err));
+            r
+        } else {
+            self.conn.exec("ROLLBACK TRANSACTION");
+            r
+        }
+    }
 }
 
-fn connect() -> sqlite3::SqliteResult<()> {
+impl elmo::ElmoStorage for ConnStuff {
+    fn createCollection(&mut self, db: &str, coll: &str, options: BsonValue) -> elmo::Result<bool> {
+        self.begin_tx();
+        let r = self.base_create_collection(db, coll, options);
+        self.finish_tx(r)
+    }
+
+    //fn beginWrite(&self, db: &str, coll: &str) -> elmo::Result<Box<elmo::ElmoWriter>> {
+    //}
+}
+
+fn base_connect() -> sqlite3::SqliteResult<sqlite3::DatabaseConnection> {
     // TODO allow a different filename to be specified
     let access = sqlite3::access::ByFilename { flags: sqlite3::access::flags::OPEN_READWRITE, filename: "elmodata.db" };
     let mut conn = try!(sqlite3::DatabaseConnection::new(access));
@@ -71,6 +105,15 @@ fn connect() -> sqlite3::SqliteResult<()> {
     try!(conn.exec("CREATE TABLE IF NOT EXISTS \"collections\" (dbName TEXT NOT NULL, collName TEXT NOT NULL, options BLOB NOT NULL, PRIMARY KEY (dbName,collName))"));
     try!(conn.exec("CREATE TABLE IF NOT EXISTS \"indexes\" (dbName TEXT NOT NULL, collName TEXT NOT NULL, ndxName TEXT NOT NULL, spec BLOB NOT NULL, options BLOB NOT NULL, PRIMARY KEY (dbName, collName, ndxName), FOREIGN KEY (dbName,collName) REFERENCES \"collections\" ON DELETE CASCADE ON UPDATE CASCADE, UNIQUE (spec,dbName,collName))"));
 
-    Ok(())
+    Ok(conn)
 }
+
+fn connect() -> elmo::Result<Box<elmo::ElmoStorage>> {
+    let conn = try!(base_connect().map_err(elmo::wrap_err));
+    let c = ConnStuff {
+        conn: conn
+    };
+    Ok(box c)
+}
+
 

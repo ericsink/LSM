@@ -51,7 +51,8 @@ use std::collections::HashSet;
 use std::error::Error;
 
 #[derive(Debug)]
-enum ElmoError {
+// TODO do we really want this public?
+pub enum ElmoError {
     // TODO remove Misc
     Misc(&'static str),
 
@@ -61,12 +62,7 @@ enum ElmoError {
     Bson(bson::BsonError),
     Io(std::io::Error),
     Utf8(std::str::Utf8Error),
-
-    CursorNotValid,
-    InvalidPageNumber,
-    InvalidPageType,
-    RootPageNotInSegmentBlockList,
-    Poisoned,
+    Whatever(Box<Error>),
 }
 
 impl std::fmt::Display for ElmoError {
@@ -75,13 +71,9 @@ impl std::fmt::Display for ElmoError {
             ElmoError::Bson(ref err) => write!(f, "bson error: {}", err),
             ElmoError::Io(ref err) => write!(f, "IO error: {}", err),
             ElmoError::Utf8(ref err) => write!(f, "Utf8 error: {}", err),
+            ElmoError::Whatever(ref err) => write!(f, "Other error: {}", err),
             ElmoError::Misc(s) => write!(f, "Misc error: {}", s),
             ElmoError::CorruptFile(s) => write!(f, "Corrupt file: {}", s),
-            ElmoError::Poisoned => write!(f, "Poisoned"),
-            ElmoError::CursorNotValid => write!(f, "Cursor not valid"),
-            ElmoError::InvalidPageNumber => write!(f, "Invalid page number"),
-            ElmoError::InvalidPageType => write!(f, "Invalid page type"),
-            ElmoError::RootPageNotInSegmentBlockList => write!(f, "Root page not in segment block list"),
         }
     }
 }
@@ -92,17 +84,18 @@ impl std::error::Error for ElmoError {
             ElmoError::Bson(ref err) => std::error::Error::description(err),
             ElmoError::Io(ref err) => std::error::Error::description(err),
             ElmoError::Utf8(ref err) => std::error::Error::description(err),
+            ElmoError::Whatever(ref err) => std::error::Error::description(&**err),
             ElmoError::Misc(s) => s,
             ElmoError::CorruptFile(s) => s,
-            ElmoError::Poisoned => "poisoned",
-            ElmoError::CursorNotValid => "cursor not valid",
-            ElmoError::InvalidPageNumber => "invalid page number",
-            ElmoError::InvalidPageType => "invalid page type",
-            ElmoError::RootPageNotInSegmentBlockList => "Root page not in segment block list",
         }
     }
 
     // TODO cause
+}
+
+// TODO why is 'static needed here?  Doesn't this take ownership?
+pub fn wrap_err<E: Error + 'static>(err: E) -> ElmoError {
+    ElmoError::Whatever(box err)
 }
 
 impl From<bson::BsonError> for ElmoError {
@@ -117,21 +110,36 @@ impl From<io::Error> for ElmoError {
     }
 }
 
+// TODO not sure this is useful
+impl From<Box<std::error::Error>> for ElmoError {
+    fn from(err: Box<std::error::Error>) -> ElmoError {
+        ElmoError::Whatever(err)
+    }
+}
+
 impl From<std::str::Utf8Error> for ElmoError {
     fn from(err: std::str::Utf8Error) -> ElmoError {
         ElmoError::Utf8(err)
     }
 }
 
+/*
 impl<T> From<std::sync::PoisonError<T>> for ElmoError {
     fn from(_err: std::sync::PoisonError<T>) -> ElmoError {
         ElmoError::Poisoned
     }
 }
 
+impl<'a, E: Error + 'a> From<E> for ElmoError {
+    fn from(err: E) -> ElmoError {
+        ElmoError::Whatever(err)
+    }
+}
+*/
+
 pub type Result<T> = std::result::Result<T, ElmoError>;
 
-trait ElmoWriter {
+pub trait ElmoWriter {
     // TODO database
     // TODO collection
     fn insert(&self, v: BsonValue) -> Result<()>;
@@ -143,8 +151,8 @@ trait ElmoWriter {
     fn rollback(&self) -> Result<()>;
 }
 
-trait ElmoStorage {
-    fn createCollection(&self, db: &str, coll: &str, options: BsonValue) -> Result<bool>;
-    fn beginWrite(&self, db: &str, coll: &str) -> Result<Box<ElmoWriter>>;
+pub trait ElmoStorage {
+    fn createCollection(&mut self, db: &str, coll: &str, options: BsonValue) -> Result<bool>;
+    //fn beginWrite(&self, db: &str, coll: &str) -> Result<Box<ElmoWriter>>;
 }
 
