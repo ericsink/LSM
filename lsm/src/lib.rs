@@ -68,6 +68,7 @@ pub enum Blob {
 }
 
 #[derive(Debug)]
+// TODO change the name of this to just Error
 enum LsmError {
     // TODO remove Misc
     Misc(&'static str),

@@ -48,11 +48,10 @@ use std::fs::File;
 use std::fs::OpenOptions;
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::error::Error;
 
 #[derive(Debug)]
 // TODO do we really want this public?
-pub enum ElmoError {
+pub enum Error {
     // TODO remove Misc
     Misc(&'static str),
 
@@ -62,31 +61,31 @@ pub enum ElmoError {
     Bson(bson::BsonError),
     Io(std::io::Error),
     Utf8(std::str::Utf8Error),
-    Whatever(Box<Error>),
+    Whatever(Box<std::error::Error>),
 }
 
-impl std::fmt::Display for ElmoError {
+impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match *self {
-            ElmoError::Bson(ref err) => write!(f, "bson error: {}", err),
-            ElmoError::Io(ref err) => write!(f, "IO error: {}", err),
-            ElmoError::Utf8(ref err) => write!(f, "Utf8 error: {}", err),
-            ElmoError::Whatever(ref err) => write!(f, "Other error: {}", err),
-            ElmoError::Misc(s) => write!(f, "Misc error: {}", s),
-            ElmoError::CorruptFile(s) => write!(f, "Corrupt file: {}", s),
+            Error::Bson(ref err) => write!(f, "bson error: {}", err),
+            Error::Io(ref err) => write!(f, "IO error: {}", err),
+            Error::Utf8(ref err) => write!(f, "Utf8 error: {}", err),
+            Error::Whatever(ref err) => write!(f, "Other error: {}", err),
+            Error::Misc(s) => write!(f, "Misc error: {}", s),
+            Error::CorruptFile(s) => write!(f, "Corrupt file: {}", s),
         }
     }
 }
 
-impl std::error::Error for ElmoError {
+impl std::error::Error for Error {
     fn description(&self) -> &str {
         match *self {
-            ElmoError::Bson(ref err) => std::error::Error::description(err),
-            ElmoError::Io(ref err) => std::error::Error::description(err),
-            ElmoError::Utf8(ref err) => std::error::Error::description(err),
-            ElmoError::Whatever(ref err) => std::error::Error::description(&**err),
-            ElmoError::Misc(s) => s,
-            ElmoError::CorruptFile(s) => s,
+            Error::Bson(ref err) => std::error::Error::description(err),
+            Error::Io(ref err) => std::error::Error::description(err),
+            Error::Utf8(ref err) => std::error::Error::description(err),
+            Error::Whatever(ref err) => std::error::Error::description(&**err),
+            Error::Misc(s) => s,
+            Error::CorruptFile(s) => s,
         }
     }
 
@@ -94,50 +93,50 @@ impl std::error::Error for ElmoError {
 }
 
 // TODO why is 'static needed here?  Doesn't this take ownership?
-pub fn wrap_err<E: Error + 'static>(err: E) -> ElmoError {
-    ElmoError::Whatever(box err)
+pub fn wrap_err<E: std::error::Error + 'static>(err: E) -> Error {
+    Error::Whatever(box err)
 }
 
-impl From<bson::BsonError> for ElmoError {
-    fn from(err: bson::BsonError) -> ElmoError {
-        ElmoError::Bson(err)
+impl From<bson::BsonError> for Error {
+    fn from(err: bson::BsonError) -> Error {
+        Error::Bson(err)
     }
 }
 
-impl From<io::Error> for ElmoError {
-    fn from(err: io::Error) -> ElmoError {
-        ElmoError::Io(err)
+impl From<io::Error> for Error {
+    fn from(err: io::Error) -> Error {
+        Error::Io(err)
     }
 }
 
 // TODO not sure this is useful
-impl From<Box<std::error::Error>> for ElmoError {
-    fn from(err: Box<std::error::Error>) -> ElmoError {
-        ElmoError::Whatever(err)
+impl From<Box<std::error::Error>> for Error {
+    fn from(err: Box<std::error::Error>) -> Error {
+        Error::Whatever(err)
     }
 }
 
-impl From<std::str::Utf8Error> for ElmoError {
-    fn from(err: std::str::Utf8Error) -> ElmoError {
-        ElmoError::Utf8(err)
+impl From<std::str::Utf8Error> for Error {
+    fn from(err: std::str::Utf8Error) -> Error {
+        Error::Utf8(err)
     }
 }
 
 /*
-impl<T> From<std::sync::PoisonError<T>> for ElmoError {
-    fn from(_err: std::sync::PoisonError<T>) -> ElmoError {
-        ElmoError::Poisoned
+impl<T> From<std::sync::PoisonError<T>> for Error {
+    fn from(_err: std::sync::PoisonError<T>) -> Error {
+        Error::Poisoned
     }
 }
 
-impl<'a, E: Error + 'a> From<E> for ElmoError {
-    fn from(err: E) -> ElmoError {
-        ElmoError::Whatever(err)
+impl<'a, E: Error + 'a> From<E> for Error {
+    fn from(err: E) -> Error {
+        Error::Whatever(err)
     }
 }
 */
 
-pub type Result<T> = std::result::Result<T, ElmoError>;
+pub type Result<T> = std::result::Result<T, Error>;
 
 pub trait ElmoWriter {
     // TODO database
