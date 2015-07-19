@@ -45,7 +45,6 @@ use std::fs::File;
 use std::fs::OpenOptions;
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::error::Error;
 
 const SIZE_32: usize = 4; // like std::mem::size_of::<u32>()
 const SIZE_16: usize = 2; // like std::mem::size_of::<u16>()
@@ -68,8 +67,7 @@ pub enum Blob {
 }
 
 #[derive(Debug)]
-// TODO change the name of this to just Error
-enum LsmError {
+enum Error {
     // TODO remove Misc
     Misc(&'static str),
 
@@ -86,59 +84,59 @@ enum LsmError {
     Poisoned,
 }
 
-impl std::fmt::Display for LsmError {
+impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match *self {
-            LsmError::Io(ref err) => write!(f, "IO error: {}", err),
-            LsmError::Utf8(ref err) => write!(f, "Utf8 error: {}", err),
-            LsmError::Misc(s) => write!(f, "Misc error: {}", s),
-            LsmError::CorruptFile(s) => write!(f, "Corrupt file: {}", s),
-            LsmError::Poisoned => write!(f, "Poisoned"),
-            LsmError::CursorNotValid => write!(f, "Cursor not valid"),
-            LsmError::InvalidPageNumber => write!(f, "Invalid page number"),
-            LsmError::InvalidPageType => write!(f, "Invalid page type"),
-            LsmError::RootPageNotInSegmentBlockList => write!(f, "Root page not in segment block list"),
+            Error::Io(ref err) => write!(f, "IO error: {}", err),
+            Error::Utf8(ref err) => write!(f, "Utf8 error: {}", err),
+            Error::Misc(s) => write!(f, "Misc error: {}", s),
+            Error::CorruptFile(s) => write!(f, "Corrupt file: {}", s),
+            Error::Poisoned => write!(f, "Poisoned"),
+            Error::CursorNotValid => write!(f, "Cursor not valid"),
+            Error::InvalidPageNumber => write!(f, "Invalid page number"),
+            Error::InvalidPageType => write!(f, "Invalid page type"),
+            Error::RootPageNotInSegmentBlockList => write!(f, "Root page not in segment block list"),
         }
     }
 }
 
-impl std::error::Error for LsmError {
+impl std::error::Error for Error {
     fn description(&self) -> &str {
         match *self {
-            LsmError::Io(ref err) => std::error::Error::description(err),
-            LsmError::Utf8(ref err) => std::error::Error::description(err),
-            LsmError::Misc(s) => s,
-            LsmError::CorruptFile(s) => s,
-            LsmError::Poisoned => "poisoned",
-            LsmError::CursorNotValid => "cursor not valid",
-            LsmError::InvalidPageNumber => "invalid page number",
-            LsmError::InvalidPageType => "invalid page type",
-            LsmError::RootPageNotInSegmentBlockList => "Root page not in segment block list",
+            Error::Io(ref err) => std::error::Error::description(err),
+            Error::Utf8(ref err) => std::error::Error::description(err),
+            Error::Misc(s) => s,
+            Error::CorruptFile(s) => s,
+            Error::Poisoned => "poisoned",
+            Error::CursorNotValid => "cursor not valid",
+            Error::InvalidPageNumber => "invalid page number",
+            Error::InvalidPageType => "invalid page type",
+            Error::RootPageNotInSegmentBlockList => "Root page not in segment block list",
         }
     }
 
     // TODO cause
 }
 
-impl From<io::Error> for LsmError {
-    fn from(err: io::Error) -> LsmError {
-        LsmError::Io(err)
+impl From<io::Error> for Error {
+    fn from(err: io::Error) -> Error {
+        Error::Io(err)
     }
 }
 
-impl From<std::str::Utf8Error> for LsmError {
-    fn from(err: std::str::Utf8Error) -> LsmError {
-        LsmError::Utf8(err)
+impl From<std::str::Utf8Error> for Error {
+    fn from(err: std::str::Utf8Error) -> Error {
+        Error::Utf8(err)
     }
 }
 
-impl<T> From<std::sync::PoisonError<T>> for LsmError {
-    fn from(_err: std::sync::PoisonError<T>) -> LsmError {
-        LsmError::Poisoned
+impl<T> From<std::sync::PoisonError<T>> for Error {
+    fn from(_err: std::sync::PoisonError<T>) -> Error {
+        Error::Poisoned
     }
 }
 
-pub type Result<T> = std::result::Result<T, LsmError>;
+pub type Result<T> = std::result::Result<T, Error>;
 
 // kvp is the struct used to provide key-value pairs downward,
 // for storage into the database.
@@ -570,13 +568,13 @@ pub mod utils {
     use std::io::Read;
     use std::io::SeekFrom;
     use super::PageNum;
-    use super::LsmError;
+    use super::Error;
     use super::Result;
     use super::misc;
 
     pub fn SeekPage(strm: &mut Seek, pgsz: usize, pageNumber: PageNum) -> Result<u64> {
         if 0==pageNumber { 
-            return Err(LsmError::InvalidPageNumber);
+            return Err(Error::InvalidPageNumber);
         }
         let pos = ((pageNumber as u64) - 1) * (pgsz as u64);
         let v = try!(strm.seek(SeekFrom::Start(pos)));
@@ -1025,35 +1023,35 @@ impl<'a> ICursor<'a> for MultiCursor<'a> {
 
     fn KeyRef(&'a self) -> Result<KeyRef<'a>> {
         match self.cur {
-            None => Err(LsmError::CursorNotValid),
+            None => Err(Error::CursorNotValid),
             Some(icur) => self.subcursors[icur].KeyRef(),
         }
     }
 
     fn ValueRef(&'a self) -> Result<ValueRef<'a>> {
         match self.cur {
-            None => Err(LsmError::CursorNotValid),
+            None => Err(Error::CursorNotValid),
             Some(icur) => self.subcursors[icur].ValueRef(),
         }
     }
 
     fn KeyCompare(&self, k: &KeyRef) -> Result<Ordering> {
         match self.cur {
-            None => Err(LsmError::CursorNotValid),
+            None => Err(Error::CursorNotValid),
             Some(icur) => self.subcursors[icur].KeyCompare(k),
         }
     }
 
     fn ValueLength(&self) -> Result<Option<usize>> {
         match self.cur {
-            None => Err(LsmError::CursorNotValid),
+            None => Err(Error::CursorNotValid),
             Some(icur) => self.subcursors[icur].ValueLength(),
         }
     }
 
     fn Next(&mut self) -> Result<()> {
         match self.cur {
-            None => Err(LsmError::CursorNotValid),
+            None => Err(Error::CursorNotValid),
             Some(icur) => {
                 // we need to fix every cursor to point to its min
                 // value > icur.
@@ -1212,7 +1210,7 @@ impl<'a> ICursor<'a> for MultiCursor<'a> {
     // TODO fix Prev like Next
     fn Prev(&mut self) -> Result<()> {
         match self.cur {
-            None => Err(LsmError::CursorNotValid),
+            None => Err(Error::CursorNotValid),
             Some(icur) => {
                 let k = {
                     let k = try!(self.subcursors[icur].KeyRef());
@@ -1403,7 +1401,7 @@ impl PageType {
             1 => Ok(PageType::LEAF_NODE),
             2 => Ok(PageType::PARENT_NODE),
             3 => Ok(PageType::OVERFLOW_NODE),
-            _ => Err(LsmError::InvalidPageType),
+            _ => Err(Error::InvalidPageType),
         }
     }
 }
@@ -2341,7 +2339,7 @@ impl myOverflowReadStream {
         self.firstPageInBlock = self.currentPage;
         try!(self.ReadPage());
         if try!(self.PageType()) != (PageType::OVERFLOW_NODE) {
-            return Err(LsmError::CorruptFile("first overflow page has invalid page type"));
+            return Err(Error::CorruptFile("first overflow page has invalid page type"));
         }
         if self.CheckPageFlag(PageFlag::FLAG_BOUNDARY_NODE) {
             // first page landed on a boundary node
@@ -2458,8 +2456,11 @@ impl Read for myOverflowReadStream {
             Err(e) => {
                 // this interface requires io::Result, so we shoehorn the others into it
                 match e {
-                    LsmError::Io(e) => Err(e),
-                    _ => Err(std::io::Error::new(std::io::ErrorKind::Other, e.description())),
+                    Error::Io(e) => Err(e),
+                    _ => {
+                        use std::error::Error;
+                        Err(std::io::Error::new(std::io::ErrorKind::Other, e.description()))
+                    }
                 }
             },
         }
@@ -2541,7 +2542,7 @@ impl<'a> SegmentCursor<'a> {
         if ! try!(res.setCurrentPage(rootPage)) {
             // TODO fix this error.  or assert, because we previously verified
             // that the root page was in the block list we were given.
-            return Err(LsmError::Misc("failed to read root page"));
+            return Err(Error::Misc("failed to read root page"));
         }
         let pt = try!(res.pr.PageType());
         if pt == PageType::LEAF_NODE {
@@ -2549,12 +2550,12 @@ impl<'a> SegmentCursor<'a> {
             res.lastLeaf = rootPage;
         } else if pt == PageType::PARENT_NODE {
             if ! res.pr.CheckPageFlag(PageFlag::FLAG_ROOT_NODE) { 
-                return Err(LsmError::CorruptFile("root page lacks flag"));
+                return Err(Error::CorruptFile("root page lacks flag"));
             }
             res.firstLeaf = res.pr.GetSecondToLastInt32() as PageNum;
             res.lastLeaf = res.pr.GetLastInt32() as PageNum;
         } else {
-            return Err(LsmError::CorruptFile("root page has invalid page type"));
+            return Err(Error::CorruptFile("root page has invalid page type"));
         }
           
         Ok(res)
@@ -2579,7 +2580,7 @@ impl<'a> SegmentCursor<'a> {
         self.currentPage = pgnum;
         self.resetLeaf();
         if 0 == self.currentPage { 
-            Err(LsmError::InvalidPageNumber)
+            Err(Error::InvalidPageNumber)
             //Ok(false)
         } else {
             // refuse to go to a page beyond the end of the stream
@@ -2590,7 +2591,7 @@ impl<'a> SegmentCursor<'a> {
                 try!(self.pr.Read(&mut self.fs));
                 Ok(true)
             } else {
-                Err(LsmError::InvalidPageNumber)
+                Err(Error::InvalidPageNumber)
                 //Ok(false)
             }
         }
@@ -2662,7 +2663,7 @@ impl<'a> SegmentCursor<'a> {
         let mut cur = 0;
         let pt = try!(PageType::from_u8(self.pr.GetByte(&mut cur)));
         if pt != PageType::LEAF_NODE {
-            return Err(LsmError::CorruptFile("leaf has invalid page type"));
+            return Err(Error::CorruptFile("leaf has invalid page type"));
         }
         self.pr.GetByte(&mut cur);
         self.previousLeaf = self.pr.GetInt32(&mut cur) as PageNum;
@@ -2774,7 +2775,7 @@ impl<'a> SegmentCursor<'a> {
     fn compare_two(x: &SegmentCursor, y: &SegmentCursor) -> Result<Ordering> {
         fn get_info(c: &SegmentCursor) -> Result<(usize, bool, usize, usize)> {
             match c.currentKey {
-                None => Err(LsmError::CursorNotValid),
+                None => Err(Error::CursorNotValid),
                 Some(n) => {
                     let mut cur = c.leafKeys[n as usize];
                     let kflag = c.pr.GetByte(&mut cur);
@@ -2858,7 +2859,7 @@ impl<'a> SegmentCursor<'a> {
         let mut cur = 0;
         let pt = try!(PageType::from_u8(self.pr.GetByte(&mut cur)));
         if  pt != PageType::PARENT_NODE {
-            return Err(LsmError::CorruptFile("parent page has invalid page type"));
+            return Err(Error::CorruptFile("parent page has invalid page type"));
         }
         cur = cur + 1; // page flags
         let count = self.pr.GetInt16(&mut cur);
@@ -3050,14 +3051,14 @@ impl<'a> ICursor<'a> for SegmentCursor<'a> {
 
     fn KeyRef(&'a self) -> Result<KeyRef<'a>> {
         match self.currentKey {
-            None => Err(LsmError::CursorNotValid),
+            None => Err(Error::CursorNotValid),
             Some(currentKey) => self.keyInLeaf2(currentKey),
         }
     }
 
     fn ValueRef(&'a self) -> Result<ValueRef<'a>> {
         match self.currentKey {
-            None => Err(LsmError::CursorNotValid),
+            None => Err(Error::CursorNotValid),
             Some(currentKey) => {
                 let mut pos = self.leafKeys[currentKey as usize];
 
@@ -3082,7 +3083,7 @@ impl<'a> ICursor<'a> for SegmentCursor<'a> {
 
     fn ValueLength(&self) -> Result<Option<usize>> {
         match self.currentKey {
-            None => Err(LsmError::CursorNotValid),
+            None => Err(Error::CursorNotValid),
             Some(currentKey) => {
                 let mut cur = self.leafKeys[currentKey as usize];
 
@@ -3214,7 +3215,7 @@ fn readHeader<R>(fs: &mut R) -> Result<(HeaderData,usize,PageNum,SegmentNum)> wh
         let mut pr = PageBuffer::new(HEADER_SIZE_IN_BYTES);
         let got = try!(pr.Read(fs));
         if got < HEADER_SIZE_IN_BYTES {
-            Err(LsmError::CorruptFile("invalid header"))
+            Err(Error::CorruptFile("invalid header"))
         } else {
             Ok(pr)
         }
@@ -3246,7 +3247,7 @@ fn readHeader<R>(fs: &mut R) -> Result<(HeaderData,usize,PageNum,SegmentNum)> wh
                 let age = pr.GetVarint(cur) as u32;
                 let blocks = readBlockList(pr, cur);
                 if !block_list_contains_page(&blocks, root) {
-                    return Err(LsmError::RootPageNotInSegmentBlockList);
+                    return Err(Error::RootPageNotInSegmentBlockList);
                 }
                 let info = SegmentInfo {root:root,age:age,blocks:blocks};
                 m.insert(g,info);
@@ -3570,11 +3571,11 @@ fn slice_within(sub: &[SegmentNum], within: &[SegmentNum]) -> Result<usize> {
             if sub == &within[ndx_first .. ndx_first + count] {
                 Ok(ndx_first)
             } else {
-                Err(LsmError::Misc("not contiguous"))
+                Err(Error::Misc("not contiguous"))
             }
         },
         None => {
-            Err(LsmError::Misc("not contiguous"))
+            Err(Error::Misc("not contiguous"))
         },
     }
 }
@@ -3800,7 +3801,7 @@ impl InnerPart {
                  g: SegmentNum
                 ) -> Result<SegmentCursor> {
         match st.header.segments.get(&g) {
-            None => Err(LsmError::Misc("getCursor: segment not found")),
+            None => Err(Error::Misc("getCursor: segment not found")),
             Some(seg) => {
                 let rootPage = seg.root;
                 let mut cursors = try!(self.cursors.lock());
@@ -3866,7 +3867,7 @@ impl InnerPart {
                     newHeader.segments.insert(*g,info);
                 },
                 None => {
-                    return Err(LsmError::Misc("commitSegments: segment not found in segmentsInWaiting"));
+                    return Err(Error::Misc("commitSegments: segment not found in segmentsInWaiting"));
                 },
             }
         }
@@ -4039,7 +4040,7 @@ impl InnerPart {
         let old = {
             let maybe = mergeStuff.pendingMerges.get(&newSegNum);
             if maybe.is_none() {
-                return Err(LsmError::Misc("commitMerge: segment not found in pendingMerges"));
+                return Err(Error::Misc("commitMerge: segment not found in pendingMerges"));
             } else {
                 maybe.expect("just checked is_none").clone()
             }
@@ -4077,7 +4078,7 @@ impl InnerPart {
         let mut newSegmentInfo = {
             let maybe = waiting.segmentsInWaiting.get(&newSegNum);
             if maybe.is_none() {
-                return Err(LsmError::Misc("commitMerge: segment not found in segmentsInWaiting"));
+                return Err(Error::Misc("commitMerge: segment not found in segmentsInWaiting"));
             } else {
                 maybe.expect("seg not found").clone()
             }
