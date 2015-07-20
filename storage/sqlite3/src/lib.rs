@@ -56,10 +56,9 @@ extern crate sqlite3;
 
 struct MyConn {
     conn: sqlite3::DatabaseConnection,
-}
-
-struct MyWriter {
-    x: i32
+    // TODO these stmts do not go here
+    stmt_insert: sqlite3::PreparedStatement,
+    stmt_delete: sqlite3::PreparedStatement,
 }
 
 impl MyConn {
@@ -104,12 +103,18 @@ impl MyConn {
                 stmt.bind_text(1,db);
                 stmt.bind_text(2,coll);
                 stmt.bind_blob(3,&baOptions);
-                // TODO same as step_done?
-                stmt.execute();
-                let collTable = Self::getTableNameForCollection(db, coll);
-                try!(self.conn.exec(&format!("CREATE TABLE \"{}\" (did INTEGER PRIMARY KEY, bson BLOB NOT NULL)", collTable)).map_err(elmo::wrap_err));
-                // TODO match bson.tryGetValueForKey options "autoIndexId" with
-                Ok(true)
+                let mut r = stmt.execute();
+                match try!(r.step().map_err(elmo::wrap_err)) {
+                    None => {
+                        let collTable = Self::getTableNameForCollection(db, coll);
+                        try!(self.conn.exec(&format!("CREATE TABLE \"{}\" (did INTEGER PRIMARY KEY, bson BLOB NOT NULL)", collTable)).map_err(elmo::wrap_err));
+                        // TODO match bson.tryGetValueForKey options "autoIndexId" with
+                        Ok(true)
+                    },
+                    Some(_) => {
+                        Err(elmo::Error::Misc("wrong"))
+                    },
+                }
             },
         }
     }
@@ -142,18 +147,32 @@ impl elmo::StorageConnection for MyConn {
         self.finish_tx(r)
     }
 
-    fn beginWrite(&self, db: &str, coll: &str) -> elmo::Result<Box<elmo::StorageWriter>> {
-        let w = MyWriter {
-            x: 5
-        };
-
-        Ok(box w)
+    fn beginWrite(&self, db: &str, coll: &str) -> elmo::Result<&elmo::StorageWriter> {
+        Ok(self)
     }
 }
 
-impl elmo::StorageWriter for MyWriter {
-    fn insert(&self, v: BsonValue) -> elmo::Result<()> {
-        Ok(())
+impl elmo::StorageWriter for MyConn {
+    fn insert(&mut self, v: BsonValue) -> elmo::Result<()> {
+        let mut ba = Vec::new();
+        v.to_bson(&mut ba);
+        self.stmt_insert.clear_bindings();
+        self.stmt_insert.bind_blob(1,&ba);
+        let mut r = self.stmt_insert.execute();
+        match try!(r.step().map_err(elmo::wrap_err)) {
+            None => {
+                let doc_rowid = self.conn.last_insert_rowid();
+                if self.conn.changes() == 1 {
+                    // TODO update indexes
+                    Ok(())
+                } else {
+                    Err(elmo::Error::Misc("wrong"))
+                }
+            },
+            Some(_) => {
+                Err(elmo::Error::Misc("wrong"))
+            },
+        }
     }
 
     fn commit(&self) -> elmo::Result<()> {
@@ -164,20 +183,29 @@ impl elmo::StorageWriter for MyWriter {
 
 fn base_connect() -> sqlite3::SqliteResult<sqlite3::DatabaseConnection> {
     // TODO allow a different filename to be specified
-    let access = sqlite3::access::ByFilename { flags: sqlite3::access::flags::OPEN_READWRITE, filename: "elmodata.db" };
+    let access = sqlite3::access::ByFilename { flags: sqlite3::access::flags::OPEN_READWRITE | sqlite3::access::flags::OPEN_CREATE, filename: "elmodata.db" };
     let mut conn = try!(sqlite3::DatabaseConnection::new(access));
     try!(conn.exec("PRAGMA journal_mode=WAL"));
     try!(conn.exec("PRAGMA foreign_keys=ON"));
     try!(conn.exec("CREATE TABLE IF NOT EXISTS \"collections\" (dbName TEXT NOT NULL, collName TEXT NOT NULL, options BLOB NOT NULL, PRIMARY KEY (dbName,collName))"));
     try!(conn.exec("CREATE TABLE IF NOT EXISTS \"indexes\" (dbName TEXT NOT NULL, collName TEXT NOT NULL, ndxName TEXT NOT NULL, spec BLOB NOT NULL, options BLOB NOT NULL, PRIMARY KEY (dbName, collName, ndxName), FOREIGN KEY (dbName,collName) REFERENCES \"collections\" ON DELETE CASCADE ON UPDATE CASCADE, UNIQUE (spec,dbName,collName))"));
 
+    // TODO rm
+    try!(conn.exec("CREATE TABLE IF NOT EXISTS \"foo\" (bson TEXT NOT NULL)"));
+
     Ok(conn)
 }
 
-fn connect() -> elmo::Result<Box<elmo::StorageConnection>> {
+pub fn connect() -> elmo::Result<Box<elmo::StorageConnection>> {
     let conn = try!(base_connect().map_err(elmo::wrap_err));
+    // TODO rm
+    let tbl = "foo";
+    let stmt_insert = try!(conn.prepare(&format!("INSERT INTO \"{}\" (bson) VALUES (?)", tbl)).map_err(elmo::wrap_err));
+    let stmt_delete = try!(conn.prepare(&format!("DELETE FROM \"{}\" WHERE rowid=?", tbl)).map_err(elmo::wrap_err));
     let c = MyConn {
-        conn: conn
+        conn: conn,
+        stmt_insert: stmt_insert,
+        stmt_delete: stmt_delete,
     };
     Ok(box c)
 }

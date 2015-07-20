@@ -141,7 +141,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub trait StorageWriter {
     // TODO database
     // TODO collection
-    fn insert(&self, v: BsonValue) -> Result<()>;
+    fn insert(&mut self, v: BsonValue) -> Result<()>;
     //fn update(&self, v: BsonValue) -> Result<()>;
     //fn delete(&self, v: BsonValue) -> Result<bool>;
     // TODO getSelect
@@ -152,6 +152,6 @@ pub trait StorageWriter {
 
 pub trait StorageConnection {
     fn createCollection(&mut self, db: &str, coll: &str, options: BsonValue) -> Result<bool>;
-    fn beginWrite(&self, db: &str, coll: &str) -> Result<Box<StorageWriter>>;
+    fn beginWrite(&self, db: &str, coll: &str) -> Result<&StorageWriter>;
 }
 
