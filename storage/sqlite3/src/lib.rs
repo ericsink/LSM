@@ -54,14 +54,64 @@ use std::error::Error;
 
 extern crate sqlite3;
 
-struct ConnStuff {
+struct MyConn {
     conn: sqlite3::DatabaseConnection,
 }
 
-impl ConnStuff {
+struct MyWriter {
+    x: i32
+}
+
+impl MyConn {
+    fn getTableNameForCollection(db: &str, coll: &str) -> String { 
+        // TODO cleanse?
+        format!("docs.{}.{}", db, coll) 
+    }
+
+    fn getCollectionOptions(&self, db: &str, coll: &str) -> elmo::Result<Option<BsonValue>> {
+        let mut stmt = try!(self.conn.prepare("SELECT options FROM \"collections\" WHERE dbName=? AND collName=?").map_err(elmo::wrap_err));
+        stmt.bind_text(1,db);
+        stmt.bind_text(2,coll);
+        // TODO alternative to step() and SQLITE_ROW/DONE, etc
+        let mut r = stmt.execute();
+        match try!(r.step().map_err(elmo::wrap_err)) {
+            None => Ok(None),
+            Some(r) => {
+                match r.column_blob(0) {
+                    Some(b) => {
+                        let v = try!(BsonValue::from_bson(&b));
+                        Ok(Some(v))
+                    },
+                    None => {
+                        // this should not be null
+                        // TODO corrupt file
+                        // TODO or is this column NOT NULL?
+                        // which means this could be assert not reached
+                        Err(elmo::Error::Misc("wrong"))
+                    },
+                }
+            },
+        }
+    }
+
     fn base_create_collection(&mut self, db: &str, coll: &str, options: BsonValue) -> elmo::Result<bool> {
-        // TODO
-        Ok(true)
+        match try!(self.getCollectionOptions(db, coll)) {
+            Some(_) => Ok(false),
+            None => {
+                let mut baOptions = Vec::new();
+                options.to_bson(&mut baOptions);
+                let mut stmt = try!(self.conn.prepare("INSERT INTO \"collections\" (dbName,collName,options) VALUES (?,?,?)").map_err(elmo::wrap_err));
+                stmt.bind_text(1,db);
+                stmt.bind_text(2,coll);
+                stmt.bind_blob(3,&baOptions);
+                // TODO same as step_done?
+                stmt.execute();
+                let collTable = Self::getTableNameForCollection(db, coll);
+                try!(self.conn.exec(&format!("CREATE TABLE \"{}\" (did INTEGER PRIMARY KEY, bson BLOB NOT NULL)", collTable)).map_err(elmo::wrap_err));
+                // TODO match bson.tryGetValueForKey options "autoIndexId" with
+                Ok(true)
+            },
+        }
     }
 
     // TODO not sure this func is worth the trouble
@@ -85,15 +135,31 @@ impl ConnStuff {
     }
 }
 
-impl elmo::ElmoStorage for ConnStuff {
+impl elmo::StorageConnection for MyConn {
     fn createCollection(&mut self, db: &str, coll: &str, options: BsonValue) -> elmo::Result<bool> {
         self.begin_tx();
         let r = self.base_create_collection(db, coll, options);
         self.finish_tx(r)
     }
 
-    //fn beginWrite(&self, db: &str, coll: &str) -> elmo::Result<Box<elmo::ElmoWriter>> {
-    //}
+    fn beginWrite(&self, db: &str, coll: &str) -> elmo::Result<Box<elmo::StorageWriter>> {
+        let w = MyWriter {
+            x: 5
+        };
+
+        Ok(box w)
+    }
+}
+
+impl elmo::StorageWriter for MyWriter {
+    fn insert(&self, v: BsonValue) -> elmo::Result<()> {
+        Ok(())
+    }
+
+    fn commit(&self) -> elmo::Result<()> {
+        Ok(())
+    }
+
 }
 
 fn base_connect() -> sqlite3::SqliteResult<sqlite3::DatabaseConnection> {
@@ -108,9 +174,9 @@ fn base_connect() -> sqlite3::SqliteResult<sqlite3::DatabaseConnection> {
     Ok(conn)
 }
 
-fn connect() -> elmo::Result<Box<elmo::ElmoStorage>> {
+fn connect() -> elmo::Result<Box<elmo::StorageConnection>> {
     let conn = try!(base_connect().map_err(elmo::wrap_err));
-    let c = ConnStuff {
+    let c = MyConn {
         conn: conn
     };
     Ok(box c)

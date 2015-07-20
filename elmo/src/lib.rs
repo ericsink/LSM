@@ -138,20 +138,20 @@ impl<'a, E: Error + 'a> From<E> for Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-pub trait ElmoWriter {
+pub trait StorageWriter {
     // TODO database
     // TODO collection
     fn insert(&self, v: BsonValue) -> Result<()>;
-    fn update(&self, v: BsonValue) -> Result<()>;
-    fn delete(&self, v: BsonValue) -> Result<bool>;
+    //fn update(&self, v: BsonValue) -> Result<()>;
+    //fn delete(&self, v: BsonValue) -> Result<bool>;
     // TODO getSelect
     // TODO getIndexes
     fn commit(&self) -> Result<()>;
-    fn rollback(&self) -> Result<()>;
+    //fn rollback(&self) -> Result<()>;
 }
 
-pub trait ElmoStorage {
+pub trait StorageConnection {
     fn createCollection(&mut self, db: &str, coll: &str, options: BsonValue) -> Result<bool>;
-    //fn beginWrite(&self, db: &str, coll: &str) -> Result<Box<ElmoWriter>>;
+    fn beginWrite(&self, db: &str, coll: &str) -> Result<Box<StorageWriter>>;
 }
 
