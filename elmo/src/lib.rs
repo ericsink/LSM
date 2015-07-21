@@ -138,9 +138,11 @@ impl<'a, E: Error + 'a> From<E> for Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-pub trait StorageWriter {
-    // TODO database
-    // TODO collection
+pub trait StorageConnection {
+    fn createCollection(&mut self, db: &str, coll: &str, options: BsonValue) -> Result<bool>;
+    fn begin(&self) -> Result<()>;
+    fn prepare_write(&mut self, db: &str, coll: &str) -> Result<()>;
+    fn end_write(&mut self) -> Result<()>;
     fn insert(&mut self, v: BsonValue) -> Result<()>;
     //fn update(&self, v: BsonValue) -> Result<()>;
     //fn delete(&self, v: BsonValue) -> Result<bool>;
@@ -148,10 +150,5 @@ pub trait StorageWriter {
     // TODO getIndexes
     fn commit(&self) -> Result<()>;
     //fn rollback(&self) -> Result<()>;
-}
-
-pub trait StorageConnection {
-    fn createCollection(&mut self, db: &str, coll: &str, options: BsonValue) -> Result<bool>;
-    fn beginWrite(&self, db: &str, coll: &str) -> Result<&StorageWriter>;
 }
 
