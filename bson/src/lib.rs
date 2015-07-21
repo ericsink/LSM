@@ -84,6 +84,7 @@ impl From<std::str::Utf8Error> for BsonError {
 
 pub type Result<T> = std::result::Result<T, BsonError>;
 
+#[derive(PartialEq)]
 pub enum BsonValue {
     BDouble(f64),
     BString(String),
@@ -248,7 +249,7 @@ fn slurp_array(ba: &[u8], i: &mut usize) -> Result<BsonValue> {
 }
 
 impl BsonValue {
-    fn tryGetValueForKey(&self, k: &str) -> Option<&BsonValue> {
+    pub fn tryGetValueForKey(&self, k: &str) -> Option<&BsonValue> {
         match self {
             &BsonValue::BDocument(ref pairs) => {
                 for t in pairs.iter() {
@@ -639,6 +640,12 @@ impl BsonValue {
             &BsonValue::BMinKey => -1,
             &BsonValue::BMaxKey => 127,
         }
+    }
+
+    pub fn to_bson_array(&self) -> Vec<u8> {
+        let mut v = Vec::new();
+        self.to_bson(&mut v);
+        v
     }
 
     pub fn to_bson(&self, w: &mut Vec<u8>) {
