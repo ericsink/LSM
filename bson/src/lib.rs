@@ -530,15 +530,6 @@ impl BsonValue {
     }
 
     pub fn find_path(&self, path: &str) -> BsonValue {
-        // TODO
-        BsonValue::BInt32(42)
-    }
-
-    /*
-       TODO this func is confused about whether it is returning a reference into self
-       or a newly constructed BsonValue
-
-    fn findPath(&self, path: &str) -> BsonValue {
         let dot = path.find('.');
         let name = match dot { 
             None => path,
@@ -550,8 +541,8 @@ impl BsonValue {
                     Some(ndx) => {
                         let v = &pairs[ndx].1;
                         match dot {
-                            None => v,
-                            Some(dot) => v.findPath(&path[dot+1..])
+                            None => v.clone(),
+                            Some(dot) => v.find_path(&path[dot+1..])
                         }
                     },
                     None => BsonValue::BUndefined
@@ -570,9 +561,9 @@ impl BsonValue {
 
                         // TODO are there any functions in the matcher which could be
                         // simplified by using this function? 
-                        let a:Vec<BsonValue> = items.iter().filter_map(|&subv| 
+                        let a:Vec<BsonValue> = items.iter().filter_map(|subv| 
                                 match subv {
-                                &BsonValue::BDocument(_) => Some(subv.findPath(path)),
+                                &BsonValue::BDocument(_) => Some(subv.find_path(path)),
                                 _ => None
                                 }
                                                        ).collect();
@@ -583,13 +574,13 @@ impl BsonValue {
                     Ok(ndx) => {
                         if ndx<0 {
                             panic!( "array index < 0");
-                        } else if ndx>=items.len() {
+                        } else if (ndx as usize)>=items.len() {
                             panic!( "array index too large");
                         } else {
-                            let v = items[ndx];
+                            let v = &items[ndx as usize];
                             match dot {
-                                None => v,
-                                Some(dot) => v.findPath(&path[dot+1..])
+                                None => v.clone(),
+                                Some(dot) => v.find_path(&path[dot+1..])
                             }
                         }
                     }
@@ -598,7 +589,6 @@ impl BsonValue {
             _ => BsonValue::BUndefined
         }
     }
-    */
 
     fn getTypeNumber_u8(&self) -> u8 {
         match self {
