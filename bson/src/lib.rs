@@ -84,7 +84,7 @@ impl From<std::str::Utf8Error> for BsonError {
 
 pub type Result<T> = std::result::Result<T, BsonError>;
 
-#[derive(PartialEq)]
+#[derive(PartialEq,Clone)]
 pub enum BsonValue {
     BDouble(f64),
     BString(String),
@@ -96,7 +96,7 @@ pub enum BsonValue {
     BRegex(String, String),
     BJSCode(String),
     BJSCodeWithScope(String),
-    BBinary(u8, Box<[u8]>),
+    BBinary(u8, Vec<u8>),
     BMinKey,
     BMaxKey,
     BDateTime(i64),
@@ -199,7 +199,7 @@ fn slurp_binary(ba: &[u8], i: &mut usize) -> BsonValue {
     let mut b = Vec::with_capacity(len);
     b.push_all(&ba[*i .. *i + len]);
     *i = *i + len;
-    BsonValue::BBinary(subtype, b.into_boxed_slice())
+    BsonValue::BBinary(subtype, b)
 }
 
 fn slurp_objectid(ba: &[u8], i: &mut usize) -> BsonValue {
@@ -387,7 +387,7 @@ impl BsonValue {
         }
     }
 
-    fn getDocument(&self) -> Result<&Vec<(String,BsonValue)>> {
+    pub fn getDocument(&self) -> Result<&Vec<(String,BsonValue)>> {
         match self {
             &BsonValue::BDocument(ref s) => Ok(s),
             _ => Err(BsonError::Misc("must be document")),
@@ -529,6 +529,11 @@ impl BsonValue {
         }
     }
 
+    pub fn find_path(&self, path: &str) -> BsonValue {
+        // TODO
+        BsonValue::BInt32(42)
+    }
+
     /*
        TODO this func is confused about whether it is returning a reference into self
        or a newly constructed BsonValue
@@ -646,6 +651,22 @@ impl BsonValue {
         let mut v = Vec::new();
         self.to_bson(&mut v);
         v
+    }
+
+    pub fn encode_one_for_index(v: &BsonValue, neg: bool) -> Vec<u8> {
+        let mut v = Vec::new();
+        // TODO fix this
+        v
+    }
+
+    pub fn encode_multi_for_index(vals: Vec<(BsonValue, bool)>) -> Vec<u8> {
+        let mut v = Vec::new();
+        // TODO fix this
+        v
+    }
+
+    pub fn replace_undefined(&mut self) {
+        // TODO
     }
 
     pub fn to_bson(&self, w: &mut Vec<u8>) {
