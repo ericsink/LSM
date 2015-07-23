@@ -656,7 +656,32 @@ impl BsonValue {
     }
 
     pub fn replace_undefined(&mut self) {
-        // TODO
+        match self {
+            &mut BsonValue::BArray(ref mut vals) => {
+                for i in 0 .. vals.len() {
+                    match &vals[i] {
+                        &BsonValue::BUndefined => {
+                            vals[i] = BsonValue::BNull;
+                        },
+                        _ => {
+                        },
+                    }
+                }
+            },
+            &mut BsonValue::BDocument(ref mut pairs) => {
+                for i in 0 .. pairs.len() {
+                    match &pairs[i].1 {
+                        &BsonValue::BUndefined => {
+                            pairs[i] = (pairs[i].0.clone(), BsonValue::BNull)
+                        },
+                        _ => {
+                        },
+                    }
+                }
+            },
+            _ => {
+            },
+        }
     }
 
     pub fn to_bson(&self, w: &mut Vec<u8>) {
