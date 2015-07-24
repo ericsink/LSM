@@ -25,7 +25,7 @@ extern crate elmo;
 extern crate sqlite3;
 
 struct IndexPrep {
-    info: IndexInfo,
+    info: elmo::IndexInfo,
     stmt_insert: sqlite3::PreparedStatement,
     stmt_delete: sqlite3::PreparedStatement,
 }
@@ -257,7 +257,7 @@ impl MyConn {
         Ok(())
     }
 
-    fn create_index(&mut self, info: IndexInfo) -> elmo::Result<bool> {
+    fn create_index(&mut self, info: elmo::IndexInfo) -> elmo::Result<bool> {
         let _created = try!(self.base_create_collection(&info.db, &info.coll, BsonValue::BArray(Vec::new())));
         match try!(self.get_index_info(&info.db, &info.coll, &info.name)) {
             Some(already) => {
@@ -345,7 +345,7 @@ impl MyConn {
                         match options.tryGetValueForKey("autoIndexId") {
                             Some(&BsonValue::BBoolean(false)) => (),
                             _ => {
-                                let info = IndexInfo {
+                                let info = elmo::IndexInfo {
                                     db: String::from(db),
                                     coll: String::from(coll),
                                     name: String::from("_id_"),
@@ -461,7 +461,7 @@ impl MyConn {
     // for the purpose of grabbing their data later when used as a covering
     // index, which we're ignoring.
     //
-    fn get_normalized_spec(info: &IndexInfo) -> elmo::Result<(Vec<(String,IndexType)>,Option<std::collections::HashMap<String,i32>>)> {
+    fn get_normalized_spec(info: &elmo::IndexInfo) -> elmo::Result<(Vec<(String,IndexType)>,Option<std::collections::HashMap<String,i32>>)> {
         //printfn "info: %A" info
         let keys = try!(info.spec.getDocument());
         let first_text = Self::slice_find(&keys, "text");
@@ -524,13 +524,13 @@ impl MyConn {
         }
     }
 
-    fn get_index_from_row(r: &sqlite3::ResultRow) -> elmo::Result<IndexInfo> {
+    fn get_index_from_row(r: &sqlite3::ResultRow) -> elmo::Result<elmo::IndexInfo> {
         let name = r.column_text(0).expect("NOT NULL");
         let spec = try!(BsonValue::from_bson(&r.column_blob(1).expect("NOT NULL")));
         let options = try!(BsonValue::from_bson(&r.column_blob(2).expect("NOT NULL")));
         let db = r.column_text(3).expect("NOT NULL");
         let coll = r.column_text(4).expect("NOT NULL");
-        let info = IndexInfo {
+        let info = elmo::IndexInfo {
             db: String::from(db),
             coll: String::from(coll),
             name: String::from(name),
@@ -540,7 +540,7 @@ impl MyConn {
         Ok(info)
     }
 
-    fn get_index_info(&mut self, db: &str, coll: &str, name: &str) -> elmo::Result<Option<IndexInfo>> {
+    fn get_index_info(&mut self, db: &str, coll: &str, name: &str) -> elmo::Result<Option<elmo::IndexInfo>> {
         // TODO DRY this string
         let mut stmt = try!(self.conn.prepare("SELECT ndxName, spec, options, dbName, collName FROM \"indexes\" WHERE dbName=? AND collName=? AND ndxName=?").map_err(elmo::wrap_err));
         try!(stmt.bind_text(1, db).map_err(elmo::wrap_err));
@@ -556,7 +556,7 @@ impl MyConn {
         }
     }
 
-    fn list_indexes(&mut self) -> elmo::Result<Vec<IndexInfo>> {
+    fn list_indexes(&mut self) -> elmo::Result<Vec<elmo::IndexInfo>> {
         let mut stmt = try!(self.conn.prepare("SELECT ndxName, spec, options, dbName, collName FROM \"indexes\"").map_err(elmo::wrap_err));
         let mut r = stmt.execute();
         let mut v = Vec::new();
@@ -572,14 +572,6 @@ impl MyConn {
         Ok(v)
     }
 
-}
-
-struct IndexInfo {
-    db: String,
-    coll: String,
-    name: String,
-    spec: BsonValue,
-    options: BsonValue,
 }
 
 impl elmo::StorageConnection for MyConn {
@@ -713,6 +705,11 @@ impl elmo::StorageConnection for MyConn {
 
     fn commit_tx(&mut self) -> elmo::Result<()> {
         try!(self.conn.exec("COMMIT TRANSACTION").map_err(elmo::wrap_err));
+        Ok(())
+    }
+
+    fn rollback_tx(&mut self) -> elmo::Result<()> {
+        try!(self.conn.exec("ROLLBACK TRANSACTION").map_err(elmo::wrap_err));
         Ok(())
     }
 
