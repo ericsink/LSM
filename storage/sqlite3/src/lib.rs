@@ -130,7 +130,7 @@ impl MyConn {
         fn q(vals: &Vec<(BsonValue, bool)>, w: i32, s: String, entries: &mut Vec<Vec<(BsonValue,bool)>>) {
             // TODO tokenize properly
             let a = s.split(" ");
-            // TODO let a = a |> Set.ofArray |> Set.toArray
+            let a = a.into_iter().collect::<std::collections::HashSet<_>>();
             for s in a {
                 let s = String::from(s);
                 let v = BsonValue::BArray(vec![BsonValue::BString(s), BsonValue::BInt32(w)]);
@@ -154,7 +154,7 @@ impl MyConn {
                                     match v {
                                         BsonValue::BString(s) => q(&vals, weights[k], s, entries),
                                         BsonValue::BArray(a) => {
-                                            // TODO let a = a |> Set.ofArray |> Set.toArray
+                                            let a = a.into_iter().collect::<std::collections::HashSet<_>>();
                                             for v in a {
                                                 match v {
                                                     BsonValue::BString(s) => q(&vals, weights[k], s, entries),
@@ -196,7 +196,7 @@ impl MyConn {
                 let typ = t.1;
                 match v {
                     &BsonValue::BArray(ref a) => {
-                        // TODO let a = a |> Set.ofArray |> Set.toArray
+                        let a = a.into_iter().collect::<std::collections::HashSet<_>>();
                         for av in a {
                             // TODO clone is ugly
                             let replaced = replace_array_element(vals, i, (av.clone(), typ));
@@ -303,7 +303,7 @@ impl MyConn {
                                     let new_doc = try!(BsonValue::from_bson(&row.column_blob(1).expect("NOT NULL")));
                                     let mut entries = Vec::new();
                                     try!(Self::get_index_entries(&new_doc, &normspec, &weights, &info.options, &mut entries));
-                                    // TODO let entries = entries.ToArray() |> Set.ofArray |> Set.toArray
+                                    let entries = entries.into_iter().collect::<std::collections::HashSet<_>>();
                                     for vals in entries {
                                         let k = BsonValue::encode_multi_for_index(vals);
                                         try!(self.index_insert_step(&mut stmt_insert, k, doc_rowid));

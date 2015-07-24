@@ -84,7 +84,7 @@ impl From<std::str::Utf8Error> for BsonError {
 
 pub type Result<T> = std::result::Result<T, BsonError>;
 
-#[derive(PartialEq,Clone)]
+#[derive(Clone)]
 pub enum BsonValue {
     BDouble(f64),
     BString(String),
@@ -104,6 +104,37 @@ pub enum BsonValue {
     BBoolean(bool),
     BArray(Vec<BsonValue>),
     BDocument(Vec<(String, BsonValue)>),
+}
+
+// We want the ability to put a BsonValue into a HashSet,
+// but it contains an f64, which does not implement Eq or Hash.
+// So we provide implementations below for BsonValue that
+// are sufficient for our purposes.
+
+impl PartialEq for BsonValue {
+    fn eq(&self, other: &BsonValue) -> bool {
+        if self.is_nan() && other.is_nan() {
+            true
+        } else {
+            *self == *other
+        }
+    }
+}
+
+impl Eq for BsonValue {
+}
+
+impl std::hash::Hash for BsonValue {
+    fn hash<H>(&self, state: &mut H) where H: std::hash::Hasher {
+        match self {
+            &BsonValue::BDouble(f) => {
+                state.write(&f64_to_bytes_le(f));
+            },
+            _ => {
+                self.hash(state);
+            },
+        }
+    }
 }
 
 fn vec_push_c_string(v: &mut Vec<u8>, s: &str) {
@@ -345,7 +376,7 @@ impl BsonValue {
         }
     }
 
-    fn isNaN(&self) -> bool {
+    fn is_nan(&self) -> bool {
         match self {
             &BsonValue::BDouble(f) => f.is_nan(),
             _ => false,
