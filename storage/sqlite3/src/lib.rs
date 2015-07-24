@@ -328,6 +328,24 @@ impl MyConn {
         }
     }
 
+    fn base_clear_collection(&mut self, db: &str, coll: &str) -> elmo::Result<bool> {
+        match try!(self.get_collection_options(db, coll)) {
+            None => {
+                let created = try!(self.base_create_collection(db, coll, BsonValue::BArray(Vec::new())));
+                Ok(created)
+            },
+            Some(_) => {
+                let tbl = Self::get_table_name_for_collection(db, coll);
+                try!(self.conn.exec(&format!("DROP TABLE \"{}\"", tbl)).map_err(elmo::wrap_err));
+                Ok(false)
+            },
+        }
+    }
+
+    fn base_rename_collection(&mut self, old_name: &str, new_name: &str, drop_target: bool) -> elmo::Result<bool> {
+        unimplemented!();
+    }
+
     fn base_create_collection(&mut self, db: &str, coll: &str, options: BsonValue) -> elmo::Result<bool> {
         match try!(self.get_collection_options(db, coll)) {
             Some(_) => Ok(false),
@@ -361,6 +379,67 @@ impl MyConn {
                         Err(elmo::Error::Misc("insert stmt step() returned a row"))
                     },
                 }
+            },
+        }
+    }
+
+    fn base_create_indexes(&mut self, what: Vec<elmo::IndexInfo>) -> elmo::Result<Vec<bool>> {
+        let mut v = Vec::new();
+        for info in what {
+            let b = try!(self.create_index(info));
+            v.push(b);
+        }
+        Ok(v)
+    }
+
+    fn base_drop_index(&mut self, db: &str, coll: &str, name: &str) -> elmo::Result<bool> {
+        match try!(self.get_index_info(db, coll, name)) {
+            None => Ok(false),
+            Some(_) => {
+                let mut stmt = try!(self.conn.prepare("DELETE FROM \"indexes\" WHERE dbName=? AND collName=? AND ndxName=?").map_err(elmo::wrap_err));
+                try!(stmt.bind_text(1, db).map_err(elmo::wrap_err));
+                try!(stmt.bind_text(2, coll).map_err(elmo::wrap_err));
+                try!(stmt.bind_text(3, name).map_err(elmo::wrap_err));
+                try!(Self::step_done(&mut stmt));
+                try!(Self::verify_changes(&stmt, 1));
+                let tbl = Self::get_table_name_for_index(db, coll, name);
+                try!(self.conn.exec(&format!("DROP TABLE \"{}\"", tbl)).map_err(elmo::wrap_err));
+                Ok(true)
+            },
+        }
+    }
+
+    fn base_drop_database(&mut self, db: &str) -> elmo::Result<bool> {
+        let collections = try!(self.base_list_collections());
+        let mut b = false;
+        for t in collections {
+            if t.0 == db {
+                let _deleted = try!(self.base_drop_collection(&t.0, &t.1));
+                assert!(_deleted);
+                b = true;
+            }
+        }
+        Ok(b)
+    }
+
+    fn base_drop_collection(&mut self, db: &str, coll: &str) -> elmo::Result<bool> {
+        match try!(self.get_collection_options(db, coll)) {
+            None => Ok(false),
+            Some(_) => {
+                let indexes = try!(self.base_list_indexes());
+                for info in indexes {
+                    if info.db == db && info.coll == coll {
+                        try!(self.base_drop_index(&info.db, &info.coll, &info.name));
+                    }
+                }
+                let mut stmt = try!(self.conn.prepare("DELETE FROM \"collections\" WHERE dbName=? AND collName=?").map_err(elmo::wrap_err));
+                try!(stmt.bind_text(1, db).map_err(elmo::wrap_err));
+                try!(stmt.bind_text(2, coll).map_err(elmo::wrap_err));
+                try!(Self::step_done(&mut stmt));
+                try!(Self::verify_changes(&stmt, 1));
+                let tbl = Self::get_table_name_for_collection(db, coll);
+                try!(self.conn.exec(&format!("DROP TABLE \"{}\"", tbl)).map_err(elmo::wrap_err));
+                Ok(true)
             },
         }
     }
@@ -556,7 +635,7 @@ impl MyConn {
         }
     }
 
-    fn list_indexes(&mut self) -> elmo::Result<Vec<elmo::IndexInfo>> {
+    fn base_list_indexes(&mut self) -> elmo::Result<Vec<elmo::IndexInfo>> {
         let mut stmt = try!(self.conn.prepare("SELECT ndxName, spec, options, dbName, collName FROM \"indexes\"").map_err(elmo::wrap_err));
         let mut r = stmt.execute();
         let mut v = Vec::new();
@@ -572,16 +651,41 @@ impl MyConn {
         Ok(v)
     }
 
+    fn base_list_collections(&mut self) -> elmo::Result<Vec<(String, String, BsonValue)>> {
+        let mut stmt = try!(self.conn.prepare("SELECT dbName, collName, options FROM \"collections\" ORDER BY collName ASC").map_err(elmo::wrap_err));
+        let mut r = stmt.execute();
+        let mut v = Vec::new();
+        loop {
+            match try!(r.step().map_err(elmo::wrap_err)) {
+                None => break,
+                Some(row) => {
+                    let db = row.column_text(0).expect("NOT NULL");
+                    let coll = row.column_text(1).expect("NOT NULL");
+                    let options = try!(BsonValue::from_bson(&row.column_blob(2).expect("NOT NULL")));
+                    let t = (db, coll, options);
+                    v.push(t);
+                },
+            }
+        }
+        Ok(v)
+    }
+
 }
 
 impl elmo::StorageConnection for MyConn {
     fn create_collection(&mut self, db: &str, coll: &str, options: BsonValue) -> elmo::Result<bool> {
-        try!(self.begin_tx());
+        try!(self.begin_write_tx());
         let r = self.base_create_collection(db, coll, options);
         self.finish_tx(r)
     }
 
-    fn begin_tx(&mut self) -> elmo::Result<()> {
+    fn drop_collection(&mut self, db: &str, coll: &str) -> elmo::Result<bool> {
+        try!(self.begin_write_tx());
+        let r = self.base_drop_collection(db, coll);
+        self.finish_tx(r)
+    }
+
+    fn begin_write_tx(&mut self) -> elmo::Result<()> {
         try!(self.conn.exec("BEGIN IMMEDIATE TRANSACTION").map_err(elmo::wrap_err));
         Ok(())
     }
@@ -593,7 +697,7 @@ impl elmo::StorageConnection for MyConn {
         let stmt_insert = try!(self.conn.prepare(&format!("INSERT INTO \"{}\" (bson) VALUES (?)", tbl)).map_err(elmo::wrap_err));
         let stmt_delete = try!(self.conn.prepare(&format!("DELETE FROM \"{}\" WHERE rowid=?", tbl)).map_err(elmo::wrap_err));
         let stmt_update = try!(self.conn.prepare(&format!("UPDATE \"{}\" SET bson=? WHERE rowid=?", tbl)).map_err(elmo::wrap_err));
-        let indexes = try!(self.list_indexes());
+        let indexes = try!(self.base_list_indexes());
         let mut find_rowid = None;
         for info in &indexes {
             if info.name == "_id_" {
@@ -673,6 +777,7 @@ impl elmo::StorageConnection for MyConn {
                         try!(Self::step_done(&mut statements.delete));
                         let count = self.conn.changes();
                         if count == 1 {
+                            // TODO might not need index update here.  foreign key cascade?
                             try!(Self::update_indexes_delete(&mut statements.indexes, rowid));
                             Ok(true)
                         } else if count == 0 {
@@ -714,35 +819,45 @@ impl elmo::StorageConnection for MyConn {
     }
 
     fn list_collections(&mut self) -> elmo::Result<Vec<(String, String, BsonValue)>> {
-        unimplemented!();
+        try!(self.begin_tx());
+        let r = self.base_list_collections();
+        self.finish_tx(r)
     }
 
     fn list_indexes(&mut self) -> elmo::Result<Vec<elmo::IndexInfo>> {
-        unimplemented!();
+        try!(self.begin_tx());
+        let r = self.base_list_indexes();
+        self.finish_tx(r)
     }
 
-    fn create_indexes(&mut self, what: Vec<elmo::IndexInfo>) -> Vec<bool> {
-        unimplemented!();
+    fn create_indexes(&mut self, what: Vec<elmo::IndexInfo>) -> elmo::Result<Vec<bool>> {
+        try!(self.begin_write_tx());
+        let r = self.base_create_indexes(what);
+        self.finish_tx(r)
     }
 
     fn rename_collection(&mut self, old_name: &str, new_name: &str, drop_target: bool) -> elmo::Result<bool> {
-        unimplemented!();
-    }
-
-    fn drop_collection(&mut self, db: &str, coll: &str) -> elmo::Result<bool> {
-        unimplemented!();
+        try!(self.begin_write_tx());
+        let r = self.base_rename_collection(old_name, new_name, drop_target);
+        self.finish_tx(r)
     }
 
     fn drop_index(&mut self, db: &str, coll: &str, name: &str) -> elmo::Result<bool> {
-        unimplemented!();
+        try!(self.begin_write_tx());
+        let r = self.base_drop_index(db, coll, name);
+        self.finish_tx(r)
     }
 
     fn drop_database(&mut self, db: &str) -> elmo::Result<bool> {
-        unimplemented!();
+        try!(self.begin_tx());
+        let r = self.base_drop_database(db);
+        self.finish_tx(r)
     }
 
     fn clear_collection(&mut self, db: &str, coll: &str) -> elmo::Result<bool> {
-        unimplemented!();
+        try!(self.begin_write_tx());
+        let r = self.base_clear_collection(db, coll);
+        self.finish_tx(r)
     }
 
 }

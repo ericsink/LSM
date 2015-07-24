@@ -150,7 +150,7 @@ pub trait StorageConnection {
     fn create_collection(&mut self, db: &str, coll: &str, options: BsonValue) -> Result<bool>;
     fn list_collections(&mut self) -> Result<Vec<(String, String, BsonValue)>>;
     fn list_indexes(&mut self) -> Result<Vec<IndexInfo>>;
-    fn create_indexes(&mut self, Vec<IndexInfo>) -> Vec<bool>;
+    fn create_indexes(&mut self, Vec<IndexInfo>) -> Result<Vec<bool>>;
     fn rename_collection(&mut self, old_name: &str, new_name: &str, drop_target: bool) -> Result<bool>;
     fn drop_collection(&mut self, db: &str, coll: &str) -> Result<bool>;
     fn drop_index(&mut self, db: &str, coll: &str, name: &str) -> Result<bool>;
@@ -158,7 +158,7 @@ pub trait StorageConnection {
     fn clear_collection(&mut self, db: &str, coll: &str) -> Result<bool>;
     // TODO beginRead
 
-    fn begin_tx(&mut self) -> Result<()>;
+    fn begin_write_tx(&mut self) -> Result<()>;
     fn prepare_write(&mut self, db: &str, coll: &str) -> Result<()>;
     fn unprepare_write(&mut self) -> Result<()>;
     fn insert(&mut self, v: BsonValue) -> Result<()>;
