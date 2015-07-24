@@ -84,6 +84,11 @@ impl From<std::str::Utf8Error> for BsonError {
 
 pub type Result<T> = std::result::Result<T, BsonError>;
 
+pub fn split_name(s: &str) -> (&str, &str) {
+    // TODO
+    (&s[0 .. 2], &s[2 .. 4])
+}
+
 #[derive(Clone)]
 pub enum BsonValue {
     BDouble(f64),

@@ -343,7 +343,42 @@ impl MyConn {
     }
 
     fn base_rename_collection(&mut self, old_name: &str, new_name: &str, drop_target: bool) -> elmo::Result<bool> {
-        unimplemented!();
+        let (old_db, old_coll) = bson::split_name(old_name);
+        let (new_db, new_coll) = bson::split_name(new_name);
+
+        if drop_target {
+            let _deleted = try!(self.base_drop_collection(new_db, new_coll));
+        }
+
+        match try!(self.get_collection_options(old_db, old_coll)) {
+            None => {
+                let created = try!(self.base_create_collection(new_db, new_coll, BsonValue::BArray(Vec::new())));
+                Ok(created)
+            },
+            Some(_) => {
+                let old_tbl = Self::get_table_name_for_collection(old_db, old_coll);
+                let new_tbl = Self::get_table_name_for_collection(new_db, new_coll);
+
+                let mut stmt = try!(self.conn.prepare("UPDATE \"collections\" SET dbName=?, collName=? WHERE dbName=? AND collName=?").map_err(elmo::wrap_err));
+                try!(stmt.bind_text(1, new_db).map_err(elmo::wrap_err));
+                try!(stmt.bind_text(2, new_coll).map_err(elmo::wrap_err));
+                try!(stmt.bind_text(3, old_db).map_err(elmo::wrap_err));
+                try!(stmt.bind_text(4, old_coll).map_err(elmo::wrap_err));
+                try!(Self::step_done(&mut stmt));
+
+                try!(self.conn.exec(&format!("ALTER TABLE \"{}\" RENAME TO \"{}\"", old_tbl, new_tbl)).map_err(elmo::wrap_err));
+
+                let indexes = try!(self.base_list_indexes());
+                for info in indexes {
+                    if info.db == old_db && info.coll == old_coll {
+                        let old_ndx_tbl = Self::get_table_name_for_index(old_db, old_coll, &info.name);
+                        let new_ndx_tbl = Self::get_table_name_for_index(new_db, new_coll, &info.name);
+                        try!(self.conn.exec(&format!("ALTER TABLE \"{}\" RENAME TO \"{}\"", old_ndx_tbl, new_ndx_tbl)).map_err(elmo::wrap_err));
+                    }
+                }
+                Ok(false)
+            },
+        }
     }
 
     fn base_create_collection(&mut self, db: &str, coll: &str, options: BsonValue) -> elmo::Result<bool> {
