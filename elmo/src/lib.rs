@@ -148,14 +148,14 @@ pub struct IndexInfo {
 
 pub trait StorageConnection {
     fn create_collection(&mut self, db: &str, coll: &str, options: BsonValue) -> Result<bool>;
-    //fn list_collections(&mut self) -> Result<Vec<(String, String, BsonValue)>>;
-    //fn list_indexes(&mut self) -> Result<Vec<IndexInfo>>;
-    //fn create_indexes(&mut self, Vec<IndexInfo>) -> Vec<bool>;
-    //fn rename_collection(&mut self, old_name: &str, new_name: &str, drop_target: bool) -> Result<bool>;
-    //fn drop_collection(&mut self, db: &str, coll: &str) -> Result<bool>;
-    //fn drop_index(&mut self, db: &str, coll: &str, name: &str) -> Result<bool>;
-    //fn drop_database(&mut self, db: &str) -> Result<bool>;
-    //fn clear_collection(&mut self, db: &str, coll: &str) -> Result<bool>;
+    fn list_collections(&mut self) -> Result<Vec<(String, String, BsonValue)>>;
+    fn list_indexes(&mut self) -> Result<Vec<IndexInfo>>;
+    fn create_indexes(&mut self, Vec<IndexInfo>) -> Vec<bool>;
+    fn rename_collection(&mut self, old_name: &str, new_name: &str, drop_target: bool) -> Result<bool>;
+    fn drop_collection(&mut self, db: &str, coll: &str) -> Result<bool>;
+    fn drop_index(&mut self, db: &str, coll: &str, name: &str) -> Result<bool>;
+    fn drop_database(&mut self, db: &str) -> Result<bool>;
+    fn clear_collection(&mut self, db: &str, coll: &str) -> Result<bool>;
     // TODO beginRead
 
     fn begin_tx(&mut self) -> Result<()>;

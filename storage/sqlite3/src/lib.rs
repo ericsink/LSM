@@ -713,6 +713,38 @@ impl elmo::StorageConnection for MyConn {
         Ok(())
     }
 
+    fn list_collections(&mut self) -> elmo::Result<Vec<(String, String, BsonValue)>> {
+        unimplemented!();
+    }
+
+    fn list_indexes(&mut self) -> elmo::Result<Vec<elmo::IndexInfo>> {
+        unimplemented!();
+    }
+
+    fn create_indexes(&mut self, what: Vec<elmo::IndexInfo>) -> Vec<bool> {
+        unimplemented!();
+    }
+
+    fn rename_collection(&mut self, old_name: &str, new_name: &str, drop_target: bool) -> elmo::Result<bool> {
+        unimplemented!();
+    }
+
+    fn drop_collection(&mut self, db: &str, coll: &str) -> elmo::Result<bool> {
+        unimplemented!();
+    }
+
+    fn drop_index(&mut self, db: &str, coll: &str, name: &str) -> elmo::Result<bool> {
+        unimplemented!();
+    }
+
+    fn drop_database(&mut self, db: &str) -> elmo::Result<bool> {
+        unimplemented!();
+    }
+
+    fn clear_collection(&mut self, db: &str, coll: &str) -> elmo::Result<bool> {
+        unimplemented!();
+    }
+
 }
 
 fn base_connect(name: &str) -> sqlite3::SqliteResult<sqlite3::DatabaseConnection> {
