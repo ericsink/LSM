@@ -27,6 +27,7 @@ extern crate sqlite3;
 struct MyStatements {
     insert: sqlite3::PreparedStatement,
     delete: sqlite3::PreparedStatement,
+    update: sqlite3::PreparedStatement,
     find_rowid: Option<sqlite3::PreparedStatement>,
 }
 
@@ -379,7 +380,7 @@ impl MyConn {
         }
     }
 
-    fn find_rowid(&mut self, v: BsonValue) -> elmo::Result<Option<i64>> {
+    fn find_rowid(&mut self, v: &BsonValue) -> elmo::Result<Option<i64>> {
         match self.statements {
             None => Err(elmo::Error::Misc("must prepare_write()")),
             Some(ref mut statements) => {
@@ -387,7 +388,7 @@ impl MyConn {
                     None => Ok(None),
                     Some(ref mut stmt) => {
                         stmt.clear_bindings();
-                        let ba = BsonValue::encode_one_for_index(&v, false);
+                        let ba = BsonValue::encode_one_for_index(v, false);
                         try!(stmt.bind_blob(1, &ba).map_err(elmo::wrap_err));
                         let mut r = stmt.execute();
                         match try!(r.step().map_err(elmo::wrap_err)) {
@@ -570,6 +571,7 @@ impl elmo::StorageConnection for MyConn {
         let tbl = Self::get_table_name_for_collection(db, coll);
         let stmt_insert = try!(self.conn.prepare(&format!("INSERT INTO \"{}\" (bson) VALUES (?)", tbl)).map_err(elmo::wrap_err));
         let stmt_delete = try!(self.conn.prepare(&format!("DELETE FROM \"{}\" WHERE rowid=?", tbl)).map_err(elmo::wrap_err));
+        let stmt_update = try!(self.conn.prepare(&format!("UPDATE \"{}\" SET bson=? WHERE rowid=?", tbl)).map_err(elmo::wrap_err));
         let indexes = try!(self.list_indexes());
         let mut find_rowid = None;
         for info in &indexes {
@@ -582,6 +584,7 @@ impl elmo::StorageConnection for MyConn {
         let c = MyStatements {
             insert: stmt_insert,
             delete: stmt_delete,
+            update: stmt_update,
             find_rowid: find_rowid,
         };
         // we assume that assigning to self.statements will replace
@@ -596,8 +599,35 @@ impl elmo::StorageConnection for MyConn {
         Ok(())
     }
 
+    fn update(&mut self, v: BsonValue) -> elmo::Result<()> {
+        match v.tryGetValueForKey("_id") {
+            None => Err(elmo::Error::Misc("cannot update without _id")),
+            Some(id) => {
+                match try!(self.find_rowid(&id).map_err(elmo::wrap_err)) {
+                    None => Err(elmo::Error::Misc("update but does not exist")),
+                    Some(rowid) => {
+                        match self.statements {
+                            None => Err(elmo::Error::Misc("must prepare_write()")),
+                            Some(ref mut statements) => {
+                                let ba = v.to_bson_array();
+                                statements.update.clear_bindings();
+                                try!(statements.update.bind_blob(1,&ba).map_err(elmo::wrap_err));
+                                try!(statements.update.bind_int64(2, rowid).map_err(elmo::wrap_err));
+                                try!(Self::step_done(&mut statements.update));
+                                try!(Self::verify_changes(&self.conn, 1));
+                                // TODO update indexes
+                                Ok(())
+                            },
+                        }
+                    },
+                }
+            },
+        }
+    }
+
     fn delete(&mut self, v: BsonValue) -> elmo::Result<bool> {
-        match try!(self.find_rowid(v).map_err(elmo::wrap_err)) {
+        // TODO is v supposed to be the id?
+        match try!(self.find_rowid(&v).map_err(elmo::wrap_err)) {
             None => Ok(false),
             Some(rowid) => {
                 match self.statements {

@@ -144,7 +144,7 @@ pub trait StorageConnection {
     fn prepare_write(&mut self, db: &str, coll: &str) -> Result<()>;
     fn unprepare_write(&mut self) -> Result<()>;
     fn insert(&mut self, v: BsonValue) -> Result<()>;
-    //fn update(&self, v: BsonValue) -> Result<()>;
+    fn update(&mut self, v: BsonValue) -> Result<()>;
     fn delete(&mut self, v: BsonValue) -> Result<bool>;
     // TODO getSelect
     // TODO getIndexes
