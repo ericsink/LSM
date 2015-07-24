@@ -24,11 +24,18 @@ extern crate elmo;
 
 extern crate sqlite3;
 
+struct IndexPrep {
+    info: IndexInfo,
+    stmt_insert: sqlite3::PreparedStatement,
+    stmt_delete: sqlite3::PreparedStatement,
+}
+
 struct MyStatements {
     insert: sqlite3::PreparedStatement,
     delete: sqlite3::PreparedStatement,
     update: sqlite3::PreparedStatement,
     find_rowid: Option<sqlite3::PreparedStatement>,
+    indexes: Vec<IndexPrep>,
 }
 
 struct MyConn {
@@ -75,7 +82,7 @@ impl MyConn {
         let mut stmt = try!(self.conn.prepare("SELECT options FROM \"collections\" WHERE dbName=? AND collName=?").map_err(elmo::wrap_err));
         try!(stmt.bind_text(1, db).map_err(elmo::wrap_err));
         try!(stmt.bind_text(2, coll).map_err(elmo::wrap_err));
-        // TODO this is apparently an alternative to step() and SQLITE_ROW/DONE, etc
+        // TODO step_row() ?
         let mut r = stmt.execute();
         match try!(r.step().map_err(elmo::wrap_err)) {
             None => Ok(None),
@@ -232,8 +239,8 @@ impl MyConn {
         }
     }
 
-    fn verify_changes(conn: &sqlite3::DatabaseConnection, shouldbe: u64) -> elmo::Result<()> {
-        if conn.changes() == shouldbe {
+    fn verify_changes(stmt: &sqlite3::PreparedStatement, shouldbe: u64) -> elmo::Result<()> {
+        if stmt.changes() == shouldbe {
             Ok(())
         } else {
             // TODO or should this be an assert?
@@ -241,17 +248,17 @@ impl MyConn {
         }
     }
 
-    fn index_insert_step(&self, stmt: &mut sqlite3::PreparedStatement, k: Vec<u8>, doc_rowid: i64) -> elmo::Result<()> {
+    fn index_insert_step(stmt: &mut sqlite3::PreparedStatement, k: Vec<u8>, doc_rowid: i64) -> elmo::Result<()> {
         stmt.clear_bindings();
         try!(stmt.bind_blob(1, &k).map_err(elmo::wrap_err));
         try!(stmt.bind_int64(2, doc_rowid).map_err(elmo::wrap_err));
         try!(Self::step_done(stmt));
-        try!(Self::verify_changes(&self.conn, 1));
+        try!(Self::verify_changes(stmt, 1));
         Ok(())
     }
 
     fn create_index(&mut self, info: IndexInfo) -> elmo::Result<bool> {
-        // TODO create_collection
+        let _created = try!(self.base_create_collection(&info.db, &info.coll, BsonValue::BArray(Vec::new())));
         match try!(self.get_index_info(&info.db, &info.coll, &info.name)) {
             Some(already) => {
                 if already.spec != info.spec {
@@ -277,7 +284,6 @@ impl MyConn {
                 let mut r = stmt.execute();
                 match try!(r.step().map_err(elmo::wrap_err)) {
                     None => {
-                        // TODO
                         let tbl_coll = Self::get_table_name_for_collection(&info.db, &info.coll);
                         let tbl_ndx = Self::get_table_name_for_index(&info.db, &info.coll, &info.name);
                         let s =
@@ -307,7 +313,7 @@ impl MyConn {
                                     let entries = entries.into_iter().collect::<std::collections::HashSet<_>>();
                                     for vals in entries {
                                         let k = BsonValue::encode_multi_for_index(vals);
-                                        try!(self.index_insert_step(&mut stmt_insert, k, doc_rowid));
+                                        try!(Self::index_insert_step(&mut stmt_insert, k, doc_rowid));
                                     }
                                 },
                             }
@@ -402,6 +408,29 @@ impl MyConn {
                 }
             }
         }
+    }
+
+    fn update_indexes_delete(indexes: &mut Vec<IndexPrep>, rowid: i64) -> elmo::Result<()> {
+        for t in indexes {
+            t.stmt_delete.clear_bindings();
+            try!(t.stmt_delete.bind_int64(1, rowid).map_err(elmo::wrap_err));
+            try!(Self::step_done(&mut t.stmt_delete));
+        }
+        Ok(())
+    }
+
+    fn update_indexes_insert(indexes: &mut Vec<IndexPrep>, rowid: i64, v: &BsonValue) -> elmo::Result<()> {
+        for t in indexes {
+            let (normspec, weights) = try!(Self::get_normalized_spec(&t.info));
+            let mut entries = Vec::new();
+            try!(Self::get_index_entries(&v, &normspec, &weights, &t.info.options, &mut entries));
+            let entries = entries.into_iter().collect::<std::collections::HashSet<_>>();
+            for vals in entries {
+                let k = BsonValue::encode_multi_for_index(vals);
+                try!(Self::index_insert_step(&mut t.stmt_insert, k, rowid));
+            }
+        }
+        Ok(())
     }
 
     fn slice_find(pairs: &[(String, BsonValue)], s: &str) -> Option<usize> {
@@ -567,7 +596,7 @@ impl elmo::StorageConnection for MyConn {
 
     fn prepare_write(&mut self, db: &str, coll: &str) -> elmo::Result<()> {
         // TODO make sure a tx is open?
-        // TODO create collection
+        let _created = try!(self.base_create_collection(db, coll, BsonValue::BArray(Vec::new())));
         let tbl = Self::get_table_name_for_collection(db, coll);
         let stmt_insert = try!(self.conn.prepare(&format!("INSERT INTO \"{}\" (bson) VALUES (?)", tbl)).map_err(elmo::wrap_err));
         let stmt_delete = try!(self.conn.prepare(&format!("DELETE FROM \"{}\" WHERE rowid=?", tbl)).map_err(elmo::wrap_err));
@@ -581,11 +610,24 @@ impl elmo::StorageConnection for MyConn {
                 break;
             }
         }
+        let mut index_stmts = Vec::new();
+        for info in indexes {
+            let tbl_ndx = Self::get_table_name_for_index(db, coll, &info.name);
+            let stmt_insert = try!(self.prepare_index_insert(&tbl_ndx));
+            let stmt_delete = try!(self.conn.prepare(&format!("DELETE FROM \"{}\" WHERE doc_rowid=?", tbl_ndx)).map_err(elmo::wrap_err));
+            let t = IndexPrep {
+                info: info, 
+                stmt_insert: stmt_insert, 
+                stmt_delete: stmt_delete
+            };
+            index_stmts.push(t);
+        }
         let c = MyStatements {
             insert: stmt_insert,
             delete: stmt_delete,
             update: stmt_update,
             find_rowid: find_rowid,
+            indexes: index_stmts,
         };
         // we assume that assigning to self.statements will replace
         // any existing value there which will cause those existing
@@ -614,8 +656,9 @@ impl elmo::StorageConnection for MyConn {
                                 try!(statements.update.bind_blob(1,&ba).map_err(elmo::wrap_err));
                                 try!(statements.update.bind_int64(2, rowid).map_err(elmo::wrap_err));
                                 try!(Self::step_done(&mut statements.update));
-                                try!(Self::verify_changes(&self.conn, 1));
-                                // TODO update indexes
+                                try!(Self::verify_changes(&statements.update, 1));
+                                try!(Self::update_indexes_delete(&mut statements.indexes, rowid));
+                                try!(Self::update_indexes_insert(&mut statements.indexes, rowid, &v));
                                 Ok(())
                             },
                         }
@@ -638,7 +681,7 @@ impl elmo::StorageConnection for MyConn {
                         try!(Self::step_done(&mut statements.delete));
                         let count = self.conn.changes();
                         if count == 1 {
-                            // TODO update indexes
+                            try!(Self::update_indexes_delete(&mut statements.indexes, rowid));
                             Ok(true)
                         } else if count == 0 {
                             Ok(false)
@@ -659,8 +702,10 @@ impl elmo::StorageConnection for MyConn {
                 statements.insert.clear_bindings();
                 try!(statements.insert.bind_blob(1,&ba).map_err(elmo::wrap_err));
                 try!(Self::step_done(&mut statements.insert));
-                try!(Self::verify_changes(&self.conn, 1));
-                // TODO update indexes
+                try!(Self::verify_changes(&statements.insert, 1));
+                let rowid = self.conn.last_insert_rowid();
+                try!(Self::update_indexes_delete(&mut statements.indexes, rowid));
+                try!(Self::update_indexes_insert(&mut statements.indexes, rowid, &v));
                 Ok(())
             }
         }
@@ -673,9 +718,8 @@ impl elmo::StorageConnection for MyConn {
 
 }
 
-fn base_connect() -> sqlite3::SqliteResult<sqlite3::DatabaseConnection> {
-    // TODO allow a different filename to be specified
-    let access = sqlite3::access::ByFilename { flags: sqlite3::access::flags::OPEN_READWRITE | sqlite3::access::flags::OPEN_CREATE, filename: "elmodata.db" };
+fn base_connect(name: &str) -> sqlite3::SqliteResult<sqlite3::DatabaseConnection> {
+    let access = sqlite3::access::ByFilename { flags: sqlite3::access::flags::OPEN_READWRITE | sqlite3::access::flags::OPEN_CREATE, filename: name};
     let mut conn = try!(sqlite3::DatabaseConnection::new(access));
     try!(conn.exec("PRAGMA journal_mode=WAL"));
     try!(conn.exec("PRAGMA foreign_keys=ON"));
@@ -685,8 +729,8 @@ fn base_connect() -> sqlite3::SqliteResult<sqlite3::DatabaseConnection> {
     Ok(conn)
 }
 
-pub fn connect() -> elmo::Result<Box<elmo::StorageConnection>> {
-    let conn = try!(base_connect().map_err(elmo::wrap_err));
+pub fn connect(name: &str) -> elmo::Result<Box<elmo::StorageConnection>> {
+    let conn = try!(base_connect(name).map_err(elmo::wrap_err));
     let c = MyConn {
         conn: conn,
         statements: None,

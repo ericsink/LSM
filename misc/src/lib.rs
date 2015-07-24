@@ -17,6 +17,35 @@
 #![feature(associated_consts)]
 #![feature(clone_from_slice)]
 
+pub fn tid() -> String {
+    // TODO use the rand crate
+    fn bytes() -> std::io::Result<[u8;16]> {
+        use std::fs::OpenOptions;
+        let mut f = try!(OpenOptions::new()
+                .read(true)
+                .open("/dev/urandom"));
+        let mut ba = [0;16];
+        try!(io::read_fully(&mut f, &mut ba));
+        Ok(ba)
+    }
+
+    fn to_hex_string(ba: &[u8]) -> String {
+        let strs: Vec<String> = ba.iter()
+            .map(|b| format!("{:02X}", b))
+            .collect();
+        strs.connect("")
+    }
+
+    let ba = bytes().unwrap();
+    to_hex_string(&ba)
+}
+
+pub fn tempfile(base: &str) -> String {
+    let _ = std::fs::create_dir("tmp");
+    let file = "tmp/".to_string() + base + "_" + &tid();
+    file
+}
+
 pub mod endian {
     use std;
 
