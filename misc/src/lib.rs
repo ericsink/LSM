@@ -521,29 +521,29 @@ pub mod io {
 
 }
 
-pub struct sqlite4_num {
+pub struct Sqlite4Num {
     neg: bool,
     approx: bool,
     e: i16,
     m: u64,
 }
 
-impl sqlite4_num {
+impl Sqlite4Num {
     const SQLITE4_MX_EXP: i16 = 999;
     const SQLITE4_NAN_EXP: i16 = 2000;
 
-    const NAN: sqlite4_num =
-        sqlite4_num
+    const NAN: Sqlite4Num =
+        Sqlite4Num
         {
             neg: false,
             approx: true,
-            e: sqlite4_num::SQLITE4_NAN_EXP,
+            e: Sqlite4Num::SQLITE4_NAN_EXP,
             m: 0,
         };
-    const POS_INF: sqlite4_num = sqlite4_num {m: 1, .. sqlite4_num::NAN};
-    const NEG_INF: sqlite4_num = sqlite4_num {neg: true, .. sqlite4_num::POS_INF};
-    const ZERO: sqlite4_num =
-        sqlite4_num
+    const POS_INF: Sqlite4Num = Sqlite4Num {m: 1, .. Sqlite4Num::NAN};
+    const NEG_INF: Sqlite4Num = Sqlite4Num {neg: true, .. Sqlite4Num::POS_INF};
+    const ZERO: Sqlite4Num =
+        Sqlite4Num
         {
             neg: false,
             approx: false,
@@ -551,16 +551,16 @@ impl sqlite4_num {
             m: 0,
         };
 
-    fn from_f64(d: f64) -> sqlite4_num {
+    pub fn from_f64(d: f64) -> Sqlite4Num {
         // TODO probably this function should be done by decoding the bits
         if d.is_nan() {
-            sqlite4_num::NAN
+            Sqlite4Num::NAN
         } else if d.is_sign_positive() && d.is_infinite() {
-            sqlite4_num::POS_INF
+            Sqlite4Num::POS_INF
         } else if d.is_sign_negative() && d.is_infinite() {
-            sqlite4_num::NEG_INF
+            Sqlite4Num::NEG_INF
         } else if d==0.0 {
-            sqlite4_num::ZERO
+            Sqlite4Num::ZERO
         } else {
             let LARGEST_UINT64 = u64::max_value();
             let TENTH_MAX = LARGEST_UINT64 / 10;
@@ -577,7 +577,7 @@ impl sqlite4_num {
                 d = d * 10.0;
                 e = e - 1;
             }
-            sqlite4_num
+            Sqlite4Num
             {
                 neg: neg,
                 approx: true,
@@ -588,15 +588,15 @@ impl sqlite4_num {
     }
 
     fn is_inf(&self) -> bool {
-        (self.e > sqlite4_num::SQLITE4_MX_EXP) && (self.m != 0)
+        (self.e > Sqlite4Num::SQLITE4_MX_EXP) && (self.m != 0)
     }
 
     fn is_nan(&self) -> bool{
-        (self.e > sqlite4_num::SQLITE4_MX_EXP) && (self.m == 0)
+        (self.e > Sqlite4Num::SQLITE4_MX_EXP) && (self.m == 0)
     }
 
-    fn from_i64(n: i64) -> sqlite4_num {
-        sqlite4_num
+    pub fn from_i64(n: i64) -> Sqlite4Num {
+        Sqlite4Num
         {
             neg: n<0,
             approx: false,
@@ -605,7 +605,7 @@ impl sqlite4_num {
         }
     }
 
-    fn normalize(&self) -> sqlite4_num {
+    fn normalize(&self) -> Sqlite4Num {
         let mut m = self.m;
         let mut e = self.e;
 
@@ -614,10 +614,10 @@ impl sqlite4_num {
             m = m / 10;
         }
 
-        sqlite4_num {m: m, e: e, .. *self}
+        Sqlite4Num {m: m, e: e, .. *self}
     }
 
-    fn encode_for_index(&self, w: &mut Vec<u8>) {
+    pub fn encode_for_index(&self, w: &mut Vec<u8>) {
         // TODO in sqlite4, the first byte of this encoding 
         // is designed to mesh with the
         // overall type order byte.

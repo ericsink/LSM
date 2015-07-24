@@ -613,7 +613,7 @@ impl BsonValue {
         }
     }
 
-    fn getTypeOrder(&self) -> i32 {
+    fn get_type_order(&self) -> i32 {
         // same numbers as canonicalizeBSONType()
         match self {
             &BsonValue::BUndefined => 0,
@@ -643,16 +643,82 @@ impl BsonValue {
         v
     }
 
+    pub fn encode_for_index_into(&self, w: &mut Vec<u8>) {
+        w.push(self.get_type_order() as u8);
+        match self {
+            &BsonValue::BBoolean(b) => if b { w.push(1u8) } else { w.push(0u8) },
+            &BsonValue::BNull => (),
+            &BsonValue::BMinKey => (),
+            &BsonValue::BMaxKey => (),
+            &BsonValue::BUndefined => (),
+            &BsonValue::BObjectID(ref a) => w.push_all(a),
+            &BsonValue::BString(ref s) => vec_push_c_string(w, &s),
+            &BsonValue::BDouble(f) => misc::Sqlite4Num::from_f64(f).encode_for_index(w),
+            &BsonValue::BInt64(n) => misc::Sqlite4Num::from_i64(n).encode_for_index(w),
+            &BsonValue::BInt32(n) => misc::Sqlite4Num::from_i64(n as i64).encode_for_index(w),
+            &BsonValue::BDocument(ref pairs) => {
+                // TODO is writing the length here what we want?
+                // it means we can't match on a prefix of a document
+                //
+                // it means any document with 3 pairs will sort before 
+                // any document with 4 pairs, even if the first 3 pairs
+                // are the same in both.
+
+                w.push_all(&i32_to_bytes_be(pairs.len() as i32));
+                for t in pairs {
+                    vec_push_c_string(w, &t.0);;
+                    t.1.encode_for_index_into(w);
+                }
+            },
+            &BsonValue::BArray(ref vals) => {
+                // TODO is writing the length here what we want?
+                // see comment on BDocument just above.
+
+                w.push_all(&i32_to_bytes_be(vals.len() as i32));
+                for v in vals {
+                    v.encode_for_index_into(w);
+                }
+            },
+            &BsonValue::BRegex(ref expr, ref opt) => {
+                vec_push_c_string(w, &expr); 
+                vec_push_c_string(w, &opt);
+            },
+            &BsonValue::BJSCode(ref s) => vec_push_c_string(w, &s),
+            &BsonValue::BJSCodeWithScope(ref s) => vec_push_c_string(w, &s),
+            &BsonValue::BDateTime(n) => {
+                misc::Sqlite4Num::from_i64(n).encode_for_index(w);
+            },
+            &BsonValue::BTimeStamp(n) => {
+                // TODO is this really how we should encode this?
+                misc::Sqlite4Num::from_i64(n).encode_for_index(w);
+            },
+            &BsonValue::BBinary(subtype, ref ba) => {
+                w.push(subtype);
+                w.push_all(&i32_to_bytes_be(ba.len() as i32));
+                w.push_all(&ba);
+            },
+        }
+    }
+
     pub fn encode_one_for_index(v: &BsonValue, neg: bool) -> Vec<u8> {
-        let mut v = Vec::new();
-        // TODO fix this
-        v
+        let mut a = Vec::new();
+        v.encode_for_index_into(&mut a);
+        if neg {
+            for i in 0 .. a.len() {
+                let b = a[i];
+                a[i] = !b;
+            }
+        }
+        a
     }
 
     pub fn encode_multi_for_index(vals: Vec<(BsonValue, bool)>) -> Vec<u8> {
-        let mut v = Vec::new();
-        // TODO fix this
-        v
+        let mut r = Vec::new();
+        for (v, neg) in vals {
+            let a = Self::encode_one_for_index(&v, neg);
+            r.push_all(&a);
+        }
+        r
     }
 
     pub fn replace_undefined(&mut self) {
