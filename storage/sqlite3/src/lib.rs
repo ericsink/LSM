@@ -191,6 +191,7 @@ impl MyConn {
         }
 
         fn maybe_array(vals: &Vec<(BsonValue, bool)>, new_doc: &BsonValue, weights: &Option<std::collections::HashMap<String,i32>>, entries: &mut Vec<Vec<(BsonValue,bool)>>) {
+            // first do the index entries for the document without considering arrays
             maybe_text(vals, new_doc, weights, entries);
 
             // now, if any of the vals in the key are an array, we need
@@ -345,6 +346,16 @@ impl MyConn {
     fn base_rename_collection(&mut self, old_name: &str, new_name: &str, drop_target: bool) -> elmo::Result<bool> {
         let (old_db, old_coll) = bson::split_name(old_name);
         let (new_db, new_coll) = bson::split_name(new_name);
+
+        // jstests/core/rename8.js seems to think that renaming to/from a system collection is illegal unless
+        // that collection is system.users, which is "whitelisted".  for now, we emulate this behavior, even
+        // though system.users isn't supported.
+        if old_coll != "system.users" && old_coll.starts_with("system.") {
+            return Err(elmo::Error::Misc("renameCollection with a system collection not allowed."))
+        }
+        if new_coll != "system.users" && new_coll.starts_with("system.") {
+            return Err(elmo::Error::Misc("renameCollection with a system collection not allowed."))
+        }
 
         if drop_target {
             let _deleted = try!(self.base_drop_collection(new_db, new_coll));

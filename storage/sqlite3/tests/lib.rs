@@ -39,6 +39,7 @@ fn insert() {
         try!(db.prepare_write("foo", "bar"));
 
         let mut pairs = Vec::new();
+        pairs.push((String::from("_id"), BsonValue::BString(misc::tid())));
         pairs.push((String::from("ok"), BsonValue::BInt32(0)));
         let doc = BsonValue::BDocument(pairs);
 
