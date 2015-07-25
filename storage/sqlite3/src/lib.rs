@@ -395,6 +395,7 @@ impl MyConn {
                     None => {
                         let tbl = Self::get_table_name_for_collection(db, coll);
                         try!(self.conn.exec(&format!("CREATE TABLE \"{}\" (did INTEGER PRIMARY KEY, bson BLOB NOT NULL)", tbl)).map_err(elmo::wrap_err));
+                        // now create mongo index for _id
                         match options.tryGetValueForKey("autoIndexId") {
                             Some(&BsonValue::BBoolean(false)) => (),
                             _ => {

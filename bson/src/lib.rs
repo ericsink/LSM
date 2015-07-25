@@ -89,6 +89,10 @@ pub fn split_name(s: &str) -> (&str, &str) {
     (&s[0 .. 2], &s[2 .. 4])
 }
 
+// TODO is it sufficient to derive PartialEq?
+// Or do we need to implement it explicitly to
+// catch the nan case?
+
 #[derive(Clone)]
 pub enum BsonValue {
     BDouble(f64),
@@ -118,11 +122,10 @@ pub enum BsonValue {
 
 impl PartialEq for BsonValue {
     fn eq(&self, other: &BsonValue) -> bool {
-        if self.is_nan() && other.is_nan() {
-            true
-        } else {
-            *self == *other
-        }
+        // TODO slow
+        let a = self.to_bson_array();
+        let b = other.to_bson_array();
+        a == b
     }
 }
 
@@ -131,14 +134,9 @@ impl Eq for BsonValue {
 
 impl std::hash::Hash for BsonValue {
     fn hash<H>(&self, state: &mut H) where H: std::hash::Hasher {
-        match self {
-            &BsonValue::BDouble(f) => {
-                state.write(&f64_to_bytes_le(f));
-            },
-            _ => {
-                self.hash(state);
-            },
-        }
+        // TODO slow
+        let a = self.to_bson_array();
+        state.write(&a);
     }
 }
 
