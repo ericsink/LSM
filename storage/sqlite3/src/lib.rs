@@ -22,6 +22,8 @@ use bson::BsonValue;
 
 extern crate elmo;
 
+// TODO consider type alias for Result = elmo::Result
+
 extern crate sqlite3;
 
 struct IndexPrep {
@@ -37,6 +39,13 @@ struct MyStatements {
     find_rowid: Option<sqlite3::PreparedStatement>,
     indexes: Vec<IndexPrep>,
 }
+
+struct MyTableScanReader {
+    stmt: sqlite3::PreparedStatement,
+    // TODO need counts here
+}
+
+struct MyEmptyReader;
 
 struct MyConn {
     conn: sqlite3::DatabaseConnection,
@@ -536,6 +545,41 @@ impl MyConn {
         }
     }
 
+    fn get_table_scan_reader(&mut self, tx: bool, db: &str, coll: &str) -> elmo::Result<MyTableScanReader> {
+        let tbl = Self::get_table_name_for_collection(db, coll);
+        let stmt = try!(self.conn.prepare(&format!("SELECT bson FROM \"{}\"", tbl)).map_err(elmo::wrap_err));
+        // TODO if tx, COMMIT on dispose
+        // TODO keep track of total keys examined, etc.
+        let rdr = MyTableScanReader {
+            stmt: stmt,
+        };
+        Ok(rdr)
+    }
+
+    fn get_reader(&mut self, tx: bool, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> elmo::Result<Box<elmo::StorageReader<Item=elmo::Result<BsonValue>>>> {
+        match try!(self.get_collection_options(db, coll)) {
+            None => {
+                let rdr = MyEmptyReader;
+                Ok(box rdr)
+            },
+            Some(_) => {
+                if tx {
+                    try!(self.conn.exec("BEGIN TRANSACTION").map_err(elmo::wrap_err));
+                }
+                match plan {
+                    Some(plan) => {
+                        // TODO
+                        unimplemented!();
+                    },
+                    None => {
+                        let rdr = try!(self.get_table_scan_reader(tx, db, coll));
+                        Ok(box rdr)
+                    },
+                }
+            },
+        }
+    }
+
     fn update_indexes_delete(indexes: &mut Vec<IndexPrep>, rowid: i64) -> elmo::Result<()> {
         for t in indexes {
             t.stmt_delete.clear_bindings();
@@ -907,6 +951,72 @@ impl elmo::StorageConnection for MyConn {
         self.finish_tx(r)
     }
 
+    fn begin_read(&mut self, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> elmo::Result<Box<elmo::StorageReader<Item=elmo::Result<BsonValue>>>> {
+        let rdr = try!(self.get_reader(true, db, coll, plan));
+        Ok(rdr)
+    }
+}
+
+impl MyTableScanReader {
+    fn iter_next(&mut self) -> elmo::Result<Option<BsonValue>> {
+        // TODO can't find a way to store the ResultSet from execute()
+        // in the same struct as its statement, because the ResultSet()
+        // contains a mut reference to the statement.  So we look at
+        // the implementation of execute() and realize that it doesn't
+        // actually do anything of substance, so we call it every
+        // time.  Ugly.
+        match try!(self.stmt.execute().step().map_err(elmo::wrap_err)) {
+            None => Ok(None),
+            Some(r) => {
+                let b = r.column_blob(0).expect("NOT NULL");
+                let v = try!(BsonValue::from_bson(&b));
+                Ok(Some(v))
+            },
+        }
+    }
+}
+
+impl elmo::StorageReader for MyTableScanReader {
+    fn get_total_keys_examined(&self) -> u64 {
+        // TODO
+        0
+    }
+
+}
+
+impl elmo::StorageReader for MyEmptyReader {
+    fn get_total_keys_examined(&self) -> u64 {
+        0
+    }
+
+}
+
+impl Iterator for MyTableScanReader {
+    type Item = elmo::Result<BsonValue>;
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.iter_next() {
+            Err(e) => {
+                return Some(Err(e));
+            },
+            Ok(v) => {
+                match v {
+                    None => {
+                        return None;
+                    },
+                    Some(v) => {
+                        return Some(Ok(v));
+                    }
+                }
+            },
+        }
+    }
+}
+
+impl Iterator for MyEmptyReader {
+    type Item = elmo::Result<BsonValue>;
+    fn next(&mut self) -> Option<Self::Item> {
+        None
+    }
 }
 
 fn base_connect(name: &str) -> sqlite3::SqliteResult<sqlite3::DatabaseConnection> {

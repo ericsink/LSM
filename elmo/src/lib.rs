@@ -146,6 +146,13 @@ pub struct IndexInfo {
     pub options: BsonValue,
 }
 
+pub struct QueryPlan;
+
+pub trait StorageReader : Iterator<Item=Result<BsonValue>> {
+    fn get_total_keys_examined(&self) -> u64;
+    // TODO more stuff here
+}
+
 pub trait StorageConnection {
     fn create_collection(&mut self, db: &str, coll: &str, options: BsonValue) -> Result<bool>;
     fn list_collections(&mut self) -> Result<Vec<(String, String, BsonValue)>>;
@@ -156,17 +163,20 @@ pub trait StorageConnection {
     fn drop_index(&mut self, db: &str, coll: &str, name: &str) -> Result<bool>;
     fn drop_database(&mut self, db: &str) -> Result<bool>;
     fn clear_collection(&mut self, db: &str, coll: &str) -> Result<bool>;
-    // TODO beginRead
 
+    // TODO still wish we could move all the write tx stuff into a separate trait
     fn begin_write_tx(&mut self) -> Result<()>;
     fn prepare_write(&mut self, db: &str, coll: &str) -> Result<()>;
     fn unprepare_write(&mut self) -> Result<()>;
     fn insert(&mut self, v: BsonValue) -> Result<()>;
     fn update(&mut self, v: BsonValue) -> Result<()>;
     fn delete(&mut self, v: BsonValue) -> Result<bool>;
-    // TODO getSelect
+    // TODO getSelect, a reader that lives in the write tx
     // TODO getIndexes
     fn commit_tx(&mut self) -> Result<()>;
     fn rollback_tx(&mut self) -> Result<()>;
+
+    fn begin_read(&mut self, db: &str, coll: &str, plan: Option<QueryPlan>) -> Result<Box<StorageReader<Item=Result<BsonValue>>>>;
 }
+
 
