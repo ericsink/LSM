@@ -146,7 +146,30 @@ pub struct IndexInfo {
     pub options: BsonValue,
 }
 
-pub struct QueryPlan;
+pub type QueryKey = Vec<BsonValue>;
+
+pub enum TextQueryTerm {
+    Word(bool, String),
+    Phrase(bool, String),
+}
+
+pub enum QueryBounds {
+    EQ(QueryKey),
+    Text(QueryKey,Vec<TextQueryTerm>),
+    GT(QueryKey),
+    GTE(QueryKey),
+    LT(QueryKey),
+    LTE(QueryKey),
+    GT_LT(QueryKey, QueryKey),
+    GT_LTE(QueryKey, QueryKey),
+    GTE_LT(QueryKey, QueryKey),
+    GTE_LTE(QueryKey, QueryKey),
+}
+
+pub struct QueryPlan {
+    pub ndx: IndexInfo,
+    pub bounds: QueryBounds,
+}
 
 pub trait StorageReader : Iterator<Item=Result<BsonValue>> {
     fn get_total_keys_examined(&self) -> u64;

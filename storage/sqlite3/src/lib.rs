@@ -40,7 +40,9 @@ struct MyStatements {
     indexes: Vec<IndexPrep>,
 }
 
+// TODO change name of this
 struct MyTableScanReader {
+    tx: bool,
     stmt: sqlite3::PreparedStatement,
     // TODO need counts here
 }
@@ -548,9 +550,91 @@ impl MyConn {
     fn get_table_scan_reader(&mut self, tx: bool, db: &str, coll: &str) -> elmo::Result<MyTableScanReader> {
         let tbl = Self::get_table_name_for_collection(db, coll);
         let stmt = try!(self.conn.prepare(&format!("SELECT bson FROM \"{}\"", tbl)).map_err(elmo::wrap_err));
-        // TODO if tx, COMMIT on dispose
         // TODO keep track of total keys examined, etc.
         let rdr = MyTableScanReader {
+            tx: tx,
+            stmt: stmt,
+        };
+        Ok(rdr)
+    }
+
+    fn get_dirs(normspec: &Vec<(String, IndexType)>, vals: Vec<BsonValue>) -> Vec<(BsonValue, bool)> {
+        // TODO if normspec.len() < vals.len() then panic?
+        let mut a = Vec::new();
+        for (i,v) in vals.into_iter().enumerate() {
+            let neg = normspec[i].1 == IndexType::Backward;
+            a.push((v, neg));
+        }
+        a
+    }
+
+    fn get_stmt_for_index_scan(&mut self, plan: elmo::QueryPlan) -> elmo::Result<sqlite3::PreparedStatement> {
+        let tbl_coll = Self::get_table_name_for_collection(&plan.ndx.db, &plan.ndx.coll);
+        let tbl_ndx = Self::get_table_name_for_index(&plan.ndx.db, &plan.ndx.coll, &plan.ndx.name);
+
+        // TODO the following is way too heavy.  all we need is the index types
+        // so we can tell if they're supposed to be backwards or not.
+        let (normspec, _weights) = try!(Self::get_normalized_spec(&plan.ndx));
+
+        // note that one of the reasons we need to do DISTINCT here is because a
+        // single index in a single document can produce multiple index entries,
+        // because, for example, when a value is an array, we don't just index
+        // the array as a value, but we also index each of its elements.
+        //
+        // TODO it would be nice if the DISTINCT here was happening on the rowids, not on the blobs
+
+        fn add_one(ba: &Vec<u8>) -> Vec<u8> {
+            let a = ba.clone();
+            // TODO add one
+            a
+        }
+
+        let f_twok = |kmin: Vec<u8>, kmax: Vec<u8>, op1: &str, op2: &str| -> elmo::Result<sqlite3::PreparedStatement> {
+            let sql = format!("SELECT DISTINCT d.bson FROM \"{}\" d INNER JOIN \"{}\" i ON (d.did = i.doc_rowid) WHERE k {} ? AND k {} ?", tbl_coll, tbl_ndx, op1, op2);
+            let mut stmt = try!(self.conn.prepare(&sql).map_err(elmo::wrap_err));
+            try!(stmt.bind_blob(1, &kmin).map_err(elmo::wrap_err));
+            try!(stmt.bind_blob(2, &kmax).map_err(elmo::wrap_err));
+            Ok(stmt)
+        };
+
+        let f_two = |minvals: elmo::QueryKey, maxvals: elmo::QueryKey, op1: &str, op2: &str| -> elmo::Result<sqlite3::PreparedStatement> {
+            let kmin = BsonValue::encode_multi_for_index(Self::get_dirs(&normspec, minvals));
+            let kmax = BsonValue::encode_multi_for_index(Self::get_dirs(&normspec, maxvals));
+            f_twok(kmin, kmax, op1, op2)
+        };
+
+        let f_one = |vals: elmo::QueryKey, op: &str| -> elmo::Result<sqlite3::PreparedStatement> {
+            let k = BsonValue::encode_multi_for_index(Self::get_dirs(&normspec, vals));
+            let sql = format!("SELECT DISTINCT d.bson FROM \"{}\" d INNER JOIN \"{}\" i ON (d.did = i.doc_rowid) WHERE k {} ?", tbl_coll, tbl_ndx, op);
+            let mut stmt = try!(self.conn.prepare(&sql).map_err(elmo::wrap_err));
+            try!(stmt.bind_blob(1, &k).map_err(elmo::wrap_err));
+            Ok(stmt)
+        };
+
+        match plan.bounds {
+            elmo::QueryBounds::Text(_,_) => unreachable!(),
+            elmo::QueryBounds::GT(vals) => f_one(vals, ">"),
+            elmo::QueryBounds::LT(vals) => f_one(vals, "<"),
+            elmo::QueryBounds::GTE(vals) => f_one(vals, ">="),
+            elmo::QueryBounds::LTE(vals) => f_one(vals, "<="),
+            elmo::QueryBounds::GT_LT(minvals, maxvals) => f_two(minvals, maxvals, ">", "<"),
+            elmo::QueryBounds::GTE_LT(minvals, maxvals) => f_two(minvals, maxvals, ">=", "<"),
+            elmo::QueryBounds::GT_LTE(minvals, maxvals) => f_two(minvals, maxvals, ">", "<="),
+            elmo::QueryBounds::GTE_LTE(minvals, maxvals) => f_two(minvals, maxvals, ">=", "<="),
+            elmo::QueryBounds::EQ(vals) => {
+                let kmin = BsonValue::encode_multi_for_index(Self::get_dirs(&normspec, vals));
+                let kmax = add_one(&kmin);
+                f_twok(kmin, kmax, ">=", "<")
+            },
+        }
+    }
+
+    fn get_nontext_index_scan_reader(&mut self, tx: bool, plan: elmo::QueryPlan) -> elmo::Result<MyTableScanReader> {
+        let stmt = try!(self.get_stmt_for_index_scan(plan));
+
+        // TODO keep track of total keys examined, etc.
+        let rdr = MyTableScanReader {
+            tx: tx,
             stmt: stmt,
         };
         Ok(rdr)
@@ -566,16 +650,23 @@ impl MyConn {
                 if tx {
                     try!(self.conn.exec("BEGIN TRANSACTION").map_err(elmo::wrap_err));
                 }
-                match plan {
-                    Some(plan) => {
-                        // TODO
-                        unimplemented!();
-                    },
-                    None => {
-                        let rdr = try!(self.get_table_scan_reader(tx, db, coll));
-                        Ok(box rdr)
-                    },
-                }
+                let rdr = 
+                    match plan {
+                        Some(plan) => {
+                            match plan.bounds {
+                                elmo::QueryBounds::Text(_,_) => {
+                                    unimplemented!();
+                                },
+                                _ => {
+                                    try!(self.get_nontext_index_scan_reader(tx, plan))
+                                },
+                            }
+                        },
+                        None => {
+                            try!(self.get_table_scan_reader(tx, db, coll))
+                        },
+                    };
+                Ok(box rdr)
             },
         }
     }
@@ -972,6 +1063,14 @@ impl MyTableScanReader {
                 let v = try!(BsonValue::from_bson(&b));
                 Ok(Some(v))
             },
+        }
+    }
+}
+
+impl Drop for MyTableScanReader {
+    fn drop(&mut self) {
+        if self.tx {
+            // TODO let _ignored = self.conn.exec("COMMIT TRANSACTION");
         }
     }
 }
