@@ -184,6 +184,7 @@ pub trait StorageCollectionWriter {
 }
 
 // TODO should implement Drop = rollback
+// TODO do we need to declare that StorageWriter must implement Drop ?
 
 pub trait StorageWriter {
     fn create_collection(&self, db: &str, coll: &str, options: BsonValue) -> Result<bool>;
@@ -205,6 +206,7 @@ pub trait StorageWriter {
 }
 
 pub trait StorageConnection {
+    // TODO move the following into the reader?
     fn list_collections(&self) -> Result<Vec<(String, String, BsonValue)>>;
     fn list_indexes(&self) -> Result<Vec<IndexInfo>>;
 
