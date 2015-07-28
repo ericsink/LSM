@@ -21,10 +21,13 @@ fn just_connect() {
 #[test]
 fn prepare_write() {
     fn f() -> elmo::Result<()> {
-        let mut db = try!(storage_sqlite3::connect(&misc::tempfile("prepare_write")));
-        try!(db.prepare_write("foo", "bar"));
-        try!(db.unprepare_write());
-        drop(db);
+        let db = try!(storage_sqlite3::connect(&misc::tempfile("prepare_write")));
+        {
+            let tx = try!(db.begin_write());
+            {
+                let _p = try!(tx.prepare_collection_writer("foo", "bar"));
+            }
+        }
         Ok(())
     }
     let r = f();
@@ -35,16 +38,21 @@ fn prepare_write() {
 #[test]
 fn insert() {
     fn f() -> elmo::Result<()> {
-        let mut db = try!(storage_sqlite3::connect(&misc::tempfile("insert")));
-        try!(db.prepare_write("foo", "bar"));
+        let db = try!(storage_sqlite3::connect(&misc::tempfile("insert")));
+        {
+            let tx = try!(db.begin_write());
+            {
+                let mut p = try!(tx.prepare_collection_writer("foo", "bar"));
 
-        let mut pairs = Vec::new();
-        pairs.push((String::from("_id"), BsonValue::BString(misc::tid())));
-        pairs.push((String::from("ok"), BsonValue::BInt32(0)));
-        let doc = BsonValue::BDocument(pairs);
+                let mut pairs = Vec::new();
+                pairs.push((String::from("_id"), BsonValue::BString(misc::tid())));
+                pairs.push((String::from("ok"), BsonValue::BInt32(0)));
+                let doc = BsonValue::BDocument(pairs);
 
-        try!(db.insert(doc));
-        try!(db.unprepare_write());
+                try!(p.insert(doc));
+            }
+            try!(tx.commit());
+        }
         drop(db);
         Ok(())
     }

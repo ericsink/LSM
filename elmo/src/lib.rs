@@ -176,30 +176,41 @@ pub trait StorageReader : Iterator<Item=Result<BsonValue>> {
     // TODO more stuff here
 }
 
-pub trait StorageConnection {
-    fn create_collection(&mut self, db: &str, coll: &str, options: BsonValue) -> Result<bool>;
-    fn list_collections(&mut self) -> Result<Vec<(String, String, BsonValue)>>;
-    fn list_indexes(&mut self) -> Result<Vec<IndexInfo>>;
-    fn create_indexes(&mut self, Vec<IndexInfo>) -> Result<Vec<bool>>;
-    fn rename_collection(&mut self, old_name: &str, new_name: &str, drop_target: bool) -> Result<bool>;
-    fn drop_collection(&mut self, db: &str, coll: &str) -> Result<bool>;
-    fn drop_index(&mut self, db: &str, coll: &str, name: &str) -> Result<bool>;
-    fn drop_database(&mut self, db: &str) -> Result<bool>;
-    fn clear_collection(&mut self, db: &str, coll: &str) -> Result<bool>;
-
-    // TODO still wish we could move all the write tx stuff into a separate trait
-    fn begin_write_tx(&mut self) -> Result<()>;
-    fn prepare_write(&mut self, db: &str, coll: &str) -> Result<()>;
-    fn unprepare_write(&mut self) -> Result<()>;
+pub trait StorageCollectionWriter {
     fn insert(&mut self, v: BsonValue) -> Result<()>;
     fn update(&mut self, v: BsonValue) -> Result<()>;
     fn delete(&mut self, v: BsonValue) -> Result<bool>;
-    // TODO getSelect, a reader that lives in the write tx
     // TODO getIndexes
-    fn commit_tx(&mut self) -> Result<()>;
-    fn rollback_tx(&mut self) -> Result<()>;
+}
 
-    fn begin_read<'a>(&'a mut self, db: &str, coll: &str, plan: Option<QueryPlan>) -> Result<Box<StorageReader<Item=Result<BsonValue>> + 'a>>;
+// TODO should implement Drop = rollback
+
+pub trait StorageWriter {
+    fn create_collection(&self, db: &str, coll: &str, options: BsonValue) -> Result<bool>;
+    fn rename_collection(&self, old_name: &str, new_name: &str, drop_target: bool) -> Result<bool>;
+    fn clear_collection(&self, db: &str, coll: &str) -> Result<bool>;
+    fn drop_collection(&self, db: &str, coll: &str) -> Result<bool>;
+
+    fn create_indexes(&self, Vec<IndexInfo>) -> Result<Vec<bool>>;
+    fn drop_index(&self, db: &str, coll: &str, name: &str) -> Result<bool>;
+
+    fn drop_database(&self, db: &str) -> Result<bool>;
+
+    fn prepare_collection_writer<'a>(&'a self, db: &str, coll: &str) -> Result<Box<StorageCollectionWriter + 'a>>;
+
+    // TODO should consume self, but not Sized
+    fn commit(&self) -> Result<()>;
+    fn rollback(&self) -> Result<()>;
+    // TODO getSelect, a reader that lives in the write tx
+}
+
+pub trait StorageConnection {
+    fn list_collections(&self) -> Result<Vec<(String, String, BsonValue)>>;
+    fn list_indexes(&self) -> Result<Vec<IndexInfo>>;
+
+    fn begin_write<'a>(&'a self) -> Result<Box<StorageWriter + 'a>>;
+
+    fn begin_read<'a>(&'a self, db: &str, coll: &str, plan: Option<QueryPlan>) -> Result<Box<StorageReader<Item=Result<BsonValue>> + 'a>>;
 }
 
 

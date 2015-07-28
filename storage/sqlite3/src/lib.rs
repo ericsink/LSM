@@ -32,27 +32,31 @@ struct IndexPrep {
     stmt_delete: sqlite3::PreparedStatement,
 }
 
-struct MyStatements {
+struct MyCollectionWriter<'a> {
     insert: sqlite3::PreparedStatement,
     delete: sqlite3::PreparedStatement,
     update: sqlite3::PreparedStatement,
-    find_rowid: Option<sqlite3::PreparedStatement>,
+    stmt_find_rowid: Option<sqlite3::PreparedStatement>,
     indexes: Vec<IndexPrep>,
+    myconn: &'a MyConn,
 }
 
 // TODO change name of this
 struct MyTableScanReader<'a> {
     tx: bool,
     stmt: sqlite3::PreparedStatement,
-    conn: &'a sqlite3::DatabaseConnection,
+    myconn: &'a MyConn,
     // TODO need counts here
 }
 
 struct MyEmptyReader;
 
+struct MyWriter<'a> {
+    myconn: &'a MyConn,
+}
+
 struct MyConn {
     conn: sqlite3::DatabaseConnection,
-    statements: Option<MyStatements>,
 }
 
 // TODO I'm not sure this type is worth the trouble anymore.
@@ -63,6 +67,180 @@ enum IndexType {
     Forward,
     Backward,
     Geo2d,
+}
+
+fn step_done(stmt: &mut sqlite3::PreparedStatement) -> elmo::Result<()> {
+    let mut r = stmt.execute();
+    match try!(r.step().map_err(elmo::wrap_err)) {
+        Some(_) => {
+            Err(elmo::Error::Misc("step_done() returned a row"))
+        },
+        None => {
+            Ok(())
+        },
+    }
+}
+
+fn verify_changes(stmt: &sqlite3::PreparedStatement, shouldbe: u64) -> elmo::Result<()> {
+    if stmt.changes() == shouldbe {
+        Ok(())
+    } else {
+        // TODO or should this be an assert?
+        Err(elmo::Error::Misc("changes() is wrong"))
+    }
+}
+
+fn get_table_name_for_collection(db: &str, coll: &str) -> String { 
+    // TODO cleanse?
+    format!("docs.{}.{}", db, coll) 
+}
+
+fn get_table_name_for_index(db: &str, coll: &str, name: &str) -> String { 
+    // TODO cleanse?
+    format!("ndx.{}.{}.{}", db, coll, name) 
+}
+
+fn get_index_entries(new_doc: &BsonValue, normspec: &Vec<(String, IndexType)>, weights: &Option<std::collections::HashMap<String,i32>>, options: &BsonValue, entries: &mut Vec<Vec<(BsonValue,bool)>>) -> elmo::Result<()> {
+    fn find_index_entry_vals(normspec: &Vec<(String, IndexType)>, new_doc: &BsonValue, sparse: bool) -> Vec<(BsonValue,bool)> {
+        let mut r = Vec::new();
+        for t in normspec {
+            let k = &t.0;
+            let typ = t.1;
+            let mut v = new_doc.find_path(k);
+
+            // now we replace any BUndefined with BNull.  this seems, well,
+            // kinda wrong, as it effectively encodes the index entries to
+            // contain information that is slightly incorrect, since BNull
+            // means "it was present and explicitly null", whereas BUndefined
+            // means "it was absent".  Still, this appears to be the exact
+            // behavior of Mongo.  Note that this only affects index entries.
+            // The matcher can and must still distinguish between null and
+            // undefined.
+
+            let keep =
+                if sparse {
+                    match v {
+                        BsonValue::BUndefined => false,
+                        _ => true,
+                    }
+                } else {
+                    true
+                };
+            if keep {
+                v.replace_undefined();
+                let neg = IndexType::Backward == typ;
+                r.push((v,neg));
+            }
+        }
+        r
+    }
+
+    // TODO what should the name of this func actually be?
+    fn q(vals: &Vec<(BsonValue, bool)>, w: i32, s: String, entries: &mut Vec<Vec<(BsonValue,bool)>>) {
+        // TODO tokenize properly
+        let a = s.split(" ");
+        let a = a.into_iter().collect::<std::collections::HashSet<_>>();
+        for s in a {
+            let s = String::from(s);
+            let v = BsonValue::BArray(vec![BsonValue::BString(s), BsonValue::BInt32(w)]);
+            // TODO clone is ugly
+            let mut vals = vals.clone();
+            vals.push((v, false));
+            entries.push(vals);
+        }
+    }
+
+    fn maybe_text(vals: &Vec<(BsonValue, bool)>, new_doc: &BsonValue, weights: &Option<std::collections::HashMap<String,i32>>, entries: &mut Vec<Vec<(BsonValue,bool)>>) {
+        match weights {
+            &Some(ref weights) => {
+                for k in weights.keys() {
+                    if k == "&**" {
+                        // TODO bson.forAllStrings newDoc (fun s -> q vals w s)
+                    } else {
+                        match new_doc.find_path(k) {
+                            BsonValue::BUndefined => (),
+                            v => {
+                                match v {
+                                    BsonValue::BString(s) => q(&vals, weights[k], s, entries),
+                                    BsonValue::BArray(a) => {
+                                        let a = a.into_iter().collect::<std::collections::HashSet<_>>();
+                                        for v in a {
+                                            match v {
+                                                BsonValue::BString(s) => q(&vals, weights[k], s, entries),
+                                                _ => (),
+                                            }
+                                        }
+                                    },
+                                    _ => (),
+                                }
+                            },
+                        }
+                    }
+                }
+            },
+            &None => {
+                // TODO clone is ugly
+                entries.push(vals.clone());
+            },
+        }
+    }
+
+    fn replace_array_element<T:Clone>(vals: &Vec<T>, i: usize, v: T) -> Vec<T> {
+        let mut v2 = vals.clone();
+        v2[i] = v;
+        v2
+    }
+
+    fn maybe_array(vals: &Vec<(BsonValue, bool)>, new_doc: &BsonValue, weights: &Option<std::collections::HashMap<String,i32>>, entries: &mut Vec<Vec<(BsonValue,bool)>>) {
+        // first do the index entries for the document without considering arrays
+        maybe_text(vals, new_doc, weights, entries);
+
+        // now, if any of the vals in the key are an array, we need
+        // to generate more index entries for this document, one
+        // for each item in the array.  Mongo calls this a
+        // multikey index.
+
+        for i in 0 .. vals.len() {
+            let t = &vals[i];
+            let v = &t.0;
+            let typ = t.1;
+            match v {
+                &BsonValue::BArray(ref a) => {
+                    let a = a.into_iter().collect::<std::collections::HashSet<_>>();
+                    for av in a {
+                        // TODO clone is ugly
+                        let replaced = replace_array_element(vals, i, (av.clone(), typ));
+                        maybe_array(&replaced, new_doc, weights, entries);
+                    }
+                },
+                _ => ()
+            }
+        }
+    }
+
+    let sparse = match options.tryGetValueForKey("sparse") {
+        Some(&BsonValue::BBoolean(b)) => b,
+        _ => false,
+    };
+
+    let vals = find_index_entry_vals(normspec, new_doc, sparse);
+    maybe_array(&vals, new_doc, weights, entries);
+
+    Ok(())
+}
+
+fn slice_find(pairs: &[(String, BsonValue)], s: &str) -> Option<usize> {
+    for i in 0 .. pairs.len() {
+        match pairs[0].1 {
+            BsonValue::BString(ref t) => {
+                if t == s {
+                    return Some(i);
+                }
+            },
+            _ => (),
+        }
+    }
+    None
 }
 
 fn decode_index_type(v: &BsonValue) -> IndexType {
@@ -79,17 +257,109 @@ fn decode_index_type(v: &BsonValue) -> IndexType {
     }
 }
 
+// this function gets the index spec (its keys) into a form that
+// is simplified and cleaned up.
+//
+// if there are text indexes in index.spec, they are removed
+//
+// all text indexes, including any that were in index.spec, and
+// anything implied by options.weights, are stored in a new Map<string,int>
+// called weights.
+//
+// any non-text indexes that appeared in spec AFTER any text
+// indexes are discarded.  I *think* Mongo keeps these, but only
+// for the purpose of grabbing their data later when used as a covering
+// index, which we're ignoring.
+//
+fn get_normalized_spec(info: &elmo::IndexInfo) -> elmo::Result<(Vec<(String,IndexType)>,Option<std::collections::HashMap<String,i32>>)> {
+    //printfn "info: %A" info
+    let keys = try!(info.spec.getDocument());
+    let first_text = slice_find(&keys, "text");
+    let w1 = info.options.tryGetValueForKey("weights");
+    match (first_text, w1) {
+        (None, None) => {
+            let decoded = keys.iter().map(|&(ref k, ref v)| (k.clone(), decode_index_type(v))).collect::<Vec<(String,IndexType)>>();
+            //printfn "no text index: %A" decoded
+            Ok((decoded, None))
+        },
+        _ => {
+            let (scalar_keys, text_keys) = 
+                match first_text {
+                    Some(i) => {
+                        let scalar_keys = &keys[0 .. i];
+                        // note that any non-text index after the first text index is getting discarded
+                        let mut text_keys = Vec::new();
+                        for t in keys {
+                            match t.1 {
+                                BsonValue::BString(ref s) => {
+                                    if s == "text" {
+                                        text_keys.push(t.0.clone());
+                                    }
+                                },
+                                _ => (),
+                            }
+                        }
+                        (scalar_keys, text_keys)
+                    },
+                    None => (&keys[0 ..], Vec::new())
+                };
+            let mut weights = std::collections::HashMap::new();
+            match w1 {
+                Some(&BsonValue::BDocument(ref a)) => {
+                    for t in a {
+                        let n = 
+                            match &t.1 {
+                                &BsonValue::BInt32(n) => n,
+                                &BsonValue::BInt64(n) => n as i32,
+                                &BsonValue::BDouble(n) => n as i32,
+                                _ => panic!("weight must be numeric")
+                            };
+                        weights.insert(t.0.clone(), n);
+                    }
+                },
+                Some(_) => panic!( "weights must be a document"),
+                None => (),
+            };
+            for k in text_keys {
+                if !weights.contains_key(&k) {
+                    weights.insert(String::from(k), 1);
+                }
+            }
+            // TODO if the wildcard is present, remove everything else?
+            let decoded = scalar_keys.iter().map(|&(ref k, ref v)| (k.clone(), decode_index_type(v))).collect::<Vec<(String,IndexType)>>();
+            let r = Ok((decoded, Some(weights)));
+            //printfn "%A" r
+            r
+        }
+    }
+}
+
+fn get_index_info_from_row(r: &sqlite3::ResultRow) -> elmo::Result<elmo::IndexInfo> {
+    let name = r.column_text(0).expect("NOT NULL");
+    let spec = try!(BsonValue::from_bson(&r.column_blob(1).expect("NOT NULL")));
+    let options = try!(BsonValue::from_bson(&r.column_blob(2).expect("NOT NULL")));
+    let db = r.column_text(3).expect("NOT NULL");
+    let coll = r.column_text(4).expect("NOT NULL");
+    let info = elmo::IndexInfo {
+        db: String::from(db),
+        coll: String::from(coll),
+        name: String::from(name),
+        spec: spec,
+        options: options,
+    };
+    Ok(info)
+}
+
+fn index_insert_step(stmt: &mut sqlite3::PreparedStatement, k: Vec<u8>, doc_rowid: i64) -> elmo::Result<()> {
+    stmt.clear_bindings();
+    try!(stmt.bind_blob(1, &k).map_err(elmo::wrap_err));
+    try!(stmt.bind_int64(2, doc_rowid).map_err(elmo::wrap_err));
+    try!(step_done(stmt));
+    try!(verify_changes(stmt, 1));
+    Ok(())
+}
+
 impl MyConn {
-    fn get_table_name_for_collection(db: &str, coll: &str) -> String { 
-        // TODO cleanse?
-        format!("docs.{}.{}", db, coll) 
-    }
-
-    fn get_table_name_for_index(db: &str, coll: &str, name: &str) -> String { 
-        // TODO cleanse?
-        format!("ndx.{}.{}.{}", db, coll, name) 
-    }
-
     fn get_collection_options(&self, db: &str, coll: &str) -> elmo::Result<Option<BsonValue>> {
         let mut stmt = try!(self.conn.prepare("SELECT options FROM \"collections\" WHERE dbName=? AND collName=?").map_err(elmo::wrap_err));
         try!(stmt.bind_text(1, db).map_err(elmo::wrap_err));
@@ -106,456 +376,14 @@ impl MyConn {
         }
     }
 
-    fn prepare_index_insert(&mut self, tbl: &str) -> elmo::Result<sqlite3::PreparedStatement> {
-        let stmt = try!(self.conn.prepare(&format!("INSERT INTO \"{}\" (k,doc_rowid) VALUES (?,?)",tbl)).map_err(elmo::wrap_err));
-        Ok(stmt)
-    }
-
-    fn get_index_entries(new_doc: &BsonValue, normspec: &Vec<(String, IndexType)>, weights: &Option<std::collections::HashMap<String,i32>>, options: &BsonValue, entries: &mut Vec<Vec<(BsonValue,bool)>>) -> elmo::Result<()> {
-        fn find_index_entry_vals(normspec: &Vec<(String, IndexType)>, new_doc: &BsonValue, sparse: bool) -> Vec<(BsonValue,bool)> {
-            let mut r = Vec::new();
-            for t in normspec {
-                let k = &t.0;
-                let typ = t.1;
-                let mut v = new_doc.find_path(k);
-
-                // now we replace any BUndefined with BNull.  this seems, well,
-                // kinda wrong, as it effectively encodes the index entries to
-                // contain information that is slightly incorrect, since BNull
-                // means "it was present and explicitly null", whereas BUndefined
-                // means "it was absent".  Still, this appears to be the exact
-                // behavior of Mongo.  Note that this only affects index entries.
-                // The matcher can and must still distinguish between null and
-                // undefined.
-
-                let keep =
-                    if sparse {
-                        match v {
-                            BsonValue::BUndefined => false,
-                            _ => true,
-                        }
-                    } else {
-                        true
-                    };
-                if keep {
-                    v.replace_undefined();
-                    let neg = IndexType::Backward == typ;
-                    r.push((v,neg));
-                }
-            }
-            r
-        }
-
-        // TODO what should the name of this func actually be?
-        fn q(vals: &Vec<(BsonValue, bool)>, w: i32, s: String, entries: &mut Vec<Vec<(BsonValue,bool)>>) {
-            // TODO tokenize properly
-            let a = s.split(" ");
-            let a = a.into_iter().collect::<std::collections::HashSet<_>>();
-            for s in a {
-                let s = String::from(s);
-                let v = BsonValue::BArray(vec![BsonValue::BString(s), BsonValue::BInt32(w)]);
-                // TODO clone is ugly
-                let mut vals = vals.clone();
-                vals.push((v, false));
-                entries.push(vals);
-            }
-        }
-
-        fn maybe_text(vals: &Vec<(BsonValue, bool)>, new_doc: &BsonValue, weights: &Option<std::collections::HashMap<String,i32>>, entries: &mut Vec<Vec<(BsonValue,bool)>>) {
-            match weights {
-                &Some(ref weights) => {
-                    for k in weights.keys() {
-                        if k == "&**" {
-                            // TODO bson.forAllStrings newDoc (fun s -> q vals w s)
-                        } else {
-                            match new_doc.find_path(k) {
-                                BsonValue::BUndefined => (),
-                                v => {
-                                    match v {
-                                        BsonValue::BString(s) => q(&vals, weights[k], s, entries),
-                                        BsonValue::BArray(a) => {
-                                            let a = a.into_iter().collect::<std::collections::HashSet<_>>();
-                                            for v in a {
-                                                match v {
-                                                    BsonValue::BString(s) => q(&vals, weights[k], s, entries),
-                                                    _ => (),
-                                                }
-                                            }
-                                        },
-                                        _ => (),
-                                    }
-                                },
-                            }
-                        }
-                    }
-                },
-                &None => {
-                    // TODO clone is ugly
-                    entries.push(vals.clone());
-                },
-            }
-        }
-
-        fn replace_array_element<T:Clone>(vals: &Vec<T>, i: usize, v: T) -> Vec<T> {
-            let mut v2 = vals.clone();
-            v2[i] = v;
-            v2
-        }
-
-        fn maybe_array(vals: &Vec<(BsonValue, bool)>, new_doc: &BsonValue, weights: &Option<std::collections::HashMap<String,i32>>, entries: &mut Vec<Vec<(BsonValue,bool)>>) {
-            // first do the index entries for the document without considering arrays
-            maybe_text(vals, new_doc, weights, entries);
-
-            // now, if any of the vals in the key are an array, we need
-            // to generate more index entries for this document, one
-            // for each item in the array.  Mongo calls this a
-            // multikey index.
-
-            for i in 0 .. vals.len() {
-                let t = &vals[i];
-                let v = &t.0;
-                let typ = t.1;
-                match v {
-                    &BsonValue::BArray(ref a) => {
-                        let a = a.into_iter().collect::<std::collections::HashSet<_>>();
-                        for av in a {
-                            // TODO clone is ugly
-                            let replaced = replace_array_element(vals, i, (av.clone(), typ));
-                            maybe_array(&replaced, new_doc, weights, entries);
-                        }
-                    },
-                    _ => ()
-                }
-            }
-        }
-
-        let sparse = match options.tryGetValueForKey("sparse") {
-            Some(&BsonValue::BBoolean(b)) => b,
-            _ => false,
-        };
-
-        let vals = find_index_entry_vals(normspec, new_doc, sparse);
-        maybe_array(&vals, new_doc, weights, entries);
-
-        Ok(())
-    }
-
-    fn step_done(stmt: &mut sqlite3::PreparedStatement) -> elmo::Result<()> {
-        let mut r = stmt.execute();
-        match try!(r.step().map_err(elmo::wrap_err)) {
-            Some(_) => {
-                Err(elmo::Error::Misc("step_done() returned a row"))
-            },
-            None => {
-                Ok(())
-            },
-        }
-    }
-
-    fn verify_changes(stmt: &sqlite3::PreparedStatement, shouldbe: u64) -> elmo::Result<()> {
-        if stmt.changes() == shouldbe {
-            Ok(())
-        } else {
-            // TODO or should this be an assert?
-            Err(elmo::Error::Misc("changes() is wrong"))
-        }
-    }
-
-    fn index_insert_step(stmt: &mut sqlite3::PreparedStatement, k: Vec<u8>, doc_rowid: i64) -> elmo::Result<()> {
-        stmt.clear_bindings();
-        try!(stmt.bind_blob(1, &k).map_err(elmo::wrap_err));
-        try!(stmt.bind_int64(2, doc_rowid).map_err(elmo::wrap_err));
-        try!(Self::step_done(stmt));
-        try!(Self::verify_changes(stmt, 1));
-        Ok(())
-    }
-
-    fn create_index(&mut self, info: elmo::IndexInfo) -> elmo::Result<bool> {
-        let _created = try!(self.base_create_collection(&info.db, &info.coll, BsonValue::BArray(Vec::new())));
-        match try!(self.get_index_info(&info.db, &info.coll, &info.name)) {
-            Some(already) => {
-                if already.spec != info.spec {
-                    // note that we do not compare the options.
-                    // I think mongo does it this way too.
-                    Err(elmo::Error::Misc("index already exists with different keys"))
-                } else {
-                    Ok(false)
-                }
-            },
-            None => {
-                // TODO if we already have a text index (where any of its spec keys are text)
-                // then fail.
-
-                let ba_spec = info.spec.to_bson_array();
-                let ba_options = info.options.to_bson_array();
-                let mut stmt = try!(self.conn.prepare("INSERT INTO \"indexes\" (dbName,collName,ndxName,spec,options) VALUES (?,?,?,?,?)").map_err(elmo::wrap_err));
-                try!(stmt.bind_text(1, &info.db).map_err(elmo::wrap_err));
-                try!(stmt.bind_text(2, &info.coll).map_err(elmo::wrap_err));
-                try!(stmt.bind_text(3, &info.name).map_err(elmo::wrap_err));
-                try!(stmt.bind_blob(4, &ba_spec).map_err(elmo::wrap_err));
-                try!(stmt.bind_blob(5, &ba_options).map_err(elmo::wrap_err));
-                let mut r = stmt.execute();
-                match try!(r.step().map_err(elmo::wrap_err)) {
-                    None => {
-                        let tbl_coll = Self::get_table_name_for_collection(&info.db, &info.coll);
-                        let tbl_ndx = Self::get_table_name_for_index(&info.db, &info.coll, &info.name);
-                        let s =
-                        match info.options.tryGetValueForKey("unique") {
-                            Some(&BsonValue::BBoolean(true)) => {
-                                format!("CREATE TABLE \"{}\" (k BLOB NOT NULL, doc_rowid int NOT NULL REFERENCES \"{}\"(did) ON DELETE CASCADE, PRIMARY KEY (k))", tbl_ndx, tbl_coll)
-                            },
-                            _ => {
-                                format!("CREATE TABLE \"{}\" (k BLOB NOT NULL, doc_rowid int NOT NULL REFERENCES \"{}\"(did) ON DELETE CASCADE, PRIMARY KEY (k,doc_rowid))", tbl_ndx, tbl_coll)
-                            },
-                        };
-                        try!(self.exec(&s));
-                        try!(self.exec(&format!("CREATE INDEX \"childndx_{}\" ON \"{}\" (doc_rowid)", tbl_ndx, tbl_ndx)));
-                        // now insert index entries for every doc that already exists
-                        let (normspec, weights) = try!(Self::get_normalized_spec(&info));
-                        let mut stmt2 = try!(self.conn.prepare(&format!("SELECT did,bson FROM \"{}\"", tbl_coll)).map_err(elmo::wrap_err));
-                        let mut stmt_insert = try!(self.prepare_index_insert(&tbl_ndx));
-                        let mut r = stmt2.execute();
-                        loop {
-                            match try!(r.step().map_err(elmo::wrap_err)) {
-                                None => break,
-                                Some(row) => {
-                                    let doc_rowid = row.column_int64(0);
-                                    let new_doc = try!(BsonValue::from_bson(&row.column_blob(1).expect("NOT NULL")));
-                                    let mut entries = Vec::new();
-                                    try!(Self::get_index_entries(&new_doc, &normspec, &weights, &info.options, &mut entries));
-                                    let entries = entries.into_iter().collect::<std::collections::HashSet<_>>();
-                                    for vals in entries {
-                                        let k = BsonValue::encode_multi_for_index(vals);
-                                        try!(Self::index_insert_step(&mut stmt_insert, k, doc_rowid));
-                                    }
-                                },
-                            }
-                        }
-                        Ok(true)
-                    },
-                    Some(_) => {
-                        Err(elmo::Error::Misc("insert stmt step() returned a row"))
-                    },
-                }
-            },
-        }
-    }
-
-    fn base_clear_collection(&mut self, db: &str, coll: &str) -> elmo::Result<bool> {
-        match try!(self.get_collection_options(db, coll)) {
-            None => {
-                let created = try!(self.base_create_collection(db, coll, BsonValue::BArray(Vec::new())));
-                Ok(created)
-            },
-            Some(_) => {
-                let tbl = Self::get_table_name_for_collection(db, coll);
-                try!(self.conn.exec(&format!("DROP TABLE \"{}\"", tbl)).map_err(elmo::wrap_err));
-                Ok(false)
-            },
-        }
-    }
-
-    fn base_rename_collection(&mut self, old_name: &str, new_name: &str, drop_target: bool) -> elmo::Result<bool> {
-        let (old_db, old_coll) = bson::split_name(old_name);
-        let (new_db, new_coll) = bson::split_name(new_name);
-
-        // jstests/core/rename8.js seems to think that renaming to/from a system collection is illegal unless
-        // that collection is system.users, which is "whitelisted".  for now, we emulate this behavior, even
-        // though system.users isn't supported.
-        if old_coll != "system.users" && old_coll.starts_with("system.") {
-            return Err(elmo::Error::Misc("renameCollection with a system collection not allowed."))
-        }
-        if new_coll != "system.users" && new_coll.starts_with("system.") {
-            return Err(elmo::Error::Misc("renameCollection with a system collection not allowed."))
-        }
-
-        if drop_target {
-            let _deleted = try!(self.base_drop_collection(new_db, new_coll));
-        }
-
-        match try!(self.get_collection_options(old_db, old_coll)) {
-            None => {
-                let created = try!(self.base_create_collection(new_db, new_coll, BsonValue::BArray(Vec::new())));
-                Ok(created)
-            },
-            Some(_) => {
-                let old_tbl = Self::get_table_name_for_collection(old_db, old_coll);
-                let new_tbl = Self::get_table_name_for_collection(new_db, new_coll);
-
-                let mut stmt = try!(self.conn.prepare("UPDATE \"collections\" SET dbName=?, collName=? WHERE dbName=? AND collName=?").map_err(elmo::wrap_err));
-                try!(stmt.bind_text(1, new_db).map_err(elmo::wrap_err));
-                try!(stmt.bind_text(2, new_coll).map_err(elmo::wrap_err));
-                try!(stmt.bind_text(3, old_db).map_err(elmo::wrap_err));
-                try!(stmt.bind_text(4, old_coll).map_err(elmo::wrap_err));
-                try!(Self::step_done(&mut stmt));
-
-                try!(self.conn.exec(&format!("ALTER TABLE \"{}\" RENAME TO \"{}\"", old_tbl, new_tbl)).map_err(elmo::wrap_err));
-
-                let indexes = try!(self.base_list_indexes());
-                for info in indexes {
-                    if info.db == old_db && info.coll == old_coll {
-                        let old_ndx_tbl = Self::get_table_name_for_index(old_db, old_coll, &info.name);
-                        let new_ndx_tbl = Self::get_table_name_for_index(new_db, new_coll, &info.name);
-                        try!(self.conn.exec(&format!("ALTER TABLE \"{}\" RENAME TO \"{}\"", old_ndx_tbl, new_ndx_tbl)).map_err(elmo::wrap_err));
-                    }
-                }
-                Ok(false)
-            },
-        }
-    }
-
-    fn base_create_collection(&mut self, db: &str, coll: &str, options: BsonValue) -> elmo::Result<bool> {
-        match try!(self.get_collection_options(db, coll)) {
-            Some(_) => Ok(false),
-            None => {
-                let v_options = options.to_bson_array();
-                let mut stmt = try!(self.conn.prepare("INSERT INTO \"collections\" (dbName,collName,options) VALUES (?,?,?)").map_err(elmo::wrap_err));
-                try!(stmt.bind_text(1, db).map_err(elmo::wrap_err));
-                try!(stmt.bind_text(2, coll).map_err(elmo::wrap_err));
-                try!(stmt.bind_blob(3, &v_options).map_err(elmo::wrap_err));
-                let mut r = stmt.execute();
-                match try!(r.step().map_err(elmo::wrap_err)) {
-                    None => {
-                        let tbl = Self::get_table_name_for_collection(db, coll);
-                        try!(self.conn.exec(&format!("CREATE TABLE \"{}\" (did INTEGER PRIMARY KEY, bson BLOB NOT NULL)", tbl)).map_err(elmo::wrap_err));
-                        // now create mongo index for _id
-                        match options.tryGetValueForKey("autoIndexId") {
-                            Some(&BsonValue::BBoolean(false)) => (),
-                            _ => {
-                                let info = elmo::IndexInfo {
-                                    db: String::from(db),
-                                    coll: String::from(coll),
-                                    name: String::from("_id_"),
-                                    spec: BsonValue::BDocument(vec![(String::from("_id"), BsonValue::BInt32(1))]),
-                                    options: BsonValue::BDocument(vec![(String::from("unique"), BsonValue::BBoolean(true))]),
-                                };
-                                let _created = self.create_index(info);
-                            },
-                        }
-                        Ok(true)
-                    },
-                    Some(_) => {
-                        Err(elmo::Error::Misc("insert stmt step() returned a row"))
-                    },
-                }
-            },
-        }
-    }
-
-    fn base_create_indexes(&mut self, what: Vec<elmo::IndexInfo>) -> elmo::Result<Vec<bool>> {
-        let mut v = Vec::new();
-        for info in what {
-            let b = try!(self.create_index(info));
-            v.push(b);
-        }
-        Ok(v)
-    }
-
-    fn base_drop_index(&mut self, db: &str, coll: &str, name: &str) -> elmo::Result<bool> {
-        match try!(self.get_index_info(db, coll, name)) {
-            None => Ok(false),
-            Some(_) => {
-                let mut stmt = try!(self.conn.prepare("DELETE FROM \"indexes\" WHERE dbName=? AND collName=? AND ndxName=?").map_err(elmo::wrap_err));
-                try!(stmt.bind_text(1, db).map_err(elmo::wrap_err));
-                try!(stmt.bind_text(2, coll).map_err(elmo::wrap_err));
-                try!(stmt.bind_text(3, name).map_err(elmo::wrap_err));
-                try!(Self::step_done(&mut stmt));
-                try!(Self::verify_changes(&stmt, 1));
-                let tbl = Self::get_table_name_for_index(db, coll, name);
-                try!(self.conn.exec(&format!("DROP TABLE \"{}\"", tbl)).map_err(elmo::wrap_err));
-                Ok(true)
-            },
-        }
-    }
-
-    fn base_drop_database(&mut self, db: &str) -> elmo::Result<bool> {
-        let collections = try!(self.base_list_collections());
-        let mut b = false;
-        for t in collections {
-            if t.0 == db {
-                let _deleted = try!(self.base_drop_collection(&t.0, &t.1));
-                assert!(_deleted);
-                b = true;
-            }
-        }
-        Ok(b)
-    }
-
-    fn base_drop_collection(&mut self, db: &str, coll: &str) -> elmo::Result<bool> {
-        match try!(self.get_collection_options(db, coll)) {
-            None => Ok(false),
-            Some(_) => {
-                let indexes = try!(self.base_list_indexes());
-                for info in indexes {
-                    if info.db == db && info.coll == coll {
-                        try!(self.base_drop_index(&info.db, &info.coll, &info.name));
-                    }
-                }
-                let mut stmt = try!(self.conn.prepare("DELETE FROM \"collections\" WHERE dbName=? AND collName=?").map_err(elmo::wrap_err));
-                try!(stmt.bind_text(1, db).map_err(elmo::wrap_err));
-                try!(stmt.bind_text(2, coll).map_err(elmo::wrap_err));
-                try!(Self::step_done(&mut stmt));
-                try!(Self::verify_changes(&stmt, 1));
-                let tbl = Self::get_table_name_for_collection(db, coll);
-                try!(self.conn.exec(&format!("DROP TABLE \"{}\"", tbl)).map_err(elmo::wrap_err));
-                Ok(true)
-            },
-        }
-    }
-
-    // TODO not sure this func is worth the trouble.
-    // or do we need more like this one?
-    fn exec(&mut self, sql: &str) -> elmo::Result<()> {
-        self.conn.exec(sql).map_err(elmo::wrap_err)
-    }
-
-    fn begin_tx(&mut self) -> elmo::Result<()> {
-        try!(self.conn.exec("BEGIN TRANSACTION").map_err(elmo::wrap_err));
-        Ok(())
-    }
-
-    fn finish_tx<T>(&mut self, r: elmo::Result<T>) -> elmo::Result<T> {
-        if r.is_ok() {
-            try!(self.conn.exec("COMMIT TRANSACTION").map_err(elmo::wrap_err));
-            r
-        } else {
-            let _ = self.conn.exec("ROLLBACK TRANSACTION");
-            r
-        }
-    }
-
-    fn find_rowid(&mut self, v: &BsonValue) -> elmo::Result<Option<i64>> {
-        match self.statements {
-            None => Err(elmo::Error::Misc("must prepare_write()")),
-            Some(ref mut statements) => {
-                match statements.find_rowid {
-                    None => Ok(None),
-                    Some(ref mut stmt) => {
-                        stmt.clear_bindings();
-                        let ba = BsonValue::encode_one_for_index(v, false);
-                        try!(stmt.bind_blob(1, &ba).map_err(elmo::wrap_err));
-                        let mut r = stmt.execute();
-                        match try!(r.step().map_err(elmo::wrap_err)) {
-                            None => Ok(None),
-                            Some(r) => {
-                                let rowid = r.column_int64(0);
-                                Ok(Some(rowid))
-                            },
-                        }
-                    },
-                }
-            }
-        }
-    }
-
-    fn get_table_scan_reader(&mut self, tx: bool, db: &str, coll: &str) -> elmo::Result<MyTableScanReader> {
-        let tbl = Self::get_table_name_for_collection(db, coll);
+    fn get_table_scan_reader(&self, tx: bool, db: &str, coll: &str) -> elmo::Result<MyTableScanReader> {
+        let tbl = get_table_name_for_collection(db, coll);
         let stmt = try!(self.conn.prepare(&format!("SELECT bson FROM \"{}\"", tbl)).map_err(elmo::wrap_err));
         // TODO keep track of total keys examined, etc.
         let rdr = MyTableScanReader {
             tx: tx,
             stmt: stmt,
-            conn: &self.conn,
+            myconn: self,
         };
         Ok(rdr)
     }
@@ -570,13 +398,13 @@ impl MyConn {
         a
     }
 
-    fn get_stmt_for_index_scan(&mut self, plan: elmo::QueryPlan) -> elmo::Result<sqlite3::PreparedStatement> {
-        let tbl_coll = Self::get_table_name_for_collection(&plan.ndx.db, &plan.ndx.coll);
-        let tbl_ndx = Self::get_table_name_for_index(&plan.ndx.db, &plan.ndx.coll, &plan.ndx.name);
+    fn get_stmt_for_index_scan(&self, plan: elmo::QueryPlan) -> elmo::Result<sqlite3::PreparedStatement> {
+        let tbl_coll = get_table_name_for_collection(&plan.ndx.db, &plan.ndx.coll);
+        let tbl_ndx = get_table_name_for_index(&plan.ndx.db, &plan.ndx.coll, &plan.ndx.name);
 
         // TODO the following is way too heavy.  all we need is the index types
         // so we can tell if they're supposed to be backwards or not.
-        let (normspec, _weights) = try!(Self::get_normalized_spec(&plan.ndx));
+        let (normspec, _weights) = try!(get_normalized_spec(&plan.ndx));
 
         // note that one of the reasons we need to do DISTINCT here is because a
         // single index in a single document can produce multiple index entries,
@@ -631,19 +459,19 @@ impl MyConn {
         }
     }
 
-    fn get_nontext_index_scan_reader(&mut self, tx: bool, plan: elmo::QueryPlan) -> elmo::Result<MyTableScanReader> {
+    fn get_nontext_index_scan_reader(&self, tx: bool, plan: elmo::QueryPlan) -> elmo::Result<MyTableScanReader> {
         let stmt = try!(self.get_stmt_for_index_scan(plan));
 
         // TODO keep track of total keys examined, etc.
         let rdr = MyTableScanReader {
             tx: tx,
             stmt: stmt,
-            conn: &self.conn,
+            myconn: self,
         };
         Ok(rdr)
     }
 
-    fn get_reader<'a>(&'a mut self, tx: bool, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> elmo::Result<Box<elmo::StorageReader<Item=elmo::Result<BsonValue>> + 'a>> {
+    fn get_reader<'a>(&'a self, tx: bool, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> elmo::Result<Box<elmo::StorageReader<Item=elmo::Result<BsonValue>> + 'a>> {
         match try!(self.get_collection_options(db, coll)) {
             None => {
                 let rdr = MyEmptyReader;
@@ -674,137 +502,7 @@ impl MyConn {
         }
     }
 
-    fn update_indexes_delete(indexes: &mut Vec<IndexPrep>, rowid: i64) -> elmo::Result<()> {
-        for t in indexes {
-            t.stmt_delete.clear_bindings();
-            try!(t.stmt_delete.bind_int64(1, rowid).map_err(elmo::wrap_err));
-            try!(Self::step_done(&mut t.stmt_delete));
-        }
-        Ok(())
-    }
-
-    fn update_indexes_insert(indexes: &mut Vec<IndexPrep>, rowid: i64, v: &BsonValue) -> elmo::Result<()> {
-        for t in indexes {
-            let (normspec, weights) = try!(Self::get_normalized_spec(&t.info));
-            let mut entries = Vec::new();
-            try!(Self::get_index_entries(&v, &normspec, &weights, &t.info.options, &mut entries));
-            let entries = entries.into_iter().collect::<std::collections::HashSet<_>>();
-            for vals in entries {
-                let k = BsonValue::encode_multi_for_index(vals);
-                try!(Self::index_insert_step(&mut t.stmt_insert, k, rowid));
-            }
-        }
-        Ok(())
-    }
-
-    fn slice_find(pairs: &[(String, BsonValue)], s: &str) -> Option<usize> {
-        for i in 0 .. pairs.len() {
-            match pairs[0].1 {
-                BsonValue::BString(ref t) => {
-                    if t == s {
-                        return Some(i);
-                    }
-                },
-                _ => (),
-            }
-        }
-        None
-    }
-
-    // this function gets the index spec (its keys) into a form that
-    // is simplified and cleaned up.
-    //
-    // if there are text indexes in index.spec, they are removed
-    //
-    // all text indexes, including any that were in index.spec, and
-    // anything implied by options.weights, are stored in a new Map<string,int>
-    // called weights.
-    //
-    // any non-text indexes that appeared in spec AFTER any text
-    // indexes are discarded.  I *think* Mongo keeps these, but only
-    // for the purpose of grabbing their data later when used as a covering
-    // index, which we're ignoring.
-    //
-    fn get_normalized_spec(info: &elmo::IndexInfo) -> elmo::Result<(Vec<(String,IndexType)>,Option<std::collections::HashMap<String,i32>>)> {
-        //printfn "info: %A" info
-        let keys = try!(info.spec.getDocument());
-        let first_text = Self::slice_find(&keys, "text");
-        let w1 = info.options.tryGetValueForKey("weights");
-        match (first_text, w1) {
-            (None, None) => {
-                let decoded = keys.iter().map(|&(ref k, ref v)| (k.clone(), decode_index_type(v))).collect::<Vec<(String,IndexType)>>();
-                //printfn "no text index: %A" decoded
-                Ok((decoded, None))
-            },
-            _ => {
-                let (scalar_keys, text_keys) = 
-                    match first_text {
-                        Some(i) => {
-                            let scalar_keys = &keys[0 .. i];
-                            // note that any non-text index after the first text index is getting discarded
-                            let mut text_keys = Vec::new();
-                            for t in keys {
-                                match t.1 {
-                                    BsonValue::BString(ref s) => {
-                                        if s == "text" {
-                                            text_keys.push(t.0.clone());
-                                        }
-                                    },
-                                    _ => (),
-                                }
-                            }
-                            (scalar_keys, text_keys)
-                        },
-                        None => (&keys[0 ..], Vec::new())
-                    };
-                let mut weights = std::collections::HashMap::new();
-                match w1 {
-                    Some(&BsonValue::BDocument(ref a)) => {
-                        for t in a {
-                            let n = 
-                                match &t.1 {
-                                    &BsonValue::BInt32(n) => n,
-                                    &BsonValue::BInt64(n) => n as i32,
-                                    &BsonValue::BDouble(n) => n as i32,
-                                    _ => panic!("weight must be numeric")
-                                };
-                            weights.insert(t.0.clone(), n);
-                        }
-                    },
-                    Some(_) => panic!( "weights must be a document"),
-                    None => (),
-                };
-                for k in text_keys {
-                    if !weights.contains_key(&k) {
-                        weights.insert(String::from(k), 1);
-                    }
-                }
-                // TODO if the wildcard is present, remove everything else?
-                let decoded = scalar_keys.iter().map(|&(ref k, ref v)| (k.clone(), decode_index_type(v))).collect::<Vec<(String,IndexType)>>();
-                let r = Ok((decoded, Some(weights)));
-                //printfn "%A" r
-                r
-            }
-        }
-    }
-
-    fn get_index_from_row(r: &sqlite3::ResultRow) -> elmo::Result<elmo::IndexInfo> {
-        let name = r.column_text(0).expect("NOT NULL");
-        let spec = try!(BsonValue::from_bson(&r.column_blob(1).expect("NOT NULL")));
-        let options = try!(BsonValue::from_bson(&r.column_blob(2).expect("NOT NULL")));
-        let db = r.column_text(3).expect("NOT NULL");
-        let coll = r.column_text(4).expect("NOT NULL");
-        let info = elmo::IndexInfo {
-            db: String::from(db),
-            coll: String::from(coll),
-            name: String::from(name),
-            spec: spec,
-            options: options,
-        };
-        Ok(info)
-    }
-
-    fn get_index_info(&mut self, db: &str, coll: &str, name: &str) -> elmo::Result<Option<elmo::IndexInfo>> {
+    fn get_index_info(&self, db: &str, coll: &str, name: &str) -> elmo::Result<Option<elmo::IndexInfo>> {
         // TODO DRY this string
         let mut stmt = try!(self.conn.prepare("SELECT ndxName, spec, options, dbName, collName FROM \"indexes\" WHERE dbName=? AND collName=? AND ndxName=?").map_err(elmo::wrap_err));
         try!(stmt.bind_text(1, db).map_err(elmo::wrap_err));
@@ -814,13 +512,13 @@ impl MyConn {
         match try!(r.step().map_err(elmo::wrap_err)) {
             None => Ok(None),
             Some(row) => {
-                let info = try!(Self::get_index_from_row(&row));
+                let info = try!(get_index_info_from_row(&row));
                 Ok(Some(info))
             },
         }
     }
 
-    fn base_list_indexes(&mut self) -> elmo::Result<Vec<elmo::IndexInfo>> {
+    fn base_list_indexes(&self) -> elmo::Result<Vec<elmo::IndexInfo>> {
         let mut stmt = try!(self.conn.prepare("SELECT ndxName, spec, options, dbName, collName FROM \"indexes\"").map_err(elmo::wrap_err));
         let mut r = stmt.execute();
         let mut v = Vec::new();
@@ -828,7 +526,7 @@ impl MyConn {
             match try!(r.step().map_err(elmo::wrap_err)) {
                 None => break,
                 Some(row) => {
-                    let info = try!(Self::get_index_from_row(&row));
+                    let info = try!(get_index_info_from_row(&row));
                     v.push(info);
                 },
             }
@@ -836,7 +534,7 @@ impl MyConn {
         Ok(v)
     }
 
-    fn base_list_collections(&mut self) -> elmo::Result<Vec<(String, String, BsonValue)>> {
+    fn base_list_collections(&self) -> elmo::Result<Vec<(String, String, BsonValue)>> {
         let mut stmt = try!(self.conn.prepare("SELECT dbName, collName, options FROM \"collections\" ORDER BY collName ASC").map_err(elmo::wrap_err));
         let mut r = stmt.execute();
         let mut v = Vec::new();
@@ -857,71 +555,52 @@ impl MyConn {
 
 }
 
-impl elmo::StorageConnection for MyConn {
-    fn create_collection(&mut self, db: &str, coll: &str, options: BsonValue) -> elmo::Result<bool> {
-        try!(self.begin_write_tx());
-        let r = self.base_create_collection(db, coll, options);
-        self.finish_tx(r)
+impl<'a> MyCollectionWriter<'a> {
+    fn find_rowid(&mut self, v: &BsonValue) -> elmo::Result<Option<i64>> {
+                match self.stmt_find_rowid {
+                    None => Ok(None),
+                    Some(ref mut stmt) => {
+                        stmt.clear_bindings();
+                        let ba = BsonValue::encode_one_for_index(v, false);
+                        try!(stmt.bind_blob(1, &ba).map_err(elmo::wrap_err));
+                        let mut r = stmt.execute();
+                        match try!(r.step().map_err(elmo::wrap_err)) {
+                            None => Ok(None),
+                            Some(r) => {
+                                let rowid = r.column_int64(0);
+                                Ok(Some(rowid))
+                            },
+                        }
+                    },
+                }
     }
 
-    fn drop_collection(&mut self, db: &str, coll: &str) -> elmo::Result<bool> {
-        try!(self.begin_write_tx());
-        let r = self.base_drop_collection(db, coll);
-        self.finish_tx(r)
-    }
-
-    fn begin_write_tx(&mut self) -> elmo::Result<()> {
-        try!(self.conn.exec("BEGIN IMMEDIATE TRANSACTION").map_err(elmo::wrap_err));
+    fn update_indexes_delete(indexes: &mut Vec<IndexPrep>, rowid: i64) -> elmo::Result<()> {
+        for t in indexes {
+            t.stmt_delete.clear_bindings();
+            try!(t.stmt_delete.bind_int64(1, rowid).map_err(elmo::wrap_err));
+            try!(step_done(&mut t.stmt_delete));
+        }
         Ok(())
     }
 
-    fn prepare_write(&mut self, db: &str, coll: &str) -> elmo::Result<()> {
-        // TODO make sure a tx is open?
-        let _created = try!(self.base_create_collection(db, coll, BsonValue::BArray(Vec::new())));
-        let tbl = Self::get_table_name_for_collection(db, coll);
-        let stmt_insert = try!(self.conn.prepare(&format!("INSERT INTO \"{}\" (bson) VALUES (?)", tbl)).map_err(elmo::wrap_err));
-        let stmt_delete = try!(self.conn.prepare(&format!("DELETE FROM \"{}\" WHERE rowid=?", tbl)).map_err(elmo::wrap_err));
-        let stmt_update = try!(self.conn.prepare(&format!("UPDATE \"{}\" SET bson=? WHERE rowid=?", tbl)).map_err(elmo::wrap_err));
-        let indexes = try!(self.base_list_indexes());
-        let mut find_rowid = None;
-        for info in &indexes {
-            if info.name == "_id_" {
-                let tbl = Self::get_table_name_for_index(db, coll, &info.name);
-                find_rowid = Some(try!(self.conn.prepare(&format!("SELECT doc_rowid FROM \"{}\" WHERE k=?", tbl)).map_err(elmo::wrap_err)));
-                break;
+    fn update_indexes_insert(indexes: &mut Vec<IndexPrep>, rowid: i64, v: &BsonValue) -> elmo::Result<()> {
+        for t in indexes {
+            let (normspec, weights) = try!(get_normalized_spec(&t.info));
+            let mut entries = Vec::new();
+            try!(get_index_entries(&v, &normspec, &weights, &t.info.options, &mut entries));
+            let entries = entries.into_iter().collect::<std::collections::HashSet<_>>();
+            for vals in entries {
+                let k = BsonValue::encode_multi_for_index(vals);
+                try!(index_insert_step(&mut t.stmt_insert, k, rowid));
             }
         }
-        let mut index_stmts = Vec::new();
-        for info in indexes {
-            let tbl_ndx = Self::get_table_name_for_index(db, coll, &info.name);
-            let stmt_insert = try!(self.prepare_index_insert(&tbl_ndx));
-            let stmt_delete = try!(self.conn.prepare(&format!("DELETE FROM \"{}\" WHERE doc_rowid=?", tbl_ndx)).map_err(elmo::wrap_err));
-            let t = IndexPrep {
-                info: info, 
-                stmt_insert: stmt_insert, 
-                stmt_delete: stmt_delete
-            };
-            index_stmts.push(t);
-        }
-        let c = MyStatements {
-            insert: stmt_insert,
-            delete: stmt_delete,
-            update: stmt_update,
-            find_rowid: find_rowid,
-            indexes: index_stmts,
-        };
-        // we assume that assigning to self.statements will replace
-        // any existing value there which will cause those existing
-        // statements to be finalized.
-        self.statements = Some(c);
         Ok(())
     }
 
-    fn unprepare_write(&mut self) -> elmo::Result<()> {
-        self.statements = None;
-        Ok(())
-    }
+}
 
+impl<'a> elmo::StorageCollectionWriter for MyCollectionWriter<'a> {
     fn update(&mut self, v: BsonValue) -> elmo::Result<()> {
         match v.tryGetValueForKey("_id") {
             None => Err(elmo::Error::Misc("cannot update without _id")),
@@ -929,21 +608,16 @@ impl elmo::StorageConnection for MyConn {
                 match try!(self.find_rowid(&id).map_err(elmo::wrap_err)) {
                     None => Err(elmo::Error::Misc("update but does not exist")),
                     Some(rowid) => {
-                        match self.statements {
-                            None => Err(elmo::Error::Misc("must prepare_write()")),
-                            Some(ref mut statements) => {
                                 let ba = v.to_bson_array();
-                                statements.update.clear_bindings();
-                                try!(statements.update.bind_blob(1,&ba).map_err(elmo::wrap_err));
-                                try!(statements.update.bind_int64(2, rowid).map_err(elmo::wrap_err));
-                                try!(Self::step_done(&mut statements.update));
-                                try!(Self::verify_changes(&statements.update, 1));
-                                try!(Self::update_indexes_delete(&mut statements.indexes, rowid));
-                                try!(Self::update_indexes_insert(&mut statements.indexes, rowid, &v));
+                                self.update.clear_bindings();
+                                try!(self.update.bind_blob(1,&ba).map_err(elmo::wrap_err));
+                                try!(self.update.bind_int64(2, rowid).map_err(elmo::wrap_err));
+                                try!(step_done(&mut self.update));
+                                try!(verify_changes(&self.update, 1));
+                                try!(Self::update_indexes_delete(&mut self.indexes, rowid));
+                                try!(Self::update_indexes_insert(&mut self.indexes, rowid, &v));
                                 Ok(())
                             },
-                        }
-                    },
                 }
             },
         }
@@ -954,16 +628,13 @@ impl elmo::StorageConnection for MyConn {
         match try!(self.find_rowid(&v).map_err(elmo::wrap_err)) {
             None => Ok(false),
             Some(rowid) => {
-                match self.statements {
-                    None => Err(elmo::Error::Misc("must prepare_write()")),
-                    Some(ref mut statements) => {
-                        statements.delete.clear_bindings();
-                        try!(statements.delete.bind_int64(1, rowid).map_err(elmo::wrap_err));
-                        try!(Self::step_done(&mut statements.delete));
-                        let count = self.conn.changes();
+                        self.delete.clear_bindings();
+                        try!(self.delete.bind_int64(1, rowid).map_err(elmo::wrap_err));
+                        try!(step_done(&mut self.delete));
+                        let count = self.myconn.conn.changes();
                         if count == 1 {
                             // TODO might not need index update here.  foreign key cascade?
-                            try!(Self::update_indexes_delete(&mut statements.indexes, rowid));
+                            try!(Self::update_indexes_delete(&mut self.indexes, rowid));
                             Ok(true)
                         } else if count == 0 {
                             Ok(false)
@@ -972,80 +643,363 @@ impl elmo::StorageConnection for MyConn {
                         }
                     },
                 }
+    }
+
+    fn insert(&mut self, v: BsonValue) -> elmo::Result<()> {
+                let ba = v.to_bson_array();
+                self.insert.clear_bindings();
+                try!(self.insert.bind_blob(1,&ba).map_err(elmo::wrap_err));
+                try!(step_done(&mut self.insert));
+                try!(verify_changes(&self.insert, 1));
+                let rowid = self.myconn.conn.last_insert_rowid();
+                try!(Self::update_indexes_delete(&mut self.indexes, rowid));
+                try!(Self::update_indexes_insert(&mut self.indexes, rowid, &v));
+                Ok(())
+    }
+
+}
+
+impl<'a> MyWriter<'a> {
+    fn prepare_index_insert(&self, tbl: &str) -> elmo::Result<sqlite3::PreparedStatement> {
+        let stmt = try!(self.myconn.conn.prepare(&format!("INSERT INTO \"{}\" (k,doc_rowid) VALUES (?,?)",tbl)).map_err(elmo::wrap_err));
+        Ok(stmt)
+    }
+
+    fn create_index(&self, info: elmo::IndexInfo) -> elmo::Result<bool> {
+        let _created = try!(self.base_create_collection(&info.db, &info.coll, BsonValue::BArray(Vec::new())));
+        match try!(self.myconn.get_index_info(&info.db, &info.coll, &info.name)) {
+            Some(already) => {
+                if already.spec != info.spec {
+                    // note that we do not compare the options.
+                    // I think mongo does it this way too.
+                    Err(elmo::Error::Misc("index already exists with different keys"))
+                } else {
+                    Ok(false)
+                }
+            },
+            None => {
+                // TODO if we already have a text index (where any of its spec keys are text)
+                // then fail.
+
+                let ba_spec = info.spec.to_bson_array();
+                let ba_options = info.options.to_bson_array();
+                let mut stmt = try!(self.myconn.conn.prepare("INSERT INTO \"indexes\" (dbName,collName,ndxName,spec,options) VALUES (?,?,?,?,?)").map_err(elmo::wrap_err));
+                try!(stmt.bind_text(1, &info.db).map_err(elmo::wrap_err));
+                try!(stmt.bind_text(2, &info.coll).map_err(elmo::wrap_err));
+                try!(stmt.bind_text(3, &info.name).map_err(elmo::wrap_err));
+                try!(stmt.bind_blob(4, &ba_spec).map_err(elmo::wrap_err));
+                try!(stmt.bind_blob(5, &ba_options).map_err(elmo::wrap_err));
+                let mut r = stmt.execute();
+                match try!(r.step().map_err(elmo::wrap_err)) {
+                    None => {
+                        let tbl_coll = get_table_name_for_collection(&info.db, &info.coll);
+                        let tbl_ndx = get_table_name_for_index(&info.db, &info.coll, &info.name);
+                        let s =
+                        match info.options.tryGetValueForKey("unique") {
+                            Some(&BsonValue::BBoolean(true)) => {
+                                format!("CREATE TABLE \"{}\" (k BLOB NOT NULL, doc_rowid int NOT NULL REFERENCES \"{}\"(did) ON DELETE CASCADE, PRIMARY KEY (k))", tbl_ndx, tbl_coll)
+                            },
+                            _ => {
+                                format!("CREATE TABLE \"{}\" (k BLOB NOT NULL, doc_rowid int NOT NULL REFERENCES \"{}\"(did) ON DELETE CASCADE, PRIMARY KEY (k,doc_rowid))", tbl_ndx, tbl_coll)
+                            },
+                        };
+                        try!(self.myconn.conn.exec(&s).map_err(elmo::wrap_err));
+                        try!(self.myconn.conn.exec(&format!("CREATE INDEX \"childndx_{}\" ON \"{}\" (doc_rowid)", tbl_ndx, tbl_ndx)).map_err(elmo::wrap_err));
+                        // now insert index entries for every doc that already exists
+                        let (normspec, weights) = try!(get_normalized_spec(&info));
+                        let mut stmt2 = try!(self.myconn.conn.prepare(&format!("SELECT did,bson FROM \"{}\"", tbl_coll)).map_err(elmo::wrap_err));
+                        let mut stmt_insert = try!(self.prepare_index_insert(&tbl_ndx));
+                        let mut r = stmt2.execute();
+                        loop {
+                            match try!(r.step().map_err(elmo::wrap_err)) {
+                                None => break,
+                                Some(row) => {
+                                    let doc_rowid = row.column_int64(0);
+                                    let new_doc = try!(BsonValue::from_bson(&row.column_blob(1).expect("NOT NULL")));
+                                    let mut entries = Vec::new();
+                                    try!(get_index_entries(&new_doc, &normspec, &weights, &info.options, &mut entries));
+                                    let entries = entries.into_iter().collect::<std::collections::HashSet<_>>();
+                                    for vals in entries {
+                                        let k = BsonValue::encode_multi_for_index(vals);
+                                        try!(index_insert_step(&mut stmt_insert, k, doc_rowid));
+                                    }
+                                },
+                            }
+                        }
+                        Ok(true)
+                    },
+                    Some(_) => {
+                        Err(elmo::Error::Misc("insert stmt step() returned a row"))
+                    },
+                }
             },
         }
     }
 
-    fn insert(&mut self, v: BsonValue) -> elmo::Result<()> {
-        match self.statements {
-            None => Err(elmo::Error::Misc("must prepare_write()")),
-            Some(ref mut statements) => {
-                let ba = v.to_bson_array();
-                statements.insert.clear_bindings();
-                try!(statements.insert.bind_blob(1,&ba).map_err(elmo::wrap_err));
-                try!(Self::step_done(&mut statements.insert));
-                try!(Self::verify_changes(&statements.insert, 1));
-                let rowid = self.conn.last_insert_rowid();
-                try!(Self::update_indexes_delete(&mut statements.indexes, rowid));
-                try!(Self::update_indexes_insert(&mut statements.indexes, rowid, &v));
-                Ok(())
-            }
+    fn base_clear_collection(&self, db: &str, coll: &str) -> elmo::Result<bool> {
+        match try!(self.myconn.get_collection_options(db, coll)) {
+            None => {
+                let created = try!(self.base_create_collection(db, coll, BsonValue::BArray(Vec::new())));
+                Ok(created)
+            },
+            Some(_) => {
+                let tbl = get_table_name_for_collection(db, coll);
+                try!(self.myconn.conn.exec(&format!("DROP TABLE \"{}\"", tbl)).map_err(elmo::wrap_err));
+                Ok(false)
+            },
         }
     }
 
-    fn commit_tx(&mut self) -> elmo::Result<()> {
-        try!(self.conn.exec("COMMIT TRANSACTION").map_err(elmo::wrap_err));
+    fn base_rename_collection(&self, old_name: &str, new_name: &str, drop_target: bool) -> elmo::Result<bool> {
+        let (old_db, old_coll) = bson::split_name(old_name);
+        let (new_db, new_coll) = bson::split_name(new_name);
+
+        // jstests/core/rename8.js seems to think that renaming to/from a system collection is illegal unless
+        // that collection is system.users, which is "whitelisted".  for now, we emulate this behavior, even
+        // though system.users isn't supported.
+        if old_coll != "system.users" && old_coll.starts_with("system.") {
+            return Err(elmo::Error::Misc("renameCollection with a system collection not allowed."))
+        }
+        if new_coll != "system.users" && new_coll.starts_with("system.") {
+            return Err(elmo::Error::Misc("renameCollection with a system collection not allowed."))
+        }
+
+        if drop_target {
+            let _deleted = try!(self.base_drop_collection(new_db, new_coll));
+        }
+
+        match try!(self.myconn.get_collection_options(old_db, old_coll)) {
+            None => {
+                let created = try!(self.base_create_collection(new_db, new_coll, BsonValue::BArray(Vec::new())));
+                Ok(created)
+            },
+            Some(_) => {
+                let old_tbl = get_table_name_for_collection(old_db, old_coll);
+                let new_tbl = get_table_name_for_collection(new_db, new_coll);
+
+                let mut stmt = try!(self.myconn.conn.prepare("UPDATE \"collections\" SET dbName=?, collName=? WHERE dbName=? AND collName=?").map_err(elmo::wrap_err));
+                try!(stmt.bind_text(1, new_db).map_err(elmo::wrap_err));
+                try!(stmt.bind_text(2, new_coll).map_err(elmo::wrap_err));
+                try!(stmt.bind_text(3, old_db).map_err(elmo::wrap_err));
+                try!(stmt.bind_text(4, old_coll).map_err(elmo::wrap_err));
+                try!(step_done(&mut stmt));
+
+                try!(self.myconn.conn.exec(&format!("ALTER TABLE \"{}\" RENAME TO \"{}\"", old_tbl, new_tbl)).map_err(elmo::wrap_err));
+
+                let indexes = try!(self.myconn.base_list_indexes());
+                for info in indexes {
+                    if info.db == old_db && info.coll == old_coll {
+                        let old_ndx_tbl = get_table_name_for_index(old_db, old_coll, &info.name);
+                        let new_ndx_tbl = get_table_name_for_index(new_db, new_coll, &info.name);
+                        try!(self.myconn.conn.exec(&format!("ALTER TABLE \"{}\" RENAME TO \"{}\"", old_ndx_tbl, new_ndx_tbl)).map_err(elmo::wrap_err));
+                    }
+                }
+                Ok(false)
+            },
+        }
+    }
+
+    fn base_create_collection(&self, db: &str, coll: &str, options: BsonValue) -> elmo::Result<bool> {
+        match try!(self.myconn.get_collection_options(db, coll)) {
+            Some(_) => Ok(false),
+            None => {
+                let v_options = options.to_bson_array();
+                let mut stmt = try!(self.myconn.conn.prepare("INSERT INTO \"collections\" (dbName,collName,options) VALUES (?,?,?)").map_err(elmo::wrap_err));
+                try!(stmt.bind_text(1, db).map_err(elmo::wrap_err));
+                try!(stmt.bind_text(2, coll).map_err(elmo::wrap_err));
+                try!(stmt.bind_blob(3, &v_options).map_err(elmo::wrap_err));
+                let mut r = stmt.execute();
+                match try!(r.step().map_err(elmo::wrap_err)) {
+                    None => {
+                        let tbl = get_table_name_for_collection(db, coll);
+                        try!(self.myconn.conn.exec(&format!("CREATE TABLE \"{}\" (did INTEGER PRIMARY KEY, bson BLOB NOT NULL)", tbl)).map_err(elmo::wrap_err));
+                        // now create mongo index for _id
+                        match options.tryGetValueForKey("autoIndexId") {
+                            Some(&BsonValue::BBoolean(false)) => (),
+                            _ => {
+                                let info = elmo::IndexInfo {
+                                    db: String::from(db),
+                                    coll: String::from(coll),
+                                    name: String::from("_id_"),
+                                    spec: BsonValue::BDocument(vec![(String::from("_id"), BsonValue::BInt32(1))]),
+                                    options: BsonValue::BDocument(vec![(String::from("unique"), BsonValue::BBoolean(true))]),
+                                };
+                                let _created = self.create_index(info);
+                            },
+                        }
+                        Ok(true)
+                    },
+                    Some(_) => {
+                        Err(elmo::Error::Misc("insert stmt step() returned a row"))
+                    },
+                }
+            },
+        }
+    }
+
+    fn base_create_indexes(&self, what: Vec<elmo::IndexInfo>) -> elmo::Result<Vec<bool>> {
+        let mut v = Vec::new();
+        for info in what {
+            let b = try!(self.create_index(info));
+            v.push(b);
+        }
+        Ok(v)
+    }
+
+    fn base_drop_index(&self, db: &str, coll: &str, name: &str) -> elmo::Result<bool> {
+        match try!(self.myconn.get_index_info(db, coll, name)) {
+            None => Ok(false),
+            Some(_) => {
+                let mut stmt = try!(self.myconn.conn.prepare("DELETE FROM \"indexes\" WHERE dbName=? AND collName=? AND ndxName=?").map_err(elmo::wrap_err));
+                try!(stmt.bind_text(1, db).map_err(elmo::wrap_err));
+                try!(stmt.bind_text(2, coll).map_err(elmo::wrap_err));
+                try!(stmt.bind_text(3, name).map_err(elmo::wrap_err));
+                try!(step_done(&mut stmt));
+                try!(verify_changes(&stmt, 1));
+                let tbl = get_table_name_for_index(db, coll, name);
+                try!(self.myconn.conn.exec(&format!("DROP TABLE \"{}\"", tbl)).map_err(elmo::wrap_err));
+                Ok(true)
+            },
+        }
+    }
+
+    fn base_drop_database(&self, db: &str) -> elmo::Result<bool> {
+        let collections = try!(self.myconn.base_list_collections());
+        let mut b = false;
+        for t in collections {
+            if t.0 == db {
+                let _deleted = try!(self.base_drop_collection(&t.0, &t.1));
+                assert!(_deleted);
+                b = true;
+            }
+        }
+        Ok(b)
+    }
+
+    fn base_drop_collection(&self, db: &str, coll: &str) -> elmo::Result<bool> {
+        match try!(self.myconn.get_collection_options(db, coll)) {
+            None => Ok(false),
+            Some(_) => {
+                let indexes = try!(self.myconn.base_list_indexes());
+                for info in indexes {
+                    if info.db == db && info.coll == coll {
+                        try!(self.base_drop_index(&info.db, &info.coll, &info.name));
+                    }
+                }
+                let mut stmt = try!(self.myconn.conn.prepare("DELETE FROM \"collections\" WHERE dbName=? AND collName=?").map_err(elmo::wrap_err));
+                try!(stmt.bind_text(1, db).map_err(elmo::wrap_err));
+                try!(stmt.bind_text(2, coll).map_err(elmo::wrap_err));
+                try!(step_done(&mut stmt));
+                try!(verify_changes(&stmt, 1));
+                let tbl = get_table_name_for_collection(db, coll);
+                try!(self.myconn.conn.exec(&format!("DROP TABLE \"{}\"", tbl)).map_err(elmo::wrap_err));
+                Ok(true)
+            },
+        }
+    }
+
+}
+
+impl<'a> elmo::StorageWriter for MyWriter<'a> {
+    fn prepare_collection_writer<'b>(&'b self, db: &str, coll: &str) -> elmo::Result<Box<elmo::StorageCollectionWriter + 'b>> {
+        // TODO make sure a tx is open?
+        let _created = try!(self.base_create_collection(db, coll, BsonValue::BArray(Vec::new())));
+        let tbl = get_table_name_for_collection(db, coll);
+        let stmt_insert = try!(self.myconn.conn.prepare(&format!("INSERT INTO \"{}\" (bson) VALUES (?)", tbl)).map_err(elmo::wrap_err));
+        let stmt_delete = try!(self.myconn.conn.prepare(&format!("DELETE FROM \"{}\" WHERE rowid=?", tbl)).map_err(elmo::wrap_err));
+        let stmt_update = try!(self.myconn.conn.prepare(&format!("UPDATE \"{}\" SET bson=? WHERE rowid=?", tbl)).map_err(elmo::wrap_err));
+        let indexes = try!(self.myconn.base_list_indexes());
+        let mut find_rowid = None;
+        for info in &indexes {
+            if info.name == "_id_" {
+                let tbl = get_table_name_for_index(db, coll, &info.name);
+                find_rowid = Some(try!(self.myconn.conn.prepare(&format!("SELECT doc_rowid FROM \"{}\" WHERE k=?", tbl)).map_err(elmo::wrap_err)));
+                break;
+            }
+        }
+        let mut index_stmts = Vec::new();
+        for info in indexes {
+            let tbl_ndx = get_table_name_for_index(db, coll, &info.name);
+            let stmt_insert = try!(self.prepare_index_insert(&tbl_ndx));
+            let stmt_delete = try!(self.myconn.conn.prepare(&format!("DELETE FROM \"{}\" WHERE doc_rowid=?", tbl_ndx)).map_err(elmo::wrap_err));
+            let t = IndexPrep {
+                info: info, 
+                stmt_insert: stmt_insert, 
+                stmt_delete: stmt_delete
+            };
+            index_stmts.push(t);
+        }
+        let c = MyCollectionWriter {
+            insert: stmt_insert,
+            delete: stmt_delete,
+            update: stmt_update,
+            stmt_find_rowid: find_rowid,
+            indexes: index_stmts,
+            myconn: self.myconn,
+        };
+        Ok(box c)
+    }
+
+    fn commit(&self) -> elmo::Result<()> {
+        try!(self.myconn.conn.exec("COMMIT TRANSACTION").map_err(elmo::wrap_err));
         Ok(())
     }
 
-    fn rollback_tx(&mut self) -> elmo::Result<()> {
-        try!(self.conn.exec("ROLLBACK TRANSACTION").map_err(elmo::wrap_err));
+    fn rollback(&self) -> elmo::Result<()> {
+        try!(self.myconn.conn.exec("ROLLBACK TRANSACTION").map_err(elmo::wrap_err));
         Ok(())
     }
 
-    fn list_collections(&mut self) -> elmo::Result<Vec<(String, String, BsonValue)>> {
-        try!(self.begin_tx());
-        let r = self.base_list_collections();
-        self.finish_tx(r)
+    // TODO maybe just move all the stuff below from the private section into here?
+
+    fn create_collection(&self, db: &str, coll: &str, options: BsonValue) -> elmo::Result<bool> {
+        self.base_create_collection(db, coll, options)
     }
 
-    fn list_indexes(&mut self) -> elmo::Result<Vec<elmo::IndexInfo>> {
-        try!(self.begin_tx());
-        let r = self.base_list_indexes();
-        self.finish_tx(r)
+    fn drop_collection(&self, db: &str, coll: &str) -> elmo::Result<bool> {
+        self.base_drop_collection(db, coll)
     }
 
-    fn create_indexes(&mut self, what: Vec<elmo::IndexInfo>) -> elmo::Result<Vec<bool>> {
-        try!(self.begin_write_tx());
-        let r = self.base_create_indexes(what);
-        self.finish_tx(r)
+    fn create_indexes(&self, what: Vec<elmo::IndexInfo>) -> elmo::Result<Vec<bool>> {
+        self.base_create_indexes(what)
     }
 
-    fn rename_collection(&mut self, old_name: &str, new_name: &str, drop_target: bool) -> elmo::Result<bool> {
-        try!(self.begin_write_tx());
-        let r = self.base_rename_collection(old_name, new_name, drop_target);
-        self.finish_tx(r)
+    fn rename_collection(&self, old_name: &str, new_name: &str, drop_target: bool) -> elmo::Result<bool> {
+        self.base_rename_collection(old_name, new_name, drop_target)
     }
 
-    fn drop_index(&mut self, db: &str, coll: &str, name: &str) -> elmo::Result<bool> {
-        try!(self.begin_write_tx());
-        let r = self.base_drop_index(db, coll, name);
-        self.finish_tx(r)
+    fn drop_index(&self, db: &str, coll: &str, name: &str) -> elmo::Result<bool> {
+        self.base_drop_index(db, coll, name)
     }
 
-    fn drop_database(&mut self, db: &str) -> elmo::Result<bool> {
-        try!(self.begin_tx());
-        let r = self.base_drop_database(db);
-        self.finish_tx(r)
+    fn drop_database(&self, db: &str) -> elmo::Result<bool> {
+        self.base_drop_database(db)
     }
 
-    fn clear_collection(&mut self, db: &str, coll: &str) -> elmo::Result<bool> {
-        try!(self.begin_write_tx());
-        let r = self.base_clear_collection(db, coll);
-        self.finish_tx(r)
+    fn clear_collection(&self, db: &str, coll: &str) -> elmo::Result<bool> {
+        self.base_clear_collection(db, coll)
     }
 
-    fn begin_read<'a>(&'a mut self, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> elmo::Result<Box<elmo::StorageReader<Item=elmo::Result<BsonValue>> + 'a>> {
+}
+
+impl elmo::StorageConnection for MyConn {
+    fn begin_write<'a>(&'a self) -> elmo::Result<Box<elmo::StorageWriter + 'a>> {
+        try!(self.conn.exec("BEGIN IMMEDIATE TRANSACTION").map_err(elmo::wrap_err));
+        let w = MyWriter {
+            myconn: self,
+        };
+        Ok(box w)
+    }
+
+    fn list_collections(&self) -> elmo::Result<Vec<(String, String, BsonValue)>> {
+        self.base_list_collections()
+    }
+
+    fn list_indexes(&self) -> elmo::Result<Vec<elmo::IndexInfo>> {
+        self.base_list_indexes()
+    }
+
+    fn begin_read<'a>(&'a self, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> elmo::Result<Box<elmo::StorageReader<Item=elmo::Result<BsonValue>> + 'a>> {
         let rdr = try!(self.get_reader(true, db, coll, plan));
         Ok(rdr)
     }
@@ -1073,7 +1027,7 @@ impl<'a> MyTableScanReader<'a> {
 impl<'a> Drop for MyTableScanReader<'a> {
     fn drop(&mut self) {
         if self.tx {
-            let _ignored = self.conn.exec("COMMIT TRANSACTION");
+            let _ignored = self.myconn.conn.exec("COMMIT TRANSACTION");
         }
     }
 }
@@ -1136,7 +1090,6 @@ pub fn connect(name: &str) -> elmo::Result<Box<elmo::StorageConnection>> {
     let conn = try!(base_connect(name).map_err(elmo::wrap_err));
     let c = MyConn {
         conn: conn,
-        statements: None,
     };
     Ok(box c)
 }
