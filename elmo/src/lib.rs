@@ -199,9 +199,8 @@ pub trait StorageWriter {
 
     fn prepare_collection_writer<'a>(&'a self, db: &str, coll: &str) -> Result<Box<StorageCollectionWriter + 'a>>;
 
-    // TODO should consume self, but not Sized
-    fn commit(&self) -> Result<()>;
-    fn rollback(&self) -> Result<()>;
+    fn commit(self: Box<Self>) -> Result<()>;
+    fn rollback(self: Box<Self>) -> Result<()>;
     // TODO getSelect, a reader that lives in the write tx
 }
 

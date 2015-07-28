@@ -940,12 +940,12 @@ impl<'a> elmo::StorageWriter for MyWriter<'a> {
         Ok(box c)
     }
 
-    fn commit(&self) -> Result<()> {
+    fn commit(self: Box<Self>) -> Result<()> {
         try!(self.myconn.conn.exec("COMMIT TRANSACTION").map_err(elmo::wrap_err));
         Ok(())
     }
 
-    fn rollback(&self) -> Result<()> {
+    fn rollback(self: Box<Self>) -> Result<()> {
         try!(self.myconn.conn.exec("ROLLBACK TRANSACTION").map_err(elmo::wrap_err));
         Ok(())
     }
