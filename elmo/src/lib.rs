@@ -199,7 +199,7 @@ pub trait StorageConnection {
     fn commit_tx(&mut self) -> Result<()>;
     fn rollback_tx(&mut self) -> Result<()>;
 
-    fn begin_read(&mut self, db: &str, coll: &str, plan: Option<QueryPlan>) -> Result<Box<StorageReader<Item=Result<BsonValue>>>>;
+    fn begin_read<'a>(&'a mut self, db: &str, coll: &str, plan: Option<QueryPlan>) -> Result<Box<StorageReader<Item=Result<BsonValue>> + 'a>>;
 }
 
 

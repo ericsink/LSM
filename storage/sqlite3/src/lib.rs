@@ -41,17 +41,17 @@ struct MyStatements {
 }
 
 // TODO change name of this
-struct MyTableScanReader {
+struct MyTableScanReader<'a> {
     tx: bool,
     stmt: sqlite3::PreparedStatement,
-    conn: std::rc::Rc<sqlite3::DatabaseConnection>,
+    conn: &'a sqlite3::DatabaseConnection,
     // TODO need counts here
 }
 
 struct MyEmptyReader;
 
 struct MyConn {
-    conn: std::rc::Rc<sqlite3::DatabaseConnection>,
+    conn: sqlite3::DatabaseConnection,
     statements: Option<MyStatements>,
 }
 
@@ -555,7 +555,7 @@ impl MyConn {
         let rdr = MyTableScanReader {
             tx: tx,
             stmt: stmt,
-            conn: self.conn.clone(),
+            conn: &self.conn,
         };
         Ok(rdr)
     }
@@ -638,12 +638,12 @@ impl MyConn {
         let rdr = MyTableScanReader {
             tx: tx,
             stmt: stmt,
-            conn: self.conn.clone(),
+            conn: &self.conn,
         };
         Ok(rdr)
     }
 
-    fn get_reader(&mut self, tx: bool, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> elmo::Result<Box<elmo::StorageReader<Item=elmo::Result<BsonValue>>>> {
+    fn get_reader<'a>(&'a mut self, tx: bool, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> elmo::Result<Box<elmo::StorageReader<Item=elmo::Result<BsonValue>> + 'a>> {
         match try!(self.get_collection_options(db, coll)) {
             None => {
                 let rdr = MyEmptyReader;
@@ -1045,13 +1045,13 @@ impl elmo::StorageConnection for MyConn {
         self.finish_tx(r)
     }
 
-    fn begin_read(&mut self, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> elmo::Result<Box<elmo::StorageReader<Item=elmo::Result<BsonValue>>>> {
+    fn begin_read<'a>(&'a mut self, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> elmo::Result<Box<elmo::StorageReader<Item=elmo::Result<BsonValue>> + 'a>> {
         let rdr = try!(self.get_reader(true, db, coll, plan));
         Ok(rdr)
     }
 }
 
-impl MyTableScanReader {
+impl<'a> MyTableScanReader<'a> {
     fn iter_next(&mut self) -> elmo::Result<Option<BsonValue>> {
         // TODO can't find a way to store the ResultSet from execute()
         // in the same struct as its statement, because the ResultSet()
@@ -1070,7 +1070,7 @@ impl MyTableScanReader {
     }
 }
 
-impl Drop for MyTableScanReader {
+impl<'a> Drop for MyTableScanReader<'a> {
     fn drop(&mut self) {
         if self.tx {
             let _ignored = self.conn.exec("COMMIT TRANSACTION");
@@ -1078,7 +1078,7 @@ impl Drop for MyTableScanReader {
     }
 }
 
-impl elmo::StorageReader for MyTableScanReader {
+impl<'a> elmo::StorageReader for MyTableScanReader<'a> {
     fn get_total_keys_examined(&self) -> u64 {
         // TODO
         0
@@ -1093,7 +1093,7 @@ impl elmo::StorageReader for MyEmptyReader {
 
 }
 
-impl Iterator for MyTableScanReader {
+impl<'a> Iterator for MyTableScanReader<'a> {
     type Item = elmo::Result<BsonValue>;
     fn next(&mut self) -> Option<Self::Item> {
         match self.iter_next() {
@@ -1135,7 +1135,7 @@ fn base_connect(name: &str) -> sqlite3::SqliteResult<sqlite3::DatabaseConnection
 pub fn connect(name: &str) -> elmo::Result<Box<elmo::StorageConnection>> {
     let conn = try!(base_connect(name).map_err(elmo::wrap_err));
     let c = MyConn {
-        conn: std::rc::Rc::new(conn),
+        conn: conn,
         statements: None,
     };
     Ok(box c)
