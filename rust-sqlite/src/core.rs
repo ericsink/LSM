@@ -304,7 +304,7 @@ impl DatabaseConnection {
     ///
     ///  - TODO: callback support?
     ///  - TODO: errmsg support
-    pub fn exec(&mut self, sql: &str) -> SqliteResult<()> {
+    pub fn exec(&self, sql: &str) -> SqliteResult<()> {
         let c_sql = try!(std_ffi::CString::new(sql.as_bytes()));
         let result = unsafe {
             ffi::sqlite3_exec(self.db.handle, c_sql.as_ptr(), None,

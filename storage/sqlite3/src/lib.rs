@@ -44,13 +44,14 @@ struct MyStatements {
 struct MyTableScanReader {
     tx: bool,
     stmt: sqlite3::PreparedStatement,
+    conn: std::rc::Rc<sqlite3::DatabaseConnection>,
     // TODO need counts here
 }
 
 struct MyEmptyReader;
 
 struct MyConn {
-    conn: sqlite3::DatabaseConnection,
+    conn: std::rc::Rc<sqlite3::DatabaseConnection>,
     statements: Option<MyStatements>,
 }
 
@@ -554,6 +555,7 @@ impl MyConn {
         let rdr = MyTableScanReader {
             tx: tx,
             stmt: stmt,
+            conn: self.conn.clone(),
         };
         Ok(rdr)
     }
@@ -636,6 +638,7 @@ impl MyConn {
         let rdr = MyTableScanReader {
             tx: tx,
             stmt: stmt,
+            conn: self.conn.clone(),
         };
         Ok(rdr)
     }
@@ -1070,7 +1073,7 @@ impl MyTableScanReader {
 impl Drop for MyTableScanReader {
     fn drop(&mut self) {
         if self.tx {
-            // TODO let _ignored = self.conn.exec("COMMIT TRANSACTION");
+            let _ignored = self.conn.exec("COMMIT TRANSACTION");
         }
     }
 }
@@ -1120,7 +1123,7 @@ impl Iterator for MyEmptyReader {
 
 fn base_connect(name: &str) -> sqlite3::SqliteResult<sqlite3::DatabaseConnection> {
     let access = sqlite3::access::ByFilename { flags: sqlite3::access::flags::OPEN_READWRITE | sqlite3::access::flags::OPEN_CREATE, filename: name};
-    let mut conn = try!(sqlite3::DatabaseConnection::new(access));
+    let conn = try!(sqlite3::DatabaseConnection::new(access));
     try!(conn.exec("PRAGMA journal_mode=WAL"));
     try!(conn.exec("PRAGMA foreign_keys=ON"));
     try!(conn.exec("CREATE TABLE IF NOT EXISTS \"collections\" (dbName TEXT NOT NULL, collName TEXT NOT NULL, options BLOB NOT NULL, PRIMARY KEY (dbName,collName))"));
@@ -1132,7 +1135,7 @@ fn base_connect(name: &str) -> sqlite3::SqliteResult<sqlite3::DatabaseConnection
 pub fn connect(name: &str) -> elmo::Result<Box<elmo::StorageConnection>> {
     let conn = try!(base_connect(name).map_err(elmo::wrap_err));
     let c = MyConn {
-        conn: conn,
+        conn: std::rc::Rc::new(conn),
         statements: None,
     };
     Ok(box c)
