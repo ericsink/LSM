@@ -16,4 +16,5 @@ Cargo.lock
 /bson/target
 /server/target
 /elmo/target
+/rust-sqlite/target
 /storage/sqlite3/target

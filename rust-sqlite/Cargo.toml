@@ -1,0 +1,32 @@
+[package]
+
+name = "rust-sqlite"
+version = "0.2.0"
+authors = [
+  "Dan Connolly <dckc@madmode.com>",
+  "Peter Reid <peter.d.reid@gmail.com>"
+]
+keywords = ["database", "sql"]
+
+exclude = [
+    ".hg/*",
+    "*.orig",
+    "*~",
+]
+
+description = "Rustic bindings for sqlite3"
+repository = "https://github.com/dckc/rust-sqlite3"
+readme = "README.md"
+
+license = "MIT"
+
+[lib]
+name = "sqlite3"
+
+[dependencies]
+bitflags = "0.1.0"
+enum_primitive = "*"
+libc = "*"
+
+[dependencies.time]
+time = "0.1.5"
