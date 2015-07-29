@@ -43,8 +43,7 @@ struct MyCollectionWriter<'a> {
 
 struct MyNormalRows<'a> {
     stmt: sqlite3::PreparedStatement,
-    // TODO should probably reference reader instead
-    myconn: &'a MyConn,
+    myreader: &'a MyReader<'a>,
     // TODO need counts here
 }
 
@@ -378,17 +377,6 @@ impl MyConn {
         }
     }
 
-    fn get_table_scan_reader(&self, db: &str, coll: &str) -> Result<MyNormalRows> {
-        let tbl = get_table_name_for_collection(db, coll);
-        let stmt = try!(self.conn.prepare(&format!("SELECT bson FROM \"{}\"", tbl)).map_err(elmo::wrap_err));
-        // TODO keep track of total keys examined, etc.
-        let rdr = MyNormalRows {
-            stmt: stmt,
-            myconn: self,
-        };
-        Ok(rdr)
-    }
-
     fn get_stmt_for_index_scan(&self, plan: elmo::QueryPlan) -> Result<sqlite3::PreparedStatement> {
         let tbl_coll = get_table_name_for_collection(&plan.ndx.db, &plan.ndx.coll);
         let tbl_ndx = get_table_name_for_index(&plan.ndx.db, &plan.ndx.coll, &plan.ndx.name);
@@ -456,45 +444,6 @@ impl MyConn {
                 let kmin = BsonValue::encode_multi_for_index(get_dirs(&normspec, vals));
                 let kmax = add_one(&kmin);
                 f_twok(kmin, kmax, ">=", "<")
-            },
-        }
-    }
-
-    fn get_nontext_index_scan_reader(&self, plan: elmo::QueryPlan) -> Result<MyNormalRows> {
-        let stmt = try!(self.get_stmt_for_index_scan(plan));
-
-        // TODO keep track of total keys examined, etc.
-        let rdr = MyNormalRows {
-            stmt: stmt,
-            myconn: self,
-        };
-        Ok(rdr)
-    }
-
-    fn get_rows<'a>(&'a self, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> Result<Box<elmo::StorageRows<Item=elmo::Result<BsonValue>> + 'a>> {
-        match try!(self.get_collection_options(db, coll)) {
-            None => {
-                let rdr = MyEmptyRows;
-                Ok(box rdr)
-            },
-            Some(_) => {
-                let rdr = 
-                    match plan {
-                        Some(plan) => {
-                            match plan.bounds {
-                                elmo::QueryBounds::Text(_,_) => {
-                                    unimplemented!();
-                                },
-                                _ => {
-                                    try!(self.get_nontext_index_scan_reader(plan))
-                                },
-                            }
-                        },
-                        None => {
-                            try!(self.get_table_scan_reader(db, coll))
-                        },
-                    };
-                Ok(box rdr)
             },
         }
     }
@@ -998,9 +947,62 @@ impl<'a> Drop for MyReader<'a> {
     }
 }
 
+impl<'a> MyReader<'a> {
+    fn get_table_scan_reader(&self, db: &str, coll: &str) -> Result<MyNormalRows> {
+        let tbl = get_table_name_for_collection(db, coll);
+        let stmt = try!(self.myconn.conn.prepare(&format!("SELECT bson FROM \"{}\"", tbl)).map_err(elmo::wrap_err));
+        // TODO keep track of total keys examined, etc.
+        let rdr = MyNormalRows {
+            stmt: stmt,
+            myreader: self,
+        };
+        Ok(rdr)
+    }
+
+    fn get_nontext_index_scan_reader(&self, plan: elmo::QueryPlan) -> Result<MyNormalRows> {
+        let stmt = try!(self.myconn.get_stmt_for_index_scan(plan));
+
+        // TODO keep track of total keys examined, etc.
+        let rdr = MyNormalRows {
+            stmt: stmt,
+            myreader: self,
+        };
+        Ok(rdr)
+    }
+
+    fn get_rows<'b>(&'b self, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> Result<Box<elmo::StorageRows<Item=elmo::Result<BsonValue>> + 'b>> {
+        match try!(self.myconn.get_collection_options(db, coll)) {
+            None => {
+                let rdr = MyEmptyRows;
+                Ok(box rdr)
+            },
+            Some(_) => {
+                let rdr = 
+                    match plan {
+                        Some(plan) => {
+                            match plan.bounds {
+                                elmo::QueryBounds::Text(_,_) => {
+                                    unimplemented!();
+                                },
+                                _ => {
+                                    try!(self.get_nontext_index_scan_reader(plan))
+                                },
+                            }
+                        },
+                        None => {
+                            try!(self.get_table_scan_reader(db, coll))
+                        },
+                    };
+                Ok(box rdr)
+            },
+        }
+    }
+
+}
+
 impl<'a> elmo::StorageReader for MyReader<'a> {
     fn query<'b>(&'b self, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> Result<Box<elmo::StorageRows<Item=elmo::Result<BsonValue>> + 'b>> {
-        let rdr = try!(self.myconn.get_rows(db, coll, plan));
+        let rdr = try!(self.get_rows(db, coll, plan));
         Ok(rdr)
     }
 
