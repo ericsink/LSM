@@ -25,7 +25,7 @@ fn prepare_write() {
         {
             let tx = try!(db.begin_write());
             {
-                let _p = try!(tx.prepare_collection_writer("foo", "bar"));
+                let _p = try!(tx.get_collection_writer("foo", "bar"));
             }
         }
         Ok(())
@@ -42,7 +42,7 @@ fn insert() {
         {
             let tx = try!(db.begin_write());
             {
-                let mut p = try!(tx.prepare_collection_writer("foo", "bar"));
+                let mut p = try!(tx.get_collection_writer("foo", "bar"));
 
                 let mut pairs = Vec::new();
                 pairs.push((String::from("_id"), BsonValue::BString(misc::tid())));

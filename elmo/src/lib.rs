@@ -171,7 +171,7 @@ pub struct QueryPlan {
     pub bounds: QueryBounds,
 }
 
-pub trait StorageRows : Iterator<Item=Result<BsonValue>> {
+pub trait StorageCollectionReader : Iterator<Item=Result<BsonValue>> {
     fn get_total_keys_examined(&self) -> u64;
     // TODO more stuff here
 }
@@ -179,7 +179,7 @@ pub trait StorageRows : Iterator<Item=Result<BsonValue>> {
 pub trait StorageReader {
     fn list_collections(&self) -> Result<Vec<(String, String, BsonValue)>>;
     fn list_indexes(&self) -> Result<Vec<IndexInfo>>;
-    fn query<'a>(&'a self, db: &str, coll: &str, plan: Option<QueryPlan>) -> Result<Box<StorageRows<Item=Result<BsonValue>> + 'a>>;
+    fn get_collection_reader<'a>(&'a self, db: &str, coll: &str, plan: Option<QueryPlan>) -> Result<Box<StorageCollectionReader<Item=Result<BsonValue>> + 'a>>;
 }
 
 pub trait StorageCollectionWriter {
@@ -192,7 +192,7 @@ pub trait StorageCollectionWriter {
 // TODO should implement Drop = rollback
 // TODO do we need to declare that StorageWriter must implement Drop ?
 
-pub trait StorageWriter {
+pub trait StorageWriter : StorageReader {
     fn create_collection(&self, db: &str, coll: &str, options: BsonValue) -> Result<bool>;
     fn rename_collection(&self, old_name: &str, new_name: &str, drop_target: bool) -> Result<bool>;
     fn clear_collection(&self, db: &str, coll: &str) -> Result<bool>;
@@ -203,11 +203,11 @@ pub trait StorageWriter {
 
     fn drop_database(&self, db: &str) -> Result<bool>;
 
-    fn prepare_collection_writer<'a>(&'a self, db: &str, coll: &str) -> Result<Box<StorageCollectionWriter + 'a>>;
+    fn get_collection_writer<'a>(&'a self, db: &str, coll: &str) -> Result<Box<StorageCollectionWriter + 'a>>;
 
     fn commit(self: Box<Self>) -> Result<()>;
     fn rollback(self: Box<Self>) -> Result<()>;
-    // TODO getSelect, a reader that lives in the write tx
+
 }
 
 pub trait StorageConnection {
