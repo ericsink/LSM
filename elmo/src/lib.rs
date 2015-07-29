@@ -171,9 +171,15 @@ pub struct QueryPlan {
     pub bounds: QueryBounds,
 }
 
-pub trait StorageReader : Iterator<Item=Result<BsonValue>> {
+pub trait StorageRows : Iterator<Item=Result<BsonValue>> {
     fn get_total_keys_examined(&self) -> u64;
     // TODO more stuff here
+}
+
+pub trait StorageReader {
+    fn list_collections(&self) -> Result<Vec<(String, String, BsonValue)>>;
+    fn list_indexes(&self) -> Result<Vec<IndexInfo>>;
+    fn query<'a>(&'a self, db: &str, coll: &str, plan: Option<QueryPlan>) -> Result<Box<StorageRows<Item=Result<BsonValue>> + 'a>>;
 }
 
 pub trait StorageCollectionWriter {
@@ -205,13 +211,8 @@ pub trait StorageWriter {
 }
 
 pub trait StorageConnection {
-    // TODO move the following into the reader?
-    fn list_collections(&self) -> Result<Vec<(String, String, BsonValue)>>;
-    fn list_indexes(&self) -> Result<Vec<IndexInfo>>;
-
     fn begin_write<'a>(&'a self) -> Result<Box<StorageWriter + 'a>>;
-
-    fn begin_read<'a>(&'a self, db: &str, coll: &str, plan: Option<QueryPlan>) -> Result<Box<StorageReader<Item=Result<BsonValue>> + 'a>>;
+    fn begin_read<'a>(&'a self) -> Result<Box<StorageReader + 'a>>;
 }
 
 

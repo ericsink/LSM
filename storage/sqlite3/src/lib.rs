@@ -41,15 +41,18 @@ struct MyCollectionWriter<'a> {
     myconn: &'a MyConn,
 }
 
-// TODO change name of this
-struct MyTableScanReader<'a> {
+struct MyNormalRows<'a> {
     tx: bool,
     stmt: sqlite3::PreparedStatement,
     myconn: &'a MyConn,
     // TODO need counts here
 }
 
-struct MyEmptyReader;
+struct MyEmptyRows;
+
+struct MyReader<'a> {
+    myconn: &'a MyConn,
+}
 
 struct MyWriter<'a> {
     myconn: &'a MyConn,
@@ -376,11 +379,11 @@ impl MyConn {
         }
     }
 
-    fn get_table_scan_reader(&self, tx: bool, db: &str, coll: &str) -> Result<MyTableScanReader> {
+    fn get_table_scan_reader(&self, tx: bool, db: &str, coll: &str) -> Result<MyNormalRows> {
         let tbl = get_table_name_for_collection(db, coll);
         let stmt = try!(self.conn.prepare(&format!("SELECT bson FROM \"{}\"", tbl)).map_err(elmo::wrap_err));
         // TODO keep track of total keys examined, etc.
-        let rdr = MyTableScanReader {
+        let rdr = MyNormalRows {
             tx: tx,
             stmt: stmt,
             myconn: self,
@@ -459,11 +462,11 @@ impl MyConn {
         }
     }
 
-    fn get_nontext_index_scan_reader(&self, tx: bool, plan: elmo::QueryPlan) -> Result<MyTableScanReader> {
+    fn get_nontext_index_scan_reader(&self, tx: bool, plan: elmo::QueryPlan) -> Result<MyNormalRows> {
         let stmt = try!(self.get_stmt_for_index_scan(plan));
 
         // TODO keep track of total keys examined, etc.
-        let rdr = MyTableScanReader {
+        let rdr = MyNormalRows {
             tx: tx,
             stmt: stmt,
             myconn: self,
@@ -471,10 +474,10 @@ impl MyConn {
         Ok(rdr)
     }
 
-    fn get_reader<'a>(&'a self, tx: bool, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> Result<Box<elmo::StorageReader<Item=elmo::Result<BsonValue>> + 'a>> {
+    fn get_rows<'a>(&'a self, tx: bool, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> Result<Box<elmo::StorageRows<Item=elmo::Result<BsonValue>> + 'a>> {
         match try!(self.get_collection_options(db, coll)) {
             None => {
-                let rdr = MyEmptyReader;
+                let rdr = MyEmptyRows;
                 Ok(box rdr)
             },
             Some(_) => {
@@ -985,8 +988,36 @@ impl<'a> elmo::StorageWriter for MyWriter<'a> {
 // TODO do we need to declare that StorageWriter must implement Drop ?
 impl<'a> Drop for MyWriter<'a> {
     fn drop(&mut self) {
+        // TODO should rollback be the default here?  or commit?
         let _ignored = self.myconn.conn.exec("ROLLBACK TRANSACTION");
     }
+}
+
+// TODO do we need to declare that StorageReader must implement Drop ?
+impl<'a> Drop for MyReader<'a> {
+    fn drop(&mut self) {
+        // this transaction was [supposed to be] read-only, so it doesn't
+        // matter in principle whether we commit or rollback.  in SQL Server,
+        // if temp tables were created, commit is MUCH faster than rollback.
+        // but this is sqlite.  anyway...
+        let _ignored = self.myconn.conn.exec("COMMIT TRANSACTION");
+    }
+}
+
+impl<'a> elmo::StorageReader for MyReader<'a> {
+    fn query<'b>(&'b self, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> Result<Box<elmo::StorageRows<Item=elmo::Result<BsonValue>> + 'b>> {
+        let rdr = try!(self.myconn.get_rows(true, db, coll, plan));
+        Ok(rdr)
+    }
+
+    fn list_collections(&self) -> Result<Vec<(String, String, BsonValue)>> {
+        self.myconn.base_list_collections()
+    }
+
+    fn list_indexes(&self) -> Result<Vec<elmo::IndexInfo>> {
+        self.myconn.base_list_indexes()
+    }
+
 }
 
 impl elmo::StorageConnection for MyConn {
@@ -998,21 +1029,16 @@ impl elmo::StorageConnection for MyConn {
         Ok(box w)
     }
 
-    fn list_collections(&self) -> Result<Vec<(String, String, BsonValue)>> {
-        self.base_list_collections()
-    }
-
-    fn list_indexes(&self) -> Result<Vec<elmo::IndexInfo>> {
-        self.base_list_indexes()
-    }
-
-    fn begin_read<'a>(&'a self, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> Result<Box<elmo::StorageReader<Item=elmo::Result<BsonValue>> + 'a>> {
-        let rdr = try!(self.get_reader(true, db, coll, plan));
-        Ok(rdr)
+    fn begin_read<'a>(&'a self) -> Result<Box<elmo::StorageReader + 'a>> {
+        try!(self.conn.exec("BEGIN TRANSACTION").map_err(elmo::wrap_err));
+        let r = MyReader {
+            myconn: self,
+        };
+        Ok(box r)
     }
 }
 
-impl<'a> MyTableScanReader<'a> {
+impl<'a> MyNormalRows<'a> {
     fn iter_next(&mut self) -> Result<Option<BsonValue>> {
         // TODO can't find a way to store the ResultSet from execute()
         // in the same struct as its statement, because the ResultSet()
@@ -1031,7 +1057,7 @@ impl<'a> MyTableScanReader<'a> {
     }
 }
 
-impl<'a> Drop for MyTableScanReader<'a> {
+impl<'a> Drop for MyNormalRows<'a> {
     fn drop(&mut self) {
         if self.tx {
             let _ignored = self.myconn.conn.exec("COMMIT TRANSACTION");
@@ -1039,7 +1065,7 @@ impl<'a> Drop for MyTableScanReader<'a> {
     }
 }
 
-impl<'a> elmo::StorageReader for MyTableScanReader<'a> {
+impl<'a> elmo::StorageRows for MyNormalRows<'a> {
     fn get_total_keys_examined(&self) -> u64 {
         // TODO
         0
@@ -1047,14 +1073,14 @@ impl<'a> elmo::StorageReader for MyTableScanReader<'a> {
 
 }
 
-impl elmo::StorageReader for MyEmptyReader {
+impl elmo::StorageRows for MyEmptyRows {
     fn get_total_keys_examined(&self) -> u64 {
         0
     }
 
 }
 
-impl<'a> Iterator for MyTableScanReader<'a> {
+impl<'a> Iterator for MyNormalRows<'a> {
     type Item = Result<BsonValue>;
     fn next(&mut self) -> Option<Self::Item> {
         match self.iter_next() {
@@ -1075,7 +1101,7 @@ impl<'a> Iterator for MyTableScanReader<'a> {
     }
 }
 
-impl Iterator for MyEmptyReader {
+impl Iterator for MyEmptyRows {
     type Item = Result<BsonValue>;
     fn next(&mut self) -> Option<Self::Item> {
         None
