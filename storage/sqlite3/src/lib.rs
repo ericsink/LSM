@@ -473,7 +473,7 @@ impl MyConn {
         Ok(rdr)
     }
 
-    fn get_rows<'b>(&'b self, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> Result<Box<elmo::StorageCollectionReader<Item=elmo::Result<BsonValue>> + 'b>> {
+    fn get_collection_reader<'b>(&'b self, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> Result<Box<elmo::StorageCollectionReader<Item=elmo::Result<BsonValue>> + 'b>> {
         match try!(self.get_collection_options(db, coll)) {
             None => {
                 let rdr = MyEmptyCollectionReader;
@@ -901,7 +901,6 @@ impl<'a> MyWriter<'a> {
 
 impl<'a> elmo::StorageWriter for MyWriter<'a> {
     fn get_collection_writer<'b>(&'b self, db: &str, coll: &str) -> Result<Box<elmo::StorageCollectionWriter + 'b>> {
-        // TODO make sure a tx is open?
         let _created = try!(self.base_create_collection(db, coll, BsonValue::BArray(Vec::new())));
         let tbl = get_table_name_for_collection(db, coll);
         let stmt_insert = try!(self.myconn.conn.prepare(&format!("INSERT INTO \"{}\" (bson) VALUES (?)", tbl)).map_err(elmo::wrap_err));
@@ -985,6 +984,8 @@ impl<'a> elmo::StorageWriter for MyWriter<'a> {
 impl<'a> Drop for MyWriter<'a> {
     fn drop(&mut self) {
         // TODO should rollback be the default here?  or commit?
+        // TODO can't do this unless we know that commit() or rollback()
+        // was not called.  Need a flag.
         let _ignored = self.myconn.conn.exec("ROLLBACK TRANSACTION");
     }
 }
@@ -1005,7 +1006,7 @@ impl<'a> MyReader<'a> {
 
 impl<'a> elmo::StorageReader for MyReader<'a> {
     fn get_collection_reader<'b>(&'b self, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> Result<Box<elmo::StorageCollectionReader<Item=elmo::Result<BsonValue>> + 'b>> {
-        let rdr = try!(self.myconn.get_rows(db, coll, plan));
+        let rdr = try!(self.myconn.get_collection_reader(db, coll, plan));
         Ok(rdr)
     }
 
@@ -1021,7 +1022,7 @@ impl<'a> elmo::StorageReader for MyReader<'a> {
 
 impl<'a> elmo::StorageReader for MyWriter<'a> {
     fn get_collection_reader<'b>(&'b self, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> Result<Box<elmo::StorageCollectionReader<Item=elmo::Result<BsonValue>> + 'b>> {
-        let rdr = try!(self.myconn.get_rows(db, coll, plan));
+        let rdr = try!(self.myconn.get_collection_reader(db, coll, plan));
         Ok(rdr)
     }
 

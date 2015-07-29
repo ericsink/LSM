@@ -186,11 +186,11 @@ pub trait StorageCollectionWriter {
     fn insert(&mut self, v: BsonValue) -> Result<()>;
     fn update(&mut self, v: BsonValue) -> Result<()>;
     fn delete(&mut self, v: BsonValue) -> Result<bool>;
-    // TODO getIndexes
 }
 
 // TODO should implement Drop = rollback
 // TODO do we need to declare that StorageWriter must implement Drop ?
+// TODO or is it enough that the actual implementation of this trait impl Drop?
 
 pub trait StorageWriter : StorageReader {
     fn create_collection(&self, db: &str, coll: &str, options: BsonValue) -> Result<bool>;
