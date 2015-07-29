@@ -38,8 +38,7 @@ struct MyCollectionWriter<'a> {
     update: sqlite3::PreparedStatement,
     stmt_find_rowid: Option<sqlite3::PreparedStatement>,
     indexes: Vec<IndexPrep>,
-    // TODO should probably reference writer instead
-    myconn: &'a MyConn,
+    mywriter: &'a MyWriter<'a>,
 }
 
 struct MyNormalRows<'a> {
@@ -629,7 +628,7 @@ impl<'a> elmo::StorageCollectionWriter for MyCollectionWriter<'a> {
                         self.delete.clear_bindings();
                         try!(self.delete.bind_int64(1, rowid).map_err(elmo::wrap_err));
                         try!(step_done(&mut self.delete));
-                        let count = self.myconn.conn.changes();
+                        let count = self.mywriter.myconn.conn.changes();
                         if count == 1 {
                             // TODO might not need index update here.  foreign key cascade?
                             try!(Self::update_indexes_delete(&mut self.indexes, rowid));
@@ -649,7 +648,7 @@ impl<'a> elmo::StorageCollectionWriter for MyCollectionWriter<'a> {
                 try!(self.insert.bind_blob(1,&ba).map_err(elmo::wrap_err));
                 try!(step_done(&mut self.insert));
                 try!(verify_changes(&self.insert, 1));
-                let rowid = self.myconn.conn.last_insert_rowid();
+                let rowid = self.mywriter.myconn.conn.last_insert_rowid();
                 try!(Self::update_indexes_delete(&mut self.indexes, rowid));
                 try!(Self::update_indexes_insert(&mut self.indexes, rowid, &v));
                 Ok(())
@@ -933,7 +932,7 @@ impl<'a> elmo::StorageWriter for MyWriter<'a> {
             update: stmt_update,
             stmt_find_rowid: find_rowid,
             indexes: index_stmts,
-            myconn: self.myconn,
+            mywriter: self,
         };
         Ok(box c)
     }
