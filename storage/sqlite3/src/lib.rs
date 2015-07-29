@@ -339,8 +339,8 @@ fn get_normalized_spec(info: &elmo::IndexInfo) -> Result<(Vec<(String,IndexType)
 
 fn get_index_info_from_row(r: &sqlite3::ResultRow) -> Result<elmo::IndexInfo> {
     let name = r.column_text(0).expect("NOT NULL");
-    let spec = try!(BsonValue::from_bson(&r.column_blob(1).expect("NOT NULL")));
-    let options = try!(BsonValue::from_bson(&r.column_blob(2).expect("NOT NULL")));
+    let spec = try!(BsonValue::from_bson(&r.column_slice(1).expect("NOT NULL")));
+    let options = try!(BsonValue::from_bson(&r.column_slice(2).expect("NOT NULL")));
     let db = r.column_text(3).expect("NOT NULL");
     let coll = r.column_text(4).expect("NOT NULL");
     let info = elmo::IndexInfo {
@@ -372,8 +372,7 @@ impl MyConn {
         match try!(r.step().map_err(elmo::wrap_err)) {
             None => Ok(None),
             Some(r) => {
-                let b = r.column_blob(0).expect("NOT NULL");
-                let v = try!(BsonValue::from_bson(&b));
+                let v = try!(BsonValue::from_bson(&r.column_slice(0).expect("NOT NULL")));
                 Ok(Some(v))
             },
         }
@@ -547,7 +546,7 @@ impl MyConn {
                 Some(row) => {
                     let db = row.column_text(0).expect("NOT NULL");
                     let coll = row.column_text(1).expect("NOT NULL");
-                    let options = try!(BsonValue::from_bson(&row.column_blob(2).expect("NOT NULL")));
+                    let options = try!(BsonValue::from_bson(&row.column_slice(2).expect("NOT NULL")));
                     let t = (db, coll, options);
                     v.push(t);
                 },
@@ -718,7 +717,7 @@ impl<'a> MyWriter<'a> {
                                 None => break,
                                 Some(row) => {
                                     let doc_rowid = row.column_int64(0);
-                                    let new_doc = try!(BsonValue::from_bson(&row.column_blob(1).expect("NOT NULL")));
+                                    let new_doc = try!(BsonValue::from_bson(&row.column_slice(1).expect("NOT NULL")));
                                     let mut entries = Vec::new();
                                     try!(get_index_entries(&new_doc, &normspec, &weights, &info.options, &mut entries));
                                     let entries = entries.into_iter().collect::<std::collections::HashSet<_>>();
