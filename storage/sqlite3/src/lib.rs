@@ -42,6 +42,50 @@ struct MyCollectionWriter<'a> {
     mywriter: &'a MyWriter<'a>,
 }
 
+struct StatementBsonValueIterator {
+    stmt: sqlite3::PreparedStatement,
+}
+
+impl StatementBsonValueIterator {
+    fn iter_next(&mut self) -> Result<Option<BsonValue>> {
+        // TODO can't find a way to store the ResultSet from execute()
+        // in the same struct as its statement, because the ResultSet()
+        // contains a mut reference to the statement.  So we look at
+        // the implementation of execute() and realize that it doesn't
+        // actually do anything of substance, so we call it every
+        // time.  Ugly.
+        match try!(self.stmt.execute().step().map_err(elmo::wrap_err)) {
+            None => Ok(None),
+            Some(r) => {
+                let b = r.column_blob(0).expect("NOT NULL");
+                let v = try!(BsonValue::from_bson(&b));
+                Ok(Some(v))
+            },
+        }
+    }
+}
+
+impl Iterator for StatementBsonValueIterator {
+    type Item = Result<BsonValue>;
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.iter_next() {
+            Err(e) => {
+                return Some(Err(e));
+            },
+            Ok(v) => {
+                match v {
+                    None => {
+                        return None;
+                    },
+                    Some(v) => {
+                        return Some(Ok(v));
+                    }
+                }
+            },
+        }
+    }
+}
+
 struct MyNormalCollectionReader {
     stmt: sqlite3::PreparedStatement,
     // TODO need counts here
@@ -637,6 +681,21 @@ impl MyConn {
             }
         }
 
+        let s = doc_weights.into_iter().flat_map(
+            |(did, v)| {
+                // TODO it would be nice not to re-prepare this every time through
+                let sql = format!("SELECT bson FROM \"{}\" WHERE did=?", tbl_coll);
+                let mut stmt = self.conn.prepare(&sql).unwrap(); // TODO
+                stmt.bind_int64(1, did).unwrap(); // TODO
+                // TODO wrap in StatementBsonValueIterator
+                // TODO need to call check_phrase(doc) on each value produced
+                // TODO if keep, calc a score for each one too
+                let rdr = MyNormalCollectionReader {
+                    stmt: stmt,
+                };
+                rdr
+            }
+        );
         unimplemented!();
 
 /*
@@ -670,7 +729,6 @@ impl MyConn {
                 totalDocsExamined=fun () -> !count
                 funk=killFunc
             }
-
 
 */
 
