@@ -16,6 +16,7 @@
 
 #![feature(box_syntax)]
 #![feature(associated_consts)]
+#![feature(vec_push_all)]
 
 extern crate bson;
 use bson::BsonValue;
@@ -42,6 +43,17 @@ struct MyCollectionWriter<'a> {
 }
 
 struct MyNormalCollectionReader {
+    stmt: sqlite3::PreparedStatement,
+    // TODO need counts here
+
+    // this struct does not have a reference to a parent.
+    // such as a MyReader.
+    // this is because its parent might be a MyReader, or it
+    // might be a MyWriter.
+    // and also because such a link doesn't seem necessary.
+}
+
+struct MyTextCollectionReader {
     stmt: sqlite3::PreparedStatement,
     // TODO need counts here
 
@@ -95,6 +107,16 @@ fn verify_changes(stmt: &sqlite3::PreparedStatement, shouldbe: u64) -> Result<()
         // TODO or should this be an assert?
         Err(elmo::Error::Misc("changes() is wrong"))
     }
+}
+
+fn get_dirs(normspec: &Vec<(String, IndexType)>, vals: Vec<BsonValue>) -> Vec<(BsonValue, bool)> {
+    // TODO if normspec.len() < vals.len() then panic?
+    let mut a = Vec::new();
+    for (i,v) in vals.into_iter().enumerate() {
+        let neg = normspec[i].1 == IndexType::Backward;
+        a.push((v, neg));
+    }
+    a
 }
 
 fn get_table_name_for_collection(db: &str, coll: &str) -> String { 
@@ -397,16 +419,6 @@ impl MyConn {
         //
         // TODO it would be nice if the DISTINCT here was happening on the rowids, not on the blobs
 
-        fn get_dirs(normspec: &Vec<(String, IndexType)>, vals: Vec<BsonValue>) -> Vec<(BsonValue, bool)> {
-            // TODO if normspec.len() < vals.len() then panic?
-            let mut a = Vec::new();
-            for (i,v) in vals.into_iter().enumerate() {
-                let neg = normspec[i].1 == IndexType::Backward;
-                a.push((v, neg));
-            }
-            a
-        }
-
         fn add_one(ba: &Vec<u8>) -> Vec<u8> {
             let a = ba.clone();
             // TODO add one
@@ -473,6 +485,197 @@ impl MyConn {
         Ok(rdr)
     }
 
+    fn get_text_index_scan_reader(&self, ndx: &elmo::IndexInfo,  eq: elmo::QueryKey, terms: Vec<elmo::TextQueryTerm>) -> Result<MyTextCollectionReader> {
+        let tbl_coll = get_table_name_for_collection(&ndx.db, &ndx.coll);
+        let tbl_ndx = get_table_name_for_index(&ndx.db, &ndx.coll, &ndx.name);
+        let (normspec, weights) = try!(get_normalized_spec(&ndx));
+        let weights = 
+            match weights {
+                None => return Err(elmo::Error::Misc("non text index")),
+                Some(w) => w,
+            };
+
+        fn lookup(stmt: &mut sqlite3::PreparedStatement, vals: &Vec<(BsonValue, bool)>, word: &str) -> Result<Vec<(i64,i32)>> {
+            // TODO if we just search for the word without the weight, we could
+            // use the add_one trick from EQ.  Probably need key encoding of an array
+            // to omit the array length.  See comment there.
+            let vmin = BsonValue::BArray(vec![BsonValue::BString(String::from(word)), BsonValue::BInt32(0)]);
+            let vmax = BsonValue::BArray(vec![BsonValue::BString(String::from(word)), BsonValue::BInt32(100000)]);
+
+            let mut minvals = vals.clone();
+            minvals.push((vmin,false));
+
+            let mut maxvals = vals.clone();
+            maxvals.push((vmax,false));
+
+            let kmin = BsonValue::encode_multi_for_index(minvals);
+            let kmax = BsonValue::encode_multi_for_index(maxvals);
+            stmt.clear_bindings();
+            try!(stmt.bind_blob(1, &kmin).map_err(elmo::wrap_err));
+            try!(stmt.bind_blob(2, &kmax).map_err(elmo::wrap_err));
+            let mut r = stmt.execute();
+            let mut entries = Vec::new();
+            loop {
+                match try!(r.step().map_err(elmo::wrap_err)) {
+                    None => break,
+                    Some(row) => {
+                        let k = row.column_slice(0).expect("NOT NULL");
+                        let w = try!(BsonValue::get_weight_from_index_entry(k));
+                        let did = row.column_int64(1);
+                        entries.push((did,w));
+                    },
+                }
+            }
+            Ok(entries)
+        };
+
+        let vals = get_dirs(&normspec, eq);
+
+        let sql = format!("SELECT k, doc_rowid FROM \"{}\" i WHERE k > ? AND k < ?", tbl_ndx);
+        let mut stmt = try!(self.conn.prepare(&sql).map_err(elmo::wrap_err));
+
+        let mut found = Vec::new();
+        for term in &terms {
+            let entries = 
+                match term {
+                    &elmo::TextQueryTerm::Word(neg, ref s) => {
+                        let entries = try!(lookup(&mut stmt, &vals, &s));
+                        entries
+                    },
+                    &elmo::TextQueryTerm::Phrase(neg, ref s) => {
+                        // TODO tokenize properly
+                        let words = s.split(" ");
+                        let mut entries = Vec::new();
+                        for w in words {
+                            entries.push_all(&try!(lookup(&mut stmt, &vals, w)));
+                        }
+                        entries
+                    },
+                };
+            let v = (term, entries);
+            found.push(v);
+        };
+
+        fn contains_phrase(weights: &std::collections::HashMap<String, i32>, doc: &BsonValue, p: &str) -> bool {
+            for k in weights.keys() {
+                let found = 
+                    match doc.find_path(k) {
+                        BsonValue::BUndefined => false,
+                        v => match v {
+                            BsonValue::BString(s) => s.find(p).is_some(),
+                            _ => false,
+                        },
+                    };
+                if found {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        fn check_phrase(terms: &Vec<elmo::TextQueryTerm>, weights: &std::collections::HashMap<String, i32>, doc: &BsonValue) -> bool {
+            for term in terms {
+                let b = 
+                    match term {
+                        &elmo::TextQueryTerm::Word(neg, ref s) => true,
+                        &elmo::TextQueryTerm::Phrase(neg, ref s) => {
+                            let has = contains_phrase(weights, doc, s);
+                            if neg {
+                                !has
+                            } else {
+                                has
+                            }
+                        },
+                    };
+                if !b {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        let mut pos_entries = Vec::new();
+        let mut neg_entries = Vec::new();
+        for e in found {
+            let (term, entries) = e;
+            match term {
+                &elmo::TextQueryTerm::Word(neg, ref s) => {
+                    if neg {
+                        neg_entries.push_all(&entries);
+                    } else {
+                        pos_entries.push_all(&entries);
+                    }
+                },
+                &elmo::TextQueryTerm::Phrase(neg, ref s) => {
+                    if neg {
+                        // TODO probably should not negate a doc just because it contains one of the words in a negated phrase
+                        // neg_entries.push_all(&entries);
+                    } else {
+                        pos_entries.push_all(&entries);
+                    }
+                },
+            };
+        }
+
+        let neg_docids = neg_entries.into_iter().map(|t| t.0).collect::<std::collections::HashSet<_>>();
+        let mut remaining = Vec::new();
+        for t in pos_entries {
+            let (did, w) = t;
+            if !neg_docids.contains(&did) {
+                remaining.push((did, w));
+            }
+        }
+
+        let mut doc_weights: std::collections::HashMap<i64, Vec<i32>> = std::collections::HashMap::new();
+        for t in remaining {
+            let (did, w) = t;
+            if doc_weights.contains_key(&did) {
+                let v = doc_weights.get_mut(&did).expect("just checked this");
+                v.push(w);
+            } else {
+                doc_weights.insert(did, vec![w]);
+            }
+        }
+
+        unimplemented!();
+
+/*
+
+            let sql = sprintf "SELECT bson FROM \"%s\" WHERE did=?" tblColl
+            let stmt = conn.prepare(sql)
+            let count = ref 0
+            let s = 
+                seq {
+                    for (did,w) in Map.toSeq doc_weights do
+                        stmt.clear_bindings()
+                        stmt.bind_int64(1, did)
+                        stmt.step_row()
+                        let doc = stmt.column_blob(0) |> BinReader.ReadDocument
+                        count := !count + 1
+                        printfn "got_SQLITE_ROW"
+                        stmt.reset()
+                        let keep = check_phrase doc
+                        if keep then
+                            //printfn "weights for this doc: %A" w
+                            let score = List.sum w |> float // TODO this is not the way mongo does this calculation
+                            yield {doc=doc;score=Some score;pos=None}
+                }
+            let killFunc() =
+                if tx then conn.exec("COMMIT TRANSACTION")
+                stmt.sqlite3_finalize()
+
+            {
+                docs=s
+                totalKeysExamined=fun () -> 0
+                totalDocsExamined=fun () -> !count
+                funk=killFunc
+            }
+
+
+*/
+
+    }
+
     fn get_collection_reader<'b>(&'b self, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> Result<Box<elmo::StorageCollectionReader<Item=elmo::Result<BsonValue>> + 'b>> {
         match try!(self.get_collection_options(db, coll)) {
             None => {
@@ -480,23 +683,24 @@ impl MyConn {
                 Ok(box rdr)
             },
             Some(_) => {
-                let rdr = 
-                    match plan {
-                        Some(plan) => {
-                            match plan.bounds {
-                                elmo::QueryBounds::Text(_,_) => {
-                                    unimplemented!();
-                                },
-                                _ => {
-                                    try!(self.get_nontext_index_scan_reader(plan))
-                                },
-                            }
-                        },
-                        None => {
-                            try!(self.get_table_scan_reader(db, coll))
-                        },
-                    };
-                Ok(box rdr)
+                match plan {
+                    Some(plan) => {
+                        match plan.bounds {
+                            elmo::QueryBounds::Text(eq,terms) => {
+                                let rdr = try!(self.get_text_index_scan_reader(&plan.ndx, eq, terms));
+                                return Ok(box rdr);
+                            },
+                            _ => {
+                                let rdr = try!(self.get_nontext_index_scan_reader(plan));
+                                return Ok(box rdr);
+                            },
+                        }
+                    },
+                    None => {
+                        let rdr = try!(self.get_table_scan_reader(db, coll));
+                        return Ok(box rdr);
+                    },
+                };
             },
         }
     }
@@ -1073,6 +1277,12 @@ impl MyNormalCollectionReader {
     }
 }
 
+impl MyTextCollectionReader {
+    fn iter_next(&mut self) -> Result<Option<BsonValue>> {
+        unimplemented!();
+    }
+}
+
 impl elmo::StorageCollectionReader for MyNormalCollectionReader {
     fn get_total_keys_examined(&self) -> u64 {
         // TODO
@@ -1083,6 +1293,14 @@ impl elmo::StorageCollectionReader for MyNormalCollectionReader {
 
 impl elmo::StorageCollectionReader for MyEmptyCollectionReader {
     fn get_total_keys_examined(&self) -> u64 {
+        0
+    }
+
+}
+
+impl elmo::StorageCollectionReader for MyTextCollectionReader {
+    fn get_total_keys_examined(&self) -> u64 {
+        // TODO
         0
     }
 
@@ -1113,6 +1331,27 @@ impl Iterator for MyEmptyCollectionReader {
     type Item = Result<BsonValue>;
     fn next(&mut self) -> Option<Self::Item> {
         None
+    }
+}
+
+impl Iterator for MyTextCollectionReader {
+    type Item = Result<BsonValue>;
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.iter_next() {
+            Err(e) => {
+                return Some(Err(e));
+            },
+            Ok(v) => {
+                match v {
+                    None => {
+                        return None;
+                    },
+                    Some(v) => {
+                        return Some(Ok(v));
+                    }
+                }
+            },
+        }
     }
 }
 

@@ -24,6 +24,7 @@
 #![feature(clone_from_slice)]
 #![feature(drain)]
 #![feature(iter_arith)]
+#![feature(slice_position_elem)]
 
 // TODO turn the following warnings back on later
 #![allow(non_snake_case)]
@@ -35,6 +36,7 @@ use misc::endian::*;
 use misc::bufndx;
 
 #[derive(Debug)]
+// TODO consider calling this just Error
 pub enum BsonError {
     // TODO remove Misc
     Misc(&'static str),
@@ -645,6 +647,58 @@ impl BsonValue {
             &BsonValue::BMinKey => 255, // NOTE
             &BsonValue::BMaxKey => 127,
         }
+    }
+
+    pub fn get_weight_from_index_entry(k: &[u8]) -> Result<i32> {
+        let n = 1 + k.rposition_elem(&0u8).expect("TODO");
+        let ord_shouldbe = BsonValue::BInt32(0).get_type_order() as u8;
+        if k[n] != ord_shouldbe {
+            return Err(BsonError::Misc("bad type order byte"));
+        }
+        let e = (k[n+1] as i32) - 23;
+        // exponent is number of times the mantissa must be multiplied times 100
+        // if we assume that all mantissa digits are to the right of the decimal point.
+        if e <= 0 {
+            return Err(BsonError::Misc("bad e"));
+        }
+        let e = e as usize;
+        let n = n + 2;
+        let a = &k[n .. k.len()-n+1];
+
+        // remaining bytes are mantissa, base 100
+        // last byte of mantissa is 2*x
+        // previous bytes are 2*x+1
+
+        //printfn "mantissa: %A" a
+        //printfn "e: %d" e
+
+        // we have an array of centimal digits here, all of
+        // which appear to the right of the decimal point.
+        //
+        // we know from the context that this
+        // SHOULD be an integer.
+
+        let a =
+            if a.len() > e {
+                &a[0 .. e+1]
+            } else {
+                a
+            };
+
+        let mut v = a.iter().fold(0, |v,d| {
+            let b = (d >> 1) as i32;
+            v * 100 + b
+        });
+
+        let need = e - a.len();
+        if need > 0 {
+            for i in 0 .. need {
+                v = v * 100;
+            }
+        }
+
+        //printfn "weight: %d" v
+        Ok(v)
     }
 
     fn get_type_order(&self) -> i32 {
