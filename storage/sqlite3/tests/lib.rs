@@ -49,7 +49,7 @@ fn insert() {
                 pairs.push((String::from("ok"), BsonValue::BInt32(0)));
                 let doc = BsonValue::BDocument(pairs);
 
-                try!(p.insert(doc));
+                try!(p.insert(&doc));
             }
             try!(tx.commit());
         }

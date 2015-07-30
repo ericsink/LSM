@@ -188,9 +188,9 @@ pub trait StorageReader {
 }
 
 pub trait StorageCollectionWriter {
-    fn insert(&mut self, v: BsonValue) -> Result<()>;
-    fn update(&mut self, v: BsonValue) -> Result<()>;
-    fn delete(&mut self, v: BsonValue) -> Result<bool>;
+    fn insert(&mut self, v: &BsonValue) -> Result<()>;
+    fn update(&mut self, v: &BsonValue) -> Result<()>;
+    fn delete(&mut self, v: &BsonValue) -> Result<bool>;
 }
 
 // TODO should implement Drop = rollback
@@ -220,4 +220,32 @@ pub trait StorageConnection {
     fn begin_read<'a>(&'a self) -> Result<Box<StorageReader + 'a>>;
 }
 
+struct ElmoConnection {
+    conn: Box<StorageConnection>,
+}
+
+impl ElmoConnection {
+    fn new(conn: Box<StorageConnection>) -> ElmoConnection {
+        ElmoConnection {
+            conn: conn,
+        }
+    }
+
+    fn insert(&self, db: &str, coll: &str, docs: Vec<BsonValue>) -> Result<Vec<(BsonValue,Result<()>)>> {
+        // TODO make sure every doc has an _id
+        let mut results = Vec::new();
+        {
+            let writer = try!(self.conn.begin_write());
+            {
+                let mut collwriter = try!(writer.get_collection_writer(db, coll));
+                for doc in docs {
+                    let r = collwriter.insert(&doc);
+                    results.push((doc, r));
+                }
+            }
+            try!(writer.commit());
+        }
+        Ok(results)
+    }
+}
 

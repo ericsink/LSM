@@ -893,7 +893,7 @@ impl<'a> MyCollectionWriter<'a> {
 }
 
 impl<'a> elmo::StorageCollectionWriter for MyCollectionWriter<'a> {
-    fn update(&mut self, v: BsonValue) -> Result<()> {
+    fn update(&mut self, v: &BsonValue) -> Result<()> {
         match v.tryGetValueForKey("_id") {
             None => Err(elmo::Error::Misc("cannot update without _id")),
             Some(id) => {
@@ -915,7 +915,7 @@ impl<'a> elmo::StorageCollectionWriter for MyCollectionWriter<'a> {
         }
     }
 
-    fn delete(&mut self, v: BsonValue) -> Result<bool> {
+    fn delete(&mut self, v: &BsonValue) -> Result<bool> {
         // TODO is v supposed to be the id?
         match try!(self.find_rowid(&v).map_err(elmo::wrap_err)) {
             None => Ok(false),
@@ -937,7 +937,7 @@ impl<'a> elmo::StorageCollectionWriter for MyCollectionWriter<'a> {
                 }
     }
 
-    fn insert(&mut self, v: BsonValue) -> Result<()> {
+    fn insert(&mut self, v: &BsonValue) -> Result<()> {
                 let ba = v.to_bson_array();
                 self.insert.clear_bindings();
                 try!(self.insert.bind_blob(1,&ba).map_err(elmo::wrap_err));
