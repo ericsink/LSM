@@ -48,7 +48,7 @@ enum Error {
     // TODO more detail within CorruptFile
     CorruptFile(&'static str),
 
-    Bson(bson::BsonError),
+    Bson(bson::Error),
     Io(std::io::Error),
     Utf8(std::str::Utf8Error),
     Whatever(Box<std::error::Error>),
@@ -85,8 +85,8 @@ impl std::error::Error for Error {
     // TODO cause
 }
 
-impl From<bson::BsonError> for Error {
-    fn from(err: bson::BsonError) -> Error {
+impl From<bson::Error> for Error {
+    fn from(err: bson::Error) -> Error {
         Error::Bson(err)
     }
 }

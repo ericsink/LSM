@@ -37,7 +37,7 @@ use misc::bufndx;
 
 #[derive(Debug)]
 // TODO consider calling this just Error
-pub enum BsonError {
+pub enum Error {
     // TODO remove Misc
     Misc(&'static str),
 
@@ -48,43 +48,43 @@ pub enum BsonError {
     Utf8(std::str::Utf8Error),
 }
 
-impl std::fmt::Display for BsonError {
+impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match *self {
-            BsonError::Io(ref err) => write!(f, "IO error: {}", err),
-            BsonError::Utf8(ref err) => write!(f, "Utf8 error: {}", err),
-            BsonError::Misc(s) => write!(f, "Misc error: {}", s),
-            BsonError::CorruptFile(s) => write!(f, "Corrupt file: {}", s),
+            Error::Io(ref err) => write!(f, "IO error: {}", err),
+            Error::Utf8(ref err) => write!(f, "Utf8 error: {}", err),
+            Error::Misc(s) => write!(f, "Misc error: {}", s),
+            Error::CorruptFile(s) => write!(f, "Corrupt file: {}", s),
         }
     }
 }
 
-impl std::error::Error for BsonError {
+impl std::error::Error for Error {
     fn description(&self) -> &str {
         match *self {
-            BsonError::Io(ref err) => std::error::Error::description(err),
-            BsonError::Utf8(ref err) => std::error::Error::description(err),
-            BsonError::Misc(s) => s,
-            BsonError::CorruptFile(s) => s,
+            Error::Io(ref err) => std::error::Error::description(err),
+            Error::Utf8(ref err) => std::error::Error::description(err),
+            Error::Misc(s) => s,
+            Error::CorruptFile(s) => s,
         }
     }
 
     // TODO cause
 }
 
-impl From<std::io::Error> for BsonError {
-    fn from(err: std::io::Error) -> BsonError {
-        BsonError::Io(err)
+impl From<std::io::Error> for Error {
+    fn from(err: std::io::Error) -> Error {
+        Error::Io(err)
     }
 }
 
-impl From<std::str::Utf8Error> for BsonError {
-    fn from(err: std::str::Utf8Error) -> BsonError {
-        BsonError::Utf8(err)
+impl From<std::str::Utf8Error> for Error {
+    fn from(err: std::str::Utf8Error) -> Error {
+        Error::Utf8(err)
     }
 }
 
-pub type Result<T> = std::result::Result<T, BsonError>;
+pub type Result<T> = std::result::Result<T, Error>;
 
 pub fn split_name(s: &str) -> (&str, &str) {
     // TODO
@@ -303,7 +303,7 @@ impl BsonValue {
     pub fn getValueForKey(&self, k: &str) -> Result<&BsonValue> {
         match self.tryGetValueForKey(k) {
             Some(v) => Ok(v),
-            None => Err(BsonError::Misc("required key not found")),
+            None => Err(Error::Misc("required key not found")),
         }
     }
 
@@ -347,7 +347,7 @@ impl BsonValue {
     fn getValueForInsensitiveKey(&self, k: &str) -> Result<&BsonValue> {
         match self.tryGetValueForInsensitiveKey(k) {
             Some(v) => Ok(v),
-            None => Err(BsonError::Misc("required key not found")),
+            None => Err(Error::Misc("required key not found")),
         }
     }
 
@@ -412,21 +412,21 @@ impl BsonValue {
     pub fn getString(&self) -> Result<&str> {
         match self {
             &BsonValue::BString(ref s) => Ok(s),
-            _ => Err(BsonError::Misc("must be string")),
+            _ => Err(Error::Misc("must be string")),
         }
     }
 
     pub fn getArray(&self) -> Result<&Vec<BsonValue>> {
         match self {
             &BsonValue::BArray(ref s) => Ok(s),
-            _ => Err(BsonError::Misc("must be array")),
+            _ => Err(Error::Misc("must be array")),
         }
     }
 
     pub fn getDocument(&self) -> Result<&Vec<(String,BsonValue)>> {
         match self {
             &BsonValue::BDocument(ref s) => Ok(s),
-            _ => Err(BsonError::Misc("must be document")),
+            _ => Err(Error::Misc("must be document")),
         }
     }
 
@@ -466,21 +466,21 @@ impl BsonValue {
     fn getBool(&self) -> Result<bool> {
         match self {
             &BsonValue::BBoolean(ref s) => Ok(*s),
-            _ => Err(BsonError::Misc("must be bool")),
+            _ => Err(Error::Misc("must be bool")),
         }
     }
 
     fn getDate(&self) -> Result<i64> {
         match self {
             &BsonValue::BDateTime(ref s) => Ok(*s),
-            _ => Err(BsonError::Misc("must be DateTime")),
+            _ => Err(Error::Misc("must be DateTime")),
         }
     }
 
     fn getInt32(&self) -> Result<i32> {
         match self {
             &BsonValue::BInt32(ref s) => Ok(*s),
-            _ => Err(BsonError::Misc("must be i32")),
+            _ => Err(Error::Misc("must be i32")),
         }
     }
 
@@ -502,7 +502,7 @@ impl BsonValue {
         &BsonValue::BInt32(i) => Ok(i!=0),
         &BsonValue::BInt64(i) => Ok(i!=0),
         &BsonValue::BDouble(f) => Ok((f as i32)!=0),
-        _ => Err(BsonError::Misc("must be convertible to bool")),
+        _ => Err(Error::Misc("must be convertible to bool")),
         }
     }
 
@@ -511,7 +511,7 @@ impl BsonValue {
         &BsonValue::BInt32(a) => Ok(a),
         &BsonValue::BInt64(a) => Ok(a as i32),
         &BsonValue::BDouble(a) => Ok(a as i32),
-        _ => Err(BsonError::Misc("must be convertible to int32")),
+        _ => Err(Error::Misc("must be convertible to int32")),
         }
     }
 
@@ -521,7 +521,7 @@ impl BsonValue {
         &BsonValue::BInt64(a) => Ok(a),
         &BsonValue::BDouble(a) => Ok(a as i64),
         &BsonValue::BDateTime(a) => Ok(a as i64),
-        _ => Err(BsonError::Misc("must be convertible to int64")),
+        _ => Err(Error::Misc("must be convertible to int64")),
         }
     }
 
@@ -530,7 +530,7 @@ impl BsonValue {
         &BsonValue::BInt32(a) => Ok(a as f64),
         &BsonValue::BInt64(a) => Ok(a as f64),
         &BsonValue::BDouble(a) => Ok(a),
-        _ => Err(BsonError::Misc("must be convertible to f64")),
+        _ => Err(Error::Misc("must be convertible to f64")),
         }
     }
 
@@ -748,13 +748,13 @@ impl BsonValue {
         let n = 1 + k.rposition_elem(&0u8).expect("TODO");
         let ord_shouldbe = BsonValue::BInt32(0).get_type_order() as u8;
         if k[n] != ord_shouldbe {
-            return Err(BsonError::Misc("bad type order byte"));
+            return Err(Error::Misc("bad type order byte"));
         }
         let e = (k[n+1] as i32) - 23;
         // exponent is number of times the mantissa must be multiplied times 100
         // if we assume that all mantissa digits are to the right of the decimal point.
         if e <= 0 {
-            return Err(BsonError::Misc("bad e"));
+            return Err(Error::Misc("bad e"));
         }
         let e = e as usize;
         let n = n + 2;

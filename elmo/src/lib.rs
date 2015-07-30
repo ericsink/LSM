@@ -58,7 +58,7 @@ pub enum Error {
     // TODO more detail within CorruptFile
     CorruptFile(&'static str),
 
-    Bson(bson::BsonError),
+    Bson(bson::Error),
     Io(std::io::Error),
     Utf8(std::str::Utf8Error),
     Whatever(Box<std::error::Error>),
@@ -97,8 +97,8 @@ pub fn wrap_err<E: std::error::Error + 'static>(err: E) -> Error {
     Error::Whatever(box err)
 }
 
-impl From<bson::BsonError> for Error {
-    fn from(err: bson::BsonError) -> Error {
+impl From<bson::Error> for Error {
+    fn from(err: bson::Error) -> Error {
         Error::Bson(err)
     }
 }
