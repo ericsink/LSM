@@ -231,7 +231,7 @@ impl Connection {
         }
     }
 
-    pub fn insert(&self, db: &str, coll: &str, docs: Vec<BsonValue>) -> Result<Vec<(BsonValue,Result<()>)>> {
+    pub fn insert(&self, db: &str, coll: &str, docs: &Vec<BsonValue>) -> Result<Vec<Result<()>>> {
         // TODO make sure every doc has an _id
         let mut results = Vec::new();
         {
@@ -239,8 +239,8 @@ impl Connection {
             {
                 let mut collwriter = try!(writer.get_collection_writer(db, coll));
                 for doc in docs {
-                    let r = collwriter.insert(&doc);
-                    results.push((doc, r));
+                    let r = collwriter.insert(doc);
+                    results.push(r);
                 }
             }
             try!(writer.commit());

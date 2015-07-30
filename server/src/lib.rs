@@ -66,6 +66,7 @@ enum Error {
     Io(std::io::Error),
     Utf8(std::str::Utf8Error),
     Whatever(Box<std::error::Error>),
+    Elmo(elmo::Error),
 
     CursorNotValid,
     InvalidPageNumber,
@@ -78,6 +79,7 @@ impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match *self {
             Error::Bson(ref err) => write!(f, "bson error: {}", err),
+            Error::Elmo(ref err) => write!(f, "elmo error: {}", err),
             Error::Io(ref err) => write!(f, "IO error: {}", err),
             Error::Utf8(ref err) => write!(f, "Utf8 error: {}", err),
             Error::Misc(s) => write!(f, "Misc error: {}", s),
@@ -96,6 +98,7 @@ impl std::error::Error for Error {
     fn description(&self) -> &str {
         match *self {
             Error::Bson(ref err) => std::error::Error::description(err),
+            Error::Elmo(ref err) => std::error::Error::description(err),
             Error::Io(ref err) => std::error::Error::description(err),
             Error::Utf8(ref err) => std::error::Error::description(err),
             Error::Misc(s) => s,
@@ -115,6 +118,12 @@ impl std::error::Error for Error {
 impl From<bson::BsonError> for Error {
     fn from(err: bson::BsonError) -> Error {
         Error::Bson(err)
+    }
+}
+
+impl From<elmo::Error> for Error {
+    fn from(err: elmo::Error) -> Error {
+        Error::Elmo(err)
     }
 }
 
@@ -282,7 +291,7 @@ fn readMessage(stream: &mut Read) -> Result<Box<[u8]>> {
     Ok(msg.into_boxed_slice())
 }
 
-fn createReply(reqID: i32, docs: Vec<BsonValue>, crsrID: i64) -> BsonMsgReply {
+fn create_reply(reqID: i32, docs: Vec<BsonValue>, crsrID: i64) -> BsonMsgReply {
     let msg = BsonMsgReply {
         r_requestID: 0,
         r_responseTo: reqID,
@@ -300,9 +309,9 @@ fn reply_err(requestID: i32, err: Error) -> BsonMsgReply {
     // TODO stack trace was nice here
     //pairs.push(("errmsg", BString("exception: " + errmsg)));
     //pairs.push(("code", BInt32(code)));
-    pairs.push((String::from_str("ok"), BsonValue::BInt32(0)));
+    pairs.push((String::from("ok"), BsonValue::BInt32(0)));
     let doc = BsonValue::BDocument(pairs);
-    createReply(requestID, vec![doc], 0)
+    create_reply(requestID, vec![doc], 0)
 }
 
 struct Server {
@@ -311,41 +320,30 @@ struct Server {
 
 impl Server {
 
-    fn doInsert(&self, db: &str, coll: &str, s: &Vec<BsonValue>) -> Result<(Vec<BsonValue>,Vec<BsonValue>)> {
-        /* TODO
-        let results = crud.insert(db, coll, s);
-        let writeErrors =
-            results
-            |> Array.filter (fun (_,err) ->
-                match err with
-                | Some _ -> true
-                | None -> false
-            )
-            |> Array.mapi (fun i (_,err) ->
-                // TODO use of Option.get is bad, but we just filtered all the Some values above
-                BDocument [| ("index",BInt32 i); ("errmsg",Option.get err |> BString) |]
-            )
-        (results,writeErrors)
-        */
-        Ok((Vec::new(), Vec::new()))
-    }
-
-    fn reply_Insert(&self, clientMsg: &BsonMsgQuery, db: &str) -> Result<BsonMsgReply> {
+    fn reply_insert(&self, clientMsg: &BsonMsgQuery, db: &str) -> Result<BsonMsgReply> {
         let q = &clientMsg.q_query;
         let coll = try!(try!(q.getValueForKey("insert")).getString());
         let docs = try!(try!(q.getValueForKey("documents")).getArray());
         // TODO ordered
-        let (results,writeErrors) = try!(self.doInsert(db, coll, docs));
+        let results = try!(self.conn.insert(db, coll, &docs));
+        let mut errors = Vec::new();
+        for i in 0 .. results.len() {
+            if results[i].is_err() {
+                let msg = format!("{:?}", results[i]);
+                let err = BsonValue::BDocument(vec![(String::from("index"), BsonValue::BInt32(i as i32)), (String::from("errmsg"), BsonValue::BString(msg))]);
+                errors.push(err);
+            }
+        }
         let mut pairs = Vec::new();
-        pairs.push((String::from_str("n"), BsonValue::BInt32((results.len() - writeErrors.len()) as i32)));
+        pairs.push((String::from("n"), BsonValue::BInt32((results.len() - errors.len()) as i32)));
         //pairs.Add("lastOp", BTimeStamp 0L) // TODO
-        if writeErrors.len() > 0 {
-            pairs.push((String::from_str("writeErrors"), BsonValue::BArray(writeErrors)));
+        if errors.len() > 0 {
+            pairs.push((String::from("writeErrors"), BsonValue::BArray(errors)));
         }
         // TODO electionId?
-        pairs.push((String::from_str("ok"), BsonValue::BDouble(1.0)));
+        pairs.push((String::from("ok"), BsonValue::BDouble(1.0)));
         let doc = BsonValue::BDocument(pairs);
-        Ok(createReply(clientMsg.q_requestID, vec![doc], 0))
+        Ok(create_reply(clientMsg.q_requestID, vec![doc], 0))
     }
 
     // TODO this layer of the code should not be using Error
@@ -363,7 +361,7 @@ impl Server {
                         match cmd {
                             //"explain" => reply_explain clientMsg db
                             //"aggregate" => reply_aggregate clientMsg db
-                            "insert" => self.reply_Insert(clientMsg, db),
+                            "insert" => self.reply_insert(clientMsg, db),
                             //"delete" => reply_Delete clientMsg db
                             //"distinct" => reply_distinct clientMsg db
                             //"update" => reply_Update clientMsg db
