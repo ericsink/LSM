@@ -86,6 +86,50 @@ impl Iterator for StatementBsonValueIterator {
     }
 }
 
+struct RefStatementBsonValueIterator<'a> {
+    stmt: &'a mut sqlite3::PreparedStatement,
+}
+
+impl<'a> RefStatementBsonValueIterator<'a> {
+    fn iter_next(&mut self) -> Result<Option<BsonValue>> {
+        // TODO can't find a way to store the ResultSet from execute()
+        // in the same struct as its statement, because the ResultSet()
+        // contains a mut reference to the statement.  So we look at
+        // the implementation of execute() and realize that it doesn't
+        // actually do anything of substance, so we call it every
+        // time.  Ugly.
+        match try!(self.stmt.execute().step().map_err(elmo::wrap_err)) {
+            None => Ok(None),
+            Some(r) => {
+                let b = r.column_blob(0).expect("NOT NULL");
+                let v = try!(BsonValue::from_bson(&b));
+                Ok(Some(v))
+            },
+        }
+    }
+}
+
+impl<'a> Iterator for RefStatementBsonValueIterator<'a> {
+    type Item = Result<BsonValue>;
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.iter_next() {
+            Err(e) => {
+                return Some(Err(e));
+            },
+            Ok(v) => {
+                match v {
+                    None => {
+                        return None;
+                    },
+                    Some(v) => {
+                        return Some(Ok(v));
+                    }
+                }
+            },
+        }
+    }
+}
+
 struct MyEmptyIterator;
 
 impl Iterator for MyEmptyIterator {
@@ -704,58 +748,32 @@ impl MyConn {
             }
         }
 
-        let s = doc_weights.into_iter().flat_map(
-            |(did, v)| {
-                // TODO it would be nice not to re-prepare this every time through
-                let sql = format!("SELECT bson FROM \"{}\" WHERE did=?", tbl_coll);
-                let mut stmt = self.conn.prepare(&sql).unwrap(); // TODO
-                stmt.bind_int64(1, did).unwrap(); // TODO
-                // TODO wrap in StatementBsonValueIterator
-                // TODO need to call check_phrase(doc) on each value produced
-                // TODO if keep, calc a score for each one too
-                let rdr = 
-                    StatementBsonValueIterator {
-                        stmt: stmt,
-                    };
-                box rdr
-            }
-        );
-        unimplemented!();
+        let sql = format!("SELECT bson FROM \"{}\" WHERE did=?", tbl_coll);
+        let mut stmt = try!(self.conn.prepare(&sql).map_err(elmo::wrap_err));
 
-/*
-
-            let sql = sprintf "SELECT bson FROM \"%s\" WHERE did=?" tblColl
-            let stmt = conn.prepare(sql)
-            let count = ref 0
-            let s = 
-                seq {
-                    for (did,w) in Map.toSeq doc_weights do
-                        stmt.clear_bindings()
-                        stmt.bind_int64(1, did)
-                        stmt.step_row()
-                        let doc = stmt.column_blob(0) |> BinReader.ReadDocument
-                        count := !count + 1
-                        printfn "got_SQLITE_ROW"
-                        stmt.reset()
-                        let keep = check_phrase doc
-                        if keep then
-                            //printfn "weights for this doc: %A" w
-                            let score = List.sum w |> float // TODO this is not the way mongo does this calculation
-                            yield {doc=doc;score=Some score;pos=None}
+        let mut res = Vec::new();
+        for (did, cur_weights) in doc_weights {
+            try!(stmt.bind_int64(1, did).map_err(elmo::wrap_err));
+            let rdr = 
+                RefStatementBsonValueIterator {
+                    stmt: &mut stmt,
+                };
+            for r in rdr {
+                let r = try!(r);
+                let keep = check_phrase(&terms, &weights, &r);
+                if keep {
+                    // TODO if keep, calc a score for each one too
+                    // let score = List.sum w |> float // TODO this is not the way mongo does this calculation
+                    res.push(Ok(r));
                 }
-            let killFunc() =
-                if tx then conn.exec("COMMIT TRANSACTION")
-                stmt.sqlite3_finalize()
-
-            {
-                docs=s
-                totalKeysExamined=fun () -> 0
-                totalDocsExamined=fun () -> !count
-                funk=killFunc
             }
+        }
 
-*/
-
+        let rdr = 
+            MyTextCollectionReader {
+                seq: box res.into_iter(),
+            };
+        Ok(rdr)
     }
 
     fn get_collection_reader<'b>(&'b self, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> Result<Box<elmo::StorageCollectionReader + 'b>> {
