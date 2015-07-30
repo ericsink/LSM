@@ -133,9 +133,7 @@ impl Iterator for MyEmptyIterator {
     }
 }
 
-// TODO why do the Reader types below need to be distinct?
-
-struct MyNormalCollectionReader {
+struct MyCollectionReader {
     seq: Box<Iterator<Item=Result<BsonValue>>>,
 
     // TODO need counts here
@@ -145,22 +143,6 @@ struct MyNormalCollectionReader {
     // this is because its parent might be a MyReader, or it
     // might be a MyWriter.
     // and also because such a link doesn't seem necessary.
-}
-
-struct MyTextCollectionReader {
-    seq: Box<Iterator<Item=Result<BsonValue>>>,
-
-    // TODO need counts here
-
-    // this struct does not have a reference to a parent.
-    // such as a MyReader.
-    // this is because its parent might be a MyReader, or it
-    // might be a MyWriter.
-    // and also because such a link doesn't seem necessary.
-}
-
-struct MyEmptyCollectionReader {
-    seq: MyEmptyIterator,
 }
 
 struct MyReader<'a> {
@@ -562,7 +544,7 @@ impl MyConn {
         }
     }
 
-    fn get_table_scan_reader(&self, db: &str, coll: &str) -> Result<MyNormalCollectionReader> {
+    fn get_table_scan_reader(&self, db: &str, coll: &str) -> Result<MyCollectionReader> {
         let tbl = get_table_name_for_collection(db, coll);
         let stmt = try!(self.conn.prepare(&format!("SELECT bson FROM \"{}\"", tbl)).map_err(elmo::wrap_err));
         // TODO keep track of total keys examined, etc.
@@ -571,13 +553,13 @@ impl MyConn {
                      stmt: stmt,
             };
         let rdr = 
-            MyNormalCollectionReader {
+            MyCollectionReader {
                 seq: box seq,
             };
         Ok(rdr)
     }
 
-    fn get_nontext_index_scan_reader(&self, plan: elmo::QueryPlan) -> Result<MyNormalCollectionReader> {
+    fn get_nontext_index_scan_reader(&self, plan: elmo::QueryPlan) -> Result<MyCollectionReader> {
         let stmt = try!(self.get_stmt_for_index_scan(plan));
 
         // TODO keep track of total keys examined, etc.
@@ -586,13 +568,13 @@ impl MyConn {
                      stmt: stmt,
             };
         let rdr = 
-            MyNormalCollectionReader {
+            MyCollectionReader {
                 seq: box seq,
             };
         Ok(rdr)
     }
 
-    fn get_text_index_scan_reader(&self, ndx: &elmo::IndexInfo,  eq: elmo::QueryKey, terms: Vec<elmo::TextQueryTerm>) -> Result<MyTextCollectionReader> {
+    fn get_text_index_scan_reader(&self, ndx: &elmo::IndexInfo,  eq: elmo::QueryKey, terms: Vec<elmo::TextQueryTerm>) -> Result<MyCollectionReader> {
         let tbl_coll = get_table_name_for_collection(&ndx.db, &ndx.coll);
         let tbl_ndx = get_table_name_for_index(&ndx.db, &ndx.coll, &ndx.name);
         let (normspec, weights) = try!(get_normalized_spec(&ndx));
@@ -750,7 +732,7 @@ impl MyConn {
         let mut res = Vec::new();
         for (did, cur_weights) in doc_weights {
             try!(stmt.bind_int64(1, did).map_err(elmo::wrap_err));
-            let mut rows = stmt.execute();
+            let rows = stmt.execute();
             let rdr = 
                 ResultSetBsonValueIterator {
                     rows: rows,
@@ -767,7 +749,7 @@ impl MyConn {
         }
 
         let rdr = 
-            MyTextCollectionReader {
+            MyCollectionReader {
                 seq: box res.into_iter(),
             };
         Ok(rdr)
@@ -777,8 +759,8 @@ impl MyConn {
         match try!(self.get_collection_options(db, coll)) {
             None => {
                 let rdr = 
-                    MyEmptyCollectionReader {
-                        seq: MyEmptyIterator,
+                    MyCollectionReader {
+                        seq: box MyEmptyIterator,
                     };
                 Ok(box rdr)
             },
@@ -1358,40 +1340,7 @@ impl elmo::StorageConnection for MyConn {
     }
 }
 
-impl elmo::StorageCollectionReader for MyNormalCollectionReader {
-    fn iter<'a>(&'a self) -> &'a Iterator<Item=Result<BsonValue>> {
-        &self.seq
-    }
-
-    fn get_total_keys_examined(&self) -> u64 {
-        // TODO
-        0
-    }
-
-    fn get_total_docs_examined(&self) -> u64 {
-        // TODO
-        0
-    }
-
-}
-
-impl elmo::StorageCollectionReader for MyEmptyCollectionReader {
-    fn iter<'a>(&'a self) -> &'a Iterator<Item=Result<BsonValue>> {
-        &self.seq
-    }
-
-    fn get_total_keys_examined(&self) -> u64 {
-        0
-    }
-
-    fn get_total_docs_examined(&self) -> u64 {
-        // TODO
-        0
-    }
-
-}
-
-impl elmo::StorageCollectionReader for MyTextCollectionReader {
+impl elmo::StorageCollectionReader for MyCollectionReader {
     fn iter<'a>(&'a self) -> &'a Iterator<Item=Result<BsonValue>> {
         &self.seq
     }
