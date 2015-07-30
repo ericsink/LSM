@@ -515,6 +515,7 @@ pub mod io {
     pub fn read_4(strm: &mut Read) -> io::Result<[u8; 4]> {
         let mut a = [0; 4];
         let got = try!(read_fully(strm, &mut a));
+        // TODO if got == 0 this is just normal end of file
         if got != 4 {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "failed to read 4 bytes"));
         }

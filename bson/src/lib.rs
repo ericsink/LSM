@@ -430,6 +430,39 @@ impl BsonValue {
         }
     }
 
+    pub fn add_pair(&mut self, k: &str, v: BsonValue) {
+        match self {
+            &mut BsonValue::BDocument(ref mut s) => {
+                s.push((String::from(k), v));
+            },
+            _ => panic!("must be document"),
+        }
+    }
+
+    pub fn add_pair_i32(&mut self, k: &str, v: i32) {
+        self.add_pair(k, BsonValue::BInt32(v));
+    }
+
+    pub fn add_pair_f64(&mut self, k: &str, v: f64) {
+        self.add_pair(k, BsonValue::BDouble(v));
+    }
+
+    pub fn add_pair_bool(&mut self, k: &str, v: bool) {
+        self.add_pair(k, BsonValue::BBoolean(v));
+    }
+
+    pub fn add_pair_str(&mut self, k: &str, v: &str) {
+        self.add_pair(k, BsonValue::BString(String::from(v)));
+    }
+
+    pub fn add_pair_timestamp(&mut self, k: &str, v: i64) {
+        self.add_pair(k, BsonValue::BTimeStamp(v));
+    }
+
+    pub fn add_pair_datetime(&mut self, k: &str, v: i64) {
+        self.add_pair(k, BsonValue::BDateTime(v));
+    }
+
     fn getBool(&self) -> Result<bool> {
         match self {
             &BsonValue::BBoolean(ref s) => Ok(*s),
