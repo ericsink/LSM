@@ -151,6 +151,7 @@ struct MyReader<'a> {
 
 struct MyWriter<'a> {
     myconn: &'a MyConn,
+    in_tx: bool,
 }
 
 struct MyConn {
@@ -188,7 +189,7 @@ fn verify_changes(stmt: &sqlite3::PreparedStatement, shouldbe: u64) -> Result<()
     }
 }
 
-fn get_dirs(normspec: &Vec<(String, IndexType)>, vals: Vec<BsonValue>) -> Vec<(BsonValue, bool)> {
+fn copy_dirs_from_normspec_to_vals(normspec: &Vec<(String, IndexType)>, vals: Vec<BsonValue>) -> Vec<(BsonValue, bool)> {
     // TODO if normspec.len() < vals.len() then panic?
     let mut a = Vec::new();
     for (i,v) in vals.into_iter().enumerate() {
@@ -263,6 +264,7 @@ fn get_index_entries(new_doc: &BsonValue, normspec: &Vec<(String, IndexType)>, w
             &Some(ref weights) => {
                 for k in weights.keys() {
                     if k == "&**" {
+                        // new_doc.for_all_strings(|s| -> q(vals, w, s));
                         // TODO bson.forAllStrings newDoc (fun s -> q vals w s)
                     } else {
                         match new_doc.find_path(k) {
@@ -491,18 +493,18 @@ impl MyConn {
         // so we can tell if they're supposed to be backwards or not.
         let (normspec, _weights) = try!(get_normalized_spec(&plan.ndx));
 
+        fn add_one(ba: &Vec<u8>) -> Vec<u8> {
+            let a = ba.clone();
+            // TODO add one
+            a
+        }
+
         // note that one of the reasons we need to do DISTINCT here is because a
         // single index in a single document can produce multiple index entries,
         // because, for example, when a value is an array, we don't just index
         // the array as a value, but we also index each of its elements.
         //
         // TODO it would be nice if the DISTINCT here was happening on the rowids, not on the blobs
-
-        fn add_one(ba: &Vec<u8>) -> Vec<u8> {
-            let a = ba.clone();
-            // TODO add one
-            a
-        }
 
         let f_twok = |kmin: Vec<u8>, kmax: Vec<u8>, op1: &str, op2: &str| -> Result<sqlite3::PreparedStatement> {
             let sql = format!("SELECT DISTINCT d.bson FROM \"{}\" d INNER JOIN \"{}\" i ON (d.did = i.doc_rowid) WHERE k {} ? AND k {} ?", tbl_coll, tbl_ndx, op1, op2);
@@ -513,13 +515,13 @@ impl MyConn {
         };
 
         let f_two = |minvals: elmo::QueryKey, maxvals: elmo::QueryKey, op1: &str, op2: &str| -> Result<sqlite3::PreparedStatement> {
-            let kmin = BsonValue::encode_multi_for_index(get_dirs(&normspec, minvals));
-            let kmax = BsonValue::encode_multi_for_index(get_dirs(&normspec, maxvals));
+            let kmin = BsonValue::encode_multi_for_index(copy_dirs_from_normspec_to_vals(&normspec, minvals));
+            let kmax = BsonValue::encode_multi_for_index(copy_dirs_from_normspec_to_vals(&normspec, maxvals));
             f_twok(kmin, kmax, op1, op2)
         };
 
         let f_one = |vals: elmo::QueryKey, op: &str| -> Result<sqlite3::PreparedStatement> {
-            let k = BsonValue::encode_multi_for_index(get_dirs(&normspec, vals));
+            let k = BsonValue::encode_multi_for_index(copy_dirs_from_normspec_to_vals(&normspec, vals));
             let sql = format!("SELECT DISTINCT d.bson FROM \"{}\" d INNER JOIN \"{}\" i ON (d.did = i.doc_rowid) WHERE k {} ?", tbl_coll, tbl_ndx, op);
             let mut stmt = try!(self.conn.prepare(&sql).map_err(elmo::wrap_err));
             try!(stmt.bind_blob(1, &k).map_err(elmo::wrap_err));
@@ -537,7 +539,7 @@ impl MyConn {
             elmo::QueryBounds::GT_LTE(minvals, maxvals) => f_two(minvals, maxvals, ">", "<="),
             elmo::QueryBounds::GTE_LTE(minvals, maxvals) => f_two(minvals, maxvals, ">=", "<="),
             elmo::QueryBounds::EQ(vals) => {
-                let kmin = BsonValue::encode_multi_for_index(get_dirs(&normspec, vals));
+                let kmin = BsonValue::encode_multi_for_index(copy_dirs_from_normspec_to_vals(&normspec, vals));
                 let kmax = add_one(&kmin);
                 f_twok(kmin, kmax, ">=", "<")
             },
@@ -618,7 +620,7 @@ impl MyConn {
             Ok(entries)
         };
 
-        let vals = get_dirs(&normspec, eq);
+        let vals = copy_dirs_from_normspec_to_vals(&normspec, eq);
 
         let sql = format!("SELECT k, doc_rowid FROM \"{}\" i WHERE k > ? AND k < ?", tbl_ndx);
         let mut stmt = try!(self.conn.prepare(&sql).map_err(elmo::wrap_err));
@@ -755,14 +757,14 @@ impl MyConn {
         Ok(rdr)
     }
 
-    fn get_collection_reader<'b>(&'b self, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> Result<Box<elmo::StorageCollectionReader + 'b>> {
+    fn get_collection_reader<'b>(&'b self, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> Result<MyCollectionReader> {
         match try!(self.get_collection_options(db, coll)) {
             None => {
                 let rdr = 
                     MyCollectionReader {
                         seq: box MyEmptyIterator,
                     };
-                Ok(box rdr)
+                Ok(rdr)
             },
             Some(_) => {
                 match plan {
@@ -770,17 +772,17 @@ impl MyConn {
                         match plan.bounds {
                             elmo::QueryBounds::Text(eq,terms) => {
                                 let rdr = try!(self.get_text_index_scan_reader(&plan.ndx, eq, terms));
-                                return Ok(box rdr);
+                                return Ok(rdr);
                             },
                             _ => {
                                 let rdr = try!(self.get_nontext_index_scan_reader(plan));
-                                return Ok(box rdr);
+                                return Ok(rdr);
                             },
                         }
                     },
                     None => {
                         let rdr = try!(self.get_table_scan_reader(db, coll));
-                        return Ok(box rdr);
+                        return Ok(rdr);
                     },
                 };
             },
@@ -788,7 +790,7 @@ impl MyConn {
     }
 
     fn get_index_info(&self, db: &str, coll: &str, name: &str) -> Result<Option<elmo::IndexInfo>> {
-        // TODO DRY this string
+        // TODO DRY this string, below
         let mut stmt = try!(self.conn.prepare("SELECT ndxName, spec, options, dbName, collName FROM \"indexes\" WHERE dbName=? AND collName=? AND ndxName=?").map_err(elmo::wrap_err));
         try!(stmt.bind_text(1, db).map_err(elmo::wrap_err));
         try!(stmt.bind_text(2, coll).map_err(elmo::wrap_err));
@@ -804,6 +806,7 @@ impl MyConn {
     }
 
     fn base_list_indexes(&self) -> Result<Vec<elmo::IndexInfo>> {
+        // TODO DRY this string, above
         let mut stmt = try!(self.conn.prepare("SELECT ndxName, spec, options, dbName, collName FROM \"indexes\"").map_err(elmo::wrap_err));
         let mut r = stmt.execute();
         let mut v = Vec::new();
@@ -1224,13 +1227,15 @@ impl<'a> elmo::StorageWriter for MyWriter<'a> {
         Ok(box c)
     }
 
-    fn commit(self: Box<Self>) -> Result<()> {
+    fn commit(mut self: Box<Self>) -> Result<()> {
         try!(self.myconn.conn.exec("COMMIT TRANSACTION").map_err(elmo::wrap_err));
+        self.in_tx = false;
         Ok(())
     }
 
-    fn rollback(self: Box<Self>) -> Result<()> {
+    fn rollback(mut self: Box<Self>) -> Result<()> {
         try!(self.myconn.conn.exec("ROLLBACK TRANSACTION").map_err(elmo::wrap_err));
+        self.in_tx = false;
         Ok(())
     }
 
@@ -1269,10 +1274,10 @@ impl<'a> elmo::StorageWriter for MyWriter<'a> {
 // TODO do we need to declare that StorageWriter must implement Drop ?
 impl<'a> Drop for MyWriter<'a> {
     fn drop(&mut self) {
-        // TODO should rollback be the default here?  or commit?
-        // TODO can't do this unless we know that commit() or rollback()
-        // was not called.  Need a flag.
-        let _ignored = self.myconn.conn.exec("ROLLBACK TRANSACTION");
+        if self.in_tx {
+            // TODO should rollback be the default here?  or commit?
+            let _ignored = self.myconn.conn.exec("ROLLBACK TRANSACTION");
+        }
     }
 }
 
@@ -1287,13 +1292,10 @@ impl<'a> Drop for MyReader<'a> {
     }
 }
 
-impl<'a> MyReader<'a> {
-}
-
 impl<'a> elmo::StorageReader for MyReader<'a> {
     fn get_collection_reader<'b>(&'b self, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> Result<Box<elmo::StorageCollectionReader + 'b>> {
         let rdr = try!(self.myconn.get_collection_reader(db, coll, plan));
-        Ok(rdr)
+        Ok(box rdr)
     }
 
     fn list_collections(&self) -> Result<Vec<(String, String, BsonValue)>> {
@@ -1309,7 +1311,7 @@ impl<'a> elmo::StorageReader for MyReader<'a> {
 impl<'a> elmo::StorageReader for MyWriter<'a> {
     fn get_collection_reader<'b>(&'b self, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> Result<Box<elmo::StorageCollectionReader + 'b>> {
         let rdr = try!(self.myconn.get_collection_reader(db, coll, plan));
-        Ok(rdr)
+        Ok(box rdr)
     }
 
     fn list_collections(&self) -> Result<Vec<(String, String, BsonValue)>> {
@@ -1327,6 +1329,7 @@ impl elmo::StorageConnection for MyConn {
         try!(self.conn.exec("BEGIN IMMEDIATE TRANSACTION").map_err(elmo::wrap_err));
         let w = MyWriter {
             myconn: self,
+            in_tx: true,
         };
         Ok(box w)
     }
