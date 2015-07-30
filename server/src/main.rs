@@ -152,6 +152,7 @@ fn wrap_err<E: std::error::Error + 'static>(err: E) -> Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+#[derive(Debug)]
 struct BsonMsgReply {
     r_requestID : i32,
     r_responseTo : i32,
@@ -161,6 +162,7 @@ struct BsonMsgReply {
     r_documents : Vec<BsonValue>,
 }
 
+#[derive(Debug)]
 struct BsonMsgQuery {
     q_requestID : i32,
     q_flags : i32,
@@ -171,6 +173,7 @@ struct BsonMsgQuery {
     q_returnFieldsSelector : Option<BsonValue>,
 }
 
+#[derive(Debug)]
 struct BsonMsgGetMore {
     m_requestID : i32,
     m_fullCollectionName : String,
@@ -178,11 +181,13 @@ struct BsonMsgGetMore {
     m_cursorID : i64,
 }
 
+#[derive(Debug)]
 struct BsonMsgKillCursors {
     k_requestID : i32,
     k_cursorIDs : Vec<i64>,
 }
 
+#[derive(Debug)]
 enum BsonClientMsg {
     BsonMsgQuery(BsonMsgQuery),
     BsonMsgGetMore(BsonMsgGetMore),
@@ -204,7 +209,7 @@ impl BsonMsgReply {
         for doc in &self.r_documents {
             doc.to_bson(&mut w);
         }
-        misc::bytes::copy_into(&endian::u32_to_bytes_be(w.len() as u32), &mut w[0 .. 4]);
+        misc::bytes::copy_into(&endian::u32_to_bytes_le(w.len() as u32), &mut w[0 .. 4]);
         w.into_boxed_slice()
     }
 }
@@ -320,6 +325,15 @@ struct Server {
 
 impl Server {
 
+    fn reply_whatsmyuri(&self, clientMsg: &BsonMsgQuery) -> Result<BsonMsgReply> {
+        println!("in reply_whatsmyuri");
+        let mut pairs = Vec::new();
+        pairs.push((String::from("you"), BsonValue::BString(String::from("127.0.0.1:65460")))); // TODO wrong
+        pairs.push((String::from("ok"), BsonValue::BDouble(1.0)));
+        let doc = BsonValue::BDocument(pairs);
+        Ok(create_reply(clientMsg.q_requestID, vec![doc], 0))
+    }
+
     fn reply_insert(&self, clientMsg: &BsonMsgQuery, db: &str) -> Result<BsonMsgReply> {
         let q = &clientMsg.q_query;
         let coll = try!(try!(q.getValueForKey("insert")).getString());
@@ -347,6 +361,44 @@ impl Server {
     }
 
     // TODO this layer of the code should not be using Error
+
+    fn reply_admin_cmd(&self, clientMsg: &BsonMsgQuery, db: &str) -> Result<BsonMsgReply> {
+        println!("admin_cmd: {:?}", clientMsg);
+        match clientMsg.q_query {
+            BsonValue::BDocument(ref pairs) => {
+                if pairs.is_empty() {
+                    Err(Error::Misc("empty query"))
+                } else {
+                    // this code assumes that the first key is always the command
+                    let cmd = pairs[0].0.as_str();
+                    // TODO let cmd = cmd.ToLower();
+                    let res =
+                        match cmd {
+                            //"explain" => reply_explain clientMsg db
+                            //"aggregate" => reply_aggregate clientMsg db
+                            "whatsmyuri" => self.reply_whatsmyuri(clientMsg),
+                            //"delete" => reply_Delete clientMsg db
+                            //"distinct" => reply_distinct clientMsg db
+                            //"update" => reply_Update clientMsg db
+                            //"findandmodify" => reply_FindAndModify clientMsg db
+                            //"count" => reply_Count clientMsg db
+                            //"validate" => reply_Validate clientMsg db
+                            //"createindexes" => reply_createIndexes clientMsg db
+                            //"deleteindexes" => reply_deleteIndexes clientMsg db
+                            //"drop" => reply_DropCollection clientMsg db
+                            //"dropdatabase" => reply_DropDatabase clientMsg db
+                            //"listcollections" => reply_listCollections clientMsg db
+                            //"listindexes" => reply_listIndexes clientMsg db
+                            //"create" => reply_CreateCollection clientMsg db
+                            //"features" => reply_features clientMsg db
+                            _ => Err(Error::Misc("unknown cmd"))
+                        };
+                    res
+                }
+            },
+            _ => Err(Error::Misc("query must be a document")),
+        }
+    }
 
     fn reply_cmd(&self, clientMsg: &BsonMsgQuery, db: &str) -> Result<BsonMsgReply> {
         match clientMsg.q_query {
@@ -397,7 +449,7 @@ impl Server {
                 if db == "admin" {
                     if coll == "$cmd" {
                         //reply_AdminCmd clientMsg
-                        Err(Error::Misc("TODO"))
+                        self.reply_admin_cmd(&qm, db)
                     } else {
                         //failwith "not implemented"
                         Err(Error::Misc("TODO"))
@@ -422,6 +474,7 @@ impl Server {
                     }
                 }
             };
+        println!("reply: {:?}", r);
         match r {
             Ok(r) => r,
             Err(e) => reply_err(qm.q_requestID, e),
@@ -430,14 +483,19 @@ impl Server {
 
     fn handle_one_message(&self, stream: &mut std::net::TcpStream) -> Result<()> {
         let ba = try!(readMessage(stream));
+        println!("{:?}", ba);
         let msg = try!(parseMessageFromClient(&ba));
+        println!("{:?}", msg);
         match msg {
             BsonClientMsg::BsonMsgKillCursors(km) => {
             },
             BsonClientMsg::BsonMsgQuery(qm) => {
                 let resp = self.reply2004(qm);
+                println!("resp: {:?}", resp);
                 let ba = resp.encodeReply();
+                println!("ba: {:?}", ba);
                 stream.write(&ba);
+                println!("response written");
             },
             BsonClientMsg::BsonMsgGetMore(gm) => {
             },
@@ -458,7 +516,7 @@ impl Server {
 }
 
 pub fn serve() {
-    let listener = std::net::TcpListener::bind("127.0.0.1:80").unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:27017").unwrap();
 
     // accept connections and process them, spawning a new thread for each one
     for stream in listener.incoming() {
@@ -482,4 +540,7 @@ pub fn serve() {
     drop(listener);
 }
 
+pub fn main() {
+    serve();
+}
 

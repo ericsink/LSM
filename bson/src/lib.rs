@@ -95,7 +95,7 @@ pub fn split_name(s: &str) -> (&str, &str) {
 // Or do we need to implement it explicitly to
 // catch the nan case?
 
-#[derive(Clone)]
+#[derive(Clone,Debug)]
 pub enum BsonValue {
     BDouble(f64),
     BString(String),

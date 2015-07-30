@@ -1,6 +1,6 @@
 [package]
 
-name = "lsm"
+name = "elmo_server"
 version = "0.0.1"
 authors = [ "Eric Sink <eric@zumero.com>" ]
 
