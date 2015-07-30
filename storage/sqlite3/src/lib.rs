@@ -86,19 +86,13 @@ impl Iterator for StatementBsonValueIterator {
     }
 }
 
-struct RefStatementBsonValueIterator<'a> {
-    stmt: &'a mut sqlite3::PreparedStatement,
+struct ResultSetBsonValueIterator<'a> {
+    rows: sqlite3::ResultSet<'a>,
 }
 
-impl<'a> RefStatementBsonValueIterator<'a> {
+impl<'a> ResultSetBsonValueIterator<'a> {
     fn iter_next(&mut self) -> Result<Option<BsonValue>> {
-        // TODO can't find a way to store the ResultSet from execute()
-        // in the same struct as its statement, because the ResultSet()
-        // contains a mut reference to the statement.  So we look at
-        // the implementation of execute() and realize that it doesn't
-        // actually do anything of substance, so we call it every
-        // time.  Ugly.
-        match try!(self.stmt.execute().step().map_err(elmo::wrap_err)) {
+        match try!(self.rows.step().map_err(elmo::wrap_err)) {
             None => Ok(None),
             Some(r) => {
                 let b = r.column_blob(0).expect("NOT NULL");
@@ -109,7 +103,7 @@ impl<'a> RefStatementBsonValueIterator<'a> {
     }
 }
 
-impl<'a> Iterator for RefStatementBsonValueIterator<'a> {
+impl<'a> Iterator for ResultSetBsonValueIterator<'a> {
     type Item = Result<BsonValue>;
     fn next(&mut self) -> Option<Self::Item> {
         match self.iter_next() {
@@ -754,9 +748,10 @@ impl MyConn {
         let mut res = Vec::new();
         for (did, cur_weights) in doc_weights {
             try!(stmt.bind_int64(1, did).map_err(elmo::wrap_err));
+            let mut rows = stmt.execute();
             let rdr = 
-                RefStatementBsonValueIterator {
-                    stmt: &mut stmt,
+                ResultSetBsonValueIterator {
+                    rows: rows,
                 };
             for r in rdr {
                 let r = try!(r);
