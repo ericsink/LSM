@@ -174,12 +174,11 @@ pub struct QueryPlan {
 // TODO the Item below should be a struct that contains both the BsonValue
 // and also the score (and maybe pos).
 
-// TODO maybe the iterator should be a member of StorageCollectionReader instead.
-
 pub trait StorageCollectionReader {
     fn iter<'a>(&'a self) -> &'a Iterator<Item=Result<BsonValue>>;
     fn get_total_keys_examined(&self) -> u64;
-    // TODO more stuff here
+    fn get_total_docs_examined(&self) -> u64;
+    // TODO more explain stuff here?
 }
 
 pub trait StorageReader {

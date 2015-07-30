@@ -133,6 +133,8 @@ impl Iterator for MyEmptyIterator {
     }
 }
 
+// TODO why do the Reader types below need to be distinct?
+
 struct MyNormalCollectionReader {
     seq: Box<Iterator<Item=Result<BsonValue>>>,
 
@@ -1366,6 +1368,11 @@ impl elmo::StorageCollectionReader for MyNormalCollectionReader {
         0
     }
 
+    fn get_total_docs_examined(&self) -> u64 {
+        // TODO
+        0
+    }
+
 }
 
 impl elmo::StorageCollectionReader for MyEmptyCollectionReader {
@@ -1377,6 +1384,11 @@ impl elmo::StorageCollectionReader for MyEmptyCollectionReader {
         0
     }
 
+    fn get_total_docs_examined(&self) -> u64 {
+        // TODO
+        0
+    }
+
 }
 
 impl elmo::StorageCollectionReader for MyTextCollectionReader {
@@ -1385,6 +1397,11 @@ impl elmo::StorageCollectionReader for MyTextCollectionReader {
     }
 
     fn get_total_keys_examined(&self) -> u64 {
+        // TODO
+        0
+    }
+
+    fn get_total_docs_examined(&self) -> u64 {
         // TODO
         0
     }
