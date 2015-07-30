@@ -245,7 +245,7 @@ fn get_index_entries(new_doc: &BsonValue, normspec: &Vec<(String, IndexType)>, w
     }
 
     // TODO what should the name of this func actually be?
-    fn q(vals: &Vec<(BsonValue, bool)>, w: i32, s: String, entries: &mut Vec<Vec<(BsonValue,bool)>>) {
+    fn q(vals: &Vec<(BsonValue, bool)>, w: i32, s: &str, entries: &mut Vec<Vec<(BsonValue,bool)>>) {
         // TODO tokenize properly
         let a = s.split(" ");
         let a = a.into_iter().collect::<std::collections::HashSet<_>>();
@@ -264,19 +264,23 @@ fn get_index_entries(new_doc: &BsonValue, normspec: &Vec<(String, IndexType)>, w
             &Some(ref weights) => {
                 for k in weights.keys() {
                     if k == "&**" {
-                        // new_doc.for_all_strings(|s| -> q(vals, w, s));
-                        // TODO bson.forAllStrings newDoc (fun s -> q vals w s)
+                        let mut a = Vec::new();
+                        new_doc.find_all_strings(& mut a);
+                        let w = weights[k];
+                        for s in a {
+                            q(vals, w, s, entries);
+                        };
                     } else {
                         match new_doc.find_path(k) {
                             BsonValue::BUndefined => (),
                             v => {
                                 match v {
-                                    BsonValue::BString(s) => q(&vals, weights[k], s, entries),
+                                    BsonValue::BString(s) => q(&vals, weights[k], &s, entries),
                                     BsonValue::BArray(a) => {
                                         let a = a.into_iter().collect::<std::collections::HashSet<_>>();
                                         for v in a {
                                             match v {
-                                                BsonValue::BString(s) => q(&vals, weights[k], s, entries),
+                                                BsonValue::BString(s) => q(&vals, weights[k], &s, entries),
                                                 _ => (),
                                             }
                                         }

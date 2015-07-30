@@ -649,6 +649,68 @@ impl BsonValue {
         }
     }
 
+    pub fn for_all_strings<F : Fn(&str) -> ()>(&self, func: &F) {
+        match self {
+            &BsonValue::BDouble(_) => (),
+            &BsonValue::BString(ref s) => func(&s),
+            &BsonValue::BDocument(ref pairs) => {
+                for t in pairs {
+                    t.1.for_all_strings(func);
+                }
+            },
+            &BsonValue::BArray(ref a) => {
+                for v in a {
+                    v.for_all_strings(func);
+                }
+            },
+            &BsonValue::BBinary(_, _) => (),
+            &BsonValue::BUndefined => (),
+            &BsonValue::BObjectID(_) => (),
+            &BsonValue::BBoolean(_) => (),
+            &BsonValue::BDateTime(_) => (),
+            &BsonValue::BNull => (),
+            &BsonValue::BRegex(_, _) => (),
+            &BsonValue::BJSCode(_) => (),
+            &BsonValue::BJSCodeWithScope(_) => (),
+            &BsonValue::BInt32(_) => (),
+            &BsonValue::BTimeStamp(_) => (),
+            &BsonValue::BInt64(_) => (),
+            &BsonValue::BMinKey => (),
+            &BsonValue::BMaxKey => (),
+        }
+    }
+
+    pub fn find_all_strings<'a>(&'a self, dest: &mut Vec<&'a str>) {
+        match self {
+            &BsonValue::BDouble(_) => (),
+            &BsonValue::BString(ref s) => dest.push(&s),
+            &BsonValue::BDocument(ref pairs) => {
+                for t in pairs {
+                    t.1.find_all_strings(dest);
+                }
+            },
+            &BsonValue::BArray(ref a) => {
+                for v in a {
+                    v.find_all_strings(dest);
+                }
+            },
+            &BsonValue::BBinary(_, _) => (),
+            &BsonValue::BUndefined => (),
+            &BsonValue::BObjectID(_) => (),
+            &BsonValue::BBoolean(_) => (),
+            &BsonValue::BDateTime(_) => (),
+            &BsonValue::BNull => (),
+            &BsonValue::BRegex(_, _) => (),
+            &BsonValue::BJSCode(_) => (),
+            &BsonValue::BJSCodeWithScope(_) => (),
+            &BsonValue::BInt32(_) => (),
+            &BsonValue::BTimeStamp(_) => (),
+            &BsonValue::BInt64(_) => (),
+            &BsonValue::BMinKey => (),
+            &BsonValue::BMaxKey => (),
+        }
+    }
+
     pub fn get_weight_from_index_entry(k: &[u8]) -> Result<i32> {
         let n = 1 + k.rposition_elem(&0u8).expect("TODO");
         let ord_shouldbe = BsonValue::BInt32(0).get_type_order() as u8;
