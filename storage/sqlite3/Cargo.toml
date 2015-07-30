@@ -1,6 +1,6 @@
 [package]
 
-name = "storage_sqlite3"
+name = "elmo_sqlite3"
 version = "0.0.1"
 authors = [ "Eric Sink <eric@zumero.com>" ]
 

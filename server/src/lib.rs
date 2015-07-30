@@ -24,6 +24,7 @@
 #![feature(clone_from_slice)]
 #![feature(drain)]
 #![feature(iter_arith)]
+#![feature(result_expect)]
 
 // TODO turn the following warnings back on later
 #![allow(non_snake_case)]
@@ -35,9 +36,12 @@ use misc::endian;
 use misc::bufndx;
 use misc::varint;
 
-// this is only here because the temp Elmo server stuff is still below
 extern crate bson;
 use bson::BsonValue;
+
+extern crate elmo;
+
+extern crate elmo_sqlite3;
 
 use std::io;
 use std::io::Seek;
@@ -49,10 +53,9 @@ use std::fs::File;
 use std::fs::OpenOptions;
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::error::Error;
 
 #[derive(Debug)]
-enum LsmError {
+enum Error {
     // TODO remove Misc
     Misc(&'static str),
 
@@ -62,6 +65,7 @@ enum LsmError {
     Bson(bson::BsonError),
     Io(std::io::Error),
     Utf8(std::str::Utf8Error),
+    Whatever(Box<std::error::Error>),
 
     CursorNotValid,
     InvalidPageNumber,
@@ -70,67 +74,74 @@ enum LsmError {
     Poisoned,
 }
 
-impl std::fmt::Display for LsmError {
+impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match *self {
-            LsmError::Bson(ref err) => write!(f, "bson error: {}", err),
-            LsmError::Io(ref err) => write!(f, "IO error: {}", err),
-            LsmError::Utf8(ref err) => write!(f, "Utf8 error: {}", err),
-            LsmError::Misc(s) => write!(f, "Misc error: {}", s),
-            LsmError::CorruptFile(s) => write!(f, "Corrupt file: {}", s),
-            LsmError::Poisoned => write!(f, "Poisoned"),
-            LsmError::CursorNotValid => write!(f, "Cursor not valid"),
-            LsmError::InvalidPageNumber => write!(f, "Invalid page number"),
-            LsmError::InvalidPageType => write!(f, "Invalid page type"),
-            LsmError::RootPageNotInSegmentBlockList => write!(f, "Root page not in segment block list"),
+            Error::Bson(ref err) => write!(f, "bson error: {}", err),
+            Error::Io(ref err) => write!(f, "IO error: {}", err),
+            Error::Utf8(ref err) => write!(f, "Utf8 error: {}", err),
+            Error::Misc(s) => write!(f, "Misc error: {}", s),
+            Error::CorruptFile(s) => write!(f, "Corrupt file: {}", s),
+            Error::Poisoned => write!(f, "Poisoned"),
+            Error::CursorNotValid => write!(f, "Cursor not valid"),
+            Error::InvalidPageNumber => write!(f, "Invalid page number"),
+            Error::InvalidPageType => write!(f, "Invalid page type"),
+            Error::RootPageNotInSegmentBlockList => write!(f, "Root page not in segment block list"),
+            Error::Whatever(ref err) => write!(f, "Other error: {}", err),
         }
     }
 }
 
-impl std::error::Error for LsmError {
+impl std::error::Error for Error {
     fn description(&self) -> &str {
         match *self {
-            LsmError::Bson(ref err) => std::error::Error::description(err),
-            LsmError::Io(ref err) => std::error::Error::description(err),
-            LsmError::Utf8(ref err) => std::error::Error::description(err),
-            LsmError::Misc(s) => s,
-            LsmError::CorruptFile(s) => s,
-            LsmError::Poisoned => "poisoned",
-            LsmError::CursorNotValid => "cursor not valid",
-            LsmError::InvalidPageNumber => "invalid page number",
-            LsmError::InvalidPageType => "invalid page type",
-            LsmError::RootPageNotInSegmentBlockList => "Root page not in segment block list",
+            Error::Bson(ref err) => std::error::Error::description(err),
+            Error::Io(ref err) => std::error::Error::description(err),
+            Error::Utf8(ref err) => std::error::Error::description(err),
+            Error::Misc(s) => s,
+            Error::CorruptFile(s) => s,
+            Error::Poisoned => "poisoned",
+            Error::CursorNotValid => "cursor not valid",
+            Error::InvalidPageNumber => "invalid page number",
+            Error::InvalidPageType => "invalid page type",
+            Error::RootPageNotInSegmentBlockList => "Root page not in segment block list",
+            Error::Whatever(ref err) => std::error::Error::description(&**err),
         }
     }
 
     // TODO cause
 }
 
-impl From<bson::BsonError> for LsmError {
-    fn from(err: bson::BsonError) -> LsmError {
-        LsmError::Bson(err)
+impl From<bson::BsonError> for Error {
+    fn from(err: bson::BsonError) -> Error {
+        Error::Bson(err)
     }
 }
 
-impl From<io::Error> for LsmError {
-    fn from(err: io::Error) -> LsmError {
-        LsmError::Io(err)
+impl From<io::Error> for Error {
+    fn from(err: io::Error) -> Error {
+        Error::Io(err)
     }
 }
 
-impl From<std::str::Utf8Error> for LsmError {
-    fn from(err: std::str::Utf8Error) -> LsmError {
-        LsmError::Utf8(err)
+impl From<std::str::Utf8Error> for Error {
+    fn from(err: std::str::Utf8Error) -> Error {
+        Error::Utf8(err)
     }
 }
 
-impl<T> From<std::sync::PoisonError<T>> for LsmError {
-    fn from(_err: std::sync::PoisonError<T>) -> LsmError {
-        LsmError::Poisoned
+impl<T> From<std::sync::PoisonError<T>> for Error {
+    fn from(_err: std::sync::PoisonError<T>) -> Error {
+        Error::Poisoned
     }
 }
 
-pub type Result<T> = std::result::Result<T, LsmError>;
+// TODO why is 'static needed here?  Doesn't this take ownership?
+fn wrap_err<E: std::error::Error + 'static>(err: E) -> Error {
+    Error::Whatever(box err)
+}
+
+pub type Result<T> = std::result::Result<T, Error>;
 
 struct BsonMsgReply {
     r_requestID : i32,
@@ -244,7 +255,7 @@ fn parseMessageFromClient(ba: &[u8]) -> Result<BsonClientMsg> {
         },
 
         _ => {
-            Err(LsmError::CorruptFile("unknown message opcode TODO"))
+            Err(Error::CorruptFile("unknown message opcode TODO"))
         },
     }
 }
@@ -266,7 +277,7 @@ fn readMessage(stream: &mut Read) -> Result<Box<[u8]>> {
     misc::bytes::copy_into(&ba, &mut msg[0 .. 4]);
     let got = try!(misc::io::read_fully(stream, &mut msg[4 .. messageLength]));
     if got != messageLength - 4 {
-        return Err(LsmError::CorruptFile("end of file at the wrong time"));
+        return Err(Error::CorruptFile("end of file at the wrong time"));
     }
     Ok(msg.into_boxed_slice())
 }
@@ -284,46 +295,7 @@ fn createReply(reqID: i32, docs: Vec<BsonValue>, crsrID: i64) -> BsonMsgReply {
     msg
 }
 
-fn doInsert(db: &str, coll: &str, s: &Vec<BsonValue>) -> Result<(Vec<BsonValue>,Vec<BsonValue>)> {
-    /* TODO
-    let results = crud.insert(db, coll, s);
-    let writeErrors =
-        results
-        |> Array.filter (fun (_,err) ->
-            match err with
-            | Some _ -> true
-            | None -> false
-        )
-        |> Array.mapi (fun i (_,err) ->
-            // TODO use of Option.get is bad, but we just filtered all the Some values above
-            BDocument [| ("index",BInt32 i); ("errmsg",Option.get err |> BString) |]
-        )
-    (results,writeErrors)
-    */
-    Ok((Vec::new(), Vec::new()))
-}
-
-fn reply_Insert(clientMsg: &BsonMsgQuery, db: &str) -> Result<BsonMsgReply> {
-    let q = &clientMsg.q_query;
-    let coll = try!(try!(q.getValueForKey("insert")).getString());
-    let docs = try!(try!(q.getValueForKey("documents")).getArray());
-    // TODO ordered
-    let (results,writeErrors) = try!(doInsert(db, coll, docs));
-    let mut pairs = Vec::new();
-    pairs.push((String::from_str("n"), BsonValue::BInt32((results.len() - writeErrors.len()) as i32)));
-    //pairs.Add("lastOp", BTimeStamp 0L) // TODO
-    if writeErrors.len() > 0 {
-        pairs.push((String::from_str("writeErrors"), BsonValue::BArray(writeErrors)));
-    }
-    // TODO electionId?
-    pairs.push((String::from_str("ok"), BsonValue::BDouble(1.0)));
-    let doc = BsonValue::BDocument(pairs);
-    Ok(createReply(clientMsg.q_requestID, vec![doc], 0))
-}
-
-// TODO this layer of the code should not be using LsmError
-
-fn reply_err(requestID: i32, err: LsmError) -> BsonMsgReply {
+fn reply_err(requestID: i32, err: Error) -> BsonMsgReply {
     let mut pairs = Vec::new();
     // TODO stack trace was nice here
     //pairs.push(("errmsg", BString("exception: " + errmsg)));
@@ -333,100 +305,139 @@ fn reply_err(requestID: i32, err: LsmError) -> BsonMsgReply {
     createReply(requestID, vec![doc], 0)
 }
 
-fn reply_cmd(clientMsg: &BsonMsgQuery, db: &str) -> Result<BsonMsgReply> {
-    match clientMsg.q_query {
-        BsonValue::BDocument(ref pairs) => {
-            if pairs.is_empty() {
-                Err(LsmError::Misc("empty query"))
-            } else {
-                // this code assumes that the first key is always the command
-                let cmd = pairs[0].0.as_str();
-                // TODO let cmd = cmd.ToLower();
-                let res =
-                    match cmd {
-                        //"explain" => reply_explain clientMsg db
-                        //"aggregate" => reply_aggregate clientMsg db
-                        "insert" => reply_Insert(clientMsg, db),
-                        //"delete" => reply_Delete clientMsg db
-                        //"distinct" => reply_distinct clientMsg db
-                        //"update" => reply_Update clientMsg db
-                        //"findandmodify" => reply_FindAndModify clientMsg db
-                        //"count" => reply_Count clientMsg db
-                        //"validate" => reply_Validate clientMsg db
-                        //"createindexes" => reply_createIndexes clientMsg db
-                        //"deleteindexes" => reply_deleteIndexes clientMsg db
-                        //"drop" => reply_DropCollection clientMsg db
-                        //"dropdatabase" => reply_DropDatabase clientMsg db
-                        //"listcollections" => reply_listCollections clientMsg db
-                        //"listindexes" => reply_listIndexes clientMsg db
-                        //"create" => reply_CreateCollection clientMsg db
-                        //"features" => reply_features clientMsg db
-                        _ => Err(LsmError::Misc("unknown cmd"))
-                    };
-                res
-            }
-        },
-        _ => Err(LsmError::Misc("query must be a document")),
-    }
+struct Server {
+    conn: elmo::Connection,
 }
 
-fn reply2004(qm: BsonMsgQuery) -> BsonMsgReply {
-    let pair = qm.q_fullCollectionName.split('.').collect::<Vec<_>>();
-    let r = 
-        if pair.len() < 2 {
-            // TODO failwith (sprintf "bad collection name: %s" (clientMsg.q_fullCollectionName))
-            Err(LsmError::Misc("bad collection name"))
-        } else {
-            let db = pair[0];
-            let coll = pair[1];
-            if db == "admin" {
-                if coll == "$cmd" {
-                    //reply_AdminCmd clientMsg
-                    Err(LsmError::Misc("TODO"))
+impl Server {
+
+    fn doInsert(&self, db: &str, coll: &str, s: &Vec<BsonValue>) -> Result<(Vec<BsonValue>,Vec<BsonValue>)> {
+        /* TODO
+        let results = crud.insert(db, coll, s);
+        let writeErrors =
+            results
+            |> Array.filter (fun (_,err) ->
+                match err with
+                | Some _ -> true
+                | None -> false
+            )
+            |> Array.mapi (fun i (_,err) ->
+                // TODO use of Option.get is bad, but we just filtered all the Some values above
+                BDocument [| ("index",BInt32 i); ("errmsg",Option.get err |> BString) |]
+            )
+        (results,writeErrors)
+        */
+        Ok((Vec::new(), Vec::new()))
+    }
+
+    fn reply_Insert(&self, clientMsg: &BsonMsgQuery, db: &str) -> Result<BsonMsgReply> {
+        let q = &clientMsg.q_query;
+        let coll = try!(try!(q.getValueForKey("insert")).getString());
+        let docs = try!(try!(q.getValueForKey("documents")).getArray());
+        // TODO ordered
+        let (results,writeErrors) = try!(self.doInsert(db, coll, docs));
+        let mut pairs = Vec::new();
+        pairs.push((String::from_str("n"), BsonValue::BInt32((results.len() - writeErrors.len()) as i32)));
+        //pairs.Add("lastOp", BTimeStamp 0L) // TODO
+        if writeErrors.len() > 0 {
+            pairs.push((String::from_str("writeErrors"), BsonValue::BArray(writeErrors)));
+        }
+        // TODO electionId?
+        pairs.push((String::from_str("ok"), BsonValue::BDouble(1.0)));
+        let doc = BsonValue::BDocument(pairs);
+        Ok(createReply(clientMsg.q_requestID, vec![doc], 0))
+    }
+
+    // TODO this layer of the code should not be using Error
+
+    fn reply_cmd(&self, clientMsg: &BsonMsgQuery, db: &str) -> Result<BsonMsgReply> {
+        match clientMsg.q_query {
+            BsonValue::BDocument(ref pairs) => {
+                if pairs.is_empty() {
+                    Err(Error::Misc("empty query"))
                 } else {
-                    //failwith "not implemented"
-                    Err(LsmError::Misc("TODO"))
+                    // this code assumes that the first key is always the command
+                    let cmd = pairs[0].0.as_str();
+                    // TODO let cmd = cmd.ToLower();
+                    let res =
+                        match cmd {
+                            //"explain" => reply_explain clientMsg db
+                            //"aggregate" => reply_aggregate clientMsg db
+                            "insert" => self.reply_Insert(clientMsg, db),
+                            //"delete" => reply_Delete clientMsg db
+                            //"distinct" => reply_distinct clientMsg db
+                            //"update" => reply_Update clientMsg db
+                            //"findandmodify" => reply_FindAndModify clientMsg db
+                            //"count" => reply_Count clientMsg db
+                            //"validate" => reply_Validate clientMsg db
+                            //"createindexes" => reply_createIndexes clientMsg db
+                            //"deleteindexes" => reply_deleteIndexes clientMsg db
+                            //"drop" => reply_DropCollection clientMsg db
+                            //"dropdatabase" => reply_DropDatabase clientMsg db
+                            //"listcollections" => reply_listCollections clientMsg db
+                            //"listindexes" => reply_listIndexes clientMsg db
+                            //"create" => reply_CreateCollection clientMsg db
+                            //"features" => reply_features clientMsg db
+                            _ => Err(Error::Misc("unknown cmd"))
+                        };
+                    res
                 }
+            },
+            _ => Err(Error::Misc("query must be a document")),
+        }
+    }
+
+    fn reply2004(&self, qm: BsonMsgQuery) -> BsonMsgReply {
+        let pair = qm.q_fullCollectionName.split('.').collect::<Vec<_>>();
+        let r = 
+            if pair.len() < 2 {
+                // TODO failwith (sprintf "bad collection name: %s" (clientMsg.q_fullCollectionName))
+                Err(Error::Misc("bad collection name"))
             } else {
-                if coll == "$cmd" {
-                    if pair.len() == 4 && pair[2]=="sys" && pair[3]=="inprog" {
-                        //reply_cmd_sys_inprog clientMsg db
-                    Err(LsmError::Misc("TODO"))
+                let db = pair[0];
+                let coll = pair[1];
+                if db == "admin" {
+                    if coll == "$cmd" {
+                        //reply_AdminCmd clientMsg
+                        Err(Error::Misc("TODO"))
                     } else {
-                        reply_cmd(&qm, db)
+                        //failwith "not implemented"
+                        Err(Error::Misc("TODO"))
                     }
-                } else if pair.len()==3 && pair[1]=="system" && pair[2]=="indexes" {
-                    //reply_system_indexes clientMsg db
-                    Err(LsmError::Misc("TODO"))
-                } else if pair.len()==3 && pair[1]=="system" && pair[2]=="namespaces" {
-                    //reply_system_namespaces clientMsg db
-                    Err(LsmError::Misc("TODO"))
                 } else {
-                    //reply_Query clientMsg
-                    Err(LsmError::Misc("TODO"))
+                    if coll == "$cmd" {
+                        if pair.len() == 4 && pair[2]=="sys" && pair[3]=="inprog" {
+                            //reply_cmd_sys_inprog clientMsg db
+                        Err(Error::Misc("TODO"))
+                        } else {
+                            self.reply_cmd(&qm, db)
+                        }
+                    } else if pair.len()==3 && pair[1]=="system" && pair[2]=="indexes" {
+                        //reply_system_indexes clientMsg db
+                        Err(Error::Misc("TODO"))
+                    } else if pair.len()==3 && pair[1]=="system" && pair[2]=="namespaces" {
+                        //reply_system_namespaces clientMsg db
+                        Err(Error::Misc("TODO"))
+                    } else {
+                        //reply_Query clientMsg
+                        Err(Error::Misc("TODO"))
+                    }
                 }
-            }
-        };
-    match r {
-        Ok(r) => r,
-        Err(e) => reply_err(qm.q_requestID, e),
+            };
+        match r {
+            Ok(r) => r,
+            Err(e) => reply_err(qm.q_requestID, e),
+        }
     }
-}
 
-use std::net::{TcpListener, TcpStream};
-use std::thread;
-
-fn serve() {
-    let listener = TcpListener::bind("127.0.0.1:80").unwrap();
-
-    fn handle_one_message(stream: &mut TcpStream) -> Result<()> {
+    fn handle_one_message(&self, stream: &mut std::net::TcpStream) -> Result<()> {
         let ba = try!(readMessage(stream));
         let msg = try!(parseMessageFromClient(&ba));
         match msg {
             BsonClientMsg::BsonMsgKillCursors(km) => {
             },
             BsonClientMsg::BsonMsgQuery(qm) => {
-                let resp = reply2004(qm);
+                let resp = self.reply2004(qm);
                 let ba = resp.encodeReply();
                 stream.write(&ba);
             },
@@ -436,23 +447,33 @@ fn serve() {
         Ok(())
     }
 
-    fn handle_client(mut stream: TcpStream) {
+    fn handle_client(&self, mut stream: std::net::TcpStream) -> Result<()> {
         loop {
-            let r = handle_one_message(&mut stream);
+            let r = self.handle_one_message(&mut stream);
             if r.is_err() {
                 // TODO
-                break;
+                return r;
             }
         }
     }
+
+}
+
+pub fn serve() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:80").unwrap();
 
     // accept connections and process them, spawning a new thread for each one
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
-                thread::spawn(move|| {
+                std::thread::spawn(move|| {
                     // connection succeeded
-                    handle_client(stream)
+                    let conn = elmo_sqlite3::connect("foo.db").expect("TODO");
+                    let conn = elmo::Connection::new(conn);
+                    let s = Server {
+                        conn: conn,
+                    };
+                    s.handle_client(stream).expect("TODO");
                 });
             }
             Err(e) => { /* connection failed */ }
@@ -462,4 +483,5 @@ fn serve() {
     // close the socket server
     drop(listener);
 }
+
 

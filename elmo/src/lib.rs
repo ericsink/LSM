@@ -220,18 +220,18 @@ pub trait StorageConnection {
     fn begin_read<'a>(&'a self) -> Result<Box<StorageReader + 'a>>;
 }
 
-struct ElmoConnection {
+pub struct Connection {
     conn: Box<StorageConnection>,
 }
 
-impl ElmoConnection {
-    fn new(conn: Box<StorageConnection>) -> ElmoConnection {
-        ElmoConnection {
+impl Connection {
+    pub fn new(conn: Box<StorageConnection>) -> Connection {
+        Connection {
             conn: conn,
         }
     }
 
-    fn insert(&self, db: &str, coll: &str, docs: Vec<BsonValue>) -> Result<Vec<(BsonValue,Result<()>)>> {
+    pub fn insert(&self, db: &str, coll: &str, docs: Vec<BsonValue>) -> Result<Vec<(BsonValue,Result<()>)>> {
         // TODO make sure every doc has an _id
         let mut results = Vec::new();
         {

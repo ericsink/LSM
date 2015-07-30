@@ -10,6 +10,12 @@ path = "../misc"
 [dependencies.bson]
 path = "../bson"
 
+[dependencies.elmo]
+path = "../elmo"
+
+[dependencies.elmo_sqlite3]
+path = "../storage/sqlite3"
+
 # The testing profile, used for `cargo test`
 [profile.test]
 opt-level = 3
