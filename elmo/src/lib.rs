@@ -176,7 +176,8 @@ pub struct QueryPlan {
 
 // TODO maybe the iterator should be a member of StorageCollectionReader instead.
 
-pub trait StorageCollectionReader : Iterator<Item=Result<BsonValue>> {
+pub trait StorageCollectionReader {
+    fn iter<'a>(&'a self) -> &'a Iterator<Item=Result<BsonValue>>;
     fn get_total_keys_examined(&self) -> u64;
     // TODO more stuff here
 }
@@ -184,7 +185,7 @@ pub trait StorageCollectionReader : Iterator<Item=Result<BsonValue>> {
 pub trait StorageReader {
     fn list_collections(&self) -> Result<Vec<(String, String, BsonValue)>>;
     fn list_indexes(&self) -> Result<Vec<IndexInfo>>;
-    fn get_collection_reader<'a>(&'a self, db: &str, coll: &str, plan: Option<QueryPlan>) -> Result<Box<StorageCollectionReader<Item=Result<BsonValue>> + 'a>>;
+    fn get_collection_reader<'a>(&'a self, db: &str, coll: &str, plan: Option<QueryPlan>) -> Result<Box<StorageCollectionReader + 'a>>;
 }
 
 pub trait StorageCollectionWriter {

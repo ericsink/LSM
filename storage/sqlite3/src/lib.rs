@@ -86,8 +86,18 @@ impl Iterator for StatementBsonValueIterator {
     }
 }
 
+struct MyEmptyIterator;
+
+impl Iterator for MyEmptyIterator {
+    type Item = Result<BsonValue>;
+    fn next(&mut self) -> Option<Self::Item> {
+        None
+    }
+}
+
 struct MyNormalCollectionReader {
-    stmt: sqlite3::PreparedStatement,
+    seq: Box<Iterator<Item=Result<BsonValue>>>,
+
     // TODO need counts here
 
     // this struct does not have a reference to a parent.
@@ -98,7 +108,8 @@ struct MyNormalCollectionReader {
 }
 
 struct MyTextCollectionReader {
-    stmt: sqlite3::PreparedStatement,
+    seq: Box<Iterator<Item=Result<BsonValue>>>,
+
     // TODO need counts here
 
     // this struct does not have a reference to a parent.
@@ -108,7 +119,9 @@ struct MyTextCollectionReader {
     // and also because such a link doesn't seem necessary.
 }
 
-struct MyEmptyCollectionReader;
+struct MyEmptyCollectionReader {
+    seq: MyEmptyIterator,
+}
 
 struct MyReader<'a> {
     myconn: &'a MyConn,
@@ -513,9 +526,14 @@ impl MyConn {
         let tbl = get_table_name_for_collection(db, coll);
         let stmt = try!(self.conn.prepare(&format!("SELECT bson FROM \"{}\"", tbl)).map_err(elmo::wrap_err));
         // TODO keep track of total keys examined, etc.
-        let rdr = MyNormalCollectionReader {
-            stmt: stmt,
-        };
+        let seq = 
+            StatementBsonValueIterator {
+                     stmt: stmt,
+            };
+        let rdr = 
+            MyNormalCollectionReader {
+                seq: box seq,
+            };
         Ok(rdr)
     }
 
@@ -523,9 +541,14 @@ impl MyConn {
         let stmt = try!(self.get_stmt_for_index_scan(plan));
 
         // TODO keep track of total keys examined, etc.
-        let rdr = MyNormalCollectionReader {
-            stmt: stmt,
-        };
+        let seq = 
+            StatementBsonValueIterator {
+                     stmt: stmt,
+            };
+        let rdr = 
+            MyNormalCollectionReader {
+                seq: box seq,
+            };
         Ok(rdr)
     }
 
@@ -690,10 +713,11 @@ impl MyConn {
                 // TODO wrap in StatementBsonValueIterator
                 // TODO need to call check_phrase(doc) on each value produced
                 // TODO if keep, calc a score for each one too
-                let rdr = MyNormalCollectionReader {
-                    stmt: stmt,
-                };
-                rdr
+                let rdr = 
+                    StatementBsonValueIterator {
+                        stmt: stmt,
+                    };
+                box rdr
             }
         );
         unimplemented!();
@@ -734,10 +758,13 @@ impl MyConn {
 
     }
 
-    fn get_collection_reader<'b>(&'b self, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> Result<Box<elmo::StorageCollectionReader<Item=elmo::Result<BsonValue>> + 'b>> {
+    fn get_collection_reader<'b>(&'b self, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> Result<Box<elmo::StorageCollectionReader + 'b>> {
         match try!(self.get_collection_options(db, coll)) {
             None => {
-                let rdr = MyEmptyCollectionReader;
+                let rdr = 
+                    MyEmptyCollectionReader {
+                        seq: MyEmptyIterator,
+                    };
                 Ok(box rdr)
             },
             Some(_) => {
@@ -1267,7 +1294,7 @@ impl<'a> MyReader<'a> {
 }
 
 impl<'a> elmo::StorageReader for MyReader<'a> {
-    fn get_collection_reader<'b>(&'b self, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> Result<Box<elmo::StorageCollectionReader<Item=elmo::Result<BsonValue>> + 'b>> {
+    fn get_collection_reader<'b>(&'b self, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> Result<Box<elmo::StorageCollectionReader + 'b>> {
         let rdr = try!(self.myconn.get_collection_reader(db, coll, plan));
         Ok(rdr)
     }
@@ -1283,7 +1310,7 @@ impl<'a> elmo::StorageReader for MyReader<'a> {
 }
 
 impl<'a> elmo::StorageReader for MyWriter<'a> {
-    fn get_collection_reader<'b>(&'b self, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> Result<Box<elmo::StorageCollectionReader<Item=elmo::Result<BsonValue>> + 'b>> {
+    fn get_collection_reader<'b>(&'b self, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> Result<Box<elmo::StorageCollectionReader + 'b>> {
         let rdr = try!(self.myconn.get_collection_reader(db, coll, plan));
         Ok(rdr)
     }
@@ -1316,32 +1343,11 @@ impl elmo::StorageConnection for MyConn {
     }
 }
 
-impl MyNormalCollectionReader {
-    fn iter_next(&mut self) -> Result<Option<BsonValue>> {
-        // TODO can't find a way to store the ResultSet from execute()
-        // in the same struct as its statement, because the ResultSet()
-        // contains a mut reference to the statement.  So we look at
-        // the implementation of execute() and realize that it doesn't
-        // actually do anything of substance, so we call it every
-        // time.  Ugly.
-        match try!(self.stmt.execute().step().map_err(elmo::wrap_err)) {
-            None => Ok(None),
-            Some(r) => {
-                let b = r.column_blob(0).expect("NOT NULL");
-                let v = try!(BsonValue::from_bson(&b));
-                Ok(Some(v))
-            },
-        }
-    }
-}
-
-impl MyTextCollectionReader {
-    fn iter_next(&mut self) -> Result<Option<BsonValue>> {
-        unimplemented!();
-    }
-}
-
 impl elmo::StorageCollectionReader for MyNormalCollectionReader {
+    fn iter<'a>(&'a self) -> &'a Iterator<Item=Result<BsonValue>> {
+        &self.seq
+    }
+
     fn get_total_keys_examined(&self) -> u64 {
         // TODO
         0
@@ -1350,6 +1356,10 @@ impl elmo::StorageCollectionReader for MyNormalCollectionReader {
 }
 
 impl elmo::StorageCollectionReader for MyEmptyCollectionReader {
+    fn iter<'a>(&'a self) -> &'a Iterator<Item=Result<BsonValue>> {
+        &self.seq
+    }
+
     fn get_total_keys_examined(&self) -> u64 {
         0
     }
@@ -1357,60 +1367,15 @@ impl elmo::StorageCollectionReader for MyEmptyCollectionReader {
 }
 
 impl elmo::StorageCollectionReader for MyTextCollectionReader {
+    fn iter<'a>(&'a self) -> &'a Iterator<Item=Result<BsonValue>> {
+        &self.seq
+    }
+
     fn get_total_keys_examined(&self) -> u64 {
         // TODO
         0
     }
 
-}
-
-impl Iterator for MyNormalCollectionReader {
-    type Item = Result<BsonValue>;
-    fn next(&mut self) -> Option<Self::Item> {
-        match self.iter_next() {
-            Err(e) => {
-                return Some(Err(e));
-            },
-            Ok(v) => {
-                match v {
-                    None => {
-                        return None;
-                    },
-                    Some(v) => {
-                        return Some(Ok(v));
-                    }
-                }
-            },
-        }
-    }
-}
-
-impl Iterator for MyEmptyCollectionReader {
-    type Item = Result<BsonValue>;
-    fn next(&mut self) -> Option<Self::Item> {
-        None
-    }
-}
-
-impl Iterator for MyTextCollectionReader {
-    type Item = Result<BsonValue>;
-    fn next(&mut self) -> Option<Self::Item> {
-        match self.iter_next() {
-            Err(e) => {
-                return Some(Err(e));
-            },
-            Ok(v) => {
-                match v {
-                    None => {
-                        return None;
-                    },
-                    Some(v) => {
-                        return Some(Ok(v));
-                    }
-                }
-            },
-        }
-    }
 }
 
 fn base_connect(name: &str) -> sqlite3::SqliteResult<sqlite3::DatabaseConnection> {
