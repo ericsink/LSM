@@ -20,10 +20,6 @@
 #![feature(vec_push_all)]
 #![feature(result_expect)]
 
-// TODO turn the following warnings back on later
-#![allow(non_snake_case)]
-#![allow(non_camel_case_types)]
-
 extern crate misc;
 
 use misc::endian;
@@ -117,7 +113,7 @@ fn wrap_err<E: std::error::Error + 'static>(err: E) -> Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug)]
-struct BsonMsgReply {
+struct Reply {
     r_requestID : i32,
     r_responseTo : i32,
     r_responseFlags : i32,
@@ -127,7 +123,7 @@ struct BsonMsgReply {
 }
 
 #[derive(Debug)]
-struct BsonMsgQuery {
+struct MsgQuery {
     q_requestID : i32,
     q_flags : i32,
     q_fullCollectionName : String,
@@ -138,7 +134,7 @@ struct BsonMsgQuery {
 }
 
 #[derive(Debug)]
-struct BsonMsgGetMore {
+struct MsgGetMore {
     m_requestID : i32,
     m_fullCollectionName : String,
     m_numberToReturn : i32,
@@ -146,20 +142,20 @@ struct BsonMsgGetMore {
 }
 
 #[derive(Debug)]
-struct BsonMsgKillCursors {
+struct MsgKillCursors {
     k_requestID : i32,
     k_cursorIDs : Vec<i64>,
 }
 
 #[derive(Debug)]
-enum BsonClientMsg {
-    BsonMsgQuery(BsonMsgQuery),
-    BsonMsgGetMore(BsonMsgGetMore),
-    BsonMsgKillCursors(BsonMsgKillCursors),
+enum Request {
+    Query(MsgQuery),
+    GetMore(MsgGetMore),
+    KillCursors(MsgKillCursors),
 }
 
-impl BsonMsgReply {
-    fn encodeReply(&self) -> Box<[u8]> {
+impl Reply {
+    fn encode(&self) -> Box<[u8]> {
         let mut w = Vec::new();
         // length placeholder
         w.push_all(&[0u8; 4]);
@@ -178,7 +174,7 @@ impl BsonMsgReply {
     }
 }
 
-fn parseMessageFromClient(ba: &[u8]) -> Result<BsonClientMsg> {
+fn parse_request(ba: &[u8]) -> Result<Request> {
     let mut i = 0;
     let (messageLength,requestID,responseTo,opCode) = slurp_header(ba, &mut i);
     match opCode {
@@ -190,7 +186,7 @@ fn parseMessageFromClient(ba: &[u8]) -> Result<BsonClientMsg> {
             let query = try!(bson::slurp_document(ba, &mut i));
             let returnFieldsSelector = if i < ba.len() { Some(try!(bson::slurp_document(ba, &mut i))) } else { None };
 
-            let msg = BsonMsgQuery {
+            let msg = MsgQuery {
                 q_requestID: requestID,
                 q_flags: flags,
                 q_fullCollectionName: fullCollectionName,
@@ -199,7 +195,7 @@ fn parseMessageFromClient(ba: &[u8]) -> Result<BsonClientMsg> {
                 q_query: query,
                 q_returnFieldsSelector: returnFieldsSelector,
             };
-            Ok(BsonClientMsg::BsonMsgQuery(msg))
+            Ok(Request::Query(msg))
         },
 
         2005 => {
@@ -208,13 +204,13 @@ fn parseMessageFromClient(ba: &[u8]) -> Result<BsonClientMsg> {
             let numberToReturn = bufndx::slurp_i32_le(ba, &mut i);
             let cursorID = bufndx::slurp_i64_le(ba, &mut i);
 
-            let msg = BsonMsgGetMore {
+            let msg = MsgGetMore {
                 m_requestID: requestID,
                 m_fullCollectionName: fullCollectionName,
                 m_numberToReturn: numberToReturn,
                 m_cursorID: cursorID,
             };
-            Ok(BsonClientMsg::BsonMsgGetMore(msg))
+            Ok(Request::GetMore(msg))
         },
 
         2007 => {
@@ -225,11 +221,11 @@ fn parseMessageFromClient(ba: &[u8]) -> Result<BsonClientMsg> {
                 cursorIDs.push(bufndx::slurp_i64_le(ba, &mut i));
             }
 
-            let msg = BsonMsgKillCursors {
+            let msg = MsgKillCursors {
                 k_requestID: requestID,
                 k_cursorIDs: cursorIDs,
             };
-            Ok(BsonClientMsg::BsonMsgKillCursors(msg))
+            Ok(Request::KillCursors(msg))
         },
 
         _ => {
@@ -264,8 +260,8 @@ fn read_message(stream: &mut Read) -> Result<Option<Box<[u8]>>> {
     Ok(Some(msg.into_boxed_slice()))
 }
 
-fn create_reply(reqID: i32, docs: Vec<BsonValue>, crsrID: i64) -> BsonMsgReply {
-    let msg = BsonMsgReply {
+fn create_reply(reqID: i32, docs: Vec<BsonValue>, crsrID: i64) -> Reply {
+    let msg = Reply {
         r_requestID: 0,
         r_responseTo: reqID,
         r_responseFlags: 0,
@@ -277,13 +273,12 @@ fn create_reply(reqID: i32, docs: Vec<BsonValue>, crsrID: i64) -> BsonMsgReply {
     msg
 }
 
-fn reply_err(requestID: i32, err: Error) -> BsonMsgReply {
-    let mut pairs = Vec::new();
+fn reply_err(requestID: i32, err: Error) -> Reply {
+    let mut doc = BsonValue::BDocument(vec![]);
     // TODO stack trace was nice here
     //pairs.push(("errmsg", BString("exception: " + errmsg)));
     //pairs.push(("code", BInt32(code)));
-    pairs.push((String::from("ok"), BsonValue::BInt32(0)));
-    let doc = BsonValue::BDocument(pairs);
+    doc.add_pair_i32("ok", 0);
     create_reply(requestID, vec![doc], 0)
 }
 
@@ -293,14 +288,14 @@ struct Server {
 
 impl Server {
 
-    fn reply_whatsmyuri(&self, clientMsg: &BsonMsgQuery) -> Result<BsonMsgReply> {
+    fn reply_whatsmyuri(&self, clientMsg: &MsgQuery) -> Result<Reply> {
         let mut doc = BsonValue::BDocument(vec![]);
         doc.add_pair_str("you", "127.0.0.1:65460");
         doc.add_pair_i32("ok", 1);
         Ok(create_reply(clientMsg.q_requestID, vec![doc], 0))
     }
 
-    fn reply_getlog(&self, clientMsg: &BsonMsgQuery) -> Result<BsonMsgReply> {
+    fn reply_getlog(&self, clientMsg: &MsgQuery) -> Result<Reply> {
         let mut doc = BsonValue::BDocument(vec![]);
         doc.add_pair_i32("totalLinesWritten", 1);
         doc.add_pair("log", BsonValue::BArray(vec![]));
@@ -308,7 +303,7 @@ impl Server {
         Ok(create_reply(clientMsg.q_requestID, vec![doc], 0))
     }
 
-    fn reply_replsetgetstatus(&self, clientMsg: &BsonMsgQuery) -> Result<BsonMsgReply> {
+    fn reply_replsetgetstatus(&self, clientMsg: &MsgQuery) -> Result<Reply> {
         let mut mine = BsonValue::BDocument(vec![]);
         mine.add_pair_i32("_id", 0);
         mine.add_pair_str("name", "whatever");
@@ -332,18 +327,23 @@ impl Server {
         Ok(create_reply(clientMsg.q_requestID, vec![doc], 0))
     }
 
-    fn reply_ismaster(&self, clientMsg: &BsonMsgQuery) -> Result<BsonMsgReply> {
-        let mut pairs = Vec::new();
-        // TODO
-        pairs.push((String::from("ismaster"), BsonValue::BBoolean(true)));
-        pairs.push((String::from("secondary"), BsonValue::BBoolean(false)));
-        pairs.push((String::from("maxWireVersion"), BsonValue::BInt32(3)));
-        pairs.push((String::from("ok"), BsonValue::BDouble(1.0)));
-        let doc = BsonValue::BDocument(pairs);
+    fn reply_ismaster(&self, clientMsg: &MsgQuery) -> Result<Reply> {
+        let mut doc = BsonValue::BDocument(vec![]);
+        doc.add_pair_bool("ismaster", true);
+        doc.add_pair_bool("secondary", false);
+        doc.add_pair_i32("maxWireVersion", 3);
+        doc.add_pair_i32("minWireVersion", 2);
+        // ver >= 2:  we don't support the older fire-and-forget write operations. 
+        // ver >= 3:  we don't support the older form of explain
+        // TODO if we set minWireVersion to 3, which is what we want to do, so
+        // that we can tell the client that we don't support the older form of
+        // explain, what happens is that we start getting the old fire-and-forget
+        // write operations instead of the write commands that we want.
+        doc.add_pair_i32("ok", 1);
         Ok(create_reply(clientMsg.q_requestID, vec![doc], 0))
     }
 
-    fn reply_admin_cmd(&self, clientMsg: &BsonMsgQuery, db: &str) -> Result<BsonMsgReply> {
+    fn reply_admin_cmd(&self, clientMsg: &MsgQuery, db: &str) -> Result<Reply> {
         match clientMsg.q_query {
             BsonValue::BDocument(ref pairs) => {
                 if pairs.is_empty() {
@@ -367,7 +367,7 @@ impl Server {
         }
     }
 
-    fn reply_insert(&self, clientMsg: &BsonMsgQuery, db: &str) -> Result<BsonMsgReply> {
+    fn reply_insert(&self, clientMsg: &MsgQuery, db: &str) -> Result<Reply> {
         let q = &clientMsg.q_query;
         let coll = try!(try!(q.getValueForKey("insert")).getString());
         let docs = try!(try!(q.getValueForKey("documents")).getArray());
@@ -381,21 +381,18 @@ impl Server {
                 errors.push(err);
             }
         }
-        let mut pairs = Vec::new();
-        pairs.push((String::from("n"), BsonValue::BInt32((results.len() - errors.len()) as i32)));
-        //pairs.Add("lastOp", BTimeStamp 0L) // TODO
+        let mut doc = BsonValue::BDocument(vec![]);
+        doc.add_pair_i32("n", ((results.len() - errors.len()) as i32));
         if errors.len() > 0 {
-            pairs.push((String::from("writeErrors"), BsonValue::BArray(errors)));
+            doc.add_pair("writeErrors", BsonValue::BArray(errors));
         }
-        // TODO electionId?
-        pairs.push((String::from("ok"), BsonValue::BDouble(1.0)));
-        let doc = BsonValue::BDocument(pairs);
+        doc.add_pair_i32("ok", 1);
         Ok(create_reply(clientMsg.q_requestID, vec![doc], 0))
     }
 
     // TODO this layer of the code should not be using Error
 
-    fn reply_cmd(&self, clientMsg: &BsonMsgQuery, db: &str) -> Result<BsonMsgReply> {
+    fn reply_cmd(&self, clientMsg: &MsgQuery, db: &str) -> Result<Reply> {
         match clientMsg.q_query {
             BsonValue::BDocument(ref pairs) => {
                 if pairs.is_empty() {
@@ -432,7 +429,7 @@ impl Server {
         }
     }
 
-    fn reply2004(&self, qm: BsonMsgQuery) -> BsonMsgReply {
+    fn reply_2004(&self, qm: MsgQuery) -> Reply {
         let pair = qm.q_fullCollectionName.split('.').collect::<Vec<_>>();
         let r = 
             if pair.len() < 2 {
@@ -482,19 +479,19 @@ impl Server {
             None => Ok(()),
             Some(ba) => {
                 //println!("{:?}", ba);
-                let msg = try!(parseMessageFromClient(&ba));
+                let msg = try!(parse_request(&ba));
                 println!("request: {:?}", msg);
                 match msg {
-                    BsonClientMsg::BsonMsgKillCursors(km) => {
+                    Request::KillCursors(km) => {
                     },
-                    BsonClientMsg::BsonMsgQuery(qm) => {
-                        let resp = self.reply2004(qm);
+                    Request::Query(qm) => {
+                        let resp = self.reply_2004(qm);
                         //println!("resp: {:?}", resp);
-                        let ba = resp.encodeReply();
+                        let ba = resp.encode();
                         //println!("ba: {:?}", ba);
                         stream.write(&ba);
                     },
-                    BsonClientMsg::BsonMsgGetMore(gm) => {
+                    Request::GetMore(gm) => {
                     },
                 }
                 Ok(())
@@ -514,6 +511,7 @@ impl Server {
 
 }
 
+// TODO args:  filename, ipaddr, port
 pub fn serve() {
     let listener = std::net::TcpListener::bind("127.0.0.1:27017").unwrap();
 
@@ -523,6 +521,7 @@ pub fn serve() {
             Ok(stream) => {
                 std::thread::spawn(move|| {
                     // connection succeeded
+                    // TODO how to use filename arg.  lifetime problem.
                     let conn = elmo_sqlite3::connect("foo.db").expect("TODO");
                     let conn = elmo::Connection::new(conn);
                     let s = Server {
