@@ -491,8 +491,26 @@ pub mod io {
     use std::io;
     use std::io::Seek;
     use std::io::Read;
+    use std::io::Write;
     use std::io::SeekFrom;
     use super::endian;
+
+    pub fn write_fully(strm: &mut Write, buf: &[u8]) -> io::Result<usize> {
+        let mut sofar = 0;
+        let len = buf.len();
+        loop {
+            let cur = &buf[sofar..len];
+            let n = try!(strm.write(cur));
+            if n == 0 {
+                break;
+            }
+            sofar += n;
+            if sofar == len {
+                break;
+            }
+        }
+        Ok(sofar)
+    }
 
     pub fn read_fully(strm: &mut Read, buf: &mut [u8]) -> io::Result<usize> {
         let mut sofar = 0;
@@ -500,16 +518,15 @@ pub mod io {
         loop {
             let cur = &mut buf[sofar..len];
             let n = try!(strm.read(cur));
-            if n==0 {
+            if n == 0 {
                 break;
             }
             sofar += n;
-            if sofar==len {
+            if sofar == len {
                 break;
             }
         }
-        let res : io::Result<usize> = Ok(sofar);
-        res
+        Ok(sofar)
     }
 
     pub fn read_4(strm: &mut Read) -> io::Result<[u8; 4]> {

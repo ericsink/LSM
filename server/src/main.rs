@@ -244,7 +244,7 @@ fn slurp_header(ba: &[u8], i: &mut usize) -> (i32,i32,i32,i32) {
     v
 }
 
-fn read_message(stream: &mut Read) -> Result<Option<Box<[u8]>>> {
+fn read_message_bytes(stream: &mut Read) -> Result<Option<Box<[u8]>>> {
     let mut a = [0; 4];
     let got = try!(misc::io::read_fully(stream, &mut a));
     if got == 0 {
@@ -402,6 +402,7 @@ impl Server {
                     let cmd = pairs[0].0.as_str();
                     // TODO let cmd = cmd.ToLower();
                     let res =
+                        // TODO isMaster needs to be in here?
                         match cmd {
                             //"explain" => reply_explain clientMsg db
                             //"aggregate" => reply_aggregate clientMsg db
@@ -474,7 +475,7 @@ impl Server {
     }
 
     fn handle_one_message(&self, stream: &mut std::net::TcpStream) -> Result<()> {
-        let ba = try!(read_message(stream));
+        let ba = try!(read_message_bytes(stream));
         match ba {
             None => Ok(()),
             Some(ba) => {
@@ -483,18 +484,24 @@ impl Server {
                 println!("request: {:?}", msg);
                 match msg {
                     Request::KillCursors(km) => {
+                        unimplemented!();
                     },
                     Request::Query(qm) => {
                         let resp = self.reply_2004(qm);
                         //println!("resp: {:?}", resp);
                         let ba = resp.encode();
                         //println!("ba: {:?}", ba);
-                        stream.write(&ba);
+                        let wrote = try!(misc::io::write_fully(stream, &ba));
+                        if wrote != ba.len() {
+                            return Err(Error::Misc("network write failed"));
+                        } else {
+                            Ok(())
+                        }
                     },
                     Request::GetMore(gm) => {
+                        unimplemented!();
                     },
                 }
-                Ok(())
             }
         }
     }
