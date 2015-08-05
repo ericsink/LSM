@@ -131,6 +131,7 @@ struct Reply {
 }
 
 #[derive(Debug)]
+// TODO consider calling this Msg2004
 struct MsgQuery {
     req_id : i32,
     flags : i32,
@@ -408,6 +409,13 @@ impl Server {
         self.cursor_num
     }
 
+    fn remove_cursors_for_collection(&mut self, ns: &str) {
+        let remove = self.cursors.iter().filter_map(|(&num, &(ref s, _))| if s.as_str() == ns { Some(num) } else { None }).collect::<Vec<_>>();
+        for cursor_num in remove {
+            self.cursors.remove(&cursor_num);
+        }
+    }
+
     // grab is just a take() which doesn't take ownership of the iterator
     fn grab<T: Iterator<Item=BsonValue>>(seq: &mut T, n: usize) -> Vec<BsonValue> {
         let mut r = Vec::new();
@@ -552,6 +560,22 @@ impl Server {
         Ok(doc)
     }
 
+    fn reply_drop_collection(&mut self, req: &MsgQuery, db: &str) -> Result<Reply> {
+        let coll = try!(try!(req.query.getValueForKey("insert")).getString());
+        let full_coll = format!("{}.{}", db, coll);
+        self.remove_cursors_for_collection(&full_coll);
+        let deleted = try!(self.conn.drop_collection(db, coll));
+        let mut doc = BsonValue::BDocument(vec![]);
+        if deleted {
+            doc.add_pair_i32("ok", 1);
+        } else {
+            // mongo shell apparently cares about this exact error message string
+            doc.add_pair_str("errmsg", "ns not found");
+            doc.add_pair_i32("ok", 0);
+        }
+        Ok(create_reply(req.req_id, vec![doc], 0))
+    }
+
     fn reply_list_collections(&mut self, req: &MsgQuery, db: &str) -> Result<Reply> {
         let results = try!(self.conn.list_collections());
         let seq = {
@@ -608,7 +632,7 @@ impl Server {
                             //"validate" => reply_Validate req db
                             //"createindexes" => reply_createIndexes req db
                             //"deleteindexes" => reply_deleteIndexes req db
-                            //"drop" => reply_DropCollection req db
+                            "drop" => self.reply_drop_collection(req, db),
                             //"dropdatabase" => reply_DropDatabase req db
                             "listcollections" => self.reply_list_collections(req, db),
                             //"listindexes" => reply_listIndexes req db

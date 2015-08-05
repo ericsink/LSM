@@ -233,5 +233,14 @@ impl Connection {
         Ok(v)
     }
 
+    pub fn drop_collection(&self, db: &str, coll: &str) -> Result<bool> {
+        let deleted = {
+            let writer = try!(self.conn.begin_write());
+            let deleted = try!(writer.drop_collection(db, coll));
+            try!(writer.commit());
+            deleted
+        };
+        Ok(deleted)
+    }
 }
 
