@@ -439,8 +439,16 @@ impl BsonValue {
         }
     }
 
+    pub fn add_pair_array(&mut self, k: &str, v: Vec<BsonValue>) {
+        self.add_pair(k, BsonValue::BArray(v));
+    }
+
     pub fn add_pair_i32(&mut self, k: &str, v: i32) {
         self.add_pair(k, BsonValue::BInt32(v));
+    }
+
+    pub fn add_pair_i64(&mut self, k: &str, v: i64) {
+        self.add_pair(k, BsonValue::BInt64(v));
     }
 
     pub fn add_pair_f64(&mut self, k: &str, v: f64) {
@@ -453,6 +461,10 @@ impl BsonValue {
 
     pub fn add_pair_str(&mut self, k: &str, v: &str) {
         self.add_pair(k, BsonValue::BString(String::from(v)));
+    }
+
+    pub fn add_pair_string(&mut self, k: &str, v: String) {
+        self.add_pair(k, BsonValue::BString(v));
     }
 
     pub fn add_pair_timestamp(&mut self, k: &str, v: i64) {

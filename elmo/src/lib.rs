@@ -247,5 +247,13 @@ impl Connection {
         }
         Ok(results)
     }
+
+    // TODO consider constraining to just one db.  if so, pass that down to storage?
+    pub fn list_collections(&self) -> Result<Vec<(String, String, BsonValue)>> {
+        let reader = try!(self.conn.begin_read());
+        let v = try!(reader.list_collections());
+        Ok(v)
+    }
+
 }
 

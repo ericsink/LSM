@@ -14,6 +14,11 @@
     limitations under the License.
 */
 
+// This server exists so that we can run the jstests suite (from the MongoDB
+// source repo on GitHub) against Elmo.  It is *not* expected that an actual
+// server listening on a socket would be useful for the common use cases on 
+// a mobile device.
+
 #![feature(box_syntax)]
 #![feature(convert)]
 #![feature(associated_consts)]
@@ -284,6 +289,8 @@ fn reply_err(requestID: i32, err: Error) -> Reply {
 
 struct Server {
     conn: elmo::Connection,
+    cursor_num: usize,
+    // TODO map of cursors
 }
 
 impl Server {
@@ -390,9 +397,148 @@ impl Server {
         Ok(create_reply(clientMsg.q_requestID, vec![doc], 0))
     }
 
-    // TODO this layer of the code should not be using Error
+    fn store_cursor<T: Iterator<Item=BsonValue>>(&mut self, ns: &str, seq: T) -> usize {
+        self.cursor_num = self.cursor_num + 1;
+        // TODO store this
+        self.cursor_num
+    }
 
-    fn reply_cmd(&self, clientMsg: &MsgQuery, db: &str) -> Result<Reply> {
+    // grab is just a take() which doesn't take ownership of the iterator
+    fn grab<T: Iterator<Item=BsonValue>>(seq: &mut T, n: usize) -> Vec<BsonValue> {
+        let mut r = Vec::new();
+        for i in 0 .. n {
+            match seq.next() {
+                None => {
+                    break;
+                },
+                Some(v) => {
+                    r.push(v);
+                },
+            }
+        }
+        r
+    }
+
+    fn reply_with_cursor<T: Iterator<Item=BsonValue>>(&mut self, ns: &str, mut seq: T, cursor_options: Option<&BsonValue>, default_batch_size: usize) -> Result<BsonValue> {
+        let number_to_return =
+            match cursor_options {
+                Some(&BsonValue::BDocument(ref pairs)) => {
+                    if pairs.iter().any(|&(ref k, _)| k != "batchSize") {
+                        return Err(Error::Misc("invalid cursor option"));
+                    }
+                    match pairs.iter().find(|&&(ref k, ref v)| k == "batchSize") {
+                        Some(&(ref k, BsonValue::BInt32(n))) => {
+                            if n < 0 {
+                                return Err(Error::Misc("batchSize < 0"));
+                            }
+                            Some(n as usize)
+                        },
+                        Some(&(ref k, BsonValue::BDouble(n))) => {
+                            if n < 0.0 {
+                                return Err(Error::Misc("batchSize < 0"));
+                            }
+                            Some(n as usize)
+                        },
+                        Some(&(ref k, BsonValue::BInt64(n))) => {
+                            if n < 0 {
+                                return Err(Error::Misc("batchSize < 0"));
+                            }
+                            Some(n as usize)
+                        },
+                        Some(_) => {
+                            return Err(Error::Misc("batchSize not numeric"));
+                        },
+                        None => {
+                            Some(default_batch_size)
+                        },
+                    }
+                },
+                Some(_) => {
+                    return Err(Error::Misc("invalid cursor option"));
+                },
+                None => {
+                    // TODO in the case where the cursor is not requested, how
+                    // many should we return?  For now we return all of them,
+                    // which for now we flag by setting numberToReturn to a negative
+                    // number, which is handled as a special case below.
+                    None
+                },
+        };
+
+        let (docs, cursor_id) =
+            match number_to_return {
+                None => {
+                    let docs = seq.collect::<Vec<_>>();
+                    (docs, None)
+                },
+                Some(0) => {
+                    // if 0, return nothing but keep the cursor open.
+                    // but we need to eval the first item in the seq,
+                    // to make sure that an error gets found now.
+                    // but we can't consume that first item and let it
+                    // get lost.  so we grab a batch but then put it back.
+
+                    // TODO peek, or something
+                    let cursor_id = self.store_cursor(ns, seq);
+                    (Vec::new(), Some(cursor_id))
+                },
+                Some(n) => {
+                    let docs = Self::grab(&mut seq, n);
+                    if docs.len() == n {
+                        // if we grabbed the same number we asked for, we assume the
+                        // sequence has more, so we store the cursor and return it.
+                        let cursor_id = self.store_cursor(ns, seq);
+                        (docs, Some(cursor_id))
+                    } else {
+                        // but if we got less than we asked for, we assume we have
+                        // consumed the whole sequence.
+                        (docs, None)
+                    }
+                },
+            };
+
+
+        let mut doc = BsonValue::BDocument(vec![]);
+        match cursor_id {
+            Some(cursor_id) => {
+                let mut cursor = BsonValue::BDocument(vec![]);
+                cursor.add_pair_i64("id", cursor_id as i64);
+                cursor.add_pair_str("ns", ns);
+                cursor.add_pair_array("firstBatch", docs);
+            },
+            None => {
+                doc.add_pair_array("result", docs);
+            },
+        }
+        doc.add_pair_i32("ok", 1);
+        Ok(doc)
+    }
+
+    fn reply_list_collections(&mut self, clientMsg: &MsgQuery, db: &str) -> Result<Reply> {
+        let results = try!(self.conn.list_collections());
+        let results = results.into_iter().filter_map(
+            |(c_db, c_coll, c_options)| {
+                if db == c_db {
+                    let mut doc = BsonValue::BDocument(vec![]);
+                    doc.add_pair_string("name", c_coll);
+                    doc.add_pair("options", c_options);
+                    Some(doc)
+                } else {
+                    None
+                }
+            }
+            );
+
+        // TODO filter in query?
+
+        let default_batch_size = 100;
+        let cursor_options = clientMsg.q_query.tryGetValueForKey("cursor");
+        let ns = format!("{}.$cmd.listCollections", db);
+        let doc = try!(self.reply_with_cursor(&ns, results, cursor_options, default_batch_size));
+        Ok(create_reply(clientMsg.q_requestID, vec![doc], 0))
+    }
+
+    fn reply_cmd(&mut self, clientMsg: &MsgQuery, db: &str) -> Result<Reply> {
         match clientMsg.q_query {
             BsonValue::BDocument(ref pairs) => {
                 if pairs.is_empty() {
@@ -417,7 +563,7 @@ impl Server {
                             //"deleteindexes" => reply_deleteIndexes clientMsg db
                             //"drop" => reply_DropCollection clientMsg db
                             //"dropdatabase" => reply_DropDatabase clientMsg db
-                            //"listcollections" => reply_listCollections clientMsg db
+                            "listcollections" => self.reply_list_collections(clientMsg, db),
                             //"listindexes" => reply_listIndexes clientMsg db
                             //"create" => reply_CreateCollection clientMsg db
                             //"features" => reply_features clientMsg db
@@ -430,7 +576,7 @@ impl Server {
         }
     }
 
-    fn reply_2004(&self, qm: MsgQuery) -> Reply {
+    fn reply_2004(&mut self, qm: MsgQuery) -> Reply {
         let pair = qm.q_fullCollectionName.split('.').collect::<Vec<_>>();
         let r = 
             if pair.len() < 2 {
@@ -451,7 +597,7 @@ impl Server {
                     if coll == "$cmd" {
                         if pair.len() == 4 && pair[2]=="sys" && pair[3]=="inprog" {
                             //reply_cmd_sys_inprog clientMsg db
-                        Err(Error::Misc("TODO"))
+                            Err(Error::Misc("TODO"))
                         } else {
                             self.reply_cmd(&qm, db)
                         }
@@ -474,7 +620,7 @@ impl Server {
         }
     }
 
-    fn handle_one_message(&self, stream: &mut std::net::TcpStream) -> Result<()> {
+    fn handle_one_message(&mut self, stream: &mut std::net::TcpStream) -> Result<()> {
         let ba = try!(read_message_bytes(stream));
         match ba {
             None => Ok(()),
@@ -506,7 +652,7 @@ impl Server {
         }
     }
 
-    fn handle_client(&self, mut stream: std::net::TcpStream) -> Result<()> {
+    fn handle_client(&mut self, mut stream: std::net::TcpStream) -> Result<()> {
         loop {
             let r = self.handle_one_message(&mut stream);
             if r.is_err() {
@@ -531,8 +677,9 @@ pub fn serve() {
                     // TODO how to use filename arg.  lifetime problem.
                     let conn = elmo_sqlite3::connect("foo.db").expect("TODO");
                     let conn = elmo::Connection::new(conn);
-                    let s = Server {
+                    let mut s = Server {
                         conn: conn,
+                        cursor_num: 0,
                     };
                     s.handle_client(stream).expect("TODO");
                 });
