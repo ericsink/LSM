@@ -119,37 +119,37 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug)]
 struct Reply {
-    r_requestID : i32,
-    r_responseTo : i32,
-    r_responseFlags : i32,
-    r_cursorID : i64,
-    r_startingFrom : i32,
-    r_documents : Vec<BsonValue>,
+    req_id : i32,
+    response_to : i32,
+    flags : i32,
+    cursor_id : i64,
+    starting_from : i32,
+    docs : Vec<BsonValue>,
 }
 
 #[derive(Debug)]
 struct MsgQuery {
-    q_requestID : i32,
-    q_flags : i32,
-    q_fullCollectionName : String,
-    q_numberToSkip : i32,
-    q_numberToReturn : i32,
-    q_query : BsonValue,
-    q_returnFieldsSelector : Option<BsonValue>,
+    req_id : i32,
+    flags : i32,
+    full_collection_name : String,
+    number_to_skip : i32,
+    number_to_return : i32,
+    query : BsonValue,
+    return_fields_selector : Option<BsonValue>,
 }
 
 #[derive(Debug)]
 struct MsgGetMore {
-    m_requestID : i32,
-    m_fullCollectionName : String,
-    m_numberToReturn : i32,
-    m_cursorID : i64,
+    req_id : i32,
+    full_collection_name : String,
+    number_to_return : i32,
+    cursor_id : i64,
 }
 
 #[derive(Debug)]
 struct MsgKillCursors {
-    k_requestID : i32,
-    k_cursorIDs : Vec<i64>,
+    req_id : i32,
+    cursor_ids : Vec<i64>,
 }
 
 #[derive(Debug)]
@@ -164,14 +164,14 @@ impl Reply {
         let mut w = Vec::new();
         // length placeholder
         w.push_all(&[0u8; 4]);
-        w.push_all(&endian::i32_to_bytes_le(self.r_requestID));
-        w.push_all(&endian::i32_to_bytes_le(self.r_responseTo));
+        w.push_all(&endian::i32_to_bytes_le(self.req_id));
+        w.push_all(&endian::i32_to_bytes_le(self.response_to));
         w.push_all(&endian::u32_to_bytes_le(1u32)); 
-        w.push_all(&endian::i32_to_bytes_le(self.r_responseFlags));
-        w.push_all(&endian::i64_to_bytes_le(self.r_cursorID));
-        w.push_all(&endian::i32_to_bytes_le(self.r_startingFrom));
-        w.push_all(&endian::u32_to_bytes_le(self.r_documents.len() as u32));
-        for doc in &self.r_documents {
+        w.push_all(&endian::i32_to_bytes_le(self.flags));
+        w.push_all(&endian::i64_to_bytes_le(self.cursor_id));
+        w.push_all(&endian::i32_to_bytes_le(self.starting_from));
+        w.push_all(&endian::u32_to_bytes_le(self.docs.len() as u32));
+        for doc in &self.docs {
             doc.to_bson(&mut w);
         }
         misc::bytes::copy_into(&endian::u32_to_bytes_le(w.len() as u32), &mut w[0 .. 4]);
@@ -181,54 +181,54 @@ impl Reply {
 
 fn parse_request(ba: &[u8]) -> Result<Request> {
     let mut i = 0;
-    let (messageLength,requestID,responseTo,opCode) = slurp_header(ba, &mut i);
-    match opCode {
+    let (message_len,req_id,response_to,op_code) = slurp_header(ba, &mut i);
+    match op_code {
         2004 => {
             let flags = bufndx::slurp_i32_le(ba, &mut i);
-            let fullCollectionName = try!(bufndx::slurp_cstring(ba, &mut i));
-            let numberToSkip = bufndx::slurp_i32_le(ba, &mut i);
-            let numberToReturn = bufndx::slurp_i32_le(ba, &mut i);
+            let full_collection_name = try!(bufndx::slurp_cstring(ba, &mut i));
+            let number_to_skip = bufndx::slurp_i32_le(ba, &mut i);
+            let number_to_return = bufndx::slurp_i32_le(ba, &mut i);
             let query = try!(bson::slurp_document(ba, &mut i));
-            let returnFieldsSelector = if i < ba.len() { Some(try!(bson::slurp_document(ba, &mut i))) } else { None };
+            let return_fields_selector = if i < ba.len() { Some(try!(bson::slurp_document(ba, &mut i))) } else { None };
 
             let msg = MsgQuery {
-                q_requestID: requestID,
-                q_flags: flags,
-                q_fullCollectionName: fullCollectionName,
-                q_numberToSkip: numberToSkip,
-                q_numberToReturn: numberToReturn,
-                q_query: query,
-                q_returnFieldsSelector: returnFieldsSelector,
+                req_id: req_id,
+                flags: flags,
+                full_collection_name: full_collection_name,
+                number_to_skip: number_to_skip,
+                number_to_return: number_to_return,
+                query: query,
+                return_fields_selector: return_fields_selector,
             };
             Ok(Request::Query(msg))
         },
 
         2005 => {
             let flags = bufndx::slurp_i32_le(ba, &mut i);
-            let fullCollectionName = try!(bufndx::slurp_cstring(ba, &mut i));
-            let numberToReturn = bufndx::slurp_i32_le(ba, &mut i);
-            let cursorID = bufndx::slurp_i64_le(ba, &mut i);
+            let full_collection_name = try!(bufndx::slurp_cstring(ba, &mut i));
+            let number_to_return = bufndx::slurp_i32_le(ba, &mut i);
+            let cursor_id = bufndx::slurp_i64_le(ba, &mut i);
 
             let msg = MsgGetMore {
-                m_requestID: requestID,
-                m_fullCollectionName: fullCollectionName,
-                m_numberToReturn: numberToReturn,
-                m_cursorID: cursorID,
+                req_id: req_id,
+                full_collection_name: full_collection_name,
+                number_to_return: number_to_return,
+                cursor_id: cursor_id,
             };
             Ok(Request::GetMore(msg))
         },
 
         2007 => {
             let flags = bufndx::slurp_i32_le(ba, &mut i);
-            let numberOfCursorIDs = bufndx::slurp_i32_le(ba, &mut i);
-            let mut cursorIDs = Vec::new();
-            for _ in 0 .. numberOfCursorIDs {
-                cursorIDs.push(bufndx::slurp_i64_le(ba, &mut i));
+            let number_of_cursor_ids = bufndx::slurp_i32_le(ba, &mut i);
+            let mut cursor_ids = Vec::new();
+            for _ in 0 .. number_of_cursor_ids {
+                cursor_ids.push(bufndx::slurp_i64_le(ba, &mut i));
             }
 
             let msg = MsgKillCursors {
-                k_requestID: requestID,
-                k_cursorIDs: cursorIDs,
+                req_id: req_id,
+                cursor_ids: cursor_ids,
             };
             Ok(Request::KillCursors(msg))
         },
@@ -241,11 +241,11 @@ fn parse_request(ba: &[u8]) -> Result<Request> {
 
 // TODO do these really need to be signed?
 fn slurp_header(ba: &[u8], i: &mut usize) -> (i32,i32,i32,i32) {
-    let messageLength = bufndx::slurp_i32_le(ba, i);
-    let requestID = bufndx::slurp_i32_le(ba, i);
-    let responseTo = bufndx::slurp_i32_le(ba, i);
-    let opCode = bufndx::slurp_i32_le(ba, i);
-    let v = (messageLength,requestID,responseTo,opCode);
+    let message_len = bufndx::slurp_i32_le(ba, i);
+    let req_id = bufndx::slurp_i32_le(ba, i);
+    let response_to = bufndx::slurp_i32_le(ba, i);
+    let op_code = bufndx::slurp_i32_le(ba, i);
+    let v = (message_len, req_id, response_to, op_code);
     v
 }
 
@@ -255,36 +255,36 @@ fn read_message_bytes(stream: &mut Read) -> Result<Option<Box<[u8]>>> {
     if got == 0 {
         return Ok(None);
     }
-    let messageLength = endian::u32_from_bytes_le(a) as usize;
-    let mut msg = vec![0; messageLength]; 
+    let message_len = endian::u32_from_bytes_le(a) as usize;
+    let mut msg = vec![0; message_len]; 
     misc::bytes::copy_into(&a, &mut msg[0 .. 4]);
-    let got = try!(misc::io::read_fully(stream, &mut msg[4 .. messageLength]));
-    if got != messageLength - 4 {
+    let got = try!(misc::io::read_fully(stream, &mut msg[4 .. message_len]));
+    if got != message_len - 4 {
         return Err(Error::CorruptFile("end of file at the wrong time"));
     }
     Ok(Some(msg.into_boxed_slice()))
 }
 
-fn create_reply(reqID: i32, docs: Vec<BsonValue>, crsrID: i64) -> Reply {
+fn create_reply(req_id: i32, docs: Vec<BsonValue>, cursor_id: i64) -> Reply {
     let msg = Reply {
-        r_requestID: 0,
-        r_responseTo: reqID,
-        r_responseFlags: 0,
-        r_cursorID: crsrID,
-        r_startingFrom: 0,
+        req_id: 0,
+        response_to: req_id,
+        flags: 0,
+        cursor_id: cursor_id,
+        starting_from: 0,
         // TODO
-        r_documents: docs,
+        docs: docs,
     };
     msg
 }
 
-fn reply_err(requestID: i32, err: Error) -> Reply {
+fn reply_err(req_id: i32, err: Error) -> Reply {
     let mut doc = BsonValue::BDocument(vec![]);
     // TODO stack trace was nice here
     //pairs.push(("errmsg", BString("exception: " + errmsg)));
     //pairs.push(("code", BInt32(code)));
     doc.add_pair_i32("ok", 0);
-    create_reply(requestID, vec![doc], 0)
+    create_reply(req_id, vec![doc], 0)
 }
 
 struct Server {
@@ -295,22 +295,22 @@ struct Server {
 
 impl Server {
 
-    fn reply_whatsmyuri(&self, clientMsg: &MsgQuery) -> Result<Reply> {
+    fn reply_whatsmyuri(&self, req: &MsgQuery) -> Result<Reply> {
         let mut doc = BsonValue::BDocument(vec![]);
         doc.add_pair_str("you", "127.0.0.1:65460");
         doc.add_pair_i32("ok", 1);
-        Ok(create_reply(clientMsg.q_requestID, vec![doc], 0))
+        Ok(create_reply(req.req_id, vec![doc], 0))
     }
 
-    fn reply_getlog(&self, clientMsg: &MsgQuery) -> Result<Reply> {
+    fn reply_getlog(&self, req: &MsgQuery) -> Result<Reply> {
         let mut doc = BsonValue::BDocument(vec![]);
         doc.add_pair_i32("totalLinesWritten", 1);
         doc.add_pair("log", BsonValue::BArray(vec![]));
         doc.add_pair_i32("ok", 1);
-        Ok(create_reply(clientMsg.q_requestID, vec![doc], 0))
+        Ok(create_reply(req.req_id, vec![doc], 0))
     }
 
-    fn reply_replsetgetstatus(&self, clientMsg: &MsgQuery) -> Result<Reply> {
+    fn reply_replsetgetstatus(&self, req: &MsgQuery) -> Result<Reply> {
         let mut mine = BsonValue::BDocument(vec![]);
         mine.add_pair_i32("_id", 0);
         mine.add_pair_str("name", "whatever");
@@ -331,10 +331,10 @@ impl Server {
         doc.add_pair_i32("myState", 1);
         doc.add_pair_i32("ok", 1);
 
-        Ok(create_reply(clientMsg.q_requestID, vec![doc], 0))
+        Ok(create_reply(req.req_id, vec![doc], 0))
     }
 
-    fn reply_ismaster(&self, clientMsg: &MsgQuery) -> Result<Reply> {
+    fn reply_ismaster(&self, req: &MsgQuery) -> Result<Reply> {
         let mut doc = BsonValue::BDocument(vec![]);
         doc.add_pair_bool("ismaster", true);
         doc.add_pair_bool("secondary", false);
@@ -347,11 +347,11 @@ impl Server {
         // explain, what happens is that we start getting the old fire-and-forget
         // write operations instead of the write commands that we want.
         doc.add_pair_i32("ok", 1);
-        Ok(create_reply(clientMsg.q_requestID, vec![doc], 0))
+        Ok(create_reply(req.req_id, vec![doc], 0))
     }
 
-    fn reply_admin_cmd(&self, clientMsg: &MsgQuery, db: &str) -> Result<Reply> {
-        match clientMsg.q_query {
+    fn reply_admin_cmd(&self, req: &MsgQuery, db: &str) -> Result<Reply> {
+        match req.query {
             BsonValue::BDocument(ref pairs) => {
                 if pairs.is_empty() {
                     Err(Error::Misc("empty query"))
@@ -361,10 +361,10 @@ impl Server {
                     // TODO let cmd = cmd.ToLower();
                     let res =
                         match cmd {
-                            "whatsmyuri" => self.reply_whatsmyuri(clientMsg),
-                            "getLog" => self.reply_getlog(clientMsg),
-                            "replSetGetStatus" => self.reply_replsetgetstatus(clientMsg),
-                            "isMaster" => self.reply_ismaster(clientMsg),
+                            "whatsmyuri" => self.reply_whatsmyuri(req),
+                            "getLog" => self.reply_getlog(req),
+                            "replSetGetStatus" => self.reply_replsetgetstatus(req),
+                            "isMaster" => self.reply_ismaster(req),
                             _ => Err(Error::Misc("unknown cmd"))
                         };
                     res
@@ -374,8 +374,8 @@ impl Server {
         }
     }
 
-    fn reply_insert(&self, clientMsg: &MsgQuery, db: &str) -> Result<Reply> {
-        let q = &clientMsg.q_query;
+    fn reply_insert(&self, req: &MsgQuery, db: &str) -> Result<Reply> {
+        let q = &req.query;
         let coll = try!(try!(q.getValueForKey("insert")).getString());
         let docs = try!(try!(q.getValueForKey("documents")).getArray());
         // TODO ordered
@@ -394,7 +394,7 @@ impl Server {
             doc.add_pair("writeErrors", BsonValue::BArray(errors));
         }
         doc.add_pair_i32("ok", 1);
-        Ok(create_reply(clientMsg.q_requestID, vec![doc], 0))
+        Ok(create_reply(req.req_id, vec![doc], 0))
     }
 
     fn store_cursor<T: Iterator<Item=BsonValue>>(&mut self, ns: &str, seq: T) -> usize {
@@ -406,7 +406,7 @@ impl Server {
     // grab is just a take() which doesn't take ownership of the iterator
     fn grab<T: Iterator<Item=BsonValue>>(seq: &mut T, n: usize) -> Vec<BsonValue> {
         let mut r = Vec::new();
-        for i in 0 .. n {
+        for _ in 0 .. n {
             match seq.next() {
                 None => {
                     break;
@@ -426,20 +426,20 @@ impl Server {
                     if pairs.iter().any(|&(ref k, _)| k != "batchSize") {
                         return Err(Error::Misc("invalid cursor option"));
                     }
-                    match pairs.iter().find(|&&(ref k, ref v)| k == "batchSize") {
-                        Some(&(ref k, BsonValue::BInt32(n))) => {
+                    match pairs.iter().find(|&&(ref k, ref _v)| k == "batchSize") {
+                        Some(&(_, BsonValue::BInt32(n))) => {
                             if n < 0 {
                                 return Err(Error::Misc("batchSize < 0"));
                             }
                             Some(n as usize)
                         },
-                        Some(&(ref k, BsonValue::BDouble(n))) => {
+                        Some(&(_, BsonValue::BDouble(n))) => {
                             if n < 0.0 {
                                 return Err(Error::Misc("batchSize < 0"));
                             }
                             Some(n as usize)
                         },
-                        Some(&(ref k, BsonValue::BInt64(n))) => {
+                        Some(&(_, BsonValue::BInt64(n))) => {
                             if n < 0 {
                                 return Err(Error::Misc("batchSize < 0"));
                             }
@@ -459,8 +459,8 @@ impl Server {
                 None => {
                     // TODO in the case where the cursor is not requested, how
                     // many should we return?  For now we return all of them,
-                    // which for now we flag by setting numberToReturn to a negative
-                    // number, which is handled as a special case below.
+                    // which for now we flag by setting number_to_return to None,
+                    // which is handled as a special case below.
                     None
                 },
         };
@@ -514,7 +514,7 @@ impl Server {
         Ok(doc)
     }
 
-    fn reply_list_collections(&mut self, clientMsg: &MsgQuery, db: &str) -> Result<Reply> {
+    fn reply_list_collections(&mut self, req: &MsgQuery, db: &str) -> Result<Reply> {
         let results = try!(self.conn.list_collections());
         let results = results.into_iter().filter_map(
             |(c_db, c_coll, c_options)| {
@@ -532,14 +532,14 @@ impl Server {
         // TODO filter in query?
 
         let default_batch_size = 100;
-        let cursor_options = clientMsg.q_query.tryGetValueForKey("cursor");
+        let cursor_options = req.query.tryGetValueForKey("cursor");
         let ns = format!("{}.$cmd.listCollections", db);
         let doc = try!(self.reply_with_cursor(&ns, results, cursor_options, default_batch_size));
-        Ok(create_reply(clientMsg.q_requestID, vec![doc], 0))
+        Ok(create_reply(req.req_id, vec![doc], 0))
     }
 
-    fn reply_cmd(&mut self, clientMsg: &MsgQuery, db: &str) -> Result<Reply> {
-        match clientMsg.q_query {
+    fn reply_cmd(&mut self, req: &MsgQuery, db: &str) -> Result<Reply> {
+        match req.query {
             BsonValue::BDocument(ref pairs) => {
                 if pairs.is_empty() {
                     Err(Error::Misc("empty query"))
@@ -550,23 +550,23 @@ impl Server {
                     let res =
                         // TODO isMaster needs to be in here?
                         match cmd {
-                            //"explain" => reply_explain clientMsg db
-                            //"aggregate" => reply_aggregate clientMsg db
-                            "insert" => self.reply_insert(clientMsg, db),
-                            //"delete" => reply_Delete clientMsg db
-                            //"distinct" => reply_distinct clientMsg db
-                            //"update" => reply_Update clientMsg db
-                            //"findandmodify" => reply_FindAndModify clientMsg db
-                            //"count" => reply_Count clientMsg db
-                            //"validate" => reply_Validate clientMsg db
-                            //"createindexes" => reply_createIndexes clientMsg db
-                            //"deleteindexes" => reply_deleteIndexes clientMsg db
-                            //"drop" => reply_DropCollection clientMsg db
-                            //"dropdatabase" => reply_DropDatabase clientMsg db
-                            "listcollections" => self.reply_list_collections(clientMsg, db),
-                            //"listindexes" => reply_listIndexes clientMsg db
-                            //"create" => reply_CreateCollection clientMsg db
-                            //"features" => reply_features clientMsg db
+                            //"explain" => reply_explain req db
+                            //"aggregate" => reply_aggregate req db
+                            "insert" => self.reply_insert(req, db),
+                            //"delete" => reply_Delete req db
+                            //"distinct" => reply_distinct req db
+                            //"update" => reply_Update req db
+                            //"findandmodify" => reply_FindAndModify req db
+                            //"count" => reply_Count req db
+                            //"validate" => reply_Validate req db
+                            //"createindexes" => reply_createIndexes req db
+                            //"deleteindexes" => reply_deleteIndexes req db
+                            //"drop" => reply_DropCollection req db
+                            //"dropdatabase" => reply_DropDatabase req db
+                            "listcollections" => self.reply_list_collections(req, db),
+                            //"listindexes" => reply_listIndexes req db
+                            //"create" => reply_CreateCollection req db
+                            //"features" => reply_features req db
                             _ => Err(Error::Misc("unknown cmd"))
                         };
                     res
@@ -577,17 +577,17 @@ impl Server {
     }
 
     fn reply_2004(&mut self, qm: MsgQuery) -> Reply {
-        let pair = qm.q_fullCollectionName.split('.').collect::<Vec<_>>();
+        let pair = qm.full_collection_name.split('.').collect::<Vec<_>>();
         let r = 
             if pair.len() < 2 {
-                // TODO failwith (sprintf "bad collection name: %s" (clientMsg.q_fullCollectionName))
+                // TODO failwith (sprintf "bad collection name: %s" (req.full_collection_name))
                 Err(Error::Misc("bad collection name"))
             } else {
                 let db = pair[0];
                 let coll = pair[1];
                 if db == "admin" {
                     if coll == "$cmd" {
-                        //reply_AdminCmd clientMsg
+                        //reply_AdminCmd req
                         self.reply_admin_cmd(&qm, db)
                     } else {
                         //failwith "not implemented"
@@ -596,19 +596,19 @@ impl Server {
                 } else {
                     if coll == "$cmd" {
                         if pair.len() == 4 && pair[2]=="sys" && pair[3]=="inprog" {
-                            //reply_cmd_sys_inprog clientMsg db
+                            //reply_cmd_sys_inprog req db
                             Err(Error::Misc("TODO"))
                         } else {
                             self.reply_cmd(&qm, db)
                         }
                     } else if pair.len()==3 && pair[1]=="system" && pair[2]=="indexes" {
-                        //reply_system_indexes clientMsg db
+                        //reply_system_indexes req db
                         Err(Error::Misc("TODO"))
                     } else if pair.len()==3 && pair[1]=="system" && pair[2]=="namespaces" {
-                        //reply_system_namespaces clientMsg db
+                        //reply_system_namespaces req db
                         Err(Error::Misc("TODO"))
                     } else {
-                        //reply_Query clientMsg
+                        //reply_Query req
                         Err(Error::Misc("TODO"))
                     }
                 }
@@ -616,7 +616,7 @@ impl Server {
         println!("reply: {:?}", r);
         match r {
             Ok(r) => r,
-            Err(e) => reply_err(qm.q_requestID, e),
+            Err(e) => reply_err(qm.req_id, e),
         }
     }
 
