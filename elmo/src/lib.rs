@@ -14,20 +14,8 @@
     limitations under the License.
 */
 
-#![feature(core)]
-#![feature(collections)]
 #![feature(box_syntax)]
-#![feature(convert)]
-#![feature(collections_drain)]
 #![feature(associated_consts)]
-#![feature(vec_push_all)]
-#![feature(clone_from_slice)]
-#![feature(drain)]
-#![feature(iter_arith)]
-
-// TODO turn the following warnings back on later
-#![allow(non_snake_case)]
-#![allow(non_camel_case_types)]
 
 extern crate misc;
 
@@ -37,17 +25,6 @@ use misc::varint;
 
 extern crate bson;
 use bson::BsonValue;
-
-use std::io;
-use std::io::Seek;
-use std::io::Read;
-use std::io::Write;
-use std::io::SeekFrom;
-use std::cmp::Ordering;
-use std::fs::File;
-use std::fs::OpenOptions;
-use std::collections::HashMap;
-use std::collections::HashSet;
 
 #[derive(Debug)]
 // TODO do we really want this public?
@@ -103,8 +80,8 @@ impl From<bson::Error> for Error {
     }
 }
 
-impl From<io::Error> for Error {
-    fn from(err: io::Error) -> Error {
+impl From<std::io::Error> for Error {
+    fn from(err: std::io::Error) -> Error {
         Error::Io(err)
     }
 }

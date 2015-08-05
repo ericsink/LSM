@@ -118,11 +118,6 @@ impl From<Box<std::error::Error>> for Error {
     }
 }
 
-// TODO why is 'static needed here?  Doesn't this take ownership?
-fn wrap_err<E: std::error::Error + 'static>(err: E) -> Error {
-    Error::Whatever(box err)
-}
-
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug)]
@@ -429,6 +424,39 @@ impl Server {
         r
     }
 
+    // this is the older way of returning a cursor.
+    fn do_limit<T: Iterator<Item=BsonValue> + 'static>(&mut self, ns: &str, mut seq: T, number_to_return: i32) -> (Vec<BsonValue>, Option<i64>) {
+        if number_to_return < 0 || number_to_return == 1 {
+            // hard limit.  do not return a cursor.
+            let n = if number_to_return < 0 {
+                -number_to_return
+            } else {
+                number_to_return
+            };
+            if n < 0 {
+                // TODO can rust overflow handling deal with this?
+                panic!("overflow");
+            }
+            let docs = seq.take(n as usize).collect::<Vec<_>>();
+            (docs, None)
+        } else if number_to_return == 0 {
+            // return whatever the default size is
+            // TODO for now, just return them all and close the cursor
+            let docs = seq.collect::<Vec<_>>();
+            (docs, None)
+        } else {
+            // soft limit.  keep cursor open.
+            let docs = Self::grab(&mut seq, number_to_return as usize);
+            if docs.len() > 0 {
+                let cursor_id = self.store_cursor(ns, seq);
+                (docs, Some(cursor_id))
+            } else {
+                (docs, None)
+            }
+        }
+    }
+
+    // this is a newer way of returning a cursor.  used by the agg framework.
     fn reply_with_cursor<T: Iterator<Item=BsonValue> + 'static>(&mut self, ns: &str, mut seq: T, cursor_options: Option<&BsonValue>, default_batch_size: usize) -> Result<BsonValue> {
         let number_to_return =
             match cursor_options {
@@ -553,6 +581,7 @@ impl Server {
         let cursor_options = req.query.tryGetValueForKey("cursor");
         let ns = format!("{}.$cmd.listCollections", db);
         let doc = try!(self.reply_with_cursor(&ns, seq, cursor_options, default_batch_size));
+        // note that this uses the newer way of returning a cursor ID, so we pass 0 below
         Ok(create_reply(req.req_id, vec![doc], 0))
     }
 
@@ -594,8 +623,8 @@ impl Server {
         }
     }
 
-    fn reply_2004(&mut self, qm: MsgQuery) -> Reply {
-        let pair = qm.full_collection_name.split('.').collect::<Vec<_>>();
+    fn reply_2004(&mut self, req: MsgQuery) -> Reply {
+        let pair = req.full_collection_name.split('.').collect::<Vec<_>>();
         let r = 
             if pair.len() < 2 {
                 // TODO failwith (sprintf "bad collection name: %s" (req.full_collection_name))
@@ -606,7 +635,7 @@ impl Server {
                 if db == "admin" {
                     if coll == "$cmd" {
                         //reply_AdminCmd req
-                        self.reply_admin_cmd(&qm, db)
+                        self.reply_admin_cmd(&req, db)
                     } else {
                         //failwith "not implemented"
                         Err(Error::Misc("TODO"))
@@ -617,7 +646,7 @@ impl Server {
                             //reply_cmd_sys_inprog req db
                             Err(Error::Misc("TODO"))
                         } else {
-                            self.reply_cmd(&qm, db)
+                            self.reply_cmd(&req, db)
                         }
                     } else if pair.len()==3 && pair[1]=="system" && pair[2]=="indexes" {
                         //reply_system_indexes req db
@@ -634,11 +663,38 @@ impl Server {
         println!("reply: {:?}", r);
         match r {
             Ok(r) => r,
-            Err(e) => reply_err(qm.req_id, e),
+            Err(e) => reply_err(req.req_id, e),
+        }
+    }
+
+    fn reply_2005(&mut self, req: MsgGetMore) -> Reply {
+        match self.cursors.remove(&req.cursor_id) {
+            Some((ns,seq)) => {
+                let (docs, cursor_id) = self.do_limit(&ns, seq, req.number_to_return);
+                match cursor_id {
+                    Some(cursor_id) => create_reply(req.req_id, docs, cursor_id),
+                    None => create_reply(req.req_id, docs, 0),
+                }
+            },
+            None => {
+                reply_err(req.req_id, Error::Misc("TODO"))
+            },
         }
     }
 
     fn handle_one_message(&mut self, stream: &mut std::net::TcpStream) -> Result<()> {
+        fn send_reply(stream: &mut std::net::TcpStream, resp: Reply) -> Result<()> {
+            //println!("resp: {:?}", resp);
+            let ba = resp.encode();
+            //println!("ba: {:?}", ba);
+            let wrote = try!(misc::io::write_fully(stream, &ba));
+            if wrote != ba.len() {
+                return Err(Error::Misc("network write failed"));
+            } else {
+                Ok(())
+            }
+        }
+
         let ba = try!(read_message_bytes(stream));
         match ba {
             None => Ok(()),
@@ -647,23 +703,20 @@ impl Server {
                 let msg = try!(parse_request(&ba));
                 println!("request: {:?}", msg);
                 match msg {
-                    Request::KillCursors(km) => {
-                        unimplemented!();
-                    },
-                    Request::Query(qm) => {
-                        let resp = self.reply_2004(qm);
-                        //println!("resp: {:?}", resp);
-                        let ba = resp.encode();
-                        //println!("ba: {:?}", ba);
-                        let wrote = try!(misc::io::write_fully(stream, &ba));
-                        if wrote != ba.len() {
-                            return Err(Error::Misc("network write failed"));
-                        } else {
-                            Ok(())
+                    Request::KillCursors(req) => {
+                        for cursor_id in req.cursor_ids {
+                            self.cursors.remove(&cursor_id);
                         }
+                        // there is no reply to this
+                        Ok(())
                     },
-                    Request::GetMore(gm) => {
-                        unimplemented!();
+                    Request::Query(req) => {
+                        let resp = self.reply_2004(req);
+                        send_reply(stream, resp)
+                    },
+                    Request::GetMore(req) => {
+                        let resp = self.reply_2005(req);
+                        send_reply(stream, resp)
                     },
                 }
             }
