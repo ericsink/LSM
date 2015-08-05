@@ -182,6 +182,7 @@ pub trait StorageCollectionReader {
 }
 
 pub trait StorageReader {
+    // TODO maybe list_collections() should return an iterator
     fn list_collections(&self) -> Result<Vec<(String, String, BsonValue)>>;
     fn list_indexes(&self) -> Result<Vec<IndexInfo>>;
     fn get_collection_reader<'a>(&'a self, db: &str, coll: &str, plan: Option<QueryPlan>) -> Result<Box<StorageCollectionReader + 'a>>;

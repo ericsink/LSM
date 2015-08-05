@@ -49,10 +49,12 @@ enum Error {
     // TODO more detail within CorruptFile
     CorruptFile(&'static str),
 
+    Whatever(Box<std::error::Error>),
+
+    // TODO do we need the following now that we have Whatever?
     Bson(bson::Error),
     Io(std::io::Error),
     Utf8(std::str::Utf8Error),
-    Whatever(Box<std::error::Error>),
     Elmo(elmo::Error),
 }
 
@@ -107,6 +109,12 @@ impl From<io::Error> for Error {
 impl From<std::str::Utf8Error> for Error {
     fn from(err: std::str::Utf8Error) -> Error {
         Error::Utf8(err)
+    }
+}
+
+impl From<Box<std::error::Error>> for Error {
+    fn from(err: Box<std::error::Error>) -> Error {
+        Error::Whatever(err)
     }
 }
 
@@ -287,10 +295,12 @@ fn reply_err(req_id: i32, err: Error) -> Reply {
     create_reply(req_id, vec![doc], 0)
 }
 
+// TODO mongo has a way of automatically killing a cursor after 10 minutes idle
+
 struct Server {
     conn: elmo::Connection,
-    cursor_num: usize,
-    // TODO map of cursors
+    cursor_num: i64,
+    cursors: std::collections::HashMap<i64, (String, Box<Iterator<Item=BsonValue>>)>,
 }
 
 impl Server {
@@ -397,9 +407,9 @@ impl Server {
         Ok(create_reply(req.req_id, vec![doc], 0))
     }
 
-    fn store_cursor<T: Iterator<Item=BsonValue>>(&mut self, ns: &str, seq: T) -> usize {
+    fn store_cursor<T: Iterator<Item=BsonValue> + 'static>(&mut self, ns: &str, seq: T) -> i64 {
         self.cursor_num = self.cursor_num + 1;
-        // TODO store this
+        self.cursors.insert(self.cursor_num, (String::from(ns), box seq));
         self.cursor_num
     }
 
@@ -419,7 +429,7 @@ impl Server {
         r
     }
 
-    fn reply_with_cursor<T: Iterator<Item=BsonValue>>(&mut self, ns: &str, mut seq: T, cursor_options: Option<&BsonValue>, default_batch_size: usize) -> Result<BsonValue> {
+    fn reply_with_cursor<T: Iterator<Item=BsonValue> + 'static>(&mut self, ns: &str, mut seq: T, cursor_options: Option<&BsonValue>, default_batch_size: usize) -> Result<BsonValue> {
         let number_to_return =
             match cursor_options {
                 Some(&BsonValue::BDocument(ref pairs)) => {
@@ -502,7 +512,7 @@ impl Server {
         match cursor_id {
             Some(cursor_id) => {
                 let mut cursor = BsonValue::BDocument(vec![]);
-                cursor.add_pair_i64("id", cursor_id as i64);
+                cursor.add_pair_i64("id", cursor_id);
                 cursor.add_pair_str("ns", ns);
                 cursor.add_pair_array("firstBatch", docs);
             },
@@ -516,25 +526,33 @@ impl Server {
 
     fn reply_list_collections(&mut self, req: &MsgQuery, db: &str) -> Result<Reply> {
         let results = try!(self.conn.list_collections());
-        let results = results.into_iter().filter_map(
-            |(c_db, c_coll, c_options)| {
-                if db == c_db {
-                    let mut doc = BsonValue::BDocument(vec![]);
-                    doc.add_pair_string("name", c_coll);
-                    doc.add_pair("options", c_options);
-                    Some(doc)
-                } else {
-                    None
+        let seq = {
+            // we need db to get captured by this closure which outlives
+            // this function, so we create String from it and use a move
+            // closure.
+
+            let db = String::from(db);
+            let results = results.into_iter().filter_map(
+                move |(c_db, c_coll, c_options)| {
+                    if db.as_str() == c_db {
+                        let mut doc = BsonValue::BDocument(vec![]);
+                        doc.add_pair_string("name", c_coll);
+                        doc.add_pair("options", c_options);
+                        Some(doc)
+                    } else {
+                        None
+                    }
                 }
-            }
-            );
+                );
+            results
+        };
 
         // TODO filter in query?
 
         let default_batch_size = 100;
         let cursor_options = req.query.tryGetValueForKey("cursor");
         let ns = format!("{}.$cmd.listCollections", db);
-        let doc = try!(self.reply_with_cursor(&ns, results, cursor_options, default_batch_size));
+        let doc = try!(self.reply_with_cursor(&ns, seq, cursor_options, default_batch_size));
         Ok(create_reply(req.req_id, vec![doc], 0))
     }
 
@@ -679,6 +697,7 @@ pub fn serve() {
                     let conn = elmo::Connection::new(conn);
                     let mut s = Server {
                         conn: conn,
+                        cursors: std::collections::HashMap::new(),
                         cursor_num: 0,
                     };
                     s.handle_client(stream).expect("TODO");
