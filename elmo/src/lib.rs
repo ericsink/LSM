@@ -14,6 +14,7 @@
     limitations under the License.
 */
 
+#![feature(convert)]
 #![feature(box_syntax)]
 #![feature(associated_consts)]
 
@@ -123,6 +124,12 @@ pub struct IndexInfo {
     pub options: BsonValue,
 }
 
+impl IndexInfo {
+    pub fn full_collection_name(&self) -> String {
+        format!("{}.{}", self.db, self.coll)
+    }
+}
+
 pub type QueryKey = Vec<BsonValue>;
 
 pub enum TextQueryTerm {
@@ -159,9 +166,11 @@ pub trait StorageCollectionReader {
 }
 
 pub trait StorageReader {
-    // TODO maybe list_collections() should return an iterator
+    // TODO maybe these two should return an iterator
+    // TODO maybe these two should accept params to limit the rows returned
     fn list_collections(&self) -> Result<Vec<(String, String, BsonValue)>>;
     fn list_indexes(&self) -> Result<Vec<IndexInfo>>;
+
     fn get_collection_reader<'a>(&'a self, db: &str, coll: &str, plan: Option<QueryPlan>) -> Result<Box<StorageCollectionReader + 'a>>;
 }
 
@@ -233,10 +242,74 @@ impl Connection {
         Ok(v)
     }
 
+    // TODO consider constraining to just one db or coll.  if so, pass that down to storage?
+    pub fn list_indexes(&self) -> Result<Vec<IndexInfo>> {
+        let reader = try!(self.conn.begin_read());
+        let v = try!(reader.list_indexes());
+        Ok(v)
+    }
+
+    fn try_find_index_by_name_or_spec(indexes: Vec<IndexInfo>, desc: &BsonValue) -> Option<IndexInfo> {
+        let mut a =
+            match desc {
+                &BsonValue::BString(ref s) => {
+                    indexes.into_iter().filter(|ndx| ndx.name.as_str() == s.as_str()).collect::<Vec<_>>()
+                },
+                &BsonValue::BDocument(_) => {
+                    indexes.into_iter().filter(|ndx| ndx.spec == *desc).collect::<Vec<_>>()
+                },
+                _ => panic!("must be name or index spec doc"),
+            };
+        if a.len() > 1 {
+            unreachable!();
+        } else {
+            a.pop()
+        }
+    }
+
+    pub fn delete_indexes(&self, db: &str, coll: &str, index: &BsonValue) -> Result<(usize, usize)> {
+        let writer = try!(self.conn.begin_write());
+        let indexes = try!(writer.list_indexes()).into_iter().filter(
+            |ndx| ndx.db == db && ndx.coll == coll
+            ).collect::<Vec<_>>();
+        let count_before = indexes.len();
+        let indexes = 
+            if index.is_string() && try!(index.getString()) == "*" {
+                indexes.into_iter().filter(
+                    |ndx| ndx.name != "_id_"
+                ).collect::<Vec<_>>()
+            } else {
+                // TODO we're supposed to disallow delete of _id_, right?
+                match Self::try_find_index_by_name_or_spec(indexes, index) {
+                    Some(ndx) => vec![ndx],
+                    None => vec![],
+                }
+            };
+        try!(writer.commit());
+        unimplemented!();
+    }
+
+    pub fn create_indexes(&self, indexes: Vec<IndexInfo>) -> Result<Vec<bool>> {
+        let writer = try!(self.conn.begin_write());
+        let results = try!(writer.create_indexes(indexes));
+        try!(writer.commit());
+        Ok(results)
+    }
+
     pub fn drop_collection(&self, db: &str, coll: &str) -> Result<bool> {
         let deleted = {
             let writer = try!(self.conn.begin_write());
             let deleted = try!(writer.drop_collection(db, coll));
+            try!(writer.commit());
+            deleted
+        };
+        Ok(deleted)
+    }
+
+    pub fn drop_database(&self, db: &str) -> Result<bool> {
+        let deleted = {
+            let writer = try!(self.conn.begin_write());
+            let deleted = try!(writer.drop_database(db));
             try!(writer.commit());
             deleted
         };

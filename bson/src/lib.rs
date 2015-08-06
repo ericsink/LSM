@@ -365,6 +365,13 @@ impl BsonValue {
         }
     }
 
+    pub fn is_string(&self) -> bool {
+        match self {
+            &BsonValue::BString(_) => true,
+            _ => false,
+        }
+    }
+
     fn isDocument(&self) -> bool {
         match self {
             &BsonValue::BDocument(_) => true,

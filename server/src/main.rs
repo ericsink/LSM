@@ -560,10 +560,54 @@ impl Server {
         Ok(doc)
     }
 
+    fn reply_create_indexes(&mut self, req: &MsgQuery, db: &str) -> Result<Reply> {
+        let coll = try!(try!(req.query.getValueForKey("createIndexes")).getString());
+        let indexes = try!(try!(req.query.getValueForKey("indexes")).getArray());
+        let indexes = indexes.into_iter().map(
+            |d| {
+                // TODO
+                let spec = BsonValue::BDocument(vec![]);
+                let options = BsonValue::BDocument(vec![]);
+                elmo::IndexInfo {
+                    db: String::from(db),
+                    coll: String::from(coll),
+                    name: String::from("TODO"),
+                    spec: spec,
+                    options: options,
+                }
+            }
+            ).collect::<Vec<_>>();
+
+        let result = try!(self.conn.create_indexes(indexes));
+        // TODO createdCollectionAutomatically
+        // TODO numIndexesBefore
+        // TODO numIndexesAfter
+        let mut doc = BsonValue::BDocument(vec![]);
+        doc.add_pair_i32("ok", 1);
+        Ok(create_reply(req.req_id, vec![doc], 0))
+    }
+
+    fn reply_delete_indexes(&mut self, req: &MsgQuery, db: &str) -> Result<Reply> {
+        let coll = try!(try!(req.query.getValueForKey("deleteIndexes")).getString());
+        {
+            // TODO is it safe/correct/necessary to remove the cursors BEFORE?
+            let full_coll = format!("{}.{}", db, coll);
+            self.remove_cursors_for_collection(&full_coll);
+        }
+        let index = try!(req.query.getValueForKey("index"));
+        let (count_indexes_before, num_indexes_deleted) = try!(self.conn.delete_indexes(db, coll, index));
+        let mut doc = BsonValue::BDocument(vec![]);
+        doc.add_pair_i32("ok", 1);
+        Ok(create_reply(req.req_id, vec![doc], 0))
+    }
+
     fn reply_drop_collection(&mut self, req: &MsgQuery, db: &str) -> Result<Reply> {
-        let coll = try!(try!(req.query.getValueForKey("insert")).getString());
-        let full_coll = format!("{}.{}", db, coll);
-        self.remove_cursors_for_collection(&full_coll);
+        let coll = try!(try!(req.query.getValueForKey("drop")).getString());
+        {
+            // TODO is it safe/correct/necessary to remove the cursors BEFORE?
+            let full_coll = format!("{}.{}", db, coll);
+            self.remove_cursors_for_collection(&full_coll);
+        }
         let deleted = try!(self.conn.drop_collection(db, coll));
         let mut doc = BsonValue::BDocument(vec![]);
         if deleted {
@@ -571,6 +615,19 @@ impl Server {
         } else {
             // mongo shell apparently cares about this exact error message string
             doc.add_pair_str("errmsg", "ns not found");
+            doc.add_pair_i32("ok", 0);
+        }
+        Ok(create_reply(req.req_id, vec![doc], 0))
+    }
+
+    fn reply_drop_database(&mut self, req: &MsgQuery, db: &str) -> Result<Reply> {
+        // TODO remove cursors?
+        let deleted = try!(self.conn.drop_database(db));
+        let mut doc = BsonValue::BDocument(vec![]);
+        if deleted {
+            doc.add_pair_i32("ok", 1);
+        } else {
+            doc.add_pair_str("errmsg", "database not found");
             doc.add_pair_i32("ok", 0);
         }
         Ok(create_reply(req.req_id, vec![doc], 0))
@@ -609,6 +666,43 @@ impl Server {
         Ok(create_reply(req.req_id, vec![doc], 0))
     }
 
+    fn reply_list_indexes(&mut self, req: &MsgQuery, db: &str) -> Result<Reply> {
+        // TODO check coll
+        let results = try!(self.conn.list_indexes());
+        let seq = {
+            // we need db to get captured by this closure which outlives
+            // this function, so we create String from it and use a move
+            // closure.
+
+            let db = String::from(db);
+            let results = results.into_iter().filter_map(
+                move |ndx| {
+                    if ndx.db.as_str() == db {
+                        let mut doc = BsonValue::BDocument(vec![]);
+                        doc.add_pair_string("ns", ndx.full_collection_name());
+                        doc.add_pair_string("name", ndx.name);
+                        doc.add_pair("key", ndx.spec);
+                        // TODO it seems the automatic index on _id is NOT supposed to be marked unique
+                        // TODO if unique && ndxInfo.ndx<>"_id_" then pairs.Add("unique", BBoolean unique)
+                        Some(doc)
+                    } else {
+                        None
+                    }
+                }
+                );
+            results
+        };
+
+        // TODO filter in query?
+
+        let default_batch_size = 100;
+        let cursor_options = req.query.tryGetValueForKey("cursor");
+        let ns = format!("{}.$cmd.listIndexes", db);
+        let doc = try!(self.reply_with_cursor(&ns, seq, cursor_options, default_batch_size));
+        // note that this uses the newer way of returning a cursor ID, so we pass 0 below
+        Ok(create_reply(req.req_id, vec![doc], 0))
+    }
+
     fn reply_cmd(&mut self, req: &MsgQuery, db: &str) -> Result<Reply> {
         match req.query {
             BsonValue::BDocument(ref pairs) => {
@@ -630,12 +724,12 @@ impl Server {
                             //"findandmodify" => reply_FindAndModify req db
                             //"count" => reply_Count req db
                             //"validate" => reply_Validate req db
-                            //"createindexes" => reply_createIndexes req db
-                            //"deleteindexes" => reply_deleteIndexes req db
+                            "createindexes" => self.reply_create_indexes(req, db),
+                            "deleteindexes" => self.reply_delete_indexes(req, db),
                             "drop" => self.reply_drop_collection(req, db),
-                            //"dropdatabase" => reply_DropDatabase req db
+                            "dropdatabase" => self.reply_drop_database(req, db),
                             "listcollections" => self.reply_list_collections(req, db),
-                            //"listindexes" => reply_listIndexes req db
+                            "listindexes" => self.reply_list_indexes(req, db),
                             //"create" => reply_CreateCollection req db
                             //"features" => reply_features req db
                             _ => Err(Error::Misc("unknown cmd"))
