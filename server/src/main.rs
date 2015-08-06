@@ -430,6 +430,7 @@ impl Server {
     }
 
     // grab is just a take() which doesn't take ownership of the iterator
+    // TODO investigate by_ref()
     fn grab<T: Iterator<Item=BsonValue>>(seq: &mut T, n: usize) -> Vec<BsonValue> {
         let mut r = Vec::new();
         for _ in 0 .. n {
@@ -757,6 +758,119 @@ impl Server {
         Ok(create_reply(req.req_id, vec![doc], 0))
     }
 
+    fn splitname(s: &str) -> Result<(&str, &str)> {
+        match s.find('.') {
+            None => Err(Error::Misc("bad namespace")),
+            Some(dot) => Ok((&s[0 .. dot], &s[dot+1 ..]))
+        }
+    }
+
+    fn tryGetKeyWithOrWithoutDollarSignPrefix<'a>(v: &'a BsonValue, k: &str) -> Option<&'a BsonValue> {
+        assert_eq!(&k[0 .. 1], "$");
+        match v.tryGetValueForKey(k) {
+            Some(r) => Some(r),
+            None => {
+                match v.tryGetValueForKey(&k[1 ..]) {
+                    Some(r) => Some(r),
+                    None => None,
+                }
+            },
+        }
+    }
+
+    fn reply_query(&mut self, req: &MsgQuery, db: &str) -> Result<Reply> {
+        let (db,coll) = try!(Self::splitname(&req.full_collection_name));
+
+        // TODO what if somebody queries on a field named query?  ambiguous.
+
+        // This *might* just have the query in it.  OR it might have the 
+        // query in a key called query, which might also be called $query,
+        // along with other stuff (like orderby) as well.
+        // This other stuff is called query modifiers.  
+        // Sigh.
+
+        let (actual_query, query_format_2) =
+            match Self::tryGetKeyWithOrWithoutDollarSignPrefix(&req.query, "$query") {
+                Some(q) => (q,true),
+                None => (&req.query, false),
+            };
+
+        let orderby = 
+            if query_format_2 {
+                Self::tryGetKeyWithOrWithoutDollarSignPrefix(&req.query, "$orderby")
+            } else {
+                // TODO orderby in the legacy format?
+                None
+            };
+        let min = 
+            if query_format_2 {
+                Self::tryGetKeyWithOrWithoutDollarSignPrefix(&req.query, "$min")
+            } else {
+                None
+            };
+        let max = 
+            if query_format_2 {
+                Self::tryGetKeyWithOrWithoutDollarSignPrefix(&req.query, "$max")
+            } else {
+                None
+            };
+        let hint = 
+            if query_format_2 {
+                Self::tryGetKeyWithOrWithoutDollarSignPrefix(&req.query, "$hint")
+            } else {
+                None
+            };
+        let explain = 
+            if query_format_2 {
+                Self::tryGetKeyWithOrWithoutDollarSignPrefix(&req.query, "$explain")
+            } else {
+                None
+            };
+
+        let projection =
+            match req.return_fields_selector {
+                Some(ref v) => Some(v),
+                None => None,
+            };
+
+        let seq = try!(self.conn.find(
+                db, 
+                coll, 
+                &actual_query,
+                orderby,
+                projection,
+                min,
+                max,
+                hint,
+                explain
+                ));
+        unimplemented!();
+/*
+        let {docs=s;funk=kill} = crud.find db coll actualQuery mods
+
+        let s = crud.seqOnlyDoc s
+
+        try
+            let s =
+                if clientMsg.q_numberToSkip > 0 then
+                    // TODO do we want seqSkip to be public?
+                    crud.seqSkip (clientMsg.q_numberToSkip) s
+                else if clientMsg.q_numberToSkip < 0 then
+                    failwith "negative skip"
+                else
+                    s
+
+            let (docs,cursorID) = doLimit fullCollectionName clientMsg.q_numberToReturn s kill
+
+            createReply clientMsg.q_requestID docs cursorID
+        with
+            | e ->
+                kill()
+                reply_err clientMsg e
+*/
+
+    }
+
     fn reply_cmd(&mut self, req: &MsgQuery, db: &str) -> Result<Reply> {
         match req.query {
             BsonValue::BDocument(ref pairs) => {
@@ -796,16 +910,15 @@ impl Server {
     }
 
     fn reply_2004(&mut self, req: MsgQuery) -> Reply {
-        let pair = req.full_collection_name.split('.').collect::<Vec<_>>();
+        let parts = req.full_collection_name.split('.').collect::<Vec<_>>();
         let r = 
-            if pair.len() < 2 {
+            if parts.len() < 2 {
                 // TODO failwith (sprintf "bad collection name: %s" (req.full_collection_name))
                 Err(Error::Misc("bad collection name"))
             } else {
-                let db = pair[0];
-                let coll = pair[1];
+                let db = parts[0];
                 if db == "admin" {
-                    if coll == "$cmd" {
+                    if parts[1] == "$cmd" {
                         //reply_AdminCmd req
                         self.reply_admin_cmd(&req, db)
                     } else {
@@ -813,22 +926,21 @@ impl Server {
                         Err(Error::Misc("TODO"))
                     }
                 } else {
-                    if coll == "$cmd" {
-                        if pair.len() == 4 && pair[2]=="sys" && pair[3]=="inprog" {
+                    if parts[1] == "$cmd" {
+                        if parts.len() == 4 && parts[2]=="sys" && parts[3]=="inprog" {
                             //reply_cmd_sys_inprog req db
                             Err(Error::Misc("TODO"))
                         } else {
                             self.reply_cmd(&req, db)
                         }
-                    } else if pair.len()==3 && pair[1]=="system" && pair[2]=="indexes" {
+                    } else if parts.len()==3 && parts[1]=="system" && parts[2]=="indexes" {
                         //reply_system_indexes req db
                         Err(Error::Misc("TODO"))
-                    } else if pair.len()==3 && pair[1]=="system" && pair[2]=="namespaces" {
+                    } else if parts.len()==3 && parts[1]=="system" && parts[2]=="namespaces" {
                         //reply_system_namespaces req db
                         Err(Error::Misc("TODO"))
                     } else {
-                        //reply_Query req
-                        Err(Error::Misc("TODO"))
+                        self.reply_query(&req, db)
                     }
                 }
             };

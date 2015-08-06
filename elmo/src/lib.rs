@@ -356,5 +356,21 @@ impl Connection {
         try!(writer.commit());
         Ok(result)
     }
+
+    pub fn find(&self,
+                db: &str,
+                coll: &str,
+                query: &BsonValue,
+                orderby: Option<&BsonValue>,
+                projection: Option<&BsonValue>,
+                min: Option<&BsonValue>,
+                max: Option<&BsonValue>,
+                hint: Option<&BsonValue>,
+                explain: Option<&BsonValue>
+                ) 
+        -> Result<Box<StorageCollectionReader>>
+    {
+        Err(Error::Misc("TODO"))
+    }
 }
 
