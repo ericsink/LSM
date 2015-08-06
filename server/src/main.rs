@@ -380,6 +380,19 @@ impl Server {
         }
     }
 
+    fn reply_delete(&self, req: &MsgQuery, db: &str) -> Result<Reply> {
+        let q = &req.query;
+        let coll = try!(try!(q.getValueForKey("delete")).getString());
+        let deletes = try!(try!(q.getValueForKey("deletes")).getArray());
+        // TODO limit
+        // TODO ordered
+        let result = try!(self.conn.delete(db, coll, deletes));
+        let mut doc = BsonValue::BDocument(vec![]);
+        doc.add_pair_i32("ok", result as i32);
+        doc.add_pair_i32("ok", 1);
+        Ok(create_reply(req.req_id, vec![doc], 0))
+    }
+
     fn reply_insert(&self, req: &MsgQuery, db: &str) -> Result<Reply> {
         let q = &req.query;
         let coll = try!(try!(q.getValueForKey("insert")).getString());
@@ -560,12 +573,53 @@ impl Server {
         Ok(doc)
     }
 
+    fn reply_create_collection(&self, req: &MsgQuery, db: &str) -> Result<Reply> {
+        let q = &req.query;
+        let coll = try!(try!(q.getValueForKey("create")).getString());
+        let mut options = BsonValue::BDocument(vec![]);
+        // TODO maybe just pass everything through instead of looking for specific options
+        match q.tryGetValueForKey("autoIndexId") {
+            Some(&BsonValue::BBoolean(b)) => options.add_pair_bool("autoIndexId", b),
+            // TODO error on bad values?
+            _ => (),
+        }
+        match q.tryGetValueForKey("temp") {
+            Some(&BsonValue::BBoolean(b)) => options.add_pair_bool("temp", b),
+            // TODO error on bad values?
+            _ => (),
+        }
+        match q.tryGetValueForKey("capped") {
+            Some(&BsonValue::BBoolean(b)) => options.add_pair_bool("capped", b),
+            // TODO error on bad values?
+            _ => (),
+        }
+        match q.tryGetValueForKey("size") {
+            Some(&BsonValue::BInt32(n)) => options.add_pair_i64("size", n as i64),
+            Some(&BsonValue::BInt64(n)) => options.add_pair_i64("size", n as i64),
+            Some(&BsonValue::BDouble(n)) => options.add_pair_i64("size", n as i64),
+            // TODO error on bad values?
+            _ => (),
+        }
+        match q.tryGetValueForKey("max") {
+            Some(&BsonValue::BInt32(n)) => options.add_pair_i64("max", n as i64),
+            Some(&BsonValue::BInt64(n)) => options.add_pair_i64("max", n as i64),
+            Some(&BsonValue::BDouble(n)) => options.add_pair_i64("max", n as i64),
+            // TODO error on bad values?
+            _ => (),
+        }
+        // TODO more options here ?
+        let result = try!(self.conn.create_collection(db, coll, options));
+        let mut doc = BsonValue::BDocument(vec![]);
+        doc.add_pair_i32("ok", 1);
+        Ok(create_reply(req.req_id, vec![doc], 0))
+    }
+
     fn reply_create_indexes(&mut self, req: &MsgQuery, db: &str) -> Result<Reply> {
         let coll = try!(try!(req.query.getValueForKey("createIndexes")).getString());
         let indexes = try!(try!(req.query.getValueForKey("indexes")).getArray());
         let indexes = indexes.into_iter().map(
             |d| {
-                // TODO
+                // TODO get these from d
                 let spec = BsonValue::BDocument(vec![]);
                 let options = BsonValue::BDocument(vec![]);
                 elmo::IndexInfo {
@@ -718,7 +772,7 @@ impl Server {
                             //"explain" => reply_explain req db
                             //"aggregate" => reply_aggregate req db
                             "insert" => self.reply_insert(req, db),
-                            //"delete" => reply_Delete req db
+                            "delete" => self.reply_delete(req, db),
                             //"distinct" => reply_distinct req db
                             //"update" => reply_Update req db
                             //"findandmodify" => reply_FindAndModify req db
@@ -730,7 +784,7 @@ impl Server {
                             "dropdatabase" => self.reply_drop_database(req, db),
                             "listcollections" => self.reply_list_collections(req, db),
                             "listindexes" => self.reply_list_indexes(req, db),
-                            //"create" => reply_CreateCollection req db
+                            "create" => self.reply_create_collection(req, db),
                             //"features" => reply_features req db
                             _ => Err(Error::Misc("unknown cmd"))
                         };

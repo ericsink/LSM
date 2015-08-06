@@ -315,5 +315,46 @@ impl Connection {
         };
         Ok(deleted)
     }
+
+    pub fn delete(&self, db: &str, coll: &str, items: &Vec<BsonValue>) -> Result<usize> {
+        let mut count = 0;
+        {
+            let writer = try!(self.conn.begin_write());
+            {
+                let mut collwriter = try!(writer.get_collection_writer(db, coll));
+                for del in items {
+                    // TODO
+                    /*
+                    let q = bson.getValueForKey upd "q"
+                    let limit = bson.tryGetValueForKey upd "limit"
+                    let m = Matcher.parseQuery q
+                    // TODO is this safe?  or do we need two-conn isolation like update?
+                    let indexes = w.getIndexes()
+                    let plan = chooseIndex indexes m None
+                    let {docs=s;funk=funk} = w.getSelect plan
+                    try
+                        s |> seqMatch m |> 
+                            Seq.iter (fun {doc=doc} -> 
+                                // TODO is it possible to delete from an autoIndexId=false collection?
+                                let id = bson.getValueForKey doc "_id"
+                                if basicDelete w id then
+                                    count := !count + 1
+                                )
+                    finally
+                        funk()
+                    */
+                }
+            }
+            try!(writer.commit());
+        }
+        Ok(count)
+    }
+
+    pub fn create_collection(&self, db: &str, coll: &str, options: BsonValue) -> Result<bool> {
+        let writer = try!(self.conn.begin_write());
+        let result = try!(writer.create_collection(db, coll, options));
+        try!(writer.commit());
+        Ok(result)
+    }
 }
 
