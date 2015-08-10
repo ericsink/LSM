@@ -133,16 +133,12 @@ impl Iterator for MyEmptyIterator {
     }
 }
 
-struct MyCollectionReader {
+struct MyCollectionReader<'a> {
+    commit_on_drop: bool,
     seq: Box<Iterator<Item=Result<BsonValue>>>,
+    myconn: &'a MyConn,
 
     // TODO need counts here
-
-    // this struct does not have a reference to a parent.
-    // such as a MyReader.
-    // this is because its parent might be a MyReader, or it
-    // might be a MyWriter.
-    // and also because such a link doesn't seem necessary.
 }
 
 struct MyReader<'a> {
@@ -550,7 +546,7 @@ impl MyConn {
         }
     }
 
-    fn get_table_scan_reader(&self, db: &str, coll: &str) -> Result<MyCollectionReader> {
+    fn get_table_scan_reader(&self, commit_on_drop: bool, db: &str, coll: &str) -> Result<MyCollectionReader> {
         let tbl = get_table_name_for_collection(db, coll);
         let stmt = try!(self.conn.prepare(&format!("SELECT bson FROM \"{}\"", tbl)).map_err(elmo::wrap_err));
         // TODO keep track of total keys examined, etc.
@@ -560,12 +556,14 @@ impl MyConn {
             };
         let rdr = 
             MyCollectionReader {
+                commit_on_drop: commit_on_drop,
                 seq: box seq,
+                myconn: self,
             };
         Ok(rdr)
     }
 
-    fn get_nontext_index_scan_reader(&self, plan: elmo::QueryPlan) -> Result<MyCollectionReader> {
+    fn get_nontext_index_scan_reader(&self, commit_on_drop: bool, plan: elmo::QueryPlan) -> Result<MyCollectionReader> {
         let stmt = try!(self.get_stmt_for_index_scan(plan));
 
         // TODO keep track of total keys examined, etc.
@@ -575,12 +573,14 @@ impl MyConn {
             };
         let rdr = 
             MyCollectionReader {
+                commit_on_drop: commit_on_drop,
                 seq: box seq,
+                myconn: self,
             };
         Ok(rdr)
     }
 
-    fn get_text_index_scan_reader(&self, ndx: &elmo::IndexInfo,  eq: elmo::QueryKey, terms: Vec<elmo::TextQueryTerm>) -> Result<MyCollectionReader> {
+    fn get_text_index_scan_reader(&self, commit_on_drop: bool, ndx: &elmo::IndexInfo,  eq: elmo::QueryKey, terms: Vec<elmo::TextQueryTerm>) -> Result<MyCollectionReader> {
         let tbl_coll = get_table_name_for_collection(&ndx.db, &ndx.coll);
         let tbl_ndx = get_table_name_for_index(&ndx.db, &ndx.coll, &ndx.name);
         let (normspec, weights) = try!(get_normalized_spec(&ndx));
@@ -756,17 +756,21 @@ impl MyConn {
 
         let rdr = 
             MyCollectionReader {
+                commit_on_drop: commit_on_drop,
                 seq: box res.into_iter(),
+                myconn: self,
             };
         Ok(rdr)
     }
 
-    fn get_collection_reader<'b>(&'b self, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> Result<MyCollectionReader> {
+    fn get_collection_reader<'b>(&'b self, commit_on_drop: bool, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> Result<MyCollectionReader> {
         match try!(self.get_collection_options(db, coll)) {
             None => {
                 let rdr = 
                     MyCollectionReader {
+                        commit_on_drop: commit_on_drop,
                         seq: box MyEmptyIterator,
+                        myconn: self,
                     };
                 Ok(rdr)
             },
@@ -775,17 +779,17 @@ impl MyConn {
                     Some(plan) => {
                         match plan.bounds {
                             elmo::QueryBounds::Text(eq,terms) => {
-                                let rdr = try!(self.get_text_index_scan_reader(&plan.ndx, eq, terms));
+                                let rdr = try!(self.get_text_index_scan_reader(commit_on_drop, &plan.ndx, eq, terms));
                                 return Ok(rdr);
                             },
                             _ => {
-                                let rdr = try!(self.get_nontext_index_scan_reader(plan));
+                                let rdr = try!(self.get_nontext_index_scan_reader(commit_on_drop, plan));
                                 return Ok(rdr);
                             },
                         }
                     },
                     None => {
-                        let rdr = try!(self.get_table_scan_reader(db, coll));
+                        let rdr = try!(self.get_table_scan_reader(commit_on_drop, db, coll));
                         return Ok(rdr);
                     },
                 };
@@ -1296,9 +1300,21 @@ impl<'a> Drop for MyReader<'a> {
     }
 }
 
+impl<'a> Drop for MyCollectionReader<'a> {
+    fn drop(&mut self) {
+        // this transaction was [supposed to be] read-only, so it doesn't
+        // matter in principle whether we commit or rollback.  in SQL Server,
+        // if temp tables were created, commit is MUCH faster than rollback.
+        // but this is sqlite.  anyway...
+        if self.commit_on_drop {
+            let _ignored = self.myconn.conn.exec("COMMIT TRANSACTION");
+        }
+    }
+}
+
 impl<'a> elmo::StorageReader for MyReader<'a> {
     fn get_collection_reader<'b>(&'b self, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> Result<Box<elmo::StorageCollectionReader + 'b>> {
-        let rdr = try!(self.myconn.get_collection_reader(db, coll, plan));
+        let rdr = try!(self.myconn.get_collection_reader(false, db, coll, plan));
         Ok(box rdr)
     }
 
@@ -1314,7 +1330,7 @@ impl<'a> elmo::StorageReader for MyReader<'a> {
 
 impl<'a> elmo::StorageReader for MyWriter<'a> {
     fn get_collection_reader<'b>(&'b self, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> Result<Box<elmo::StorageCollectionReader + 'b>> {
-        let rdr = try!(self.myconn.get_collection_reader(db, coll, plan));
+        let rdr = try!(self.myconn.get_collection_reader(false, db, coll, plan));
         Ok(box rdr)
     }
 
@@ -1345,9 +1361,15 @@ impl elmo::StorageConnection for MyConn {
         };
         Ok(box r)
     }
+
+    fn read_collection<'a>(&'a self, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> Result<Box<elmo::StorageCollectionReader + 'a>> {
+        try!(self.conn.exec("BEGIN TRANSACTION").map_err(elmo::wrap_err));
+        let rdr = try!(self.get_collection_reader(true, db, coll, plan));
+        Ok(box rdr)
+    }
 }
 
-impl elmo::StorageCollectionReader for MyCollectionReader {
+impl<'b> elmo::StorageCollectionReader for MyCollectionReader<'b> {
     fn iter<'a>(&'a self) -> &'a Iterator<Item=Result<BsonValue>> {
         &self.seq
     }

@@ -165,6 +165,10 @@ pub trait StorageCollectionReader {
     // TODO more explain stuff here?
 }
 
+// TODO not sure this trait is worth the trouble.  does anything actually
+// care about having list_collections() in the same underlying tx as a query?
+// we could just go back to having list_collections() and list_indexes() on
+// the connection.  OTOH, it also establishes a snapshot.  multiple reads.
 pub trait StorageReader {
     // TODO maybe these two should return an iterator
     // TODO maybe these two should accept params to limit the rows returned
@@ -205,6 +209,7 @@ pub trait StorageWriter : StorageReader {
 pub trait StorageConnection {
     fn begin_write<'a>(&'a self) -> Result<Box<StorageWriter + 'a>>;
     fn begin_read<'a>(&'a self) -> Result<Box<StorageReader + 'a>>;
+    fn read_collection<'a>(&'a self, db: &str, coll: &str, plan: Option<QueryPlan>) -> Result<Box<StorageCollectionReader + 'a>>;
 }
 
 pub struct Connection {
@@ -357,7 +362,7 @@ impl Connection {
         Ok(result)
     }
 
-    pub fn find(&self,
+    pub fn find<'a>(&'a self,
                 db: &str,
                 coll: &str,
                 query: &BsonValue,
@@ -368,9 +373,10 @@ impl Connection {
                 hint: Option<&BsonValue>,
                 explain: Option<&BsonValue>
                 ) 
-        -> Result<Box<StorageCollectionReader>>
+        -> Result<Box<StorageCollectionReader + 'a>>
     {
-        Err(Error::Misc("TODO"))
+        let coll_reader = try!(self.conn.read_collection(db, coll, None));
+        Ok(coll_reader)
     }
 }
 
