@@ -171,12 +171,32 @@ pub trait StorageReader {
     fn list_indexes(&self) -> Result<Vec<IndexInfo>>;
 
     fn get_collection_reader<'a>(&'a self, db: &str, coll: &str, plan: Option<QueryPlan>) -> Result<Box<StorageCollectionReader<Item=Result<BsonValue>> + 'a>>;
+
+    fn find<'a>(&'a self,
+                db: &str,
+                coll: &str,
+                query: &BsonValue,
+                orderby: Option<&BsonValue>,
+                projection: Option<&BsonValue>,
+                min: Option<&BsonValue>,
+                max: Option<&BsonValue>,
+                hint: Option<&BsonValue>,
+                explain: Option<&BsonValue>
+                ) 
+        -> Result<Box<StorageCollectionReader<Item=Result<BsonValue>> + 'a>>
+    {
+        // TODO how to return the tx object?  probably just expose tx objects
+        // another layer up.
+        let coll_reader = try!(self.get_collection_reader(db, coll, None));
+        Ok(coll_reader)
+    }
 }
 
 pub trait StorageCollectionWriter {
     fn insert(&mut self, v: &BsonValue) -> Result<()>;
     fn update(&mut self, v: &BsonValue) -> Result<()>;
     fn delete(&mut self, v: &BsonValue) -> Result<bool>;
+
 }
 
 // TODO should implement Drop = rollback
@@ -200,6 +220,69 @@ pub trait StorageWriter : StorageReader {
     fn commit(self: Box<Self>) -> Result<()>;
     fn rollback(self: Box<Self>) -> Result<()>;
 
+    fn insert(&self, db: &str, coll: &str, docs: &Vec<BsonValue>) -> Result<Vec<Result<()>>> {
+        // TODO make sure every doc has an _id
+        let mut results = Vec::new();
+        {
+            let mut collwriter = try!(self.get_collection_writer(db, coll));
+            for doc in docs {
+                let r = collwriter.insert(doc);
+                results.push(r);
+            }
+        }
+        Ok(results)
+    }
+
+    fn delete_indexes(&self, db: &str, coll: &str, index: &BsonValue) -> Result<(usize, usize)> {
+        let indexes = try!(self.list_indexes()).into_iter().filter(
+            |ndx| ndx.db == db && ndx.coll == coll
+            ).collect::<Vec<_>>();
+        let count_before = indexes.len();
+        let indexes = 
+            if index.is_string() && try!(index.getString()) == "*" {
+                indexes.into_iter().filter(
+                    |ndx| ndx.name != "_id_"
+                ).collect::<Vec<_>>()
+            } else {
+                // TODO we're supposed to disallow delete of _id_, right?
+                match try_find_index_by_name_or_spec(indexes, index) {
+                    Some(ndx) => vec![ndx],
+                    None => vec![],
+                }
+            };
+        unimplemented!();
+    }
+
+    fn delete(&self, db: &str, coll: &str, items: &Vec<BsonValue>) -> Result<usize> {
+        let mut count = 0;
+        {
+            let mut collwriter = try!(self.get_collection_writer(db, coll));
+            for del in items {
+                // TODO
+                /*
+                let q = bson.getValueForKey upd "q"
+                let limit = bson.tryGetValueForKey upd "limit"
+                let m = Matcher.parseQuery q
+                // TODO is this safe?  or do we need two-conn isolation like update?
+                let indexes = w.getIndexes()
+                let plan = chooseIndex indexes m None
+                let {docs=s;funk=funk} = w.getSelect plan
+                try
+                    s |> seqMatch m |> 
+                        Seq.iter (fun {doc=doc} -> 
+                            // TODO is it possible to delete from an autoIndexId=false collection?
+                            let id = bson.getValueForKey doc "_id"
+                            if basicDelete w id then
+                                count := !count + 1
+                            )
+                finally
+                    funk()
+                */
+            }
+        }
+        Ok(count)
+    }
+
 }
 
 pub trait StorageConnection {
@@ -213,171 +296,22 @@ pub trait StorageConnection {
     // as long as they live within the same tx.
 }
 
-pub struct Connection {
-    conn: Box<StorageConnection>,
+fn try_find_index_by_name_or_spec(indexes: Vec<IndexInfo>, desc: &BsonValue) -> Option<IndexInfo> {
+    let mut a =
+        match desc {
+            &BsonValue::BString(ref s) => {
+                indexes.into_iter().filter(|ndx| ndx.name.as_str() == s.as_str()).collect::<Vec<_>>()
+            },
+            &BsonValue::BDocument(_) => {
+                indexes.into_iter().filter(|ndx| ndx.spec == *desc).collect::<Vec<_>>()
+            },
+            _ => panic!("must be name or index spec doc"),
+        };
+    if a.len() > 1 {
+        unreachable!();
+    } else {
+        a.pop()
+    }
 }
 
-impl Connection {
-    pub fn new(conn: Box<StorageConnection>) -> Connection {
-        Connection {
-            conn: conn,
-        }
-    }
-
-    pub fn insert(&self, db: &str, coll: &str, docs: &Vec<BsonValue>) -> Result<Vec<Result<()>>> {
-        // TODO make sure every doc has an _id
-        let mut results = Vec::new();
-        {
-            let writer = try!(self.conn.begin_write());
-            {
-                let mut collwriter = try!(writer.get_collection_writer(db, coll));
-                for doc in docs {
-                    let r = collwriter.insert(doc);
-                    results.push(r);
-                }
-            }
-            try!(writer.commit());
-        }
-        Ok(results)
-    }
-
-    // TODO consider constraining to just one db.  if so, pass that down to storage?
-    pub fn list_collections(&self) -> Result<Vec<(String, String, BsonValue)>> {
-        let reader = try!(self.conn.begin_read());
-        let v = try!(reader.list_collections());
-        Ok(v)
-    }
-
-    // TODO consider constraining to just one db or coll.  if so, pass that down to storage?
-    pub fn list_indexes(&self) -> Result<Vec<IndexInfo>> {
-        let reader = try!(self.conn.begin_read());
-        let v = try!(reader.list_indexes());
-        Ok(v)
-    }
-
-    fn try_find_index_by_name_or_spec(indexes: Vec<IndexInfo>, desc: &BsonValue) -> Option<IndexInfo> {
-        let mut a =
-            match desc {
-                &BsonValue::BString(ref s) => {
-                    indexes.into_iter().filter(|ndx| ndx.name.as_str() == s.as_str()).collect::<Vec<_>>()
-                },
-                &BsonValue::BDocument(_) => {
-                    indexes.into_iter().filter(|ndx| ndx.spec == *desc).collect::<Vec<_>>()
-                },
-                _ => panic!("must be name or index spec doc"),
-            };
-        if a.len() > 1 {
-            unreachable!();
-        } else {
-            a.pop()
-        }
-    }
-
-    pub fn delete_indexes(&self, db: &str, coll: &str, index: &BsonValue) -> Result<(usize, usize)> {
-        let writer = try!(self.conn.begin_write());
-        let indexes = try!(writer.list_indexes()).into_iter().filter(
-            |ndx| ndx.db == db && ndx.coll == coll
-            ).collect::<Vec<_>>();
-        let count_before = indexes.len();
-        let indexes = 
-            if index.is_string() && try!(index.getString()) == "*" {
-                indexes.into_iter().filter(
-                    |ndx| ndx.name != "_id_"
-                ).collect::<Vec<_>>()
-            } else {
-                // TODO we're supposed to disallow delete of _id_, right?
-                match Self::try_find_index_by_name_or_spec(indexes, index) {
-                    Some(ndx) => vec![ndx],
-                    None => vec![],
-                }
-            };
-        try!(writer.commit());
-        unimplemented!();
-    }
-
-    pub fn create_indexes(&self, indexes: Vec<IndexInfo>) -> Result<Vec<bool>> {
-        let writer = try!(self.conn.begin_write());
-        let results = try!(writer.create_indexes(indexes));
-        try!(writer.commit());
-        Ok(results)
-    }
-
-    pub fn drop_collection(&self, db: &str, coll: &str) -> Result<bool> {
-        let deleted = {
-            let writer = try!(self.conn.begin_write());
-            let deleted = try!(writer.drop_collection(db, coll));
-            try!(writer.commit());
-            deleted
-        };
-        Ok(deleted)
-    }
-
-    pub fn drop_database(&self, db: &str) -> Result<bool> {
-        let deleted = {
-            let writer = try!(self.conn.begin_write());
-            let deleted = try!(writer.drop_database(db));
-            try!(writer.commit());
-            deleted
-        };
-        Ok(deleted)
-    }
-
-    pub fn delete(&self, db: &str, coll: &str, items: &Vec<BsonValue>) -> Result<usize> {
-        let mut count = 0;
-        {
-            let writer = try!(self.conn.begin_write());
-            {
-                let mut collwriter = try!(writer.get_collection_writer(db, coll));
-                for del in items {
-                    // TODO
-                    /*
-                    let q = bson.getValueForKey upd "q"
-                    let limit = bson.tryGetValueForKey upd "limit"
-                    let m = Matcher.parseQuery q
-                    // TODO is this safe?  or do we need two-conn isolation like update?
-                    let indexes = w.getIndexes()
-                    let plan = chooseIndex indexes m None
-                    let {docs=s;funk=funk} = w.getSelect plan
-                    try
-                        s |> seqMatch m |> 
-                            Seq.iter (fun {doc=doc} -> 
-                                // TODO is it possible to delete from an autoIndexId=false collection?
-                                let id = bson.getValueForKey doc "_id"
-                                if basicDelete w id then
-                                    count := !count + 1
-                                )
-                    finally
-                        funk()
-                    */
-                }
-            }
-            try!(writer.commit());
-        }
-        Ok(count)
-    }
-
-    pub fn create_collection(&self, db: &str, coll: &str, options: BsonValue) -> Result<bool> {
-        let writer = try!(self.conn.begin_write());
-        let result = try!(writer.create_collection(db, coll, options));
-        try!(writer.commit());
-        Ok(result)
-    }
-
-    pub fn find<'a>(&'a self,
-                db: &str,
-                coll: &str,
-                query: &BsonValue,
-                orderby: Option<&BsonValue>,
-                projection: Option<&BsonValue>,
-                min: Option<&BsonValue>,
-                max: Option<&BsonValue>,
-                hint: Option<&BsonValue>,
-                explain: Option<&BsonValue>
-                ) 
-        -> Result<Box<StorageCollectionReader<Item=Result<BsonValue>> + 'a>>
-    {
-        let coll_reader = try!(self.conn.read_collection(db, coll, None));
-        Ok(coll_reader)
-    }
-}
 

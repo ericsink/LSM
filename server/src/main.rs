@@ -310,7 +310,7 @@ fn reply_err(req_id: i32, err: Error) -> Reply {
 // TODO mongo has a way of automatically killing a cursor after 10 minutes idle
 
 struct Server<'a> {
-    conn: elmo::Connection,
+    conn: Box<elmo::StorageConnection +'a>,
     cursor_num: i64,
     // TODO this is problematic when/if the Iterator has a reference to or the same lifetime
     // as self.conn.
@@ -404,7 +404,9 @@ impl<'b> Server<'b> {
         let deletes = try!(try!(q.getValueForKey("deletes")).getArray());
         // TODO limit
         // TODO ordered
-        let result = try!(self.conn.delete(db, coll, deletes));
+        let writer = try!(self.conn.begin_write());
+        let result = try!(writer.delete(db, coll, deletes));
+        try!(writer.commit());
         let mut doc = BsonValue::BDocument(vec![]);
         doc.add_pair_i32("ok", result as i32);
         doc.add_pair_i32("ok", 1);
@@ -416,7 +418,8 @@ impl<'b> Server<'b> {
         let coll = try!(try!(q.getValueForKey("insert")).getString());
         let docs = try!(try!(q.getValueForKey("documents")).getArray());
         // TODO ordered
-        let results = try!(self.conn.insert(db, coll, &docs));
+        let writer = try!(self.conn.begin_write());
+        let results = try!(writer.insert(db, coll, &docs));
         let mut errors = Vec::new();
         for i in 0 .. results.len() {
             if results[i].is_err() {
@@ -633,7 +636,8 @@ impl<'b> Server<'b> {
             _ => (),
         }
         // TODO more options here ?
-        let result = try!(self.conn.create_collection(db, coll, options));
+        let writer = try!(self.conn.begin_write());
+        let result = try!(writer.create_collection(db, coll, options));
         let mut doc = BsonValue::BDocument(vec![]);
         doc.add_pair_i32("ok", 1);
         Ok(create_reply(req.req_id, vec![doc], 0))
@@ -657,7 +661,8 @@ impl<'b> Server<'b> {
             }
             ).collect::<Vec<_>>();
 
-        let result = try!(self.conn.create_indexes(indexes));
+        let writer = try!(self.conn.begin_write());
+        let result = try!(writer.create_indexes(indexes));
         // TODO createdCollectionAutomatically
         // TODO numIndexesBefore
         // TODO numIndexesAfter
@@ -674,7 +679,8 @@ impl<'b> Server<'b> {
             self.remove_cursors_for_collection(&full_coll);
         }
         let index = try!(req.query.getValueForKey("index"));
-        let (count_indexes_before, num_indexes_deleted) = try!(self.conn.delete_indexes(db, coll, index));
+        let writer = try!(self.conn.begin_write());
+        let (count_indexes_before, num_indexes_deleted) = try!(writer.delete_indexes(db, coll, index));
         let mut doc = BsonValue::BDocument(vec![]);
         doc.add_pair_i32("ok", 1);
         Ok(create_reply(req.req_id, vec![doc], 0))
@@ -687,7 +693,8 @@ impl<'b> Server<'b> {
             let full_coll = format!("{}.{}", db, coll);
             self.remove_cursors_for_collection(&full_coll);
         }
-        let deleted = try!(self.conn.drop_collection(db, coll));
+        let writer = try!(self.conn.begin_write());
+        let deleted = try!(writer.drop_collection(db, coll));
         let mut doc = BsonValue::BDocument(vec![]);
         if deleted {
             doc.add_pair_i32("ok", 1);
@@ -701,7 +708,8 @@ impl<'b> Server<'b> {
 
     fn reply_drop_database(&mut self, req: &MsgQuery, db: &str) -> Result<Reply> {
         // TODO remove cursors?
-        let deleted = try!(self.conn.drop_database(db));
+        let writer = try!(self.conn.begin_write());
+        let deleted = try!(writer.drop_database(db));
         let mut doc = BsonValue::BDocument(vec![]);
         if deleted {
             doc.add_pair_i32("ok", 1);
@@ -713,7 +721,8 @@ impl<'b> Server<'b> {
     }
 
     fn reply_list_collections(&mut self, req: &MsgQuery, db: &str) -> Result<Reply> {
-        let results = try!(self.conn.list_collections());
+        let reader = try!(self.conn.begin_read());
+        let results = try!(reader.list_collections());
         let seq = {
             // we need db to get captured by this closure which outlives
             // this function, so we create String from it and use a move
@@ -747,7 +756,8 @@ impl<'b> Server<'b> {
 
     fn reply_list_indexes(&mut self, req: &MsgQuery, db: &str) -> Result<Reply> {
         // TODO check coll
-        let results = try!(self.conn.list_indexes());
+        let reader = try!(self.conn.begin_read());
+        let results = try!(reader.list_indexes());
         let seq = {
             // we need db to get captured by this closure which outlives
             // this function, so we create String from it and use a move
@@ -857,7 +867,9 @@ impl<'b> Server<'b> {
                 None => None,
             };
 
-        let seq = try!(self.conn.find(
+        let reader = try!(self.conn.begin_read());
+
+        let seq = try!(reader.find(
                 db, 
                 coll, 
                 &actual_query,
@@ -884,6 +896,11 @@ impl<'b> Server<'b> {
         //let docs = Self::grab(&mut seq, req.number_to_return as usize);
         //let docs = try!(unwrap_vec_of_results(docs));
         //Ok(create_reply(req.req_id, docs, 0))
+
+        // TODO the issue here is that we want to store the cursor so we can
+        // fill additional 2005 requests from it.  so we can't end the transaction
+        // until later.  but the cursor is an iterator and it doesn't OWN the
+        // transaction object.
 
         let (docs, more) = try!(Self::do_limit(&req.full_collection_name, &mut seq, req.number_to_return));
         let cursor_id = if more {
@@ -1059,7 +1076,6 @@ pub fn serve() {
                     // connection succeeded
                     // TODO how to use filename arg.  lifetime problem.
                     let conn = elmo_sqlite3::connect("foo.db").expect("TODO");
-                    let conn = elmo::Connection::new(conn);
                     let mut s = Server {
                         conn: conn,
                         cursors: std::collections::HashMap::new(),

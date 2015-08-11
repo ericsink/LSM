@@ -1381,11 +1381,6 @@ impl elmo::StorageConnection for MyConn {
         Ok(box r)
     }
 
-    fn read_collection<'a>(&'a self, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> Result<Box<elmo::StorageCollectionReader<Item=Result<BsonValue>> + 'a>> {
-        try!(self.conn.exec("BEGIN TRANSACTION").map_err(elmo::wrap_err));
-        let rdr = try!(self.get_collection_reader(true, db, coll, plan));
-        Ok(box rdr)
-    }
 }
 
 impl<'b> elmo::StorageCollectionReader for MyCollectionReader<'b> {
