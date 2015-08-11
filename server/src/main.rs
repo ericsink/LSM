@@ -58,6 +58,11 @@ enum Error {
     Elmo(elmo::Error),
 }
 
+// TODO why is 'static needed here?  Doesn't this take ownership?
+fn wrap_err<E: std::error::Error + 'static>(err: E) -> Error {
+    Error::Whatever(box err)
+}
+
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match *self {
@@ -183,6 +188,18 @@ impl Reply {
     }
 }
 
+// TODO in cases where we collect() an iterator and then immediately call this func,
+// it would be better to do the result unwrap during the collect, while building the
+// first vec, instead of building a vec and then rebuilding it.
+fn unwrap_vec_of_results<T,E>(v: Vec<std::result::Result<T,E>>) -> std::result::Result<Vec<T>,E> {
+    let mut r = Vec::new();
+    for t in v {
+        let q = try!(t);
+        r.push(q);
+    }
+    Ok(r)
+}
+
 fn parse_request(ba: &[u8]) -> Result<Request> {
     let mut i = 0;
     let (message_len,req_id,response_to,op_code) = slurp_header(ba, &mut i);
@@ -293,13 +310,13 @@ fn reply_err(req_id: i32, err: Error) -> Reply {
 
 // TODO mongo has a way of automatically killing a cursor after 10 minutes idle
 
-struct Server {
+struct Server<'a> {
     conn: elmo::Connection,
     cursor_num: i64,
-    cursors: std::collections::HashMap<i64, (String, Box<Iterator<Item=BsonValue>>)>,
+    cursors: std::collections::HashMap<i64, (String, Box<Iterator<Item=Result<BsonValue>> + 'a>)>,
 }
 
-impl Server {
+impl<'b> Server<'b> {
 
     fn reply_whatsmyuri(&self, req: &MsgQuery) -> Result<Reply> {
         let mut doc = BsonValue::BDocument(vec![]);
@@ -416,7 +433,7 @@ impl Server {
         Ok(create_reply(req.req_id, vec![doc], 0))
     }
 
-    fn store_cursor<T: Iterator<Item=BsonValue> + 'static>(&mut self, ns: &str, seq: T) -> i64 {
+    fn store_cursor<T: Iterator<Item=Result<BsonValue>> + 'b>(&mut self, ns: &str, seq: T) -> i64 {
         self.cursor_num = self.cursor_num + 1;
         self.cursors.insert(self.cursor_num, (String::from(ns), box seq));
         self.cursor_num
@@ -431,7 +448,7 @@ impl Server {
 
     // grab is just a take() which doesn't take ownership of the iterator
     // TODO investigate by_ref()
-    fn grab<T: Iterator<Item=BsonValue>>(seq: &mut T, n: usize) -> Vec<BsonValue> {
+    fn grab<T: Iterator<Item=Result<BsonValue>>>(seq: &mut T, n: usize) -> Vec<Result<BsonValue>> {
         let mut r = Vec::new();
         for _ in 0 .. n {
             match seq.next() {
@@ -447,7 +464,7 @@ impl Server {
     }
 
     // this is the older way of returning a cursor.
-    fn do_limit<T: Iterator<Item=BsonValue> + 'static>(&mut self, ns: &str, mut seq: T, number_to_return: i32) -> (Vec<BsonValue>, Option<i64>) {
+    fn do_limit<T: Iterator<Item=Result<BsonValue>>>(ns: &str, seq: &mut T, number_to_return: i32) -> Result<(Vec<BsonValue>, bool)> {
         if number_to_return < 0 || number_to_return == 1 {
             // hard limit.  do not return a cursor.
             let n = if number_to_return < 0 {
@@ -460,26 +477,29 @@ impl Server {
                 panic!("overflow");
             }
             let docs = seq.take(n as usize).collect::<Vec<_>>();
-            (docs, None)
+            let docs = try!(unwrap_vec_of_results(docs));
+            Ok((docs, false))
         } else if number_to_return == 0 {
             // return whatever the default size is
             // TODO for now, just return them all and close the cursor
             let docs = seq.collect::<Vec<_>>();
-            (docs, None)
+            let docs = try!(unwrap_vec_of_results(docs));
+            Ok((docs, false))
         } else {
             // soft limit.  keep cursor open.
-            let docs = Self::grab(&mut seq, number_to_return as usize);
+            let docs = Self::grab(seq, number_to_return as usize);
             if docs.len() > 0 {
-                let cursor_id = self.store_cursor(ns, seq);
-                (docs, Some(cursor_id))
+                let docs = try!(unwrap_vec_of_results(docs));
+                Ok((docs, true))
             } else {
-                (docs, None)
+                let docs = try!(unwrap_vec_of_results(docs));
+                Ok((docs, false))
             }
         }
     }
 
     // this is a newer way of returning a cursor.  used by the agg framework.
-    fn reply_with_cursor<T: Iterator<Item=BsonValue> + 'static>(&mut self, ns: &str, mut seq: T, cursor_options: Option<&BsonValue>, default_batch_size: usize) -> Result<BsonValue> {
+    fn reply_with_cursor<T: Iterator<Item=Result<BsonValue>> + 'static>(&mut self, ns: &str, mut seq: T, cursor_options: Option<&BsonValue>, default_batch_size: usize) -> Result<BsonValue> {
         let number_to_return =
             match cursor_options {
                 Some(&BsonValue::BDocument(ref pairs)) => {
@@ -529,6 +549,7 @@ impl Server {
             match number_to_return {
                 None => {
                     let docs = seq.collect::<Vec<_>>();
+                    let docs = try!(unwrap_vec_of_results(docs));
                     (docs, None)
                 },
                 Some(0) => {
@@ -548,10 +569,12 @@ impl Server {
                         // if we grabbed the same number we asked for, we assume the
                         // sequence has more, so we store the cursor and return it.
                         let cursor_id = self.store_cursor(ns, seq);
+                        let docs = try!(unwrap_vec_of_results(docs));
                         (docs, Some(cursor_id))
                     } else {
                         // but if we got less than we asked for, we assume we have
                         // consumed the whole sequence.
+                        let docs = try!(unwrap_vec_of_results(docs));
                         (docs, None)
                     }
                 },
@@ -702,7 +725,7 @@ impl Server {
                         let mut doc = BsonValue::BDocument(vec![]);
                         doc.add_pair_string("name", c_coll);
                         doc.add_pair("options", c_options);
-                        Some(doc)
+                        Some(Ok(doc))
                     } else {
                         None
                     }
@@ -739,7 +762,7 @@ impl Server {
                         doc.add_pair("key", ndx.spec);
                         // TODO it seems the automatic index on _id is NOT supposed to be marked unique
                         // TODO if unique && ndxInfo.ndx<>"_id_" then pairs.Add("unique", BBoolean unique)
-                        Some(doc)
+                        Some(Ok(doc))
                     } else {
                         None
                     }
@@ -844,31 +867,31 @@ impl Server {
                 hint,
                 explain
                 ));
-        unimplemented!();
-/*
-        let {docs=s;funk=kill} = crud.find db coll actualQuery mods
 
-        let s = crud.seqOnlyDoc s
+        // TODO let s = crud.seqOnlyDoc s
 
-        try
-            let s =
-                if clientMsg.q_numberToSkip > 0 then
-                    // TODO do we want seqSkip to be public?
-                    crud.seqSkip (clientMsg.q_numberToSkip) s
-                else if clientMsg.q_numberToSkip < 0 then
-                    failwith "negative skip"
-                else
-                    s
+        if req.number_to_skip < 0 {
+            unimplemented!();
+        }
 
-            let (docs,cursorID) = doLimit fullCollectionName clientMsg.q_numberToReturn s kill
+        let seq = seq.skip(req.number_to_skip as usize);
 
-            createReply clientMsg.q_requestID docs cursorID
-        with
-            | e ->
-                kill()
-                reply_err clientMsg e
-*/
+        let mut seq = seq.map(
+            |r| r.map_err(wrap_err)
+        );
 
+        //let docs = Self::grab(&mut seq, req.number_to_return as usize);
+        //let docs = try!(unwrap_vec_of_results(docs));
+        //Ok(create_reply(req.req_id, docs, 0))
+
+        let (docs, more) = try!(Self::do_limit(&req.full_collection_name, &mut seq, req.number_to_return));
+        let cursor_id = if more {
+            self.store_cursor(&req.full_collection_name, seq)
+            //0
+        } else {
+            0
+        };
+        Ok(create_reply(req.req_id, docs, cursor_id))
     }
 
     fn reply_cmd(&mut self, req: &MsgQuery, db: &str) -> Result<Reply> {
@@ -952,12 +975,16 @@ impl Server {
     }
 
     fn reply_2005(&mut self, req: MsgGetMore) -> Reply {
-        match self.cursors.remove(&req.cursor_id) {
-            Some((ns,seq)) => {
-                let (docs, cursor_id) = self.do_limit(&ns, seq, req.number_to_return);
-                match cursor_id {
-                    Some(cursor_id) => create_reply(req.req_id, docs, cursor_id),
-                    None => create_reply(req.req_id, docs, 0),
+        // TODO it would be nice not to remove this cursor and put it back
+        match self.cursors.get_mut(&req.cursor_id) {
+            Some(&mut (ref ns, ref mut seq)) => {
+                match Self::do_limit(&ns, seq, req.number_to_return) {
+                    Ok((docs, more)) => {
+                        create_reply(req.req_id, docs, 0)
+                    },
+                    Err(e) => {
+                        reply_err(req.req_id, Error::Misc("TODO"))
+                    },
                 }
             },
             None => {

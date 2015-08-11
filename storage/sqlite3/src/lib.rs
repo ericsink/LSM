@@ -1312,8 +1312,15 @@ impl<'a> Drop for MyCollectionReader<'a> {
     }
 }
 
+impl<'a> Iterator for MyCollectionReader<'a> {
+    type Item = Result<BsonValue>;
+    fn next(&mut self) -> Option<Self::Item> {
+        self.seq.next()
+    }
+}
+
 impl<'a> elmo::StorageReader for MyReader<'a> {
-    fn get_collection_reader<'b>(&'b self, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> Result<Box<elmo::StorageCollectionReader + 'b>> {
+    fn get_collection_reader<'b>(&'b self, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> Result<Box<elmo::StorageCollectionReader<Item=Result<BsonValue>> + 'b>> {
         let rdr = try!(self.myconn.get_collection_reader(false, db, coll, plan));
         Ok(box rdr)
     }
@@ -1329,7 +1336,7 @@ impl<'a> elmo::StorageReader for MyReader<'a> {
 }
 
 impl<'a> elmo::StorageReader for MyWriter<'a> {
-    fn get_collection_reader<'b>(&'b self, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> Result<Box<elmo::StorageCollectionReader + 'b>> {
+    fn get_collection_reader<'b>(&'b self, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> Result<Box<elmo::StorageCollectionReader<Item=Result<BsonValue>> + 'b>> {
         let rdr = try!(self.myconn.get_collection_reader(false, db, coll, plan));
         Ok(box rdr)
     }
@@ -1362,7 +1369,7 @@ impl elmo::StorageConnection for MyConn {
         Ok(box r)
     }
 
-    fn read_collection<'a>(&'a self, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> Result<Box<elmo::StorageCollectionReader + 'a>> {
+    fn read_collection<'a>(&'a self, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> Result<Box<elmo::StorageCollectionReader<Item=Result<BsonValue>> + 'a>> {
         try!(self.conn.exec("BEGIN TRANSACTION").map_err(elmo::wrap_err));
         let rdr = try!(self.get_collection_reader(true, db, coll, plan));
         Ok(box rdr)
@@ -1370,10 +1377,6 @@ impl elmo::StorageConnection for MyConn {
 }
 
 impl<'b> elmo::StorageCollectionReader for MyCollectionReader<'b> {
-    fn iter<'a>(&'a self) -> &'a Iterator<Item=Result<BsonValue>> {
-        &self.seq
-    }
-
     fn get_total_keys_examined(&self) -> u64 {
         // TODO
         0

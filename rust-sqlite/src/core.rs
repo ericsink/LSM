@@ -366,6 +366,10 @@ pub fn str_charstar<'a>(s: &'a str) -> std_ffi::CString {
 
 /// A prepared statement.
 pub struct PreparedStatement {
+    // TODO I kinda wish this were a reference instead of Rc.
+    // A PreparedStatement should not be allowed to outlive its
+    // Database, and it would be nice for this to be enforced at
+    // compile time.
     db: Rc<Database>,
     stmt: *mut ffi::sqlite3_stmt,
     detailed: bool,

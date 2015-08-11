@@ -158,8 +158,7 @@ pub struct QueryPlan {
 // TODO the Item below should be a struct that contains both the BsonValue
 // and also the score (and maybe pos).
 
-pub trait StorageCollectionReader {
-    fn iter<'a>(&'a self) -> &'a Iterator<Item=Result<BsonValue>>;
+pub trait StorageCollectionReader : Iterator<Item=Result<BsonValue>> {
     fn get_total_keys_examined(&self) -> u64;
     fn get_total_docs_examined(&self) -> u64;
     // TODO more explain stuff here?
@@ -175,7 +174,7 @@ pub trait StorageReader {
     fn list_collections(&self) -> Result<Vec<(String, String, BsonValue)>>;
     fn list_indexes(&self) -> Result<Vec<IndexInfo>>;
 
-    fn get_collection_reader<'a>(&'a self, db: &str, coll: &str, plan: Option<QueryPlan>) -> Result<Box<StorageCollectionReader + 'a>>;
+    fn get_collection_reader<'a>(&'a self, db: &str, coll: &str, plan: Option<QueryPlan>) -> Result<Box<StorageCollectionReader<Item=Result<BsonValue>> + 'a>>;
 }
 
 pub trait StorageCollectionWriter {
@@ -209,7 +208,7 @@ pub trait StorageWriter : StorageReader {
 pub trait StorageConnection {
     fn begin_write<'a>(&'a self) -> Result<Box<StorageWriter + 'a>>;
     fn begin_read<'a>(&'a self) -> Result<Box<StorageReader + 'a>>;
-    fn read_collection<'a>(&'a self, db: &str, coll: &str, plan: Option<QueryPlan>) -> Result<Box<StorageCollectionReader + 'a>>;
+    fn read_collection<'a>(&'a self, db: &str, coll: &str, plan: Option<QueryPlan>) -> Result<Box<StorageCollectionReader<Item=Result<BsonValue>> + 'a>>;
 }
 
 pub struct Connection {
@@ -373,7 +372,7 @@ impl Connection {
                 hint: Option<&BsonValue>,
                 explain: Option<&BsonValue>
                 ) 
-        -> Result<Box<StorageCollectionReader + 'a>>
+        -> Result<Box<StorageCollectionReader<Item=Result<BsonValue>> + 'a>>
     {
         let coll_reader = try!(self.conn.read_collection(db, coll, None));
         Ok(coll_reader)
