@@ -134,6 +134,12 @@ impl Iterator for MyEmptyIterator {
 }
 
 struct MyCollectionReader<'a> {
+    // TODO commit_on_drop is probably not a good idea after all.
+    // because it forces this to have a reference to the conn.
+    // and that makes it impossible to store one of these things
+    // in the same struct as its conn, up in layers above.
+    // nonetheless, this thing should NOT be allowed to outlive
+    // its conn, so the reference and lifetime to make some sense.
     commit_on_drop: bool,
     seq: Box<Iterator<Item=Result<BsonValue>>>,
     myconn: &'a MyConn,
@@ -1282,6 +1288,8 @@ impl<'a> elmo::StorageWriter for MyWriter<'a> {
 // TODO do we need to declare that StorageWriter must implement Drop ?
 impl<'a> Drop for MyWriter<'a> {
     fn drop(&mut self) {
+        // TODO consider panic here if still in tx.  force caller to
+        // explicitly commit or rollback.
         if self.in_tx {
             // TODO should rollback be the default here?  or commit?
             let _ignored = self.myconn.conn.exec("ROLLBACK TRANSACTION");
@@ -1292,6 +1300,9 @@ impl<'a> Drop for MyWriter<'a> {
 // TODO do we need to declare that StorageReader must implement Drop ?
 impl<'a> Drop for MyReader<'a> {
     fn drop(&mut self) {
+        // TODO consider panic here if still in tx.  force caller to
+        // explicitly end the tx.
+
         // this transaction was [supposed to be] read-only, so it doesn't
         // matter in principle whether we commit or rollback.  in SQL Server,
         // if temp tables were created, commit is MUCH faster than rollback.
@@ -1300,6 +1311,7 @@ impl<'a> Drop for MyReader<'a> {
     }
 }
 
+// TODO not sure we want this anymore.
 impl<'a> Drop for MyCollectionReader<'a> {
     fn drop(&mut self) {
         // this transaction was [supposed to be] read-only, so it doesn't

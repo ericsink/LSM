@@ -164,10 +164,6 @@ pub trait StorageCollectionReader : Iterator<Item=Result<BsonValue>> {
     // TODO more explain stuff here?
 }
 
-// TODO not sure this trait is worth the trouble.  does anything actually
-// care about having list_collections() in the same underlying tx as a query?
-// we could just go back to having list_collections() and list_indexes() on
-// the connection.  OTOH, it also establishes a snapshot.  multiple reads.
 pub trait StorageReader {
     // TODO maybe these two should return an iterator
     // TODO maybe these two should accept params to limit the rows returned
@@ -200,6 +196,7 @@ pub trait StorageWriter : StorageReader {
 
     fn get_collection_writer<'a>(&'a self, db: &str, coll: &str) -> Result<Box<StorageCollectionWriter + 'a>>;
 
+    // TODO rm commit, make it implicit on Drop?
     fn commit(self: Box<Self>) -> Result<()>;
     fn rollback(self: Box<Self>) -> Result<()>;
 
@@ -208,7 +205,12 @@ pub trait StorageWriter : StorageReader {
 pub trait StorageConnection {
     fn begin_write<'a>(&'a self) -> Result<Box<StorageWriter + 'a>>;
     fn begin_read<'a>(&'a self) -> Result<Box<StorageReader + 'a>>;
-    fn read_collection<'a>(&'a self, db: &str, coll: &str, plan: Option<QueryPlan>) -> Result<Box<StorageCollectionReader<Item=Result<BsonValue>> + 'a>>;
+    // TODO note that only one tx can exist at a time per connection.
+    // maybe these two structs should be holding a mut reference to
+    // the conn?
+
+    // but it would be possible to have multiple iterators at the same time.
+    // as long as they live within the same tx.
 }
 
 pub struct Connection {

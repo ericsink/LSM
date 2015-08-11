@@ -58,7 +58,6 @@ enum Error {
     Elmo(elmo::Error),
 }
 
-// TODO why is 'static needed here?  Doesn't this take ownership?
 fn wrap_err<E: std::error::Error + 'static>(err: E) -> Error {
     Error::Whatever(box err)
 }
@@ -313,6 +312,8 @@ fn reply_err(req_id: i32, err: Error) -> Reply {
 struct Server<'a> {
     conn: elmo::Connection,
     cursor_num: i64,
+    // TODO this is problematic when/if the Iterator has a reference to or the same lifetime
+    // as self.conn.
     cursors: std::collections::HashMap<i64, (String, Box<Iterator<Item=Result<BsonValue>> + 'a>)>,
 }
 
@@ -975,11 +976,11 @@ impl<'b> Server<'b> {
     }
 
     fn reply_2005(&mut self, req: MsgGetMore) -> Reply {
-        // TODO it would be nice not to remove this cursor and put it back
         match self.cursors.get_mut(&req.cursor_id) {
             Some(&mut (ref ns, ref mut seq)) => {
                 match Self::do_limit(&ns, seq, req.number_to_return) {
                     Ok((docs, more)) => {
+                        // TODO if !more remove the cursor
                         create_reply(req.req_id, docs, 0)
                     },
                     Err(e) => {
