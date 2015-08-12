@@ -33,13 +33,13 @@ struct IndexPrep {
     stmt_delete: sqlite3::PreparedStatement,
 }
 
-struct MyCollectionWriter<'a> {
+struct MyCollectionWriter {
     insert: sqlite3::PreparedStatement,
     delete: sqlite3::PreparedStatement,
     update: sqlite3::PreparedStatement,
     stmt_find_rowid: Option<sqlite3::PreparedStatement>,
     indexes: Vec<IndexPrep>,
-    mywriter: &'a MyWriter<'a>,
+    myconn: std::rc::Rc<MyConn>,
 }
 
 struct StatementBsonValueIterator {
@@ -133,31 +133,29 @@ impl Iterator for MyEmptyIterator {
     }
 }
 
-struct MyCollectionReader<'a> {
-    // TODO commit_on_drop is probably not a good idea after all.
-    // because it forces this to have a reference to the conn.
-    // and that makes it impossible to store one of these things
-    // in the same struct as its conn, up in layers above.
-    // nonetheless, this thing should NOT be allowed to outlive
-    // its conn, so the reference and lifetime to make some sense.
+struct MyCollectionReader {
     commit_on_drop: bool,
     seq: Box<Iterator<Item=Result<BsonValue>>>,
-    myconn: &'a MyConn,
+    myconn: std::rc::Rc<MyConn>,
 
     // TODO need counts here
 }
 
-struct MyReader<'a> {
-    myconn: &'a MyConn,
+struct MyReader {
+    myconn: std::rc::Rc<MyConn>,
 }
 
-struct MyWriter<'a> {
-    myconn: &'a MyConn,
+struct MyWriter {
+    myconn: std::rc::Rc<MyConn>,
     in_tx: bool,
 }
 
 struct MyConn {
     conn: sqlite3::DatabaseConnection,
+}
+
+struct MyPublicConn {
+    myconn: std::rc::Rc<MyConn>,
 }
 
 // TODO I'm not sure this type is worth the trouble anymore.
@@ -491,7 +489,7 @@ impl MyConn {
         }
     }
 
-    fn get_stmt_for_index_scan(&self, plan: elmo::QueryPlan) -> Result<sqlite3::PreparedStatement> {
+    fn get_stmt_for_index_scan(myconn: &MyConn, plan: elmo::QueryPlan) -> Result<sqlite3::PreparedStatement> {
         let tbl_coll = get_table_name_for_collection(&plan.ndx.db, &plan.ndx.coll);
         let tbl_ndx = get_table_name_for_index(&plan.ndx.db, &plan.ndx.coll, &plan.ndx.name);
 
@@ -514,7 +512,7 @@ impl MyConn {
 
         let f_twok = |kmin: Vec<u8>, kmax: Vec<u8>, op1: &str, op2: &str| -> Result<sqlite3::PreparedStatement> {
             let sql = format!("SELECT DISTINCT d.bson FROM \"{}\" d INNER JOIN \"{}\" i ON (d.did = i.doc_rowid) WHERE k {} ? AND k {} ?", tbl_coll, tbl_ndx, op1, op2);
-            let mut stmt = try!(self.conn.prepare(&sql).map_err(elmo::wrap_err));
+            let mut stmt = try!(myconn.conn.prepare(&sql).map_err(elmo::wrap_err));
             try!(stmt.bind_blob(1, &kmin).map_err(elmo::wrap_err));
             try!(stmt.bind_blob(2, &kmax).map_err(elmo::wrap_err));
             Ok(stmt)
@@ -529,7 +527,7 @@ impl MyConn {
         let f_one = |vals: elmo::QueryKey, op: &str| -> Result<sqlite3::PreparedStatement> {
             let k = BsonValue::encode_multi_for_index(copy_dirs_from_normspec_to_vals(&normspec, vals));
             let sql = format!("SELECT DISTINCT d.bson FROM \"{}\" d INNER JOIN \"{}\" i ON (d.did = i.doc_rowid) WHERE k {} ?", tbl_coll, tbl_ndx, op);
-            let mut stmt = try!(self.conn.prepare(&sql).map_err(elmo::wrap_err));
+            let mut stmt = try!(myconn.conn.prepare(&sql).map_err(elmo::wrap_err));
             try!(stmt.bind_blob(1, &k).map_err(elmo::wrap_err));
             Ok(stmt)
         };
@@ -552,9 +550,9 @@ impl MyConn {
         }
     }
 
-    fn get_table_scan_reader(&self, commit_on_drop: bool, db: &str, coll: &str) -> Result<MyCollectionReader> {
+    fn get_table_scan_reader(myconn: std::rc::Rc<MyConn>, commit_on_drop: bool, db: &str, coll: &str) -> Result<MyCollectionReader> {
         let tbl = get_table_name_for_collection(db, coll);
-        let stmt = try!(self.conn.prepare(&format!("SELECT bson FROM \"{}\"", tbl)).map_err(elmo::wrap_err));
+        let stmt = try!(myconn.conn.prepare(&format!("SELECT bson FROM \"{}\"", tbl)).map_err(elmo::wrap_err));
         // TODO keep track of total keys examined, etc.
         let seq = 
             StatementBsonValueIterator {
@@ -564,13 +562,13 @@ impl MyConn {
             MyCollectionReader {
                 commit_on_drop: commit_on_drop,
                 seq: box seq,
-                myconn: self,
+                myconn: myconn,
             };
         Ok(rdr)
     }
 
-    fn get_nontext_index_scan_reader(&self, commit_on_drop: bool, plan: elmo::QueryPlan) -> Result<MyCollectionReader> {
-        let stmt = try!(self.get_stmt_for_index_scan(plan));
+    fn get_nontext_index_scan_reader(myconn: std::rc::Rc<MyConn>, commit_on_drop: bool, plan: elmo::QueryPlan) -> Result<MyCollectionReader> {
+        let stmt = try!(Self::get_stmt_for_index_scan(&myconn, plan));
 
         // TODO keep track of total keys examined, etc.
         let seq = 
@@ -581,12 +579,12 @@ impl MyConn {
             MyCollectionReader {
                 commit_on_drop: commit_on_drop,
                 seq: box seq,
-                myconn: self,
+                myconn: myconn,
             };
         Ok(rdr)
     }
 
-    fn get_text_index_scan_reader(&self, commit_on_drop: bool, ndx: &elmo::IndexInfo,  eq: elmo::QueryKey, terms: Vec<elmo::TextQueryTerm>) -> Result<MyCollectionReader> {
+    fn get_text_index_scan_reader(myconn: std::rc::Rc<MyConn>, commit_on_drop: bool, ndx: &elmo::IndexInfo,  eq: elmo::QueryKey, terms: Vec<elmo::TextQueryTerm>) -> Result<MyCollectionReader> {
         let tbl_coll = get_table_name_for_collection(&ndx.db, &ndx.coll);
         let tbl_ndx = get_table_name_for_index(&ndx.db, &ndx.coll, &ndx.name);
         let (normspec, weights) = try!(get_normalized_spec(&ndx));
@@ -633,7 +631,7 @@ impl MyConn {
         let vals = copy_dirs_from_normspec_to_vals(&normspec, eq);
 
         let sql = format!("SELECT k, doc_rowid FROM \"{}\" i WHERE k > ? AND k < ?", tbl_ndx);
-        let mut stmt = try!(self.conn.prepare(&sql).map_err(elmo::wrap_err));
+        let mut stmt = try!(myconn.conn.prepare(&sql).map_err(elmo::wrap_err));
 
         let mut found = Vec::new();
         for term in &terms {
@@ -739,7 +737,7 @@ impl MyConn {
         }
 
         let sql = format!("SELECT bson FROM \"{}\" WHERE did=?", tbl_coll);
-        let mut stmt = try!(self.conn.prepare(&sql).map_err(elmo::wrap_err));
+        let mut stmt = try!(myconn.conn.prepare(&sql).map_err(elmo::wrap_err));
 
         let mut res = Vec::new();
         for (did, cur_weights) in doc_weights {
@@ -764,19 +762,19 @@ impl MyConn {
             MyCollectionReader {
                 commit_on_drop: commit_on_drop,
                 seq: box res.into_iter(),
-                myconn: self,
+                myconn: myconn,
             };
         Ok(rdr)
     }
 
-    fn get_collection_reader<'b>(&'b self, commit_on_drop: bool, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> Result<MyCollectionReader> {
+    fn get_collection_reader(&self, myconn: std::rc::Rc<MyConn>, commit_on_drop: bool, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> Result<MyCollectionReader> {
         match try!(self.get_collection_options(db, coll)) {
             None => {
                 let rdr = 
                     MyCollectionReader {
                         commit_on_drop: commit_on_drop,
                         seq: box MyEmptyIterator,
-                        myconn: self,
+                        myconn: myconn,
                     };
                 Ok(rdr)
             },
@@ -785,17 +783,17 @@ impl MyConn {
                     Some(plan) => {
                         match plan.bounds {
                             elmo::QueryBounds::Text(eq,terms) => {
-                                let rdr = try!(self.get_text_index_scan_reader(commit_on_drop, &plan.ndx, eq, terms));
+                                let rdr = try!(Self::get_text_index_scan_reader(myconn, commit_on_drop, &plan.ndx, eq, terms));
                                 return Ok(rdr);
                             },
                             _ => {
-                                let rdr = try!(self.get_nontext_index_scan_reader(commit_on_drop, plan));
+                                let rdr = try!(Self::get_nontext_index_scan_reader(myconn, commit_on_drop, plan));
                                 return Ok(rdr);
                             },
                         }
                     },
                     None => {
-                        let rdr = try!(self.get_table_scan_reader(commit_on_drop, db, coll));
+                        let rdr = try!(Self::get_table_scan_reader(myconn, commit_on_drop, db, coll));
                         return Ok(rdr);
                     },
                 };
@@ -857,7 +855,7 @@ impl MyConn {
 
 }
 
-impl<'a> MyCollectionWriter<'a> {
+impl MyCollectionWriter {
     fn find_rowid(&mut self, v: &BsonValue) -> Result<Option<i64>> {
                 match self.stmt_find_rowid {
                     None => Ok(None),
@@ -902,7 +900,7 @@ impl<'a> MyCollectionWriter<'a> {
 
 }
 
-impl<'a> elmo::StorageCollectionWriter for MyCollectionWriter<'a> {
+impl elmo::StorageCollectionWriter for MyCollectionWriter {
     fn update(&mut self, v: &BsonValue) -> Result<()> {
         match v.tryGetValueForKey("_id") {
             None => Err(elmo::Error::Misc("cannot update without _id")),
@@ -933,7 +931,7 @@ impl<'a> elmo::StorageCollectionWriter for MyCollectionWriter<'a> {
                         self.delete.clear_bindings();
                         try!(self.delete.bind_int64(1, rowid).map_err(elmo::wrap_err));
                         try!(step_done(&mut self.delete));
-                        let count = self.mywriter.myconn.conn.changes();
+                        let count = self.myconn.conn.changes();
                         if count == 1 {
                             // TODO might not need index update here.  foreign key cascade?
                             try!(Self::update_indexes_delete(&mut self.indexes, rowid));
@@ -953,7 +951,7 @@ impl<'a> elmo::StorageCollectionWriter for MyCollectionWriter<'a> {
                 try!(self.insert.bind_blob(1,&ba).map_err(elmo::wrap_err));
                 try!(step_done(&mut self.insert));
                 try!(verify_changes(&self.insert, 1));
-                let rowid = self.mywriter.myconn.conn.last_insert_rowid();
+                let rowid = self.myconn.conn.last_insert_rowid();
                 try!(Self::update_indexes_delete(&mut self.indexes, rowid));
                 try!(Self::update_indexes_insert(&mut self.indexes, rowid, &v));
                 Ok(())
@@ -961,7 +959,7 @@ impl<'a> elmo::StorageCollectionWriter for MyCollectionWriter<'a> {
 
 }
 
-impl<'a> MyWriter<'a> {
+impl MyWriter {
     fn prepare_index_insert(&self, tbl: &str) -> Result<sqlite3::PreparedStatement> {
         let stmt = try!(self.myconn.conn.prepare(&format!("INSERT INTO \"{}\" (k,doc_rowid) VALUES (?,?)",tbl)).map_err(elmo::wrap_err));
         Ok(stmt)
@@ -1202,8 +1200,8 @@ impl<'a> MyWriter<'a> {
 
 }
 
-impl<'a> elmo::StorageWriter for MyWriter<'a> {
-    fn get_collection_writer<'b>(&'b self, db: &str, coll: &str) -> Result<Box<elmo::StorageCollectionWriter + 'b>> {
+impl elmo::StorageWriter for MyWriter {
+    fn get_collection_writer(&self, db: &str, coll: &str) -> Result<Box<elmo::StorageCollectionWriter + 'static>> {
         let _created = try!(self.base_create_collection(db, coll, BsonValue::BArray(Vec::new())));
         let tbl = get_table_name_for_collection(db, coll);
         let stmt_insert = try!(self.myconn.conn.prepare(&format!("INSERT INTO \"{}\" (bson) VALUES (?)", tbl)).map_err(elmo::wrap_err));
@@ -1236,7 +1234,7 @@ impl<'a> elmo::StorageWriter for MyWriter<'a> {
             update: stmt_update,
             stmt_find_rowid: find_rowid,
             indexes: index_stmts,
-            mywriter: self,
+            myconn: self.myconn.clone(),
         };
         Ok(box c)
     }
@@ -1286,7 +1284,7 @@ impl<'a> elmo::StorageWriter for MyWriter<'a> {
 }
 
 // TODO do we need to declare that StorageWriter must implement Drop ?
-impl<'a> Drop for MyWriter<'a> {
+impl Drop for MyWriter {
     fn drop(&mut self) {
         // TODO consider panic here if still in tx.  force caller to
         // explicitly commit or rollback.
@@ -1298,7 +1296,7 @@ impl<'a> Drop for MyWriter<'a> {
 }
 
 // TODO do we need to declare that StorageReader must implement Drop ?
-impl<'a> Drop for MyReader<'a> {
+impl Drop for MyReader {
     fn drop(&mut self) {
         // TODO consider panic here if still in tx.  force caller to
         // explicitly end the tx.
@@ -1311,8 +1309,7 @@ impl<'a> Drop for MyReader<'a> {
     }
 }
 
-// TODO not sure we want this anymore.
-impl<'a> Drop for MyCollectionReader<'a> {
+impl Drop for MyCollectionReader {
     fn drop(&mut self) {
         // this transaction was [supposed to be] read-only, so it doesn't
         // matter in principle whether we commit or rollback.  in SQL Server,
@@ -1324,16 +1321,16 @@ impl<'a> Drop for MyCollectionReader<'a> {
     }
 }
 
-impl<'a> Iterator for MyCollectionReader<'a> {
+impl Iterator for MyCollectionReader {
     type Item = Result<BsonValue>;
     fn next(&mut self) -> Option<Self::Item> {
         self.seq.next()
     }
 }
 
-impl<'a> elmo::StorageReader for MyReader<'a> {
-    fn get_collection_reader<'b>(&'b self, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> Result<Box<elmo::StorageCollectionReader<Item=Result<BsonValue>> + 'b>> {
-        let rdr = try!(self.myconn.get_collection_reader(false, db, coll, plan));
+impl elmo::StorageReader for MyReader {
+    fn get_collection_reader(&self, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> Result<Box<elmo::StorageCollectionReader<Item=Result<BsonValue>> + 'static>> {
+        let rdr = try!(self.myconn.get_collection_reader(self.myconn.clone(), false, db, coll, plan));
         Ok(box rdr)
     }
 
@@ -1347,9 +1344,9 @@ impl<'a> elmo::StorageReader for MyReader<'a> {
 
 }
 
-impl<'a> elmo::StorageReader for MyWriter<'a> {
-    fn get_collection_reader<'b>(&'b self, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> Result<Box<elmo::StorageCollectionReader<Item=Result<BsonValue>> + 'b>> {
-        let rdr = try!(self.myconn.get_collection_reader(false, db, coll, plan));
+impl elmo::StorageReader for MyWriter {
+    fn get_collection_reader(&self, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> Result<Box<elmo::StorageCollectionReader<Item=Result<BsonValue>> + 'static>> {
+        let rdr = try!(self.myconn.get_collection_reader(self.myconn.clone(), false, db, coll, plan));
         Ok(box rdr)
     }
 
@@ -1363,32 +1360,32 @@ impl<'a> elmo::StorageReader for MyWriter<'a> {
 
 }
 
-impl elmo::StorageConnection for MyConn {
-    fn begin_write<'a>(&'a self) -> Result<Box<elmo::StorageWriter + 'a>> {
-        try!(self.conn.exec("BEGIN IMMEDIATE TRANSACTION").map_err(elmo::wrap_err));
+impl elmo::StorageConnection for MyPublicConn {
+    fn begin_write(&self) -> Result<Box<elmo::StorageWriter + 'static>> {
+        try!(self.myconn.conn.exec("BEGIN IMMEDIATE TRANSACTION").map_err(elmo::wrap_err));
         let w = MyWriter {
-            myconn: self,
+            myconn: self.myconn.clone(),
             in_tx: true,
         };
         Ok(box w)
     }
 
-    fn begin_read<'a>(&'a self) -> Result<Box<elmo::StorageReader + 'a>> {
-        try!(self.conn.exec("BEGIN TRANSACTION").map_err(elmo::wrap_err));
+    fn begin_read(&self) -> Result<Box<elmo::StorageReader + 'static>> {
+        try!(self.myconn.conn.exec("BEGIN TRANSACTION").map_err(elmo::wrap_err));
         let r = MyReader {
-            myconn: self,
+            myconn: self.myconn.clone(),
         };
         Ok(box r)
     }
 
-    fn read_collection<'a>(&'a self, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> Result<Box<elmo::StorageCollectionReader<Item=Result<BsonValue>> + 'a>> {
-        try!(self.conn.exec("BEGIN TRANSACTION").map_err(elmo::wrap_err));
-        let rdr = try!(self.get_collection_reader(true, db, coll, plan));
+    fn read_collection(&self, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> Result<Box<elmo::StorageCollectionReader<Item=Result<BsonValue>> + 'static>> {
+        try!(self.myconn.conn.exec("BEGIN TRANSACTION").map_err(elmo::wrap_err));
+        let rdr = try!(self.myconn.get_collection_reader(self.myconn.clone(), true, db, coll, plan));
         Ok(box rdr)
     }
 }
 
-impl<'b> elmo::StorageCollectionReader for MyCollectionReader<'b> {
+impl elmo::StorageCollectionReader for MyCollectionReader {
     fn get_total_keys_examined(&self) -> u64 {
         // TODO
         0
@@ -1416,6 +1413,9 @@ pub fn connect(name: &str) -> Result<Box<elmo::StorageConnection>> {
     let conn = try!(base_connect(name).map_err(elmo::wrap_err));
     let c = MyConn {
         conn: conn,
+    };
+    let c = MyPublicConn {
+        myconn: std::rc::Rc::new(c)
     };
     Ok(box c)
 }

@@ -164,13 +164,17 @@ pub trait StorageCollectionReader : Iterator<Item=Result<BsonValue>> {
     // TODO more explain stuff here?
 }
 
+// TODO not sure this trait is worth the trouble.  does anything actually
+// care about having list_collections() in the same underlying tx as a query?
+// we could just go back to having list_collections() and list_indexes() on
+// the connection.  OTOH, it also establishes a snapshot.  multiple reads.
 pub trait StorageReader {
     // TODO maybe these two should return an iterator
     // TODO maybe these two should accept params to limit the rows returned
     fn list_collections(&self) -> Result<Vec<(String, String, BsonValue)>>;
     fn list_indexes(&self) -> Result<Vec<IndexInfo>>;
 
-    fn get_collection_reader<'a>(&'a self, db: &str, coll: &str, plan: Option<QueryPlan>) -> Result<Box<StorageCollectionReader<Item=Result<BsonValue>> + 'a>>;
+    fn get_collection_reader(&self, db: &str, coll: &str, plan: Option<QueryPlan>) -> Result<Box<StorageCollectionReader<Item=Result<BsonValue>> + 'static>>;
 }
 
 pub trait StorageCollectionWriter {
@@ -194,20 +198,18 @@ pub trait StorageWriter : StorageReader {
 
     fn drop_database(&self, db: &str) -> Result<bool>;
 
-    fn get_collection_writer<'a>(&'a self, db: &str, coll: &str) -> Result<Box<StorageCollectionWriter + 'a>>;
+    fn get_collection_writer(&self, db: &str, coll: &str) -> Result<Box<StorageCollectionWriter + 'static>>;
 
-    // TODO rm commit, make it implicit on Drop?
     fn commit(self: Box<Self>) -> Result<()>;
     fn rollback(self: Box<Self>) -> Result<()>;
 
 }
 
 pub trait StorageConnection {
-    fn begin_write<'a>(&'a self) -> Result<Box<StorageWriter + 'a>>;
-    fn begin_read<'a>(&'a self) -> Result<Box<StorageReader + 'a>>;
+    fn begin_write(&self) -> Result<Box<StorageWriter + 'static>>;
+    fn begin_read(&self) -> Result<Box<StorageReader + 'static>>;
+    fn read_collection(&self, db: &str, coll: &str, plan: Option<QueryPlan>) -> Result<Box<StorageCollectionReader<Item=Result<BsonValue>> + 'static>>;
     // TODO note that only one tx can exist at a time per connection.
-    // maybe these two structs should be holding a mut reference to
-    // the conn?
 
     // but it would be possible to have multiple iterators at the same time.
     // as long as they live within the same tx.
@@ -363,7 +365,7 @@ impl Connection {
         Ok(result)
     }
 
-    pub fn find<'a>(&'a self,
+    pub fn find(&self,
                 db: &str,
                 coll: &str,
                 query: &BsonValue,
@@ -374,7 +376,7 @@ impl Connection {
                 hint: Option<&BsonValue>,
                 explain: Option<&BsonValue>
                 ) 
-        -> Result<Box<StorageCollectionReader<Item=Result<BsonValue>> + 'a>>
+        -> Result<Box<StorageCollectionReader<Item=Result<BsonValue>> + 'static>>
     {
         let coll_reader = try!(self.conn.read_collection(db, coll, None));
         Ok(coll_reader)
