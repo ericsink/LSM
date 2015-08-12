@@ -164,11 +164,7 @@ pub trait StorageCollectionReader : Iterator<Item=Result<BsonValue>> {
     // TODO more explain stuff here?
 }
 
-// TODO not sure this trait is worth the trouble.  does anything actually
-// care about having list_collections() in the same underlying tx as a query?
-// we could just go back to having list_collections() and list_indexes() on
-// the connection.  OTOH, it also establishes a snapshot.  multiple reads.
-pub trait StorageReader {
+pub trait StorageBase {
     // TODO maybe these two should return an iterator
     // TODO maybe these two should accept params to limit the rows returned
     fn list_collections(&self) -> Result<Vec<(String, String, BsonValue)>>;
@@ -187,7 +183,11 @@ pub trait StorageCollectionWriter {
 // TODO do we need to declare that StorageWriter must implement Drop ?
 // TODO or is it enough that the actual implementation of this trait impl Drop?
 
-pub trait StorageWriter : StorageReader {
+pub trait StorageReader : StorageBase {
+    fn into_collection_reader(self: Box<Self>, db: &str, coll: &str, plan: Option<QueryPlan>) -> Result<Box<StorageCollectionReader<Item=Result<BsonValue>> + 'static>>;
+}
+
+pub trait StorageWriter : StorageBase {
     fn create_collection(&self, db: &str, coll: &str, options: BsonValue) -> Result<bool>;
     fn rename_collection(&self, old_name: &str, new_name: &str, drop_target: bool) -> Result<bool>;
     fn clear_collection(&self, db: &str, coll: &str) -> Result<bool>;
@@ -208,7 +208,6 @@ pub trait StorageWriter : StorageReader {
 pub trait StorageConnection {
     fn begin_write(&self) -> Result<Box<StorageWriter + 'static>>;
     fn begin_read(&self) -> Result<Box<StorageReader + 'static>>;
-    fn read_collection(&self, db: &str, coll: &str, plan: Option<QueryPlan>) -> Result<Box<StorageCollectionReader<Item=Result<BsonValue>> + 'static>>;
     // TODO note that only one tx can exist at a time per connection.
 
     // but it would be possible to have multiple iterators at the same time.
@@ -378,7 +377,9 @@ impl Connection {
                 ) 
         -> Result<Box<StorageCollectionReader<Item=Result<BsonValue>> + 'static>>
     {
-        let coll_reader = try!(self.conn.read_collection(db, coll, None));
+        let reader = try!(self.conn.begin_read());
+        //let indexes = try!(self.list_indexes_for_collection(db, coll));
+        let coll_reader = try!(reader.into_collection_reader(db, coll, None));
         Ok(coll_reader)
     }
 }

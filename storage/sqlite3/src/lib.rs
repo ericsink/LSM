@@ -143,6 +143,7 @@ struct MyCollectionReader {
 
 struct MyReader {
     myconn: std::rc::Rc<MyConn>,
+    in_tx: bool,
 }
 
 struct MyWriter {
@@ -1305,7 +1306,9 @@ impl Drop for MyReader {
         // matter in principle whether we commit or rollback.  in SQL Server,
         // if temp tables were created, commit is MUCH faster than rollback.
         // but this is sqlite.  anyway...
-        let _ignored = self.myconn.conn.exec("COMMIT TRANSACTION");
+        if self.in_tx {
+            let _ignored = self.myconn.conn.exec("COMMIT TRANSACTION");
+        }
     }
 }
 
@@ -1328,7 +1331,7 @@ impl Iterator for MyCollectionReader {
     }
 }
 
-impl elmo::StorageReader for MyReader {
+impl elmo::StorageBase for MyReader {
     fn get_collection_reader(&self, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> Result<Box<elmo::StorageCollectionReader<Item=Result<BsonValue>> + 'static>> {
         let rdr = try!(self.myconn.get_collection_reader(self.myconn.clone(), false, db, coll, plan));
         Ok(box rdr)
@@ -1344,7 +1347,16 @@ impl elmo::StorageReader for MyReader {
 
 }
 
-impl elmo::StorageReader for MyWriter {
+impl elmo::StorageReader for MyReader {
+    fn into_collection_reader(mut self: Box<Self>, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> Result<Box<elmo::StorageCollectionReader<Item=Result<BsonValue>> + 'static>> {
+        self.in_tx = false;
+        let rdr = try!(self.myconn.get_collection_reader(self.myconn.clone(), true, db, coll, plan));
+        Ok(box rdr)
+    }
+
+}
+
+impl elmo::StorageBase for MyWriter {
     fn get_collection_reader(&self, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> Result<Box<elmo::StorageCollectionReader<Item=Result<BsonValue>> + 'static>> {
         let rdr = try!(self.myconn.get_collection_reader(self.myconn.clone(), false, db, coll, plan));
         Ok(box rdr)
@@ -1374,14 +1386,9 @@ impl elmo::StorageConnection for MyPublicConn {
         try!(self.myconn.conn.exec("BEGIN TRANSACTION").map_err(elmo::wrap_err));
         let r = MyReader {
             myconn: self.myconn.clone(),
+            in_tx: true,
         };
         Ok(box r)
-    }
-
-    fn read_collection(&self, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> Result<Box<elmo::StorageCollectionReader<Item=Result<BsonValue>> + 'static>> {
-        try!(self.myconn.conn.exec("BEGIN TRANSACTION").map_err(elmo::wrap_err));
-        let rdr = try!(self.myconn.get_collection_reader(self.myconn.clone(), true, db, coll, plan));
-        Ok(box rdr)
     }
 }
 
