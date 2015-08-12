@@ -721,11 +721,8 @@ impl<'b> Server<'b> {
     }
 
     fn reply_list_collections(&mut self, req: &MsgQuery, db: &str) -> Result<Reply> {
-        let results = {
         let reader = try!(self.conn.begin_read());
         let results = try!(reader.list_collections());
-        results
-        };
         let seq = {
             // we need db to get captured by this closure which outlives
             // this function, so we create String from it and use a move
@@ -759,11 +756,8 @@ impl<'b> Server<'b> {
 
     fn reply_list_indexes(&mut self, req: &MsgQuery, db: &str) -> Result<Reply> {
         // TODO check coll
-        let results = {
         let reader = try!(self.conn.begin_read());
         let results = try!(reader.list_indexes());
-        results
-        };
         let seq = {
             // we need db to get captured by this closure which outlives
             // this function, so we create String from it and use a move
@@ -818,7 +812,7 @@ impl<'b> Server<'b> {
         }
     }
 
-    fn reply_query(&'b mut self, req: &MsgQuery, db: &str) -> Result<Reply> {
+    fn reply_query(&mut self, req: &MsgQuery, db: &str) -> Result<Reply> {
         let (db,coll) = try!(Self::splitname(&req.full_collection_name));
 
         // TODO what if somebody queries on a field named query?  ambiguous.
@@ -956,7 +950,7 @@ impl<'b> Server<'b> {
         }
     }
 
-    fn reply_2004(&'b mut self, req: MsgQuery) -> Reply {
+    fn reply_2004(&mut self, req: MsgQuery) -> Reply {
         let parts = req.full_collection_name.split('.').collect::<Vec<_>>();
         let r = 
             if parts.len() < 2 {
@@ -998,7 +992,7 @@ impl<'b> Server<'b> {
         }
     }
 
-    fn reply_2005(&'b mut self, req: MsgGetMore) -> Reply {
+    fn reply_2005(&mut self, req: MsgGetMore) -> Reply {
         match self.cursors.get_mut(&req.cursor_id) {
             Some(&mut (ref ns, ref mut seq)) => {
                 match Self::do_limit(&ns, seq, req.number_to_return) {
@@ -1017,7 +1011,7 @@ impl<'b> Server<'b> {
         }
     }
 
-    fn handle_one_message(&'b mut self, stream: &mut std::net::TcpStream) -> Result<()> {
+    fn handle_one_message(&mut self, stream: &mut std::net::TcpStream) -> Result<()> {
         fn send_reply(stream: &mut std::net::TcpStream, resp: Reply) -> Result<()> {
             //println!("resp: {:?}", resp);
             let ba = resp.encode();
@@ -1058,7 +1052,7 @@ impl<'b> Server<'b> {
         }
     }
 
-    fn handle_client(&'b mut self, mut stream: std::net::TcpStream) -> Result<()> {
+    fn handle_client(&mut self, mut stream: std::net::TcpStream) -> Result<()> {
         loop {
             let r = self.handle_one_message(&mut stream);
             if r.is_err() {
