@@ -309,15 +309,15 @@ fn reply_err(req_id: i32, err: Error) -> Reply {
 
 // TODO mongo has a way of automatically killing a cursor after 10 minutes idle
 
-struct Server {
-    conn: Box<elmo::StorageConnection>,
+struct Server<'a> {
+    conn: Box<elmo::StorageConnection +'a>,
     cursor_num: i64,
     // TODO this is problematic when/if the Iterator has a reference to or the same lifetime
     // as self.conn.
-    cursors: std::collections::HashMap<i64, (String, Box<Iterator<Item=Result<BsonValue>> + 'static>)>,
+    cursors: std::collections::HashMap<i64, (String, Box<Iterator<Item=Result<BsonValue>> + 'a>)>,
 }
 
-impl Server {
+impl<'b> Server<'b> {
 
     fn reply_whatsmyuri(&self, req: &MsgQuery) -> Result<Reply> {
         let mut doc = BsonValue::BDocument(vec![]);
@@ -437,7 +437,7 @@ impl Server {
         Ok(create_reply(req.req_id, vec![doc], 0))
     }
 
-    fn store_cursor<T: Iterator<Item=Result<BsonValue>> + 'static>(&mut self, ns: &str, seq: T) -> i64 {
+    fn store_cursor<T: Iterator<Item=Result<BsonValue>> + 'b>(&mut self, ns: &str, seq: T) -> i64 {
         self.cursor_num = self.cursor_num + 1;
         self.cursors.insert(self.cursor_num, (String::from(ns), box seq));
         self.cursor_num
@@ -818,7 +818,7 @@ impl Server {
         }
     }
 
-    fn reply_query(&mut self, req: &MsgQuery, db: &str) -> Result<Reply> {
+    fn reply_query(&'b mut self, req: &MsgQuery, db: &str) -> Result<Reply> {
         let (db,coll) = try!(Self::splitname(&req.full_collection_name));
 
         // TODO what if somebody queries on a field named query?  ambiguous.
@@ -906,8 +906,7 @@ impl Server {
         // TODO the issue here is that we want to store the cursor so we can
         // fill additional 2005 requests from it.  so we can't end the transaction
         // until later.  but the cursor is an iterator and it doesn't OWN the
-        // transaction object.  and we can't store the reader too because of the
-        // problem of storing something that references something else in the struct.
+        // transaction object.
 
         let (docs, more) = try!(Self::do_limit(&req.full_collection_name, &mut seq, req.number_to_return));
         let cursor_id = if more {
@@ -957,7 +956,7 @@ impl Server {
         }
     }
 
-    fn reply_2004(&mut self, req: MsgQuery) -> Reply {
+    fn reply_2004(&'b mut self, req: MsgQuery) -> Reply {
         let parts = req.full_collection_name.split('.').collect::<Vec<_>>();
         let r = 
             if parts.len() < 2 {
@@ -999,7 +998,7 @@ impl Server {
         }
     }
 
-    fn reply_2005(&mut self, req: MsgGetMore) -> Reply {
+    fn reply_2005(&'b mut self, req: MsgGetMore) -> Reply {
         match self.cursors.get_mut(&req.cursor_id) {
             Some(&mut (ref ns, ref mut seq)) => {
                 match Self::do_limit(&ns, seq, req.number_to_return) {
@@ -1018,7 +1017,7 @@ impl Server {
         }
     }
 
-    fn handle_one_message(&mut self, stream: &mut std::net::TcpStream) -> Result<()> {
+    fn handle_one_message(&'b mut self, stream: &mut std::net::TcpStream) -> Result<()> {
         fn send_reply(stream: &mut std::net::TcpStream, resp: Reply) -> Result<()> {
             //println!("resp: {:?}", resp);
             let ba = resp.encode();
@@ -1059,7 +1058,7 @@ impl Server {
         }
     }
 
-    fn handle_client(&mut self, mut stream: std::net::TcpStream) -> Result<()> {
+    fn handle_client(&'b mut self, mut stream: std::net::TcpStream) -> Result<()> {
         loop {
             let r = self.handle_one_message(&mut stream);
             if r.is_err() {
