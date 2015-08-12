@@ -465,6 +465,18 @@ fn get_index_info_from_row(r: &sqlite3::ResultRow) -> Result<elmo::IndexInfo> {
     Ok(info)
 }
 
+fn get_collection_info_from_row(r: &sqlite3::ResultRow) -> Result<elmo::CollectionInfo> {
+    let db = r.column_text(0).expect("NOT NULL");
+    let coll = r.column_text(1).expect("NOT NULL");
+    let options = try!(BsonValue::from_bson(&r.column_slice(2).expect("NOT NULL")));
+    let info = elmo::CollectionInfo {
+        db: String::from(db),
+        coll: String::from(coll),
+        options: options,
+    };
+    Ok(info)
+}
+
 fn index_insert_step(stmt: &mut sqlite3::PreparedStatement, k: Vec<u8>, doc_rowid: i64) -> Result<()> {
     stmt.clear_bindings();
     try!(stmt.bind_blob(1, &k).map_err(elmo::wrap_err));
@@ -835,7 +847,7 @@ impl MyConn {
         Ok(v)
     }
 
-    fn base_list_collections(&self) -> Result<Vec<(String, String, BsonValue)>> {
+    fn base_list_collections(&self) -> Result<Vec<elmo::CollectionInfo>> {
         let mut stmt = try!(self.conn.prepare("SELECT dbName, collName, options FROM \"collections\" ORDER BY collName ASC").map_err(elmo::wrap_err));
         let mut r = stmt.execute();
         let mut v = Vec::new();
@@ -843,11 +855,8 @@ impl MyConn {
             match try!(r.step().map_err(elmo::wrap_err)) {
                 None => break,
                 Some(row) => {
-                    let db = row.column_text(0).expect("NOT NULL");
-                    let coll = row.column_text(1).expect("NOT NULL");
-                    let options = try!(BsonValue::from_bson(&row.column_slice(2).expect("NOT NULL")));
-                    let t = (db, coll, options);
-                    v.push(t);
+                    let info = try!(get_collection_info_from_row(&row));
+                    v.push(info);
                 },
             }
         }
@@ -1168,8 +1177,8 @@ impl MyWriter {
         let collections = try!(self.myconn.base_list_collections());
         let mut b = false;
         for t in collections {
-            if t.0 == db {
-                let _deleted = try!(self.base_drop_collection(&t.0, &t.1));
+            if t.db == db {
+                let _deleted = try!(self.base_drop_collection(&t.db, &t.coll));
                 assert!(_deleted);
                 b = true;
             }
@@ -1337,7 +1346,7 @@ impl elmo::StorageBase for MyReader {
         Ok(box rdr)
     }
 
-    fn list_collections(&self) -> Result<Vec<(String, String, BsonValue)>> {
+    fn list_collections(&self) -> Result<Vec<elmo::CollectionInfo>> {
         self.myconn.base_list_collections()
     }
 
@@ -1362,7 +1371,7 @@ impl elmo::StorageBase for MyWriter {
         Ok(box rdr)
     }
 
-    fn list_collections(&self) -> Result<Vec<(String, String, BsonValue)>> {
+    fn list_collections(&self) -> Result<Vec<elmo::CollectionInfo>> {
         self.myconn.base_list_collections()
     }
 

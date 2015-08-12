@@ -721,11 +721,11 @@ impl<'b> Server<'b> {
 
             let db = String::from(db);
             let results = results.into_iter().filter_map(
-                move |(c_db, c_coll, c_options)| {
-                    if db.as_str() == c_db {
+                move |c| {
+                    if db.as_str() == c.db {
                         let mut doc = BsonValue::BDocument(vec![]);
-                        doc.add_pair_string("name", c_coll);
-                        doc.add_pair("options", c_options);
+                        doc.add_pair_string("name", c.coll);
+                        doc.add_pair("options", c.options);
                         Some(Ok(doc))
                     } else {
                         None

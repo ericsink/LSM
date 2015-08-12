@@ -116,6 +116,12 @@ impl<'a, E: Error + 'a> From<E> for Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+pub struct CollectionInfo {
+    pub db: String,
+    pub coll: String,
+    pub options: BsonValue,
+}
+
 pub struct IndexInfo {
     pub db: String,
     pub coll: String,
@@ -167,7 +173,7 @@ pub trait StorageCollectionReader : Iterator<Item=Result<BsonValue>> {
 pub trait StorageBase {
     // TODO maybe these two should return an iterator
     // TODO maybe these two should accept params to limit the rows returned
-    fn list_collections(&self) -> Result<Vec<(String, String, BsonValue)>>;
+    fn list_collections(&self) -> Result<Vec<CollectionInfo>>;
     fn list_indexes(&self) -> Result<Vec<IndexInfo>>;
 
     fn get_collection_reader(&self, db: &str, coll: &str, plan: Option<QueryPlan>) -> Result<Box<StorageCollectionReader<Item=Result<BsonValue>> + 'static>>;
@@ -242,14 +248,12 @@ impl Connection {
         Ok(results)
     }
 
-    // TODO consider constraining to just one db.  if so, pass that down to storage?
-    pub fn list_collections(&self) -> Result<Vec<(String, String, BsonValue)>> {
+    pub fn list_collections(&self) -> Result<Vec<CollectionInfo>> {
         let reader = try!(self.conn.begin_read());
         let v = try!(reader.list_collections());
         Ok(v)
     }
 
-    // TODO consider constraining to just one db or coll.  if so, pass that down to storage?
     pub fn list_indexes(&self) -> Result<Vec<IndexInfo>> {
         let reader = try!(self.conn.begin_read());
         let v = try!(reader.list_indexes());
