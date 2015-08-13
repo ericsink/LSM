@@ -316,4 +316,214 @@ fn cmp_gte(d: &BsonValue, lit: &BsonValue) -> bool {
     cmp_lte_gte(d, lit, Ordering::Greater)
 }
 
+fn do_elem_match_objects<F: Fn(&str, usize)>(doc: &QueryDoc, d: &BsonValue, cb_array_pos: &F) -> bool {
+    match d {
+        &BsonValue::BArray(ref a) => {
+            for vsub in a {
+                match vsub {
+                    &BsonValue::BArray(_) | &BsonValue::BDocument(_) => {
+                        if match_query_doc(doc, vsub, cb_array_pos) {
+                            return true;
+                        }
+                    },
+                    _ => {
+                    },
+                }
+            }
+            false
+        },
+        _ => {
+            false
+        },
+    }
+}
+
+fn match_predicate<F: Fn(&str, usize)>(pred: &Pred, d: &BsonValue, cb_array_pos: &F) -> bool {
+    match pred {
+        &Pred::Exists(b) => {
+            unreachable!();
+        },
+        &Pred::Not(ref preds) => {
+            let any_matches = preds.iter().any(|p| match_predicate(p, d, cb_array_pos));
+            !any_matches
+        },
+        &Pred::ElemMatchObjects(ref doc) => {
+            match d {
+                &BsonValue::BArray(ref a) => {
+                    let found = 
+                        a.iter().position(|vsub| {
+                            match vsub {
+                                &BsonValue::BDocument(_) | &BsonValue::BArray(_) => match_query_doc(doc, vsub, cb_array_pos),
+                                _ => false,
+                            }
+                        });
+                    match found {
+                        Some(n) => {
+                            cb_array_pos("TODO", n);
+                            true
+                        },
+                        None => false
+                    }
+                },
+                _ => false,
+            }
+        },
+        &Pred::ElemMatchPreds(ref preds) => {
+            match d {
+                &BsonValue::BArray(ref a) => {
+                    let found = 
+                        a.iter().position(|vsub| preds.iter().any(|p| !match_predicate(p, vsub, cb_array_pos)));
+                    match found {
+                        Some(n) => {
+                            cb_array_pos("TODO", n);
+                            true
+                        },
+                        None => false
+                    }
+                },
+                _ => false,
+            }
+        },
+        &Pred::AllElemMatchObjects(ref docs) => {
+            // for each elemMatch doc in the $all array, run it against
+            // the candidate array.  if any elemMatch doc fails, false.
+            docs.iter().any(|doc| !do_elem_match_objects(doc, d, cb_array_pos))
+        },
+        &Pred::All(ref lits) => {
+            // TODO does this ever happen, now that it is handled earlier?
+            if lits.len() == 0 {
+                false
+            } else {
+                !lits.iter().any(|lit| {
+                    let b =
+                        if cmp_eq(d, lit) {
+                            true
+                        } else {
+                            match d {
+                                &BsonValue::BArray(ref a) => {
+                                    a.iter().any(|v| cmp_eq(v, lit))
+                                },
+                                _ => false,
+                            }
+                        };
+                    !b
+                })
+            }
+        },
+        &Pred::EQ(ref lit) => cmp_eq(d, lit),
+        &Pred::NE(ref lit) => !cmp_eq(d, lit),
+        &Pred::LT(ref lit) => cmp_lt(d, lit),
+        &Pred::GT(ref lit) => cmp_gt(d, lit),
+        &Pred::LTE(ref lit) => cmp_lte(d, lit),
+        &Pred::GTE(ref lit) => cmp_gte(d, lit),
+        &Pred::REGEX(_) => unimplemented!(),
+        &Pred::Near(_) => unimplemented!(),
+        &Pred::NearSphere(_) => unimplemented!(),
+        &Pred::GeoWithin(_) => unimplemented!(),
+        &Pred::GeoIntersects(_) => unimplemented!(),
+        &Pred::Type(n) => (d.getTypeNumber_u8() as i32) == n,
+        &Pred::In(ref lits) => lits.iter().any(|v| cmp_in(d, v)),
+        &Pred::Nin(ref lits) => !lits.iter().any(|v| cmp_in(d, v)),
+        &Pred::Size(n) => {
+            match d {
+                &BsonValue::BArray(ref a) => a.len() == (n as usize),
+                _ => false,
+            }
+        },
+        &Pred::Mod(div, rem) => {
+            match d {
+                &BsonValue::BInt32(n) => ((n as i64) % div) == rem,
+                &BsonValue::BInt64(n) => (n % div) == rem,
+                &BsonValue::BDouble(n) => ((n as i64) % div) == rem,
+                _ => false,
+            }
+        },
+    }
+}
+
+fn match_pair_exists(pred: &Pred, path: &str, start: &BsonValue) -> bool {
+    // TODO
+    true
+}
+
+fn match_pair_other<F: Fn(&str, usize)>(pred: &Pred, path: &str, start: &BsonValue, arr: bool, cb_array_pos: &F) -> bool {
+    // TODO
+    true
+}
+
+fn match_pair<F: Fn(&str, usize)>(pred: &Pred, path: &str, start: &BsonValue, cb_array_pos: &F) -> bool {
+    // not all predicates do their path searching in the same way
+    // TODO consider a reusable function which generates all possible paths
+    
+    match pred {
+        &Pred::All(ref a) => {
+            if a.len() == 0 {
+                false
+            } else {
+                // TODO clone below is awful
+                a.iter().all(|lit| match_pair(&Pred::EQ(lit.clone()), path, start, cb_array_pos))
+            }
+        },
+        &Pred::Exists(b) => {
+            b == match_pair_exists(pred, path, start)
+        },
+        &Pred::Not(ref a) => {
+            let any_matches = a.iter().any(|p| !match_pair(p, path, start, cb_array_pos));
+            any_matches
+        },
+        &Pred::NE(ref a) => {
+            // TODO since this is implemented in matchPredicate, it seems like we should
+            // be able to remove this implementation.  but if we do, some tests fail.
+            // figure out exactly why.
+            // TODO clone below is awful
+            !match_pair(&Pred::EQ(a.clone()), path, start, cb_array_pos)
+        },
+        &Pred::Nin(ref a) => {
+            // TODO since this is implemented in matchPredicate, it seems like we should
+            // be able to remove this implementation.  but if we do, some tests fail.
+            // figure out exactly why.
+            // TODO clone below is awful
+            !match_pair(&Pred::In(a.clone()), path, start, cb_array_pos)
+        },
+        _ => {
+            match_pair_other(pred, path, start, false, cb_array_pos)
+        },
+    }
+}
+
+fn match_query_item<F: Fn(&str, usize)>(qit: &QueryItem, d: &BsonValue, cb_array_pos: &F) -> bool {
+    match qit {
+        &QueryItem::Compare(ref path, ref preds) => {
+            preds.iter().all(|v| match_pair(v, path, d, cb_array_pos))
+        },
+        &QueryItem::AND(ref qd) => {
+            qd.iter().all(|v| match_query_doc(v, d, cb_array_pos))
+        },
+        &QueryItem::OR(ref qd) => {
+            qd.iter().any(|v| match_query_doc(v, d, cb_array_pos))
+        },
+        &QueryItem::NOR(ref qd) => {
+            !qd.iter().any(|v| match_query_doc(v, d, cb_array_pos))
+        },
+        &QueryItem::Where(ref v) => {
+            panic!("TODO $where is not supported"); //16395 in agg
+        },
+        &QueryItem::Text(ref s) => {
+            // TODO is there more work to do here?  or does the index code deal with it all now?
+            true
+        },
+    }
+}
+
+fn match_query_doc<F: Fn(&str, usize)>(q: &QueryDoc, d: &BsonValue, cb_array_pos: &F) -> bool {
+    let &QueryDoc::QueryDoc(ref items) = q;
+    // AND
+    for qit in items {
+        if !match_query_item(qit, d, cb_array_pos) {
+            return false;
+        }
+    }
+    true
+}
+
 

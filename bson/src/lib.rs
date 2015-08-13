@@ -678,7 +678,7 @@ impl BsonValue {
         }
     }
 
-    fn getTypeNumber_u8(&self) -> u8 {
+    pub fn getTypeNumber_u8(&self) -> u8 {
         match self {
             &BsonValue::BDouble(_) => 1,
             &BsonValue::BString(_) => 2,
