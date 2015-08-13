@@ -157,3 +157,163 @@ fn cmp(d: &BsonValue, lit: &BsonValue) -> Ordering {
     }
 }
 
+fn array_min_max(a: &Vec<BsonValue>, judge: Ordering) -> Option<&BsonValue> {
+    let mut cur = None;
+    for v in a {
+        match cur {
+            Some(win) => {
+                let c = cmp(v, win);
+                if c == judge {
+                    cur = Some(v);
+                }
+            },
+            None => {
+                cur = Some(v);
+            },
+        }
+    }
+    cur
+}
+
+fn array_min(a: &Vec<BsonValue>) -> Option<&BsonValue> {
+    array_min_max(a, Ordering::Less)
+}
+
+fn array_max(a: &Vec<BsonValue>) -> Option<&BsonValue> {
+    array_min_max(a, Ordering::Greater)
+}
+
+fn cmpdir(d: &BsonValue, lit: &BsonValue, reverse: bool) -> Ordering {
+    // when comparing an array against something else during sort:
+    // if two arrays, compare element by element.
+    // if array vs. not-array, find the min or max (depending on the
+    // sort direction) of the array and compare against that.
+
+    let c = 
+        match (d, lit) {
+            (&BsonValue::BArray(_), &BsonValue::BArray(_)) => {
+                cmp(d, lit)
+            },
+            (&BsonValue::BArray(ref a), _) => {
+                let om =
+                    if reverse {
+                        array_max(a)
+                    } else {
+                        array_min(a)
+                    };
+                match om {
+                    Some(m) => cmp(m, lit),
+                    // TODO is the following the correct behavior for an empty array?
+                    None => cmp(d, lit),
+                }
+            },
+            (_, &BsonValue::BArray(ref a)) => {
+                let om =
+                    if reverse {
+                        array_max(a)
+                    } else {
+                        array_min(a)
+                    };
+                match om {
+                    Some(m) => cmp(d, m),
+                    // TODO is the following the correct behavior for an empty array?
+                    None => cmp(d, lit),
+                }
+            },
+            _ => {
+                cmp(d, lit)
+            },
+        };
+    if reverse {
+        c.reverse()
+    } else {
+        c
+    }
+}
+
+fn cmp_eq(d: &BsonValue, lit: &BsonValue) -> bool {
+    let torder_d = d.get_type_order();
+    let torder_lit = lit.get_type_order();
+
+    if torder_d == torder_lit {
+        cmp(d, lit) == Ordering::Equal
+    } else {
+        false
+    }
+}
+
+fn cmp_in(d: &BsonValue, lit: &BsonValue) -> bool {
+    match lit {
+        &BsonValue::BRegex(ref expr, ref options) => {
+            match d {
+                &BsonValue::BString(ref s) => {
+                    unimplemented!();
+                },
+                _ => {
+                    false
+                },
+            }
+        },
+        _ => {
+            cmp_eq(d, lit)
+        },
+    }
+}
+
+fn cmp_lt_gt(d: &BsonValue, lit: &BsonValue, judge: Ordering) -> bool {
+    if d.is_nan() || lit.is_nan() {
+        false
+    } else {
+        let torder_d = d.get_type_order();
+        let torder_lit = lit.get_type_order();
+
+        if torder_d == torder_lit {
+            cmp(d, lit) == judge
+        } else {
+            false
+        }
+    }
+}
+
+fn cmp_lt(d: &BsonValue, lit: &BsonValue) -> bool {
+    cmp_lt_gt(d, lit, Ordering::Less)
+}
+
+fn cmp_gt(d: &BsonValue, lit: &BsonValue) -> bool {
+    cmp_lt_gt(d, lit, Ordering::Greater)
+}
+
+fn cmp_lte_gte(d: &BsonValue, lit: &BsonValue, judge: Ordering) -> bool {
+    let dnan = d.is_nan();
+    let litnan = lit.is_nan();
+    if dnan || litnan {
+        dnan && litnan
+    } else {
+        let torder_d = d.get_type_order();
+        let torder_lit = lit.get_type_order();
+
+        if torder_d == torder_lit {
+            let c = cmp(d, lit);
+            if c == Ordering::Equal {
+                true
+            } else if c == judge {
+                true
+            } else {
+                false
+            }
+        } else {
+            // TODO this seems wrong.  shouldn't we compare the type orders?
+            false
+        }
+    }
+}
+
+fn cmp_lte(d: &BsonValue, lit: &BsonValue) -> bool {
+    cmp_lte_gte(d, lit, Ordering::Less)
+}
+
+fn cmp_gte(d: &BsonValue, lit: &BsonValue) -> bool {
+    cmp_lte_gte(d, lit, Ordering::Greater)
+}
+
+

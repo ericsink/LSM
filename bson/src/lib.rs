@@ -388,7 +388,7 @@ impl BsonValue {
         }
     }
 
-    fn is_nan(&self) -> bool {
+    pub fn is_nan(&self) -> bool {
         match self {
             &BsonValue::BDouble(f) => f.is_nan(),
             _ => false,
