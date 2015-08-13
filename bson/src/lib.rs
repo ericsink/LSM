@@ -815,7 +815,7 @@ impl BsonValue {
         Ok(v)
     }
 
-    fn get_type_order(&self) -> i32 {
+    pub fn get_type_order(&self) -> i32 {
         // same numbers as canonicalizeBSONType()
         match self {
             &BsonValue::BUndefined => 0,

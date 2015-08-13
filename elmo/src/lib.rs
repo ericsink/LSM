@@ -116,6 +116,8 @@ impl<'a, E: Error + 'a> From<E> for Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+mod matcher;
+
 pub struct CollectionInfo {
     pub db: String,
     pub coll: String,
@@ -280,6 +282,7 @@ impl Connection {
 
     pub fn delete_indexes(&self, db: &str, coll: &str, index: &BsonValue) -> Result<(usize, usize)> {
         let writer = try!(self.conn.begin_write());
+        // TODO make the following filter DRY
         let indexes = try!(writer.list_indexes()).into_iter().filter(
             |ndx| ndx.db == db && ndx.coll == coll
             ).collect::<Vec<_>>();
@@ -382,7 +385,10 @@ impl Connection {
         -> Result<Box<StorageCollectionReader<Item=Result<BsonValue>> + 'static>>
     {
         let reader = try!(self.conn.begin_read());
-        //let indexes = try!(self.list_indexes_for_collection(db, coll));
+        // TODO make the following filter DRY
+        let indexes = try!(reader.list_indexes()).into_iter().filter(
+            |ndx| ndx.db == db && ndx.coll == coll
+            ).collect::<Vec<_>>();
         let coll_reader = try!(reader.into_collection_reader(db, coll, None));
         Ok(coll_reader)
     }
