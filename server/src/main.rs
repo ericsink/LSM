@@ -802,10 +802,25 @@ impl<'b> Server<'b> {
         }
     }
 
-    fn reply_query(&mut self, req: &MsgQuery, db: &str) -> Result<Reply> {
-        let (db,coll) = try!(Self::splitname(&req.full_collection_name));
+    fn reply_query(&mut self, req: MsgQuery, db: &str) -> Result<Reply> {
+        let MsgQuery {
+            req_id: req_id,
+            flags: flags,
+            full_collection_name: full_collection_name,
+            number_to_skip: number_to_skip,
+            number_to_return: number_to_return,
+            query: query,
+            return_fields_selector: return_fields_selector,
+        } = req;
 
-        // TODO what if somebody queries on a field named query?  ambiguous.
+        let (db, coll) = try!(Self::splitname(&full_collection_name));
+
+        let projection =
+            match return_fields_selector {
+                Some(ref v) => Some(v),
+                None => None,
+            };
+
 
         // This *might* just have the query in it.  OR it might have the 
         // query in a key called query, which might also be called $query,
@@ -813,86 +828,69 @@ impl<'b> Server<'b> {
         // This other stuff is called query modifiers.  
         // Sigh.
 
-        let (actual_query, query_format_2) =
-            match Self::tryGetKeyWithOrWithoutDollarSignPrefix(&req.query, "$query") {
-                Some(q) => (q,true),
-                None => (&req.query, false),
-            };
+        let seq = 
+            match Self::tryGetKeyWithOrWithoutDollarSignPrefix(&query, "$query") {
+                Some(q) => {
+                    // TODO what if somebody queries on a field named query?  ambiguous.
 
-        let orderby = 
-            if query_format_2 {
-                Self::tryGetKeyWithOrWithoutDollarSignPrefix(&req.query, "$orderby")
-            } else {
-                // TODO orderby in the legacy format?
-                None
+                    let orderby = Self::tryGetKeyWithOrWithoutDollarSignPrefix(&query, "$orderby");
+                    let min = Self::tryGetKeyWithOrWithoutDollarSignPrefix(&query, "$min");
+                    let max = Self::tryGetKeyWithOrWithoutDollarSignPrefix(&query, "$max");
+                    let hint = Self::tryGetKeyWithOrWithoutDollarSignPrefix(&query, "$hint");
+                    let explain = Self::tryGetKeyWithOrWithoutDollarSignPrefix(&query, "$explain");
+                    let seq = try!(self.conn.find(
+                            db, 
+                            coll, 
+                            &q,
+                            orderby,
+                            projection,
+                            min,
+                            max,
+                            hint,
+                            explain
+                            ));
+                    seq
+                },
+                None => {
+                    let seq = try!(self.conn.find(
+                            db, 
+                            coll, 
+                            &query,
+                            None,
+                            None,
+                            None,
+                            None,
+                            None,
+                            None
+                            ));
+                    seq
+                },
             };
-        let min = 
-            if query_format_2 {
-                Self::tryGetKeyWithOrWithoutDollarSignPrefix(&req.query, "$min")
-            } else {
-                None
-            };
-        let max = 
-            if query_format_2 {
-                Self::tryGetKeyWithOrWithoutDollarSignPrefix(&req.query, "$max")
-            } else {
-                None
-            };
-        let hint = 
-            if query_format_2 {
-                Self::tryGetKeyWithOrWithoutDollarSignPrefix(&req.query, "$hint")
-            } else {
-                None
-            };
-        let explain = 
-            if query_format_2 {
-                Self::tryGetKeyWithOrWithoutDollarSignPrefix(&req.query, "$explain")
-            } else {
-                None
-            };
-
-        let projection =
-            match req.return_fields_selector {
-                Some(ref v) => Some(v),
-                None => None,
-            };
-
-        let seq = try!(self.conn.find(
-                db, 
-                coll, 
-                &actual_query,
-                orderby,
-                projection,
-                min,
-                max,
-                hint,
-                explain
-                ));
 
         // TODO let s = crud.seqOnlyDoc s
 
-        if req.number_to_skip < 0 {
+        if number_to_skip < 0 {
             unimplemented!();
         }
 
-        let seq = seq.skip(req.number_to_skip as usize);
+        let seq = seq.skip(number_to_skip as usize);
 
         let mut seq = seq.map(
             |r| r.map_err(wrap_err)
         );
 
-        //let docs = Self::grab(&mut seq, req.number_to_return as usize);
+        //let docs = Self::grab(&mut seq, number_to_return as usize);
         //let docs = try!(unwrap_vec_of_results(docs));
-        //Ok(create_reply(req.req_id, docs, 0))
+        //Ok(create_reply(req_id, docs, 0))
 
-        let (docs, more) = try!(Self::do_limit(&req.full_collection_name, &mut seq, req.number_to_return));
+        let (docs, more) = try!(Self::do_limit(&full_collection_name, &mut seq, number_to_return));
         let cursor_id = if more {
-            self.store_cursor(&req.full_collection_name, seq)
+            self.store_cursor(&full_collection_name, seq)
             //0
         } else {
             0
         };
-        Ok(create_reply(req.req_id, docs, cursor_id))
+        Ok(create_reply(req_id, docs, cursor_id))
     }
 
     fn reply_cmd(&mut self, req: &MsgQuery, db: &str) -> Result<Reply> {
@@ -934,16 +932,20 @@ impl<'b> Server<'b> {
     }
 
     fn reply_2004(&mut self, req: MsgQuery) -> Reply {
-        let parts = req.full_collection_name.split('.').collect::<Vec<_>>();
+        // reallocating the strings here so we can pass ownership of req down the line.
+        // TODO we could deconstruct req now?
+        let parts = req.full_collection_name.split('.').map(|s| String::from(s)).collect::<Vec<_>>();
+        let req_id = req.req_id;
         let r = 
             if parts.len() < 2 {
                 // TODO failwith (sprintf "bad collection name: %s" (req.full_collection_name))
                 Err(Error::Misc("bad collection name"))
             } else {
-                let db = parts[0];
+                let db = &parts[0];
                 if db == "admin" {
                     if parts[1] == "$cmd" {
                         //reply_AdminCmd req
+                        // TODO probably want to pass ownership of req down here
                         self.reply_admin_cmd(&req, db)
                     } else {
                         //failwith "not implemented"
@@ -955,6 +957,7 @@ impl<'b> Server<'b> {
                             //reply_cmd_sys_inprog req db
                             Err(Error::Misc("TODO"))
                         } else {
+                            // TODO probably want to pass ownership of req down here
                             self.reply_cmd(&req, db)
                         }
                     } else if parts.len()==3 && parts[1]=="system" && parts[2]=="indexes" {
@@ -964,14 +967,14 @@ impl<'b> Server<'b> {
                         //reply_system_namespaces req db
                         Err(Error::Misc("TODO"))
                     } else {
-                        self.reply_query(&req, db)
+                        self.reply_query(req, db)
                     }
                 }
             };
         println!("reply: {:?}", r);
         match r {
             Ok(r) => r,
-            Err(e) => reply_err(req.req_id, e),
+            Err(e) => reply_err(req_id, e),
         }
     }
 
