@@ -7,7 +7,7 @@ use super::Result;
 extern crate bson;
 use bson::BsonValue;
 
-enum QueryDoc {
+pub enum QueryDoc {
     QueryDoc(Vec<QueryItem>),
 }
 
@@ -834,4 +834,9 @@ fn parse_query_doc(v: &BsonValue) -> Result<Vec<QueryItem>> {
     Ok(result)
 }
 
+pub fn parse_query(v: BsonValue) -> Result<QueryDoc> {
+    let a = try!(parse_query_doc(&v));
+    let q = QueryDoc::QueryDoc(a);
+    Ok(q)
+}
 

@@ -374,7 +374,7 @@ impl Connection {
     pub fn find(&self,
                 db: &str,
                 coll: &str,
-                query: &BsonValue,
+                query: BsonValue,
                 orderby: Option<&BsonValue>,
                 projection: Option<&BsonValue>,
                 min: Option<&BsonValue>,
@@ -389,6 +389,7 @@ impl Connection {
         let indexes = try!(reader.list_indexes()).into_iter().filter(
             |ndx| ndx.db == db && ndx.coll == coll
             ).collect::<Vec<_>>();
+        let m = matcher::parse_query(query);
         let coll_reader = try!(reader.into_collection_reader(db, coll, None));
         Ok(coll_reader)
     }

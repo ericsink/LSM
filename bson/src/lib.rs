@@ -95,6 +95,14 @@ pub fn split_name(s: &str) -> (&str, &str) {
 // Or do we need to implement it explicitly to
 // catch the nan case?
 
+pub struct BsonDocument {
+    pairs: Vec<(String, BsonValue)>,
+}
+
+pub struct BsonArray {
+    items: Vec<BsonValue>,
+}
+
 #[derive(Clone,Debug)]
 pub enum BsonValue {
     BDouble(f64),

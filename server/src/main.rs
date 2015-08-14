@@ -802,6 +802,19 @@ impl<'b> Server<'b> {
         }
     }
 
+    fn try_remove_optional_prefix(v: &mut BsonValue, k: &str) -> Option<BsonValue> {
+        assert_eq!(&k[0 .. 1], "$");
+        match v.try_remove_key(k) {
+            Some(r) => Some(r),
+            None => {
+                match v.try_remove_key(&k[1 ..]) {
+                    Some(r) => Some(r),
+                    None => None,
+                }
+            },
+        }
+    }
+
     fn reply_query(&mut self, req: MsgQuery, db: &str) -> Result<Reply> {
         let MsgQuery {
             req_id: req_id,
@@ -809,7 +822,7 @@ impl<'b> Server<'b> {
             full_collection_name: full_collection_name,
             number_to_skip: number_to_skip,
             number_to_return: number_to_return,
-            query: query,
+            query: mut query,
             return_fields_selector: return_fields_selector,
         } = req;
 
@@ -821,7 +834,6 @@ impl<'b> Server<'b> {
                 None => None,
             };
 
-
         // This *might* just have the query in it.  OR it might have the 
         // query in a key called query, which might also be called $query,
         // along with other stuff (like orderby) as well.
@@ -829,7 +841,7 @@ impl<'b> Server<'b> {
         // Sigh.
 
         let seq = 
-            match Self::tryGetKeyWithOrWithoutDollarSignPrefix(&query, "$query") {
+            match Self::try_remove_optional_prefix(&mut query, "$query") {
                 Some(q) => {
                     // TODO what if somebody queries on a field named query?  ambiguous.
 
@@ -841,7 +853,7 @@ impl<'b> Server<'b> {
                     let seq = try!(self.conn.find(
                             db, 
                             coll, 
-                            &q,
+                            q,
                             orderby,
                             projection,
                             min,
@@ -855,7 +867,7 @@ impl<'b> Server<'b> {
                     let seq = try!(self.conn.find(
                             db, 
                             coll, 
-                            &query,
+                            query,
                             None,
                             None,
                             None,
