@@ -19,7 +19,6 @@
 #![feature(vec_push_all)]
 
 extern crate bson;
-use bson::BsonValue;
 
 extern crate elmo;
 
@@ -47,7 +46,7 @@ struct StatementBsonValueIterator {
 }
 
 impl StatementBsonValueIterator {
-    fn iter_next(&mut self) -> Result<Option<BsonValue>> {
+    fn iter_next(&mut self) -> Result<Option<bson::Value>> {
         // TODO can't find a way to store the ResultSet from execute()
         // in the same struct as its statement, because the ResultSet()
         // contains a mut reference to the statement.  So we look at
@@ -58,8 +57,8 @@ impl StatementBsonValueIterator {
             None => Ok(None),
             Some(r) => {
                 let b = r.column_blob(0).expect("NOT NULL");
-                let v = try!(bson::BsonDocument::from_bson(&b));
-                let v = BsonValue::BDocument(v);
+                let v = try!(bson::Document::from_bson(&b));
+                let v = bson::Value::BDocument(v);
                 Ok(Some(v))
             },
         }
@@ -67,7 +66,7 @@ impl StatementBsonValueIterator {
 }
 
 impl Iterator for StatementBsonValueIterator {
-    type Item = Result<BsonValue>;
+    type Item = Result<bson::Value>;
     fn next(&mut self) -> Option<Self::Item> {
         match self.iter_next() {
             Err(e) => {
@@ -92,13 +91,13 @@ struct ResultSetBsonValueIterator<'a> {
 }
 
 impl<'a> ResultSetBsonValueIterator<'a> {
-    fn iter_next(&mut self) -> Result<Option<BsonValue>> {
+    fn iter_next(&mut self) -> Result<Option<bson::Value>> {
         match try!(self.rows.step().map_err(elmo::wrap_err)) {
             None => Ok(None),
             Some(r) => {
                 let b = r.column_blob(0).expect("NOT NULL");
-                let v = try!(bson::BsonDocument::from_bson(&b));
-                let v = BsonValue::BDocument(v);
+                let v = try!(bson::Document::from_bson(&b));
+                let v = bson::Value::BDocument(v);
                 Ok(Some(v))
             },
         }
@@ -106,7 +105,7 @@ impl<'a> ResultSetBsonValueIterator<'a> {
 }
 
 impl<'a> Iterator for ResultSetBsonValueIterator<'a> {
-    type Item = Result<BsonValue>;
+    type Item = Result<bson::Value>;
     fn next(&mut self) -> Option<Self::Item> {
         match self.iter_next() {
             Err(e) => {
@@ -129,7 +128,7 @@ impl<'a> Iterator for ResultSetBsonValueIterator<'a> {
 struct MyEmptyIterator;
 
 impl Iterator for MyEmptyIterator {
-    type Item = Result<BsonValue>;
+    type Item = Result<bson::Value>;
     fn next(&mut self) -> Option<Self::Item> {
         None
     }
@@ -137,7 +136,7 @@ impl Iterator for MyEmptyIterator {
 
 struct MyCollectionReader {
     commit_on_drop: bool,
-    seq: Box<Iterator<Item=Result<BsonValue>>>,
+    seq: Box<Iterator<Item=Result<bson::Value>>>,
     myconn: std::rc::Rc<MyConn>,
 
     // TODO need counts here
@@ -192,7 +191,7 @@ fn verify_changes(stmt: &sqlite3::PreparedStatement, shouldbe: u64) -> Result<()
     }
 }
 
-fn copy_dirs_from_normspec_to_vals(normspec: &Vec<(String, IndexType)>, vals: Vec<BsonValue>) -> Vec<(BsonValue, bool)> {
+fn copy_dirs_from_normspec_to_vals(normspec: &Vec<(String, IndexType)>, vals: Vec<bson::Value>) -> Vec<(bson::Value, bool)> {
     // TODO if normspec.len() < vals.len() then panic?
     let mut a = Vec::new();
     for (i,v) in vals.into_iter().enumerate() {
@@ -212,8 +211,8 @@ fn get_table_name_for_index(db: &str, coll: &str, name: &str) -> String {
     format!("ndx.{}.{}.{}", db, coll, name) 
 }
 
-fn get_index_entries(new_doc: &bson::BsonDocument, normspec: &Vec<(String, IndexType)>, weights: &Option<std::collections::HashMap<String,i32>>, options: &bson::BsonDocument, entries: &mut Vec<Vec<(BsonValue,bool)>>) -> Result<()> {
-    fn find_index_entry_vals(normspec: &Vec<(String, IndexType)>, new_doc: &bson::BsonDocument, sparse: bool) -> Vec<(BsonValue,bool)> {
+fn get_index_entries(new_doc: &bson::Document, normspec: &Vec<(String, IndexType)>, weights: &Option<std::collections::HashMap<String,i32>>, options: &bson::Document, entries: &mut Vec<Vec<(bson::Value,bool)>>) -> Result<()> {
+    fn find_index_entry_vals(normspec: &Vec<(String, IndexType)>, new_doc: &bson::Document, sparse: bool) -> Vec<(bson::Value,bool)> {
         let mut r = Vec::new();
         for t in normspec {
             let k = &t.0;
@@ -232,7 +231,7 @@ fn get_index_entries(new_doc: &bson::BsonDocument, normspec: &Vec<(String, Index
             let keep =
                 if sparse {
                     match v {
-                        BsonValue::BUndefined => false,
+                        bson::Value::BUndefined => false,
                         _ => true,
                     }
                 } else {
@@ -248,13 +247,13 @@ fn get_index_entries(new_doc: &bson::BsonDocument, normspec: &Vec<(String, Index
     }
 
     // TODO what should the name of this func actually be?
-    fn q(vals: &Vec<(BsonValue, bool)>, w: i32, s: &str, entries: &mut Vec<Vec<(BsonValue,bool)>>) {
+    fn q(vals: &Vec<(bson::Value, bool)>, w: i32, s: &str, entries: &mut Vec<Vec<(bson::Value,bool)>>) {
         // TODO tokenize properly
         let a = s.split(" ");
         let a = a.into_iter().collect::<std::collections::HashSet<_>>();
         for s in a {
             let s = String::from(s);
-            let v = BsonValue::BArray(bson::BsonArray {items: vec![BsonValue::BString(s), BsonValue::BInt32(w)]});
+            let v = bson::Value::BArray(bson::Array {items: vec![bson::Value::BString(s), bson::Value::BInt32(w)]});
             // TODO clone is ugly
             let mut vals = vals.clone();
             vals.push((v, false));
@@ -262,7 +261,7 @@ fn get_index_entries(new_doc: &bson::BsonDocument, normspec: &Vec<(String, Index
         }
     }
 
-    fn maybe_text(vals: &Vec<(BsonValue, bool)>, new_doc: &bson::BsonDocument, weights: &Option<std::collections::HashMap<String,i32>>, entries: &mut Vec<Vec<(BsonValue,bool)>>) {
+    fn maybe_text(vals: &Vec<(bson::Value, bool)>, new_doc: &bson::Document, weights: &Option<std::collections::HashMap<String,i32>>, entries: &mut Vec<Vec<(bson::Value,bool)>>) {
         match weights {
             &Some(ref weights) => {
                 for k in weights.keys() {
@@ -275,15 +274,15 @@ fn get_index_entries(new_doc: &bson::BsonDocument, normspec: &Vec<(String, Index
                         };
                     } else {
                         match new_doc.find_path(k) {
-                            BsonValue::BUndefined => (),
+                            bson::Value::BUndefined => (),
                             v => {
                                 match v {
-                                    BsonValue::BString(s) => q(&vals, weights[k], &s, entries),
-                                    BsonValue::BArray(ba) => {
+                                    bson::Value::BString(s) => q(&vals, weights[k], &s, entries),
+                                    bson::Value::BArray(ba) => {
                                         let a = ba.items.into_iter().collect::<std::collections::HashSet<_>>();
                                         for v in a {
                                             match v {
-                                                BsonValue::BString(s) => q(&vals, weights[k], &s, entries),
+                                                bson::Value::BString(s) => q(&vals, weights[k], &s, entries),
                                                 _ => (),
                                             }
                                         }
@@ -308,7 +307,7 @@ fn get_index_entries(new_doc: &bson::BsonDocument, normspec: &Vec<(String, Index
         v2
     }
 
-    fn maybe_array(vals: &Vec<(BsonValue, bool)>, new_doc: &bson::BsonDocument, weights: &Option<std::collections::HashMap<String,i32>>, entries: &mut Vec<Vec<(BsonValue,bool)>>) {
+    fn maybe_array(vals: &Vec<(bson::Value, bool)>, new_doc: &bson::Document, weights: &Option<std::collections::HashMap<String,i32>>, entries: &mut Vec<Vec<(bson::Value,bool)>>) {
         // first do the index entries for the document without considering arrays
         maybe_text(vals, new_doc, weights, entries);
 
@@ -322,7 +321,7 @@ fn get_index_entries(new_doc: &bson::BsonDocument, normspec: &Vec<(String, Index
             let v = &t.0;
             let typ = t.1;
             match v {
-                &BsonValue::BArray(ref ba) => {
+                &bson::Value::BArray(ref ba) => {
                     let a = ba.items.iter().collect::<std::collections::HashSet<_>>();
                     for av in a {
                         // TODO clone is ugly
@@ -336,7 +335,7 @@ fn get_index_entries(new_doc: &bson::BsonDocument, normspec: &Vec<(String, Index
     }
 
     let sparse = match options.get("sparse") {
-        Some(&BsonValue::BBoolean(b)) => b,
+        Some(&bson::Value::BBoolean(b)) => b,
         _ => false,
     };
 
@@ -347,10 +346,10 @@ fn get_index_entries(new_doc: &bson::BsonDocument, normspec: &Vec<(String, Index
 }
 
 // TODO this is basically iter().position()
-fn slice_find(pairs: &[(String, BsonValue)], s: &str) -> Option<usize> {
+fn slice_find(pairs: &[(String, bson::Value)], s: &str) -> Option<usize> {
     for i in 0 .. pairs.len() {
         match pairs[0].1 {
-            BsonValue::BString(ref t) => {
+            bson::Value::BString(ref t) => {
                 if t == s {
                     return Some(i);
                 }
@@ -361,12 +360,12 @@ fn slice_find(pairs: &[(String, BsonValue)], s: &str) -> Option<usize> {
     None
 }
 
-fn decode_index_type(v: &BsonValue) -> IndexType {
+fn decode_index_type(v: &bson::Value) -> IndexType {
     match v {
-        &BsonValue::BInt32(n) => if n<0 { IndexType::Backward } else { IndexType::Forward },
-        &BsonValue::BInt64(n) => if n<0 { IndexType::Backward } else { IndexType::Forward },
-        &BsonValue::BDouble(n) => if n<0.0 { IndexType::Backward } else { IndexType::Forward },
-        &BsonValue::BString(ref s) => if s == "2d" { 
+        &bson::Value::BInt32(n) => if n<0 { IndexType::Backward } else { IndexType::Forward },
+        &bson::Value::BInt64(n) => if n<0 { IndexType::Backward } else { IndexType::Forward },
+        &bson::Value::BDouble(n) => if n<0.0 { IndexType::Backward } else { IndexType::Forward },
+        &bson::Value::BString(ref s) => if s == "2d" { 
             IndexType::Geo2d 
         } else { 
             panic!("decode_index_type")
@@ -408,7 +407,7 @@ fn get_normalized_spec(info: &elmo::IndexInfo) -> Result<(Vec<(String,IndexType)
                         let mut text_keys = Vec::new();
                         for t in &info.spec.pairs {
                             match t.1 {
-                                BsonValue::BString(ref s) => {
+                                bson::Value::BString(ref s) => {
                                     if s == "text" {
                                         text_keys.push(t.0.clone());
                                     }
@@ -422,13 +421,13 @@ fn get_normalized_spec(info: &elmo::IndexInfo) -> Result<(Vec<(String,IndexType)
                 };
             let mut weights = std::collections::HashMap::new();
             match w1 {
-                Some(&BsonValue::BDocument(ref bd)) => {
+                Some(&bson::Value::BDocument(ref bd)) => {
                     for t in &bd.pairs {
                         let n = 
                             match &t.1 {
-                                &BsonValue::BInt32(n) => n,
-                                &BsonValue::BInt64(n) => n as i32,
-                                &BsonValue::BDouble(n) => n as i32,
+                                &bson::Value::BInt32(n) => n,
+                                &bson::Value::BInt64(n) => n as i32,
+                                &bson::Value::BDouble(n) => n as i32,
                                 _ => panic!("weight must be numeric")
                             };
                         weights.insert(t.0.clone(), n);
@@ -453,8 +452,8 @@ fn get_normalized_spec(info: &elmo::IndexInfo) -> Result<(Vec<(String,IndexType)
 
 fn get_index_info_from_row(r: &sqlite3::ResultRow) -> Result<elmo::IndexInfo> {
     let name = r.column_text(0).expect("NOT NULL");
-    let spec = try!(bson::BsonDocument::from_bson(&r.column_slice(1).expect("NOT NULL")));
-    let options = try!(bson::BsonDocument::from_bson(&r.column_slice(2).expect("NOT NULL")));
+    let spec = try!(bson::Document::from_bson(&r.column_slice(1).expect("NOT NULL")));
+    let options = try!(bson::Document::from_bson(&r.column_slice(2).expect("NOT NULL")));
     let db = r.column_text(3).expect("NOT NULL");
     let coll = r.column_text(4).expect("NOT NULL");
     let info = elmo::IndexInfo {
@@ -470,7 +469,7 @@ fn get_index_info_from_row(r: &sqlite3::ResultRow) -> Result<elmo::IndexInfo> {
 fn get_collection_info_from_row(r: &sqlite3::ResultRow) -> Result<elmo::CollectionInfo> {
     let db = r.column_text(0).expect("NOT NULL");
     let coll = r.column_text(1).expect("NOT NULL");
-    let options = try!(bson::BsonDocument::from_bson(&r.column_slice(2).expect("NOT NULL")));
+    let options = try!(bson::Document::from_bson(&r.column_slice(2).expect("NOT NULL")));
     let info = elmo::CollectionInfo {
         db: String::from(db),
         coll: String::from(coll),
@@ -489,7 +488,7 @@ fn index_insert_step(stmt: &mut sqlite3::PreparedStatement, k: Vec<u8>, doc_rowi
 }
 
 impl MyConn {
-    fn get_collection_options(&self, db: &str, coll: &str) -> Result<Option<bson::BsonDocument>> {
+    fn get_collection_options(&self, db: &str, coll: &str) -> Result<Option<bson::Document>> {
         let mut stmt = try!(self.conn.prepare("SELECT options FROM \"collections\" WHERE dbName=? AND collName=?").map_err(elmo::wrap_err));
         try!(stmt.bind_text(1, db).map_err(elmo::wrap_err));
         try!(stmt.bind_text(2, coll).map_err(elmo::wrap_err));
@@ -498,7 +497,7 @@ impl MyConn {
         match try!(r.step().map_err(elmo::wrap_err)) {
             None => Ok(None),
             Some(r) => {
-                let v = try!(bson::BsonDocument::from_bson(&r.column_slice(0).expect("NOT NULL")));
+                let v = try!(bson::Document::from_bson(&r.column_slice(0).expect("NOT NULL")));
                 Ok(Some(v))
             },
         }
@@ -534,13 +533,13 @@ impl MyConn {
         };
 
         let f_two = |minvals: elmo::QueryKey, maxvals: elmo::QueryKey, op1: &str, op2: &str| -> Result<sqlite3::PreparedStatement> {
-            let kmin = BsonValue::encode_multi_for_index(copy_dirs_from_normspec_to_vals(&normspec, minvals));
-            let kmax = BsonValue::encode_multi_for_index(copy_dirs_from_normspec_to_vals(&normspec, maxvals));
+            let kmin = bson::Value::encode_multi_for_index(copy_dirs_from_normspec_to_vals(&normspec, minvals));
+            let kmax = bson::Value::encode_multi_for_index(copy_dirs_from_normspec_to_vals(&normspec, maxvals));
             f_twok(kmin, kmax, op1, op2)
         };
 
         let f_one = |vals: elmo::QueryKey, op: &str| -> Result<sqlite3::PreparedStatement> {
-            let k = BsonValue::encode_multi_for_index(copy_dirs_from_normspec_to_vals(&normspec, vals));
+            let k = bson::Value::encode_multi_for_index(copy_dirs_from_normspec_to_vals(&normspec, vals));
             let sql = format!("SELECT DISTINCT d.bson FROM \"{}\" d INNER JOIN \"{}\" i ON (d.did = i.doc_rowid) WHERE k {} ?", tbl_coll, tbl_ndx, op);
             let mut stmt = try!(myconn.conn.prepare(&sql).map_err(elmo::wrap_err));
             try!(stmt.bind_blob(1, &k).map_err(elmo::wrap_err));
@@ -558,7 +557,7 @@ impl MyConn {
             elmo::QueryBounds::GT_LTE(minvals, maxvals) => f_two(minvals, maxvals, ">", "<="),
             elmo::QueryBounds::GTE_LTE(minvals, maxvals) => f_two(minvals, maxvals, ">=", "<="),
             elmo::QueryBounds::EQ(vals) => {
-                let kmin = BsonValue::encode_multi_for_index(copy_dirs_from_normspec_to_vals(&normspec, vals));
+                let kmin = bson::Value::encode_multi_for_index(copy_dirs_from_normspec_to_vals(&normspec, vals));
                 let kmax = add_one(&kmin);
                 f_twok(kmin, kmax, ">=", "<")
             },
@@ -609,12 +608,12 @@ impl MyConn {
                 Some(w) => w,
             };
 
-        fn lookup(stmt: &mut sqlite3::PreparedStatement, vals: &Vec<(BsonValue, bool)>, word: &str) -> Result<Vec<(i64,i32)>> {
+        fn lookup(stmt: &mut sqlite3::PreparedStatement, vals: &Vec<(bson::Value, bool)>, word: &str) -> Result<Vec<(i64,i32)>> {
             // TODO if we just search for the word without the weight, we could
             // use the add_one trick from EQ.  Probably need key encoding of an array
             // to omit the array length.  See comment there.
-            let vmin = BsonValue::BArray(bson::BsonArray {items: vec![BsonValue::BString(String::from(word)), BsonValue::BInt32(0)]});
-            let vmax = BsonValue::BArray(bson::BsonArray {items: vec![BsonValue::BString(String::from(word)), BsonValue::BInt32(100000)]});
+            let vmin = bson::Value::BArray(bson::Array {items: vec![bson::Value::BString(String::from(word)), bson::Value::BInt32(0)]});
+            let vmax = bson::Value::BArray(bson::Array {items: vec![bson::Value::BString(String::from(word)), bson::Value::BInt32(100000)]});
 
             let mut minvals = vals.clone();
             minvals.push((vmin,false));
@@ -622,8 +621,8 @@ impl MyConn {
             let mut maxvals = vals.clone();
             maxvals.push((vmax,false));
 
-            let kmin = BsonValue::encode_multi_for_index(minvals);
-            let kmax = BsonValue::encode_multi_for_index(maxvals);
+            let kmin = bson::Value::encode_multi_for_index(minvals);
+            let kmax = bson::Value::encode_multi_for_index(maxvals);
             stmt.clear_bindings();
             try!(stmt.bind_blob(1, &kmin).map_err(elmo::wrap_err));
             try!(stmt.bind_blob(2, &kmax).map_err(elmo::wrap_err));
@@ -634,7 +633,7 @@ impl MyConn {
                     None => break,
                     Some(row) => {
                         let k = row.column_slice(0).expect("NOT NULL");
-                        let w = try!(BsonValue::get_weight_from_index_entry(k));
+                        let w = try!(bson::Value::get_weight_from_index_entry(k));
                         let did = row.column_int64(1);
                         entries.push((did,w));
                     },
@@ -670,13 +669,13 @@ impl MyConn {
             found.push(v);
         };
 
-        fn contains_phrase(weights: &std::collections::HashMap<String, i32>, doc: &BsonValue, p: &str) -> bool {
+        fn contains_phrase(weights: &std::collections::HashMap<String, i32>, doc: &bson::Value, p: &str) -> bool {
             for k in weights.keys() {
                 let found = 
                     match doc.find_path(k) {
-                        BsonValue::BUndefined => false,
+                        bson::Value::BUndefined => false,
                         v => match v {
-                            BsonValue::BString(s) => s.find(p).is_some(),
+                            bson::Value::BString(s) => s.find(p).is_some(),
                             _ => false,
                         },
                     };
@@ -687,7 +686,7 @@ impl MyConn {
             return false;
         }
 
-        fn check_phrase(terms: &Vec<elmo::TextQueryTerm>, weights: &std::collections::HashMap<String, i32>, doc: &BsonValue) -> bool {
+        fn check_phrase(terms: &Vec<elmo::TextQueryTerm>, weights: &std::collections::HashMap<String, i32>, doc: &bson::Value) -> bool {
             for term in terms {
                 let b = 
                     match term {
@@ -868,12 +867,12 @@ impl MyConn {
 }
 
 impl MyCollectionWriter {
-    fn find_rowid(&mut self, v: &BsonValue) -> Result<Option<i64>> {
+    fn find_rowid(&mut self, v: &bson::Value) -> Result<Option<i64>> {
                 match self.stmt_find_rowid {
                     None => Ok(None),
                     Some(ref mut stmt) => {
                         stmt.clear_bindings();
-                        let ba = BsonValue::encode_one_for_index(v, false);
+                        let ba = bson::Value::encode_one_for_index(v, false);
                         try!(stmt.bind_blob(1, &ba).map_err(elmo::wrap_err));
                         let mut r = stmt.execute();
                         match try!(r.step().map_err(elmo::wrap_err)) {
@@ -896,14 +895,14 @@ impl MyCollectionWriter {
         Ok(())
     }
 
-    fn update_indexes_insert(indexes: &mut Vec<IndexPrep>, rowid: i64, v: &bson::BsonDocument) -> Result<()> {
+    fn update_indexes_insert(indexes: &mut Vec<IndexPrep>, rowid: i64, v: &bson::Document) -> Result<()> {
         for t in indexes {
             let (normspec, weights) = try!(get_normalized_spec(&t.info));
             let mut entries = Vec::new();
             try!(get_index_entries(&v, &normspec, &weights, &t.info.options, &mut entries));
             let entries = entries.into_iter().collect::<std::collections::HashSet<_>>();
             for vals in entries {
-                let k = BsonValue::encode_multi_for_index(vals);
+                let k = bson::Value::encode_multi_for_index(vals);
                 try!(index_insert_step(&mut t.stmt_insert, k, rowid));
             }
         }
@@ -913,7 +912,7 @@ impl MyCollectionWriter {
 }
 
 impl elmo::StorageCollectionWriter for MyCollectionWriter {
-    fn update(&mut self, v: &bson::BsonDocument) -> Result<()> {
+    fn update(&mut self, v: &bson::Document) -> Result<()> {
         match v.get("_id") {
             None => Err(elmo::Error::Misc("cannot update without _id")),
             Some(id) => {
@@ -935,7 +934,7 @@ impl elmo::StorageCollectionWriter for MyCollectionWriter {
         }
     }
 
-    fn delete(&mut self, v: &BsonValue) -> Result<bool> {
+    fn delete(&mut self, v: &bson::Value) -> Result<bool> {
         // TODO is v supposed to be the id?
         match try!(self.find_rowid(&v).map_err(elmo::wrap_err)) {
             None => Ok(false),
@@ -957,7 +956,7 @@ impl elmo::StorageCollectionWriter for MyCollectionWriter {
                 }
     }
 
-    fn insert(&mut self, v: &bson::BsonDocument) -> Result<()> {
+    fn insert(&mut self, v: &bson::Document) -> Result<()> {
                 let ba = v.to_bson_array();
                 self.insert.clear_bindings();
                 try!(self.insert.bind_blob(1,&ba).map_err(elmo::wrap_err));
@@ -978,7 +977,7 @@ impl MyWriter {
     }
 
     fn create_index(&self, info: elmo::IndexInfo) -> Result<bool> {
-        let _created = try!(self.base_create_collection(&info.db, &info.coll, bson::BsonDocument::new_empty()));
+        let _created = try!(self.base_create_collection(&info.db, &info.coll, bson::Document::new_empty()));
         match try!(self.myconn.get_index_info(&info.db, &info.coll, &info.name)) {
             Some(already) => {
                 if already.spec != info.spec {
@@ -1008,7 +1007,7 @@ impl MyWriter {
                         let tbl_ndx = get_table_name_for_index(&info.db, &info.coll, &info.name);
                         let s =
                         match info.options.get("unique") {
-                            Some(&BsonValue::BBoolean(true)) => {
+                            Some(&bson::Value::BBoolean(true)) => {
                                 format!("CREATE TABLE \"{}\" (k BLOB NOT NULL, doc_rowid int NOT NULL REFERENCES \"{}\"(did) ON DELETE CASCADE, PRIMARY KEY (k))", tbl_ndx, tbl_coll)
                             },
                             _ => {
@@ -1027,12 +1026,12 @@ impl MyWriter {
                                 None => break,
                                 Some(row) => {
                                     let doc_rowid = row.column_int64(0);
-                                    let new_doc = try!(bson::BsonDocument::from_bson(&row.column_slice(1).expect("NOT NULL")));
+                                    let new_doc = try!(bson::Document::from_bson(&row.column_slice(1).expect("NOT NULL")));
                                     let mut entries = Vec::new();
                                     try!(get_index_entries(&new_doc, &normspec, &weights, &info.options, &mut entries));
                                     let entries = entries.into_iter().collect::<std::collections::HashSet<_>>();
                                     for vals in entries {
-                                        let k = BsonValue::encode_multi_for_index(vals);
+                                        let k = bson::Value::encode_multi_for_index(vals);
                                         try!(index_insert_step(&mut stmt_insert, k, doc_rowid));
                                     }
                                 },
@@ -1051,7 +1050,7 @@ impl MyWriter {
     fn base_clear_collection(&self, db: &str, coll: &str) -> Result<bool> {
         match try!(self.myconn.get_collection_options(db, coll)) {
             None => {
-                let created = try!(self.base_create_collection(db, coll, bson::BsonDocument::new_empty()));
+                let created = try!(self.base_create_collection(db, coll, bson::Document::new_empty()));
                 Ok(created)
             },
             Some(_) => {
@@ -1082,7 +1081,7 @@ impl MyWriter {
 
         match try!(self.myconn.get_collection_options(old_db, old_coll)) {
             None => {
-                let created = try!(self.base_create_collection(new_db, new_coll, bson::BsonDocument::new_empty()));
+                let created = try!(self.base_create_collection(new_db, new_coll, bson::Document::new_empty()));
                 Ok(created)
             },
             Some(_) => {
@@ -1111,7 +1110,7 @@ impl MyWriter {
         }
     }
 
-    fn base_create_collection(&self, db: &str, coll: &str, options: bson::BsonDocument) -> Result<bool> {
+    fn base_create_collection(&self, db: &str, coll: &str, options: bson::Document) -> Result<bool> {
         match try!(self.myconn.get_collection_options(db, coll)) {
             Some(_) => Ok(false),
             None => {
@@ -1127,14 +1126,14 @@ impl MyWriter {
                         try!(self.myconn.conn.exec(&format!("CREATE TABLE \"{}\" (did INTEGER PRIMARY KEY, bson BLOB NOT NULL)", tbl)).map_err(elmo::wrap_err));
                         // now create mongo index for _id
                         match options.get("autoIndexId") {
-                            Some(&BsonValue::BBoolean(false)) => (),
+                            Some(&bson::Value::BBoolean(false)) => (),
                             _ => {
                                 let info = elmo::IndexInfo {
                                     db: String::from(db),
                                     coll: String::from(coll),
                                     name: String::from("_id_"),
-                                    spec: bson::BsonDocument {pairs: vec![(String::from("_id"), BsonValue::BInt32(1))]},
-                                    options: bson::BsonDocument {pairs: vec![(String::from("unique"), BsonValue::BBoolean(true))]},
+                                    spec: bson::Document {pairs: vec![(String::from("_id"), bson::Value::BInt32(1))]},
+                                    options: bson::Document {pairs: vec![(String::from("unique"), bson::Value::BBoolean(true))]},
                                 };
                                 let _created = self.create_index(info);
                             },
@@ -1214,7 +1213,7 @@ impl MyWriter {
 
 impl elmo::StorageWriter for MyWriter {
     fn get_collection_writer(&self, db: &str, coll: &str) -> Result<Box<elmo::StorageCollectionWriter + 'static>> {
-        let _created = try!(self.base_create_collection(db, coll, bson::BsonDocument::new_empty()));
+        let _created = try!(self.base_create_collection(db, coll, bson::Document::new_empty()));
         let tbl = get_table_name_for_collection(db, coll);
         let stmt_insert = try!(self.myconn.conn.prepare(&format!("INSERT INTO \"{}\" (bson) VALUES (?)", tbl)).map_err(elmo::wrap_err));
         let stmt_delete = try!(self.myconn.conn.prepare(&format!("DELETE FROM \"{}\" WHERE rowid=?", tbl)).map_err(elmo::wrap_err));
@@ -1265,7 +1264,7 @@ impl elmo::StorageWriter for MyWriter {
 
     // TODO maybe just move all the stuff below from the private section into here?
 
-    fn create_collection(&self, db: &str, coll: &str, options: bson::BsonDocument) -> Result<bool> {
+    fn create_collection(&self, db: &str, coll: &str, options: bson::Document) -> Result<bool> {
         self.base_create_collection(db, coll, options)
     }
 
@@ -1336,14 +1335,14 @@ impl Drop for MyCollectionReader {
 }
 
 impl Iterator for MyCollectionReader {
-    type Item = Result<BsonValue>;
+    type Item = Result<bson::Value>;
     fn next(&mut self) -> Option<Self::Item> {
         self.seq.next()
     }
 }
 
 impl elmo::StorageBase for MyReader {
-    fn get_collection_reader(&self, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> Result<Box<elmo::StorageCollectionReader<Item=Result<BsonValue>> + 'static>> {
+    fn get_collection_reader(&self, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> Result<Box<elmo::StorageCollectionReader<Item=Result<bson::Value>> + 'static>> {
         let rdr = try!(self.myconn.get_collection_reader(self.myconn.clone(), false, db, coll, plan));
         Ok(box rdr)
     }
@@ -1359,7 +1358,7 @@ impl elmo::StorageBase for MyReader {
 }
 
 impl elmo::StorageReader for MyReader {
-    fn into_collection_reader(mut self: Box<Self>, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> Result<Box<elmo::StorageCollectionReader<Item=Result<BsonValue>> + 'static>> {
+    fn into_collection_reader(mut self: Box<Self>, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> Result<Box<elmo::StorageCollectionReader<Item=Result<bson::Value>> + 'static>> {
         self.in_tx = false;
         let rdr = try!(self.myconn.get_collection_reader(self.myconn.clone(), true, db, coll, plan));
         Ok(box rdr)
@@ -1368,7 +1367,7 @@ impl elmo::StorageReader for MyReader {
 }
 
 impl elmo::StorageBase for MyWriter {
-    fn get_collection_reader(&self, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> Result<Box<elmo::StorageCollectionReader<Item=Result<BsonValue>> + 'static>> {
+    fn get_collection_reader(&self, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> Result<Box<elmo::StorageCollectionReader<Item=Result<bson::Value>> + 'static>> {
         let rdr = try!(self.myconn.get_collection_reader(self.myconn.clone(), false, db, coll, plan));
         Ok(box rdr)
     }

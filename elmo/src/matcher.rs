@@ -5,7 +5,6 @@ use std::cmp::Ordering;
 use super::Result;
 
 extern crate bson;
-use bson::BsonValue;
 
 pub enum QueryDoc {
     QueryDoc(Vec<QueryItem>),
@@ -16,7 +15,7 @@ enum QueryItem {
     AND(Vec<QueryDoc>),
     OR(Vec<QueryDoc>),
     NOR(Vec<QueryDoc>),
-    Where(BsonValue),
+    Where(bson::Value),
     Text(String),
 }
 
@@ -28,22 +27,22 @@ enum Pred {
     ElemMatchObjects(QueryDoc),
     ElemMatchPreds(Vec<Pred>),
     Not(Vec<Pred>),
-    In(Vec<BsonValue>),
-    Nin(Vec<BsonValue>),
-    All(Vec<BsonValue>),
+    In(Vec<bson::Value>),
+    Nin(Vec<bson::Value>),
+    All(Vec<bson::Value>),
     AllElemMatchObjects(Vec<QueryDoc>),
-    EQ(BsonValue),
-    NE(BsonValue),
-    GT(BsonValue),
-    LT(BsonValue),
-    GTE(BsonValue),
-    LTE(BsonValue),
+    EQ(bson::Value),
+    NE(bson::Value),
+    GT(bson::Value),
+    LT(bson::Value),
+    GTE(bson::Value),
+    LTE(bson::Value),
     // TODO regex should be in compiled form, not a string
     REGEX(String),
-    Near(BsonValue),
-    NearSphere(BsonValue),
-    GeoWithin(BsonValue),
-    GeoIntersects(BsonValue),
+    Near(bson::Value),
+    NearSphere(bson::Value),
+    GeoWithin(bson::Value),
+    GeoIntersects(bson::Value),
 }
 
 fn cmp_f64(m: f64, litv: f64) -> Ordering {
@@ -62,66 +61,66 @@ fn cmp_f64(m: f64, litv: f64) -> Ordering {
     }
 }
 
-fn cmp(d: &BsonValue, lit: &BsonValue) -> Ordering {
+fn cmp(d: &bson::Value, lit: &bson::Value) -> Ordering {
     match (d,lit) {
-        (&BsonValue::BObjectID(m), &BsonValue::BObjectID(litv)) => {
+        (&bson::Value::BObjectID(m), &bson::Value::BObjectID(litv)) => {
             m.cmp(&litv)
         },
-        (&BsonValue::BInt32(m), &BsonValue::BInt32(litv)) => {
+        (&bson::Value::BInt32(m), &bson::Value::BInt32(litv)) => {
             m.cmp(&litv)
         },
-        (&BsonValue::BInt64(m), &BsonValue::BInt64(litv)) => {
+        (&bson::Value::BInt64(m), &bson::Value::BInt64(litv)) => {
             m.cmp(&litv)
         },
-        (&BsonValue::BDateTime(m), &BsonValue::BDateTime(litv)) => {
+        (&bson::Value::BDateTime(m), &bson::Value::BDateTime(litv)) => {
             m.cmp(&litv)
         },
-        (&BsonValue::BTimeStamp(m), &BsonValue::BTimeStamp(litv)) => {
+        (&bson::Value::BTimeStamp(m), &bson::Value::BTimeStamp(litv)) => {
             m.cmp(&litv)
         },
-        (&BsonValue::BDouble(m), &BsonValue::BDouble(litv)) => {
+        (&bson::Value::BDouble(m), &bson::Value::BDouble(litv)) => {
             cmp_f64(m, litv)
         },
-        (&BsonValue::BString(ref m), &BsonValue::BString(ref litv)) => {
+        (&bson::Value::BString(ref m), &bson::Value::BString(ref litv)) => {
             m.cmp(&litv)
         },
-        (&BsonValue::BBoolean(m), &BsonValue::BBoolean(litv)) => {
+        (&bson::Value::BBoolean(m), &bson::Value::BBoolean(litv)) => {
             m.cmp(&litv)
         },
-        (&BsonValue::BUndefined, &BsonValue::BUndefined) => {
+        (&bson::Value::BUndefined, &bson::Value::BUndefined) => {
             Ordering::Equal
         },
-        (&BsonValue::BNull, &BsonValue::BNull) => {
+        (&bson::Value::BNull, &bson::Value::BNull) => {
             Ordering::Equal
         },
-        (&BsonValue::BInt32(m), &BsonValue::BInt64(litv)) => {
+        (&bson::Value::BInt32(m), &bson::Value::BInt64(litv)) => {
             let m = m as i64;
             m.cmp(&litv)
         },
-        (&BsonValue::BInt32(m), &BsonValue::BDouble(litv)) => {
+        (&bson::Value::BInt32(m), &bson::Value::BDouble(litv)) => {
             let m = m as f64;
             cmp_f64(m, litv)
         },
-        (&BsonValue::BInt64(m), &BsonValue::BInt32(litv)) => {
+        (&bson::Value::BInt64(m), &bson::Value::BInt32(litv)) => {
             let litv = litv as i64;
             m.cmp(&litv)
         },
-        (&BsonValue::BInt64(m), &BsonValue::BDouble(litv)) => {
+        (&bson::Value::BInt64(m), &bson::Value::BDouble(litv)) => {
             let m = m as f64;
             cmp_f64(m, litv)
         },
-        (&BsonValue::BDouble(m), &BsonValue::BInt32(litv)) => {
+        (&bson::Value::BDouble(m), &bson::Value::BInt32(litv)) => {
             // when comparing double and int, cast the int to double, regardless of ordering
             let litv = litv as f64;
             cmp_f64(m, litv)
         },
-        (&BsonValue::BDouble(m), &BsonValue::BInt64(litv)) => {
+        (&bson::Value::BDouble(m), &bson::Value::BInt64(litv)) => {
             // when comparing double and int, cast the int to double, regardless of ordering
             // TODO this can overflow
             let litv = litv as f64;
             cmp_f64(m, litv)
         },
-        (&BsonValue::BArray(ref ba_m), &BsonValue::BArray(ref ba_litv)) => {
+        (&bson::Value::BArray(ref ba_m), &bson::Value::BArray(ref ba_litv)) => {
             let lenm = ba_m.items.len();
             let lenlitv = ba_litv.items.len();
             let len = std::cmp::min(lenm, lenlitv);
@@ -133,7 +132,7 @@ fn cmp(d: &BsonValue, lit: &BsonValue) -> Ordering {
             }
             lenm.cmp(&lenlitv)
         },
-        (&BsonValue::BDocument(ref bd_m), &BsonValue::BDocument(ref bd_litv)) => {
+        (&bson::Value::BDocument(ref bd_m), &bson::Value::BDocument(ref bd_litv)) => {
             let lenm = bd_m.pairs.len();
             let lenlitv = bd_litv.pairs.len();
             let len = std::cmp::min(lenm, lenlitv);
@@ -160,7 +159,7 @@ fn cmp(d: &BsonValue, lit: &BsonValue) -> Ordering {
     }
 }
 
-fn array_min_max(a: &Vec<BsonValue>, judge: Ordering) -> Option<&BsonValue> {
+fn array_min_max(a: &Vec<bson::Value>, judge: Ordering) -> Option<&bson::Value> {
     let mut cur = None;
     for v in a {
         match cur {
@@ -178,15 +177,15 @@ fn array_min_max(a: &Vec<BsonValue>, judge: Ordering) -> Option<&BsonValue> {
     cur
 }
 
-fn array_min(a: &Vec<BsonValue>) -> Option<&BsonValue> {
+fn array_min(a: &Vec<bson::Value>) -> Option<&bson::Value> {
     array_min_max(a, Ordering::Less)
 }
 
-fn array_max(a: &Vec<BsonValue>) -> Option<&BsonValue> {
+fn array_max(a: &Vec<bson::Value>) -> Option<&bson::Value> {
     array_min_max(a, Ordering::Greater)
 }
 
-fn cmpdir(d: &BsonValue, lit: &BsonValue, reverse: bool) -> Ordering {
+fn cmpdir(d: &bson::Value, lit: &bson::Value, reverse: bool) -> Ordering {
     // when comparing an array against something else during sort:
     // if two arrays, compare element by element.
     // if array vs. not-array, find the min or max (depending on the
@@ -194,10 +193,10 @@ fn cmpdir(d: &BsonValue, lit: &BsonValue, reverse: bool) -> Ordering {
 
     let c = 
         match (d, lit) {
-            (&BsonValue::BArray(_), &BsonValue::BArray(_)) => {
+            (&bson::Value::BArray(_), &bson::Value::BArray(_)) => {
                 cmp(d, lit)
             },
-            (&BsonValue::BArray(ref ba), _) => {
+            (&bson::Value::BArray(ref ba), _) => {
                 let om =
                     if reverse {
                         array_max(&ba.items)
@@ -210,7 +209,7 @@ fn cmpdir(d: &BsonValue, lit: &BsonValue, reverse: bool) -> Ordering {
                     None => cmp(d, lit),
                 }
             },
-            (_, &BsonValue::BArray(ref ba)) => {
+            (_, &bson::Value::BArray(ref ba)) => {
                 let om =
                     if reverse {
                         array_max(&ba.items)
@@ -234,7 +233,7 @@ fn cmpdir(d: &BsonValue, lit: &BsonValue, reverse: bool) -> Ordering {
     }
 }
 
-fn cmp_eq(d: &BsonValue, lit: &BsonValue) -> bool {
+fn cmp_eq(d: &bson::Value, lit: &bson::Value) -> bool {
     let torder_d = d.get_type_order();
     let torder_lit = lit.get_type_order();
 
@@ -245,11 +244,11 @@ fn cmp_eq(d: &BsonValue, lit: &BsonValue) -> bool {
     }
 }
 
-fn cmp_in(d: &BsonValue, lit: &BsonValue) -> bool {
+fn cmp_in(d: &bson::Value, lit: &bson::Value) -> bool {
     match lit {
-        &BsonValue::BRegex(ref expr, ref options) => {
+        &bson::Value::BRegex(ref expr, ref options) => {
             match d {
-                &BsonValue::BString(ref s) => {
+                &bson::Value::BString(ref s) => {
                     // TODO use expr and options to construct a regex and match s
                     unimplemented!();
                 },
@@ -264,7 +263,7 @@ fn cmp_in(d: &BsonValue, lit: &BsonValue) -> bool {
     }
 }
 
-fn cmp_lt_gt(d: &BsonValue, lit: &BsonValue, judge: Ordering) -> bool {
+fn cmp_lt_gt(d: &bson::Value, lit: &bson::Value, judge: Ordering) -> bool {
     if d.is_nan() || lit.is_nan() {
         false
     } else {
@@ -279,15 +278,15 @@ fn cmp_lt_gt(d: &BsonValue, lit: &BsonValue, judge: Ordering) -> bool {
     }
 }
 
-fn cmp_lt(d: &BsonValue, lit: &BsonValue) -> bool {
+fn cmp_lt(d: &bson::Value, lit: &bson::Value) -> bool {
     cmp_lt_gt(d, lit, Ordering::Less)
 }
 
-fn cmp_gt(d: &BsonValue, lit: &BsonValue) -> bool {
+fn cmp_gt(d: &bson::Value, lit: &bson::Value) -> bool {
     cmp_lt_gt(d, lit, Ordering::Greater)
 }
 
-fn cmp_lte_gte(d: &BsonValue, lit: &BsonValue, judge: Ordering) -> bool {
+fn cmp_lte_gte(d: &bson::Value, lit: &bson::Value, judge: Ordering) -> bool {
     let dnan = d.is_nan();
     let litnan = lit.is_nan();
     if dnan || litnan {
@@ -312,20 +311,20 @@ fn cmp_lte_gte(d: &BsonValue, lit: &BsonValue, judge: Ordering) -> bool {
     }
 }
 
-fn cmp_lte(d: &BsonValue, lit: &BsonValue) -> bool {
+fn cmp_lte(d: &bson::Value, lit: &bson::Value) -> bool {
     cmp_lte_gte(d, lit, Ordering::Less)
 }
 
-fn cmp_gte(d: &BsonValue, lit: &BsonValue) -> bool {
+fn cmp_gte(d: &bson::Value, lit: &bson::Value) -> bool {
     cmp_lte_gte(d, lit, Ordering::Greater)
 }
 
-fn do_elem_match_objects<F: Fn(&str, usize)>(doc: &QueryDoc, d: &BsonValue, cb_array_pos: &F) -> bool {
+fn do_elem_match_objects<F: Fn(&str, usize)>(doc: &QueryDoc, d: &bson::Value, cb_array_pos: &F) -> bool {
     match d {
-        &BsonValue::BArray(ref ba) => {
+        &bson::Value::BArray(ref ba) => {
             for vsub in &ba.items {
                 match vsub {
-                    &BsonValue::BArray(_) | &BsonValue::BDocument(_) => {
+                    &bson::Value::BArray(_) | &bson::Value::BDocument(_) => {
                         if match_query_doc(doc, vsub, cb_array_pos) {
                             return true;
                         }
@@ -342,7 +341,7 @@ fn do_elem_match_objects<F: Fn(&str, usize)>(doc: &QueryDoc, d: &BsonValue, cb_a
     }
 }
 
-fn match_predicate<F: Fn(&str, usize)>(pred: &Pred, d: &BsonValue, cb_array_pos: &F) -> bool {
+fn match_predicate<F: Fn(&str, usize)>(pred: &Pred, d: &bson::Value, cb_array_pos: &F) -> bool {
     match pred {
         &Pred::Exists(b) => {
             unreachable!();
@@ -353,11 +352,11 @@ fn match_predicate<F: Fn(&str, usize)>(pred: &Pred, d: &BsonValue, cb_array_pos:
         },
         &Pred::ElemMatchObjects(ref doc) => {
             match d {
-                &BsonValue::BArray(ref ba) => {
+                &bson::Value::BArray(ref ba) => {
                     let found = 
                         ba.items.iter().position(|vsub| {
                             match vsub {
-                                &BsonValue::BDocument(_) | &BsonValue::BArray(_) => match_query_doc(doc, vsub, cb_array_pos),
+                                &bson::Value::BDocument(_) | &bson::Value::BArray(_) => match_query_doc(doc, vsub, cb_array_pos),
                                 _ => false,
                             }
                         });
@@ -374,7 +373,7 @@ fn match_predicate<F: Fn(&str, usize)>(pred: &Pred, d: &BsonValue, cb_array_pos:
         },
         &Pred::ElemMatchPreds(ref preds) => {
             match d {
-                &BsonValue::BArray(ref ba) => {
+                &bson::Value::BArray(ref ba) => {
                     let found = 
                         ba.items.iter().position(|vsub| preds.iter().any(|p| !match_predicate(p, vsub, cb_array_pos)));
                     match found {
@@ -404,7 +403,7 @@ fn match_predicate<F: Fn(&str, usize)>(pred: &Pred, d: &BsonValue, cb_array_pos:
                             true
                         } else {
                             match d {
-                                &BsonValue::BArray(ref ba) => {
+                                &bson::Value::BArray(ref ba) => {
                                     ba.items.iter().any(|v| cmp_eq(v, lit))
                                 },
                                 _ => false,
@@ -422,7 +421,7 @@ fn match_predicate<F: Fn(&str, usize)>(pred: &Pred, d: &BsonValue, cb_array_pos:
         &Pred::GTE(ref lit) => cmp_gte(d, lit),
         &Pred::REGEX(_) => {
             match d {
-                &BsonValue::BString(ref s) => {
+                &bson::Value::BString(ref s) => {
                     // TODO use regex to match s
                     unimplemented!();
                 },
@@ -438,22 +437,22 @@ fn match_predicate<F: Fn(&str, usize)>(pred: &Pred, d: &BsonValue, cb_array_pos:
         &Pred::Nin(ref lits) => !lits.iter().any(|v| cmp_in(d, v)),
         &Pred::Size(n) => {
             match d {
-                &BsonValue::BArray(ref ba) => ba.items.len() == (n as usize),
+                &bson::Value::BArray(ref ba) => ba.items.len() == (n as usize),
                 _ => false,
             }
         },
         &Pred::Mod(div, rem) => {
             match d {
-                &BsonValue::BInt32(n) => ((n as i64) % div) == rem,
-                &BsonValue::BInt64(n) => (n % div) == rem,
-                &BsonValue::BDouble(n) => ((n as i64) % div) == rem,
+                &bson::Value::BInt32(n) => ((n as i64) % div) == rem,
+                &bson::Value::BInt64(n) => (n % div) == rem,
+                &bson::Value::BDouble(n) => ((n as i64) % div) == rem,
                 _ => false,
             }
         },
     }
 }
 
-fn match_pair_exists(pred: &Pred, path: &str, start: &BsonValue) -> bool {
+fn match_pair_exists(pred: &Pred, path: &str, start: &bson::Value) -> bool {
     let dot = path.find('.');
     let name = match dot { 
         None => path,
@@ -466,17 +465,17 @@ fn match_pair_exists(pred: &Pred, path: &str, start: &BsonValue) -> bool {
                 Some(dot) => {
                     let subpath = &path[dot+1 ..];
                     match v {
-                        &BsonValue::BDocument(_) => {
+                        &bson::Value::BDocument(_) => {
                             match_pair_exists(pred, subpath, v)
                         },
-                        &BsonValue::BArray(ref ba) => {
+                        &bson::Value::BArray(ref ba) => {
                             let b = match_pair_exists(pred, subpath, v);
                             if b {
                                 true
                             } else {
                                 ba.items.iter().any(|vsub| {
                                     match vsub {
-                                        &BsonValue::BDocument(_) => match_pair_exists(pred, subpath, v),
+                                        &bson::Value::BDocument(_) => match_pair_exists(pred, subpath, v),
                                         _ => false,
                                     }
                                 })
@@ -491,7 +490,7 @@ fn match_pair_exists(pred: &Pred, path: &str, start: &BsonValue) -> bool {
     }
 }
 
-fn match_pair_other<F: Fn(&str, usize)>(pred: &Pred, path: &str, start: &BsonValue, arr: bool, cb_array_pos: &F) -> bool {
+fn match_pair_other<F: Fn(&str, usize)>(pred: &Pred, path: &str, start: &bson::Value, arr: bool, cb_array_pos: &F) -> bool {
     let dot = path.find('.');
     let name = match dot { 
         None => path,
@@ -510,7 +509,7 @@ fn match_pair_other<F: Fn(&str, usize)>(pred: &Pred, path: &str, start: &BsonVal
                             &Pred::ElemMatchPreds(_) => false,
                             _ => {
                                 match v {
-                                    &BsonValue::BArray(ref ba) => {
+                                    &bson::Value::BArray(ref ba) => {
                                         match ba.items.iter().position(|vsub| match_predicate(pred, vsub, cb_array_pos)) {
                                             Some(ndx) => {
                                                 cb_array_pos("TODO", ndx);
@@ -530,17 +529,17 @@ fn match_pair_other<F: Fn(&str, usize)>(pred: &Pred, path: &str, start: &BsonVal
                 Some(dot) => {
                     let subpath = &path[dot+1 ..];
                     match v {
-                        &BsonValue::BDocument(_) => {
+                        &bson::Value::BDocument(_) => {
                             match_pair_other(pred, subpath, v, false, cb_array_pos)
                         },
-                        &BsonValue::BArray(ref ba) => {
+                        &bson::Value::BArray(ref ba) => {
                             let b = match_pair_other(pred, subpath, v, true, cb_array_pos);
                             if b {
                                 true
                             } else {
                                 let f = |vsub| {
                                     match vsub {
-                                        &BsonValue::BDocument(_) => match_pair_other(pred, subpath, v, false, cb_array_pos),
+                                        &bson::Value::BDocument(_) => match_pair_other(pred, subpath, v, false, cb_array_pos),
                                         _ => false,
                                     }
                                 };
@@ -556,7 +555,7 @@ fn match_pair_other<F: Fn(&str, usize)>(pred: &Pred, path: &str, start: &BsonVal
                         _ => {
                             match pred {
                                 &Pred::Type(n) => false,
-                                _ => match_predicate(pred, &BsonValue::BNull, cb_array_pos),
+                                _ => match_predicate(pred, &bson::Value::BNull, cb_array_pos),
                             }
                         },
                     }
@@ -569,14 +568,14 @@ fn match_pair_other<F: Fn(&str, usize)>(pred: &Pred, path: &str, start: &BsonVal
             } else {
                 match pred {
                     &Pred::Type(n) => false,
-                    _ => match_predicate(pred, &BsonValue::BNull, cb_array_pos),
+                    _ => match_predicate(pred, &bson::Value::BNull, cb_array_pos),
                 }
             }
         },
     }
 }
 
-fn match_pair<F: Fn(&str, usize)>(pred: &Pred, path: &str, start: &BsonValue, cb_array_pos: &F) -> bool {
+fn match_pair<F: Fn(&str, usize)>(pred: &Pred, path: &str, start: &bson::Value, cb_array_pos: &F) -> bool {
     // not all predicates do their path searching in the same way
     // TODO consider a reusable function which generates all possible paths
     
@@ -616,7 +615,7 @@ fn match_pair<F: Fn(&str, usize)>(pred: &Pred, path: &str, start: &BsonValue, cb
     }
 }
 
-fn match_query_item<F: Fn(&str, usize)>(qit: &QueryItem, d: &BsonValue, cb_array_pos: &F) -> bool {
+fn match_query_item<F: Fn(&str, usize)>(qit: &QueryItem, d: &bson::Value, cb_array_pos: &F) -> bool {
     match qit {
         &QueryItem::Compare(ref path, ref preds) => {
             preds.iter().all(|v| match_pair(v, path, d, cb_array_pos))
@@ -640,7 +639,7 @@ fn match_query_item<F: Fn(&str, usize)>(qit: &QueryItem, d: &BsonValue, cb_array
     }
 }
 
-fn match_query_doc<F: Fn(&str, usize)>(q: &QueryDoc, d: &BsonValue, cb_array_pos: &F) -> bool {
+fn match_query_doc<F: Fn(&str, usize)>(q: &QueryDoc, d: &bson::Value, cb_array_pos: &F) -> bool {
     let &QueryDoc::QueryDoc(ref items) = q;
     // AND
     for qit in items {
@@ -651,20 +650,20 @@ fn match_query_doc<F: Fn(&str, usize)>(q: &QueryDoc, d: &BsonValue, cb_array_pos
     true
 }
 
-fn contains_no_dollar_keys(v: &BsonValue) -> bool {
+fn contains_no_dollar_keys(v: &bson::Value) -> bool {
     match v {
-        &BsonValue::BDocument(ref bd) => {
+        &bson::Value::BDocument(ref bd) => {
             bd.pairs.iter().all(|&(ref k, _)| !k.starts_with("$"))
         },
         _ => true,
     }
 }
 
-fn is_valid_within_all(v: &BsonValue) -> bool {
+fn is_valid_within_all(v: &bson::Value) -> bool {
     contains_no_dollar_keys(v)
 }
 
-fn is_valid_within_in(v: &BsonValue) -> bool {
+fn is_valid_within_in(v: &bson::Value) -> bool {
     contains_no_dollar_keys(v)
 }
 
@@ -694,8 +693,8 @@ fn get_paths(q: &QueryDoc) -> Vec<String> {
     a
 }
 
-fn get_eqs(q: &QueryDoc) -> Vec<(&str, &BsonValue)> {
-    fn f<'q>(a: &mut Vec<(&'q str, &'q BsonValue)>, q: &'q QueryDoc) {
+fn get_eqs(q: &QueryDoc) -> Vec<(&str, &bson::Value)> {
+    fn f<'q>(a: &mut Vec<(&'q str, &'q bson::Value)>, q: &'q QueryDoc) {
         let &QueryDoc::QueryDoc(ref items) = q;
         for qit in items {
             match qit {
@@ -726,9 +725,9 @@ fn get_eqs(q: &QueryDoc) -> Vec<(&str, &BsonValue)> {
     a
 }
 
-fn is_query_doc(v: &BsonValue) -> bool {
+fn is_query_doc(v: &bson::Value) -> bool {
     match v {
-        &BsonValue::BDocument(ref bd) => {
+        &bson::Value::BDocument(ref bd) => {
             let has_path = bd.pairs.iter().any(|&(ref k, _)| !k.starts_with("$"));
             let has_and = bd.pairs.iter().any(|&(ref k, _)| k == "$and");
             let has_or = bd.pairs.iter().any(|&(ref k, _)| k == "$or");
@@ -742,13 +741,13 @@ fn is_query_doc(v: &BsonValue) -> bool {
     }
 }
 
-fn parse_compare(k: &str, v: &BsonValue) -> Result<QueryItem> {
+fn parse_compare(k: &str, v: &bson::Value) -> Result<QueryItem> {
     unimplemented!();
 }
 
 // TODO this func kinda wants to consume its argument
-fn parse_query_doc(bd: &bson::BsonDocument) -> Result<Vec<QueryItem>> {
-    fn do_and_or(result: &mut Vec<QueryItem>, a: &Vec<BsonValue>, op: &str) -> Result<()> {
+fn parse_query_doc(bd: &bson::Document) -> Result<Vec<QueryItem>> {
+    fn do_and_or(result: &mut Vec<QueryItem>, a: &Vec<bson::Value>, op: &str) -> Result<()> {
         if a.len() == 0 {
             // TODO no panic
             panic!("array for $and $or cannot be empty");
@@ -800,9 +799,9 @@ fn parse_query_doc(bd: &bson::BsonDocument) -> Result<Vec<QueryItem>> {
             },
             "$text" => {
                 match v {
-                    &BsonValue::BDocument(ref bd) => {
+                    &bson::Value::BDocument(ref bd) => {
                         match bd.pairs.iter().find(|&&(ref k, _)| k == "$search") {
-                            Some(&(_, BsonValue::BString(ref s))) => {
+                            Some(&(_, bson::Value::BString(ref s))) => {
                                 result.push(QueryItem::Text(s.clone()));
                             },
                             _ => panic!("invalid $text"),
@@ -836,7 +835,7 @@ fn parse_query_doc(bd: &bson::BsonDocument) -> Result<Vec<QueryItem>> {
     Ok(result)
 }
 
-pub fn parse_query(v: bson::BsonDocument) -> Result<QueryDoc> {
+pub fn parse_query(v: bson::Document) -> Result<QueryDoc> {
     let a = try!(parse_query_doc(&v));
     let q = QueryDoc::QueryDoc(a);
     Ok(q)

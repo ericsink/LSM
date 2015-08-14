@@ -96,19 +96,19 @@ pub fn split_name(s: &str) -> (&str, &str) {
 // catch the nan case?
 
 #[derive(Clone,Debug,PartialEq)]
-pub struct BsonDocument {
+pub struct Document {
     // TODO consider private
-    pub pairs: Vec<(String, BsonValue)>,
+    pub pairs: Vec<(String, Value)>,
 }
 
-impl BsonDocument {
+impl Document {
     pub fn new_empty() -> Self {
-        BsonDocument {
+        Document {
             pairs: vec![],
         }
     }
 
-    pub fn remove(&mut self, k: &str) -> Option<BsonValue> {
+    pub fn remove(&mut self, k: &str) -> Option<Value> {
         match self.pairs.iter().position(|&(ref ksub, _)| ksub == k) {
             Some(i) => {
                 let (_, v) = self.pairs.remove(i);
@@ -120,7 +120,7 @@ impl BsonDocument {
         }
     }
 
-    pub fn get(&self, k: &str) -> Option<&BsonValue> {
+    pub fn get(&self, k: &str) -> Option<&Value> {
         for t in self.pairs.iter() {
             let (ref ksub, ref vsub) = *t;
             if ksub == k {
@@ -131,57 +131,57 @@ impl BsonDocument {
     }
 
     // TODO rm
-    pub fn getValueForKey(&self, k: &str) -> Result<&BsonValue> {
+    pub fn getValueForKey(&self, k: &str) -> Result<&Value> {
         match self.get(k) {
             Some(v) => Ok(v),
             None => Err(Error::Misc("required key not found")),
         }
     }
 
-    fn add_pair(&mut self, k: &str, v: BsonValue) {
+    fn add_pair(&mut self, k: &str, v: Value) {
         self.pairs.push((String::from(k), v));
     }
 
     // TODO all the following names don't need pair in them
 
-    pub fn add_pair_document(&mut self, k: &str, v: BsonDocument) {
-        self.add_pair(k, BsonValue::BDocument(v));
+    pub fn add_pair_document(&mut self, k: &str, v: Document) {
+        self.add_pair(k, Value::BDocument(v));
     }
 
-    pub fn add_pair_array(&mut self, k: &str, v: BsonArray) {
-        self.add_pair(k, BsonValue::BArray(v));
+    pub fn add_pair_array(&mut self, k: &str, v: Array) {
+        self.add_pair(k, Value::BArray(v));
     }
 
     pub fn add_pair_i32(&mut self, k: &str, v: i32) {
-        self.add_pair(k, BsonValue::BInt32(v));
+        self.add_pair(k, Value::BInt32(v));
     }
 
     pub fn add_pair_i64(&mut self, k: &str, v: i64) {
-        self.add_pair(k, BsonValue::BInt64(v));
+        self.add_pair(k, Value::BInt64(v));
     }
 
     pub fn add_pair_f64(&mut self, k: &str, v: f64) {
-        self.add_pair(k, BsonValue::BDouble(v));
+        self.add_pair(k, Value::BDouble(v));
     }
 
     pub fn add_pair_bool(&mut self, k: &str, v: bool) {
-        self.add_pair(k, BsonValue::BBoolean(v));
+        self.add_pair(k, Value::BBoolean(v));
     }
 
     pub fn add_pair_str(&mut self, k: &str, v: &str) {
-        self.add_pair(k, BsonValue::BString(String::from(v)));
+        self.add_pair(k, Value::BString(String::from(v)));
     }
 
     pub fn add_pair_string(&mut self, k: &str, v: String) {
-        self.add_pair(k, BsonValue::BString(v));
+        self.add_pair(k, Value::BString(v));
     }
 
     pub fn add_pair_timestamp(&mut self, k: &str, v: i64) {
-        self.add_pair(k, BsonValue::BTimeStamp(v));
+        self.add_pair(k, Value::BTimeStamp(v));
     }
 
     pub fn add_pair_datetime(&mut self, k: &str, v: i64) {
-        self.add_pair(k, BsonValue::BDateTime(v));
+        self.add_pair(k, Value::BDateTime(v));
     }
 
     pub fn to_bson(&self, w: &mut Vec<u8>) {
@@ -211,7 +211,7 @@ impl BsonDocument {
         }
     }
 
-    pub fn find_path(&self, path: &str) -> BsonValue {
+    pub fn find_path(&self, path: &str) -> Value {
         let dot = path.find('.');
         let name = match dot { 
             None => path,
@@ -225,11 +225,11 @@ impl BsonDocument {
                     Some(dot) => v.find_path(&path[dot+1..])
                 }
             },
-            None => BsonValue::BUndefined
+            None => Value::BUndefined
         }
     }
 
-    pub fn from_bson(w: &[u8]) -> Result<BsonDocument> {
+    pub fn from_bson(w: &[u8]) -> Result<Document> {
         let mut cur = 0;
         let d = try!(slurp_document(w, &mut cur));
         Ok(d)
@@ -237,14 +237,14 @@ impl BsonDocument {
 }
 
 #[derive(Clone,Debug)]
-pub struct BsonArray {
+pub struct Array {
     // TODO consider private
-    pub items: Vec<BsonValue>,
+    pub items: Vec<Value>,
 }
 
-impl BsonArray {
+impl Array {
     pub fn new_empty() -> Self {
-        BsonArray {
+        Array {
             items: vec![],
         }
     }
@@ -272,7 +272,7 @@ impl BsonArray {
 }
 
 #[derive(Clone,Debug)]
-pub enum BsonValue {
+pub enum Value {
     BDouble(f64),
     BString(String),
     BInt64(i64),
@@ -289,17 +289,17 @@ pub enum BsonValue {
     BDateTime(i64),
     BTimeStamp(i64),
     BBoolean(bool),
-    BArray(BsonArray),
-    BDocument(BsonDocument),
+    BArray(Array),
+    BDocument(Document),
 }
 
-// We want the ability to put a BsonValue into a HashSet,
+// We want the ability to put a Value into a HashSet,
 // but it contains an f64, which does not implement Eq or Hash.
-// So we provide implementations below for BsonValue that
+// So we provide implementations below for Value that
 // are sufficient for our purposes.
 
-impl PartialEq for BsonValue {
-    fn eq(&self, other: &BsonValue) -> bool {
+impl PartialEq for Value {
+    fn eq(&self, other: &Value) -> bool {
         // TODO slow
         let a = self.to_bson_array();
         let b = other.to_bson_array();
@@ -307,10 +307,10 @@ impl PartialEq for BsonValue {
     }
 }
 
-impl Eq for BsonValue {
+impl Eq for Value {
 }
 
-impl std::hash::Hash for BsonValue {
+impl std::hash::Hash for Value {
     fn hash<H>(&self, state: &mut H) where H: std::hash::Hasher {
         // TODO slow
         let a = self.to_bson_array();
@@ -332,7 +332,7 @@ fn vec_push_bson_string(v: &mut Vec<u8>, s: &str) {
 
 // TODO this should be a library func, right?
 // TODO this is basically position(), I think.
-fn slice_find(pairs: &[(String, BsonValue)], s: &str) -> Option<usize> {
+fn slice_find(pairs: &[(String, Value)], s: &str) -> Option<usize> {
     for i in 0 .. pairs.len() {
         if pairs[i].0.as_str() == s {
             return Some(i);
@@ -350,60 +350,60 @@ fn slurp_bson_string(ba: &[u8], i: &mut usize) -> Result<String> {
     Ok(String::from_str(s))
 }
 
-fn slurp_bson_value(ba: &[u8], i: &mut usize, valtype: u8) -> Result<BsonValue> {
+fn slurp_bson_value(ba: &[u8], i: &mut usize, valtype: u8) -> Result<Value> {
     let bv =
         match valtype {
-            1 => BsonValue::BDouble(bufndx::slurp_f64_le(ba, i)),
-            2 => BsonValue::BString(try!(slurp_bson_string(ba, i))),
-            3 => BsonValue::BDocument(try!(slurp_document(ba, i))),
-            4 => BsonValue::BArray(try!(slurp_array(ba, i))),
+            1 => Value::BDouble(bufndx::slurp_f64_le(ba, i)),
+            2 => Value::BString(try!(slurp_bson_string(ba, i))),
+            3 => Value::BDocument(try!(slurp_document(ba, i))),
+            4 => Value::BArray(try!(slurp_array(ba, i))),
             5 => slurp_binary(ba, i),
-            6 => BsonValue::BUndefined,
+            6 => Value::BUndefined,
             7 => slurp_objectid(ba, i),
             8 => slurp_boolean(ba, i),
-            9 => BsonValue::BDateTime(bufndx::slurp_i64_le(ba, i)),
-            10 => BsonValue::BNull,
+            9 => Value::BDateTime(bufndx::slurp_i64_le(ba, i)),
+            10 => Value::BNull,
             11 => try!(slurp_regex(ba, i)),
             12 => try!(slurp_deprecated_12(ba, i)),
             13 => try!(slurp_js(ba, i)),
             15 => try!(slurp_js_with_scope(ba, i)),
-            16 => BsonValue::BInt32(bufndx::slurp_i32_le(ba, i)),
-            17 => BsonValue::BTimeStamp(bufndx::slurp_i64_le(ba, i)),
-            18 => BsonValue::BInt64(bufndx::slurp_i64_le(ba, i)),
-            127 => BsonValue::BMaxKey,
-            255 => BsonValue::BMinKey,
+            16 => Value::BInt32(bufndx::slurp_i32_le(ba, i)),
+            17 => Value::BTimeStamp(bufndx::slurp_i64_le(ba, i)),
+            18 => Value::BInt64(bufndx::slurp_i64_le(ba, i)),
+            127 => Value::BMaxKey,
+            255 => Value::BMinKey,
             _ => panic!("invalid BSON value type"),
         };
     Ok(bv)
 }
 
-fn slurp_deprecated_12(ba: &[u8], i: &mut usize) -> Result<BsonValue> {
+fn slurp_deprecated_12(ba: &[u8], i: &mut usize) -> Result<Value> {
     // deprecated
     let a = try!(slurp_bson_string(ba, i));
     Ok(slurp_objectid(ba, i))
 }
 
-fn slurp_js(ba: &[u8], i: &mut usize) -> Result<BsonValue> {
+fn slurp_js(ba: &[u8], i: &mut usize) -> Result<Value> {
     let a = try!(slurp_bson_string(ba, i));
-    Ok(BsonValue::BJSCode(a))
+    Ok(Value::BJSCode(a))
 }
 
-fn slurp_js_with_scope(ba: &[u8], i: &mut usize) -> Result<BsonValue> {
+fn slurp_js_with_scope(ba: &[u8], i: &mut usize) -> Result<Value> {
     // TODO the spec says the len here is a signed number, but that's silly
     let len = bufndx::slurp_u32_le(ba, i);
 
     let a = try!(slurp_bson_string(ba, i));
     let scope = try!(slurp_document(ba, i));
-    Ok(BsonValue::BJSCodeWithScope(a))
+    Ok(Value::BJSCodeWithScope(a))
 }
 
-fn slurp_regex(ba: &[u8], i: &mut usize) -> Result<BsonValue> {
+fn slurp_regex(ba: &[u8], i: &mut usize) -> Result<Value> {
     let expr = try!(bufndx::slurp_cstring(ba, i));
     let options = try!(bufndx::slurp_cstring(ba, i));
-    Ok(BsonValue::BRegex(expr, options))
+    Ok(Value::BRegex(expr, options))
 }
 
-fn slurp_binary(ba: &[u8], i: &mut usize) -> BsonValue {
+fn slurp_binary(ba: &[u8], i: &mut usize) -> Value {
     // TODO the spec says the len here is a signed number, but that's silly
     let len = bufndx::slurp_u32_le(ba, i) as usize;
 
@@ -412,23 +412,23 @@ fn slurp_binary(ba: &[u8], i: &mut usize) -> BsonValue {
     let mut b = Vec::with_capacity(len);
     b.push_all(&ba[*i .. *i + len]);
     *i = *i + len;
-    BsonValue::BBinary(subtype, b)
+    Value::BBinary(subtype, b)
 }
 
-fn slurp_objectid(ba: &[u8], i: &mut usize) -> BsonValue {
+fn slurp_objectid(ba: &[u8], i: &mut usize) -> Value {
     let mut b = [0; 12];
     b.clone_from_slice(&ba[*i .. *i + 12]);
     *i = *i + 12;
-    BsonValue::BObjectID(b)
+    Value::BObjectID(b)
 }
 
-fn slurp_boolean(ba: &[u8], i: &mut usize) -> BsonValue {
+fn slurp_boolean(ba: &[u8], i: &mut usize) -> Value {
     let b = ba[*i] != 0;
     *i = *i + 1;
-    BsonValue::BBoolean(b)
+    Value::BBoolean(b)
 }
 
-fn slurp_document_pairs(ba: &[u8], i: &mut usize) -> Result<Vec<(String, BsonValue)>> {
+fn slurp_document_pairs(ba: &[u8], i: &mut usize) -> Result<Vec<(String, Value)>> {
     // TODO the spec says the len here is a signed number, but that's silly
     let len = misc::bufndx::slurp_u32_le(ba, i) as usize;
 
@@ -446,30 +446,30 @@ fn slurp_document_pairs(ba: &[u8], i: &mut usize) -> Result<Vec<(String, BsonVal
     Ok(pairs)
 }
 
-pub fn slurp_document(ba: &[u8], i: &mut usize) -> Result<BsonDocument> {
+pub fn slurp_document(ba: &[u8], i: &mut usize) -> Result<Document> {
     let pairs = try!(slurp_document_pairs(ba, i));
-    Ok(BsonDocument {pairs: pairs})
+    Ok(Document {pairs: pairs})
 }
 
-fn slurp_array(ba: &[u8], i: &mut usize) -> Result<BsonArray> {
+fn slurp_array(ba: &[u8], i: &mut usize) -> Result<Array> {
     let pairs = try!(slurp_document_pairs(ba, i));
     // TODO verify that the keys are correct, integers, ascending, etc?
     let a = pairs.into_iter().map(|t| {
         let (k,v) = t;
         v
     }).collect();
-    Ok(BsonArray { items: a})
+    Ok(Array { items: a})
 }
 
-impl BsonValue {
-    pub fn tryGetValueEither(&self, k: &str) -> Option<&BsonValue> {
+impl Value {
+    pub fn tryGetValueEither(&self, k: &str) -> Option<&Value> {
         unimplemented!();
     }
 
     // TODO move this to document
-    fn tryGetValueForInsensitiveKey(&self, k: &str) -> Option<&BsonValue> {
+    fn tryGetValueForInsensitiveKey(&self, k: &str) -> Option<&Value> {
         match self {
-            &BsonValue::BDocument(ref bd) => {
+            &Value::BDocument(ref bd) => {
                 for t in bd.pairs.iter() {
                     let (ref ksub, ref vsub) = *t;
                     if std::ascii::AsciiExt::eq_ignore_ascii_case(ksub.as_str(), k) {
@@ -483,9 +483,9 @@ impl BsonValue {
     }
 
     // TODO move this to array
-    fn tryGetValueAtIndex(&self, ndx: usize) -> Option<&BsonValue> {
+    fn tryGetValueAtIndex(&self, ndx: usize) -> Option<&Value> {
         match self {
-            &BsonValue::BArray(ref ba) => {
+            &Value::BArray(ref ba) => {
                 if ndx<0 {
                     return None
                 } else if ndx >= ba.items.len() {
@@ -499,7 +499,7 @@ impl BsonValue {
     }
 
     // TODO move this to document
-    fn getValueForInsensitiveKey(&self, k: &str) -> Result<&BsonValue> {
+    fn getValueForInsensitiveKey(&self, k: &str) -> Result<&Value> {
         match self.tryGetValueForInsensitiveKey(k) {
             Some(v) => Ok(v),
             None => Err(Error::Misc("required key not found")),
@@ -508,56 +508,56 @@ impl BsonValue {
 
     fn isNull(&self) -> bool {
         match self {
-            &BsonValue::BNull => true,
+            &Value::BNull => true,
             _ => false,
         }
     }
 
     fn isArray(&self) -> bool {
         match self {
-            &BsonValue::BArray(_) => true,
+            &Value::BArray(_) => true,
             _ => false,
         }
     }
 
     pub fn is_string(&self) -> bool {
         match self {
-            &BsonValue::BString(_) => true,
+            &Value::BString(_) => true,
             _ => false,
         }
     }
 
     fn isDocument(&self) -> bool {
         match self {
-            &BsonValue::BDocument(_) => true,
+            &Value::BDocument(_) => true,
             _ => false,
         }
     }
 
     fn isNumeric(&self) -> bool {
         match self {
-            &BsonValue::BInt32(_) => true,
-            &BsonValue::BInt64(_) => true,
-            &BsonValue::BDouble(_) => true,
+            &Value::BInt32(_) => true,
+            &Value::BInt64(_) => true,
+            &Value::BDouble(_) => true,
             _ => false,
         }
     }
 
     pub fn is_nan(&self) -> bool {
         match self {
-            &BsonValue::BDouble(f) => f.is_nan(),
+            &Value::BDouble(f) => f.is_nan(),
             _ => false,
         }
     }
 
     fn isDate(&self) -> bool {
         match self {
-            &BsonValue::BDateTime(_) => true,
+            &Value::BDateTime(_) => true,
             _ => false,
         }
     }
 
-    fn is_dbref(pairs: &[(String,BsonValue)]) -> bool {
+    fn is_dbref(pairs: &[(String,Value)]) -> bool {
         let has_ref = slice_find(pairs, "$ref").is_some();
         let has_id =  slice_find(pairs, "$id").is_some();
         let has_db =  slice_find(pairs, "$db").is_some();
@@ -573,7 +573,7 @@ impl BsonValue {
 
     pub fn into_string(self) -> Result<String> {
         match self {
-            BsonValue::BString(s) => Ok(s),
+            Value::BString(s) => Ok(s),
             _ => Err(Error::Misc("must be string")),
         }
     }
@@ -581,121 +581,121 @@ impl BsonValue {
     // TODO as_str
     pub fn getString(&self) -> Result<&str> {
         match self {
-            &BsonValue::BString(ref s) => Ok(s),
+            &Value::BString(ref s) => Ok(s),
             _ => Err(Error::Misc("must be string")),
         }
     }
 
-    pub fn getArray(&self) -> Result<&BsonArray> {
+    pub fn getArray(&self) -> Result<&Array> {
         match self {
-            &BsonValue::BArray(ref s) => Ok(s),
+            &Value::BArray(ref s) => Ok(s),
             _ => Err(Error::Misc("must be array")),
         }
     }
 
-    pub fn expect_document(self) -> BsonDocument {
+    pub fn expect_document(self) -> Document {
         match self {
-            BsonValue::BDocument(s) => s,
+            Value::BDocument(s) => s,
             _ => panic!(),
         }
     }
 
-    pub fn as_document(&self) -> Result<&BsonDocument> {
+    pub fn as_document(&self) -> Result<&Document> {
         match self {
-            &BsonValue::BDocument(ref s) => Ok(s),
+            &Value::BDocument(ref s) => Ok(s),
             _ => Err(Error::Misc("must be document")),
         }
     }
 
-    pub fn into_document(self) -> Result<BsonDocument> {
+    pub fn into_document(self) -> Result<Document> {
         match self {
-            BsonValue::BDocument(s) => Ok(s),
+            Value::BDocument(s) => Ok(s),
             _ => Err(Error::Misc("must be document")),
         }
     }
 
-    pub fn into_array(self) -> Result<BsonArray> {
+    pub fn into_array(self) -> Result<Array> {
         match self {
-            BsonValue::BArray(s) => Ok(s),
+            Value::BArray(s) => Ok(s),
             _ => Err(Error::Misc("must be array")),
         }
     }
 
     fn getBool(&self) -> Result<bool> {
         match self {
-            &BsonValue::BBoolean(ref s) => Ok(*s),
+            &Value::BBoolean(ref s) => Ok(*s),
             _ => Err(Error::Misc("must be bool")),
         }
     }
 
     fn getDate(&self) -> Result<i64> {
         match self {
-            &BsonValue::BDateTime(ref s) => Ok(*s),
+            &Value::BDateTime(ref s) => Ok(*s),
             _ => Err(Error::Misc("must be DateTime")),
         }
     }
 
     fn getInt32(&self) -> Result<i32> {
         match self {
-            &BsonValue::BInt32(ref s) => Ok(*s),
+            &Value::BInt32(ref s) => Ok(*s),
             _ => Err(Error::Misc("must be i32")),
         }
     }
 
     fn getAsExprBool(&self) -> bool {
         match self {
-            &BsonValue::BBoolean(false) => false,
-            &BsonValue::BNull => false,
-            &BsonValue::BUndefined => false,
-            &BsonValue::BInt32(0) => false,
-            &BsonValue::BInt64(0) => false,
-            &BsonValue::BDouble(0.0) => false,
+            &Value::BBoolean(false) => false,
+            &Value::BNull => false,
+            &Value::BUndefined => false,
+            &Value::BInt32(0) => false,
+            &Value::BInt64(0) => false,
+            &Value::BDouble(0.0) => false,
             _ => true,
         }
     }
 
     fn getAsBool(&self) -> Result<bool> {
         match self {
-        &BsonValue::BBoolean(b) => Ok(b),
-        &BsonValue::BInt32(i) => Ok(i!=0),
-        &BsonValue::BInt64(i) => Ok(i!=0),
-        &BsonValue::BDouble(f) => Ok((f as i32)!=0),
+        &Value::BBoolean(b) => Ok(b),
+        &Value::BInt32(i) => Ok(i!=0),
+        &Value::BInt64(i) => Ok(i!=0),
+        &Value::BDouble(f) => Ok((f as i32)!=0),
         _ => Err(Error::Misc("must be convertible to bool")),
         }
     }
 
     fn getAsInt32(&self) -> Result<i32> {
         match self {
-        &BsonValue::BInt32(a) => Ok(a),
-        &BsonValue::BInt64(a) => Ok(a as i32),
-        &BsonValue::BDouble(a) => Ok(a as i32),
+        &Value::BInt32(a) => Ok(a),
+        &Value::BInt64(a) => Ok(a as i32),
+        &Value::BDouble(a) => Ok(a as i32),
         _ => Err(Error::Misc("must be convertible to int32")),
         }
     }
 
     fn getAsInt64(&self) -> Result<i64> {
         match self {
-        &BsonValue::BInt32(a) => Ok(a as i64),
-        &BsonValue::BInt64(a) => Ok(a),
-        &BsonValue::BDouble(a) => Ok(a as i64),
-        &BsonValue::BDateTime(a) => Ok(a as i64),
+        &Value::BInt32(a) => Ok(a as i64),
+        &Value::BInt64(a) => Ok(a),
+        &Value::BDouble(a) => Ok(a as i64),
+        &Value::BDateTime(a) => Ok(a as i64),
         _ => Err(Error::Misc("must be convertible to int64")),
         }
     }
 
     fn getAsDouble(&self) -> Result<f64> {
         match self {
-        &BsonValue::BInt32(a) => Ok(a as f64),
-        &BsonValue::BInt64(a) => Ok(a as f64),
-        &BsonValue::BDouble(a) => Ok(a),
+        &Value::BInt32(a) => Ok(a as f64),
+        &Value::BInt64(a) => Ok(a as f64),
+        &Value::BDouble(a) => Ok(a),
         _ => Err(Error::Misc("must be convertible to f64")),
         }
     }
 
     // TODO move to array
-    fn setValueAtIndex(&mut self, ndx: usize, v: BsonValue) {
+    fn setValueAtIndex(&mut self, ndx: usize, v: Value) {
         match *self {
-        BsonValue::BArray(ref mut ba) => {
+        Value::BArray(ref mut ba) => {
             if ndx > 1500001 { panic!( "too big"); } // TODO this limit passes test set7.js, but is a bad idea
             if ndx >= ba.items.len() {
                 // TODO
@@ -709,7 +709,7 @@ impl BsonValue {
     // TODO move to array
     fn removeValueAtIndex(&mut self, ndx: usize) {
         match *self {
-        BsonValue::BArray(ref mut ba) => {
+        Value::BArray(ref mut ba) => {
             ba.items.remove(ndx);
         },
         _ => panic!("wrong type?")
@@ -719,9 +719,9 @@ impl BsonValue {
     // TODO move to array
     fn unsetValueAtIndex(&mut self, ndx: usize) {
         match *self {
-        BsonValue::BArray(ref mut ba) => {
+        Value::BArray(ref mut ba) => {
             if ndx >=0 && ndx < ba.items.len() {
-                ba.items[ndx] = BsonValue::BNull;
+                ba.items[ndx] = Value::BNull;
             }
         },
         _ => panic!("wrong type?")
@@ -729,10 +729,10 @@ impl BsonValue {
     }
 
     // TODO move to document
-    fn setValueForKey(&mut self, k: &str, v: BsonValue) {
+    fn setValueForKey(&mut self, k: &str, v: Value) {
         // TODO make this more efficient?
         match *self {
-        BsonValue::BDocument(ref mut bd) => {
+        Value::BDocument(ref mut bd) => {
             for i in 0 .. bd.pairs.len() {
                 if bd.pairs[i].0 == k {
                     bd.pairs[i].1 = v;
@@ -749,7 +749,7 @@ impl BsonValue {
     fn unsetValueForKey(&mut self, k: &str) {
         // TODO make this more efficient?
         match *self {
-        BsonValue::BDocument(ref mut bd) => {
+        Value::BDocument(ref mut bd) => {
             for i in 0 .. bd.pairs.len() {
                 if bd.pairs[i].0 == k {
                     bd.pairs.remove(i);
@@ -761,15 +761,15 @@ impl BsonValue {
         }
     }
 
-    pub fn find_path(&self, path: &str) -> BsonValue {
+    pub fn find_path(&self, path: &str) -> Value {
         let dot = path.find('.');
         let name = match dot { 
             None => path,
             Some(ndx) => &path[0 .. ndx]
         };
         match self {
-            &BsonValue::BDocument(ref bd) => bd.find_path(path),
-            &BsonValue::BArray(ref ba) => {
+            &Value::BDocument(ref bd) => bd.find_path(path),
+            &Value::BArray(ref ba) => {
                 // TODO move into array and call from here?
                 match name.parse::<i32>() {
                     Err(_) => {
@@ -783,15 +783,15 @@ impl BsonValue {
 
                         // TODO are there any functions in the matcher which could be
                         // simplified by using this function? 
-                        let a:Vec<BsonValue> = ba.items.iter().filter_map(|subv| 
+                        let a:Vec<Value> = ba.items.iter().filter_map(|subv| 
                                 match subv {
-                                &BsonValue::BDocument(_) => Some(subv.find_path(path)),
+                                &Value::BDocument(_) => Some(subv.find_path(path)),
                                 _ => None
                                 }
                                                        ).collect();
                         // if nothing matched, return None instead of an empty array.
                         // TODO is this right?
-                        if a.len()==0 { BsonValue::BUndefined } else { BsonValue::BArray(BsonArray { items: a }) }
+                        if a.len()==0 { Value::BUndefined } else { Value::BArray(Array { items: a }) }
                     }, 
                     Ok(ndx) => {
                         if ndx<0 {
@@ -808,90 +808,90 @@ impl BsonValue {
                     }
                 }
             },
-            _ => BsonValue::BUndefined
+            _ => Value::BUndefined
         }
     }
 
     pub fn getTypeNumber_u8(&self) -> u8 {
         match self {
-            &BsonValue::BDouble(_) => 1,
-            &BsonValue::BString(_) => 2,
-            &BsonValue::BDocument(_) => 3,
-            &BsonValue::BArray(_) => 4,
-            &BsonValue::BBinary(_, _) => 5,
-            &BsonValue::BUndefined => 6,
-            &BsonValue::BObjectID(_) => 7,
-            &BsonValue::BBoolean(_) => 8,
-            &BsonValue::BDateTime(_) => 9,
-            &BsonValue::BNull => 10,
-            &BsonValue::BRegex(_, _) => 11,
-            &BsonValue::BJSCode(_) => 13,
-            &BsonValue::BJSCodeWithScope(_) => 15,
-            &BsonValue::BInt32(_) => 16,
-            &BsonValue::BTimeStamp(_) => 17,
-            &BsonValue::BInt64(_) => 18,
-            &BsonValue::BMinKey => 255, // NOTE
-            &BsonValue::BMaxKey => 127,
+            &Value::BDouble(_) => 1,
+            &Value::BString(_) => 2,
+            &Value::BDocument(_) => 3,
+            &Value::BArray(_) => 4,
+            &Value::BBinary(_, _) => 5,
+            &Value::BUndefined => 6,
+            &Value::BObjectID(_) => 7,
+            &Value::BBoolean(_) => 8,
+            &Value::BDateTime(_) => 9,
+            &Value::BNull => 10,
+            &Value::BRegex(_, _) => 11,
+            &Value::BJSCode(_) => 13,
+            &Value::BJSCodeWithScope(_) => 15,
+            &Value::BInt32(_) => 16,
+            &Value::BTimeStamp(_) => 17,
+            &Value::BInt64(_) => 18,
+            &Value::BMinKey => 255, // NOTE
+            &Value::BMaxKey => 127,
         }
     }
 
     pub fn for_all_strings<F : Fn(&str) -> ()>(&self, func: &F) {
         match self {
-            &BsonValue::BDouble(_) => (),
-            &BsonValue::BString(ref s) => func(&s),
-            &BsonValue::BDocument(ref bd) => {
+            &Value::BDouble(_) => (),
+            &Value::BString(ref s) => func(&s),
+            &Value::BDocument(ref bd) => {
                 for t in &bd.pairs {
                     t.1.for_all_strings(func);
                 }
             },
-            &BsonValue::BArray(ref ba) => {
+            &Value::BArray(ref ba) => {
                 for v in &ba.items {
                     v.for_all_strings(func);
                 }
             },
-            &BsonValue::BBinary(_, _) => (),
-            &BsonValue::BUndefined => (),
-            &BsonValue::BObjectID(_) => (),
-            &BsonValue::BBoolean(_) => (),
-            &BsonValue::BDateTime(_) => (),
-            &BsonValue::BNull => (),
-            &BsonValue::BRegex(_, _) => (),
-            &BsonValue::BJSCode(_) => (),
-            &BsonValue::BJSCodeWithScope(_) => (),
-            &BsonValue::BInt32(_) => (),
-            &BsonValue::BTimeStamp(_) => (),
-            &BsonValue::BInt64(_) => (),
-            &BsonValue::BMinKey => (),
-            &BsonValue::BMaxKey => (),
+            &Value::BBinary(_, _) => (),
+            &Value::BUndefined => (),
+            &Value::BObjectID(_) => (),
+            &Value::BBoolean(_) => (),
+            &Value::BDateTime(_) => (),
+            &Value::BNull => (),
+            &Value::BRegex(_, _) => (),
+            &Value::BJSCode(_) => (),
+            &Value::BJSCodeWithScope(_) => (),
+            &Value::BInt32(_) => (),
+            &Value::BTimeStamp(_) => (),
+            &Value::BInt64(_) => (),
+            &Value::BMinKey => (),
+            &Value::BMaxKey => (),
         }
     }
 
     pub fn find_all_strings<'a>(&'a self, dest: &mut Vec<&'a str>) {
         match self {
-            &BsonValue::BDouble(_) => (),
-            &BsonValue::BString(ref s) => dest.push(&s),
-            &BsonValue::BDocument(ref bd) => bd.find_all_strings(dest),
-            &BsonValue::BArray(ref ba) => ba.find_all_strings(dest),
-            &BsonValue::BBinary(_, _) => (),
-            &BsonValue::BUndefined => (),
-            &BsonValue::BObjectID(_) => (),
-            &BsonValue::BBoolean(_) => (),
-            &BsonValue::BDateTime(_) => (),
-            &BsonValue::BNull => (),
-            &BsonValue::BRegex(_, _) => (),
-            &BsonValue::BJSCode(_) => (),
-            &BsonValue::BJSCodeWithScope(_) => (),
-            &BsonValue::BInt32(_) => (),
-            &BsonValue::BTimeStamp(_) => (),
-            &BsonValue::BInt64(_) => (),
-            &BsonValue::BMinKey => (),
-            &BsonValue::BMaxKey => (),
+            &Value::BDouble(_) => (),
+            &Value::BString(ref s) => dest.push(&s),
+            &Value::BDocument(ref bd) => bd.find_all_strings(dest),
+            &Value::BArray(ref ba) => ba.find_all_strings(dest),
+            &Value::BBinary(_, _) => (),
+            &Value::BUndefined => (),
+            &Value::BObjectID(_) => (),
+            &Value::BBoolean(_) => (),
+            &Value::BDateTime(_) => (),
+            &Value::BNull => (),
+            &Value::BRegex(_, _) => (),
+            &Value::BJSCode(_) => (),
+            &Value::BJSCodeWithScope(_) => (),
+            &Value::BInt32(_) => (),
+            &Value::BTimeStamp(_) => (),
+            &Value::BInt64(_) => (),
+            &Value::BMinKey => (),
+            &Value::BMaxKey => (),
         }
     }
 
     pub fn get_weight_from_index_entry(k: &[u8]) -> Result<i32> {
         let n = 1 + k.rposition_elem(&0u8).expect("TODO");
-        let ord_shouldbe = BsonValue::BInt32(0).get_type_order() as u8;
+        let ord_shouldbe = Value::BInt32(0).get_type_order() as u8;
         if k[n] != ord_shouldbe {
             return Err(Error::Misc("bad type order byte"));
         }
@@ -944,24 +944,24 @@ impl BsonValue {
     pub fn get_type_order(&self) -> i32 {
         // same numbers as canonicalizeBSONType()
         match self {
-            &BsonValue::BUndefined => 0,
-            &BsonValue::BNull => 5,
-            &BsonValue::BDouble(_) => 10,
-            &BsonValue::BInt64(_) => 10,
-            &BsonValue::BInt32(_) => 10,
-            &BsonValue::BString(_) => 15,
-            &BsonValue::BDocument(_) => 20,
-            &BsonValue::BArray(_) => 25,
-            &BsonValue::BBinary(_, _) => 30,
-            &BsonValue::BObjectID(_) => 35,
-            &BsonValue::BBoolean(_) => 40,
-            &BsonValue::BDateTime(_) => 45,
-            &BsonValue::BTimeStamp(_) => 47,
-            &BsonValue::BRegex(_, _) => 50,
-            &BsonValue::BJSCode(_) => 60,
-            &BsonValue::BJSCodeWithScope(_) => 65,
-            &BsonValue::BMinKey => -1,
-            &BsonValue::BMaxKey => 127,
+            &Value::BUndefined => 0,
+            &Value::BNull => 5,
+            &Value::BDouble(_) => 10,
+            &Value::BInt64(_) => 10,
+            &Value::BInt32(_) => 10,
+            &Value::BString(_) => 15,
+            &Value::BDocument(_) => 20,
+            &Value::BArray(_) => 25,
+            &Value::BBinary(_, _) => 30,
+            &Value::BObjectID(_) => 35,
+            &Value::BBoolean(_) => 40,
+            &Value::BDateTime(_) => 45,
+            &Value::BTimeStamp(_) => 47,
+            &Value::BRegex(_, _) => 50,
+            &Value::BJSCode(_) => 60,
+            &Value::BJSCodeWithScope(_) => 65,
+            &Value::BMinKey => -1,
+            &Value::BMaxKey => 127,
         }
     }
 
@@ -974,17 +974,17 @@ impl BsonValue {
     pub fn encode_for_index_into(&self, w: &mut Vec<u8>) {
         w.push(self.get_type_order() as u8);
         match self {
-            &BsonValue::BBoolean(b) => if b { w.push(1u8) } else { w.push(0u8) },
-            &BsonValue::BNull => (),
-            &BsonValue::BMinKey => (),
-            &BsonValue::BMaxKey => (),
-            &BsonValue::BUndefined => (),
-            &BsonValue::BObjectID(ref a) => w.push_all(a),
-            &BsonValue::BString(ref s) => vec_push_c_string(w, &s),
-            &BsonValue::BDouble(f) => misc::Sqlite4Num::from_f64(f).encode_for_index(w),
-            &BsonValue::BInt64(n) => misc::Sqlite4Num::from_i64(n).encode_for_index(w),
-            &BsonValue::BInt32(n) => misc::Sqlite4Num::from_i64(n as i64).encode_for_index(w),
-            &BsonValue::BDocument(ref bd) => {
+            &Value::BBoolean(b) => if b { w.push(1u8) } else { w.push(0u8) },
+            &Value::BNull => (),
+            &Value::BMinKey => (),
+            &Value::BMaxKey => (),
+            &Value::BUndefined => (),
+            &Value::BObjectID(ref a) => w.push_all(a),
+            &Value::BString(ref s) => vec_push_c_string(w, &s),
+            &Value::BDouble(f) => misc::Sqlite4Num::from_f64(f).encode_for_index(w),
+            &Value::BInt64(n) => misc::Sqlite4Num::from_i64(n).encode_for_index(w),
+            &Value::BInt32(n) => misc::Sqlite4Num::from_i64(n as i64).encode_for_index(w),
+            &Value::BDocument(ref bd) => {
                 // TODO is writing the length here what we want?
                 // it means we can't match on a prefix of a document
                 //
@@ -998,7 +998,7 @@ impl BsonValue {
                     t.1.encode_for_index_into(w);
                 }
             },
-            &BsonValue::BArray(ref ba) => {
+            &Value::BArray(ref ba) => {
                 // TODO is writing the length here what we want?
                 // see comment on BDocument just above.
 
@@ -1007,20 +1007,20 @@ impl BsonValue {
                     v.encode_for_index_into(w);
                 }
             },
-            &BsonValue::BRegex(ref expr, ref opt) => {
+            &Value::BRegex(ref expr, ref opt) => {
                 vec_push_c_string(w, &expr); 
                 vec_push_c_string(w, &opt);
             },
-            &BsonValue::BJSCode(ref s) => vec_push_c_string(w, &s),
-            &BsonValue::BJSCodeWithScope(ref s) => vec_push_c_string(w, &s),
-            &BsonValue::BDateTime(n) => {
+            &Value::BJSCode(ref s) => vec_push_c_string(w, &s),
+            &Value::BJSCodeWithScope(ref s) => vec_push_c_string(w, &s),
+            &Value::BDateTime(n) => {
                 misc::Sqlite4Num::from_i64(n).encode_for_index(w);
             },
-            &BsonValue::BTimeStamp(n) => {
+            &Value::BTimeStamp(n) => {
                 // TODO is this really how we should encode this?
                 misc::Sqlite4Num::from_i64(n).encode_for_index(w);
             },
-            &BsonValue::BBinary(subtype, ref ba) => {
+            &Value::BBinary(subtype, ref ba) => {
                 w.push(subtype);
                 w.push_all(&i32_to_bytes_be(ba.len() as i32));
                 w.push_all(&ba);
@@ -1028,7 +1028,7 @@ impl BsonValue {
         }
     }
 
-    pub fn encode_one_for_index(v: &BsonValue, neg: bool) -> Vec<u8> {
+    pub fn encode_one_for_index(v: &Value, neg: bool) -> Vec<u8> {
         let mut a = Vec::new();
         v.encode_for_index_into(&mut a);
         if neg {
@@ -1040,7 +1040,7 @@ impl BsonValue {
         a
     }
 
-    pub fn encode_multi_for_index(vals: Vec<(BsonValue, bool)>) -> Vec<u8> {
+    pub fn encode_multi_for_index(vals: Vec<(Value, bool)>) -> Vec<u8> {
         let mut r = Vec::new();
         for (v, neg) in vals {
             let a = Self::encode_one_for_index(&v, neg);
@@ -1051,22 +1051,22 @@ impl BsonValue {
 
     pub fn replace_undefined(&mut self) {
         match self {
-            &mut BsonValue::BArray(ref mut ba) => {
+            &mut Value::BArray(ref mut ba) => {
                 for i in 0 .. ba.items.len() {
                     match &ba.items[i] {
-                        &BsonValue::BUndefined => {
-                            ba.items[i] = BsonValue::BNull;
+                        &Value::BUndefined => {
+                            ba.items[i] = Value::BNull;
                         },
                         _ => {
                         },
                     }
                 }
             },
-            &mut BsonValue::BDocument(ref mut bd) => {
+            &mut Value::BDocument(ref mut bd) => {
                 for i in 0 .. bd.pairs.len() {
                     match &bd.pairs[i].1 {
-                        &BsonValue::BUndefined => {
-                            bd.pairs[i] = (bd.pairs[i].0.clone(), BsonValue::BNull)
+                        &Value::BUndefined => {
+                            bd.pairs[i] = (bd.pairs[i].0.clone(), Value::BNull)
                         },
                         _ => {
                         },
@@ -1080,33 +1080,33 @@ impl BsonValue {
 
     pub fn to_bson(&self, w: &mut Vec<u8>) {
         match self {
-            &BsonValue::BDouble(f) => w.push_all(&f64_to_bytes_le(f)),
-            &BsonValue::BInt32(n) => w.push_all(&i32_to_bytes_le(n)),
-            &BsonValue::BDateTime(n) => w.push_all(&i64_to_bytes_le(n)),
-            &BsonValue::BTimeStamp(n) => w.push_all(&i64_to_bytes_le(n)),
-            &BsonValue::BInt64(n) => w.push_all(&i64_to_bytes_le(n)),
-            &BsonValue::BString(ref s) => vec_push_bson_string(w, &s),
-            &BsonValue::BObjectID(ref a) => w.push_all(a),
-            &BsonValue::BBoolean(b) => if b { w.push(1u8) } else { w.push(0u8) },
-            &BsonValue::BNull => (),
-            &BsonValue::BMinKey => (),
-            &BsonValue::BMaxKey => (),
-            &BsonValue::BRegex(ref expr, ref opt) => {
+            &Value::BDouble(f) => w.push_all(&f64_to_bytes_le(f)),
+            &Value::BInt32(n) => w.push_all(&i32_to_bytes_le(n)),
+            &Value::BDateTime(n) => w.push_all(&i64_to_bytes_le(n)),
+            &Value::BTimeStamp(n) => w.push_all(&i64_to_bytes_le(n)),
+            &Value::BInt64(n) => w.push_all(&i64_to_bytes_le(n)),
+            &Value::BString(ref s) => vec_push_bson_string(w, &s),
+            &Value::BObjectID(ref a) => w.push_all(a),
+            &Value::BBoolean(b) => if b { w.push(1u8) } else { w.push(0u8) },
+            &Value::BNull => (),
+            &Value::BMinKey => (),
+            &Value::BMaxKey => (),
+            &Value::BRegex(ref expr, ref opt) => {
                 vec_push_c_string(w, &expr); 
                 vec_push_c_string(w, &opt);
             },
-            &BsonValue::BUndefined => (),
-            &BsonValue::BJSCode(ref s) => vec_push_bson_string(w, &s),
-            &BsonValue::BJSCodeWithScope(ref s) => panic!("TODO write BJSCodeWithScope"),
-            &BsonValue::BBinary(subtype, ref ba) => {
+            &Value::BUndefined => (),
+            &Value::BJSCode(ref s) => vec_push_bson_string(w, &s),
+            &Value::BJSCodeWithScope(ref s) => panic!("TODO write BJSCodeWithScope"),
+            &Value::BBinary(subtype, ref ba) => {
                 w.push_all(&i32_to_bytes_le(ba.len() as i32));
                 w.push(subtype);
                 w.push_all(&ba);
             },
-            &BsonValue::BArray(ref ba) => {
+            &Value::BArray(ref ba) => {
                 ba.to_bson(w);
             },
-            &BsonValue::BDocument(ref bd) => {
+            &Value::BDocument(ref bd) => {
                 bd.to_bson(w);
             },
         }

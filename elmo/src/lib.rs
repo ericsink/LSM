@@ -25,7 +25,6 @@ use misc::bufndx;
 use misc::varint;
 
 extern crate bson;
-use bson::BsonValue;
 
 #[derive(Debug)]
 // TODO do we really want this public?
@@ -121,15 +120,15 @@ mod matcher;
 pub struct CollectionInfo {
     pub db: String,
     pub coll: String,
-    pub options: bson::BsonDocument,
+    pub options: bson::Document,
 }
 
 pub struct IndexInfo {
     pub db: String,
     pub coll: String,
     pub name: String,
-    pub spec: bson::BsonDocument,
-    pub options: bson::BsonDocument,
+    pub spec: bson::Document,
+    pub options: bson::Document,
 }
 
 impl IndexInfo {
@@ -138,7 +137,7 @@ impl IndexInfo {
     }
 }
 
-pub type QueryKey = Vec<BsonValue>;
+pub type QueryKey = Vec<bson::Value>;
 
 pub enum TextQueryTerm {
     Word(bool, String),
@@ -163,12 +162,12 @@ pub struct QueryPlan {
     pub bounds: QueryBounds,
 }
 
-// TODO the Item below should be a struct that contains both the BsonValue
+// TODO the Item below should be a struct that contains both the bson::Value
 // and also the score (and maybe pos).
 
-// TODO should this be a seq of BsonDocument instead of BsonValue ?
+// TODO should this be a seq of Document instead of bson::Value ?
 
-pub trait StorageCollectionReader : Iterator<Item=Result<BsonValue>> {
+pub trait StorageCollectionReader : Iterator<Item=Result<bson::Value>> {
     fn get_total_keys_examined(&self) -> u64;
     fn get_total_docs_examined(&self) -> u64;
     // TODO more explain stuff here?
@@ -180,14 +179,14 @@ pub trait StorageBase {
     fn list_collections(&self) -> Result<Vec<CollectionInfo>>;
     fn list_indexes(&self) -> Result<Vec<IndexInfo>>;
 
-    fn get_collection_reader(&self, db: &str, coll: &str, plan: Option<QueryPlan>) -> Result<Box<StorageCollectionReader<Item=Result<BsonValue>> + 'static>>;
+    fn get_collection_reader(&self, db: &str, coll: &str, plan: Option<QueryPlan>) -> Result<Box<StorageCollectionReader<Item=Result<bson::Value>> + 'static>>;
 }
 
 pub trait StorageCollectionWriter {
-    fn insert(&mut self, v: &bson::BsonDocument) -> Result<()>;
-    fn update(&mut self, v: &bson::BsonDocument) -> Result<()>;
+    fn insert(&mut self, v: &bson::Document) -> Result<()>;
+    fn update(&mut self, v: &bson::Document) -> Result<()>;
     // TODO arg to delete should be what?
-    fn delete(&mut self, v: &BsonValue) -> Result<bool>;
+    fn delete(&mut self, v: &bson::Value) -> Result<bool>;
 }
 
 // TODO should implement Drop = rollback
@@ -195,11 +194,11 @@ pub trait StorageCollectionWriter {
 // TODO or is it enough that the actual implementation of this trait impl Drop?
 
 pub trait StorageReader : StorageBase {
-    fn into_collection_reader(self: Box<Self>, db: &str, coll: &str, plan: Option<QueryPlan>) -> Result<Box<StorageCollectionReader<Item=Result<BsonValue>> + 'static>>;
+    fn into_collection_reader(self: Box<Self>, db: &str, coll: &str, plan: Option<QueryPlan>) -> Result<Box<StorageCollectionReader<Item=Result<bson::Value>> + 'static>>;
 }
 
 pub trait StorageWriter : StorageBase {
-    fn create_collection(&self, db: &str, coll: &str, options: bson::BsonDocument) -> Result<bool>;
+    fn create_collection(&self, db: &str, coll: &str, options: bson::Document) -> Result<bool>;
     fn rename_collection(&self, old_name: &str, new_name: &str, drop_target: bool) -> Result<bool>;
     fn clear_collection(&self, db: &str, coll: &str) -> Result<bool>;
     fn drop_collection(&self, db: &str, coll: &str) -> Result<bool>;
@@ -236,7 +235,7 @@ impl Connection {
         }
     }
 
-    pub fn insert(&self, db: &str, coll: &str, docs: &Vec<bson::BsonDocument>) -> Result<Vec<Result<()>>> {
+    pub fn insert(&self, db: &str, coll: &str, docs: &Vec<bson::Document>) -> Result<Vec<Result<()>>> {
         // TODO make sure every doc has an _id
         let mut results = Vec::new();
         {
@@ -265,13 +264,13 @@ impl Connection {
         Ok(v)
     }
 
-    fn try_find_index_by_name_or_spec(indexes: Vec<IndexInfo>, desc: &BsonValue) -> Option<IndexInfo> {
+    fn try_find_index_by_name_or_spec(indexes: Vec<IndexInfo>, desc: &bson::Value) -> Option<IndexInfo> {
         let mut a =
             match desc {
-                &BsonValue::BString(ref s) => {
+                &bson::Value::BString(ref s) => {
                     indexes.into_iter().filter(|ndx| ndx.name.as_str() == s.as_str()).collect::<Vec<_>>()
                 },
-                &BsonValue::BDocument(ref bd) => {
+                &bson::Value::BDocument(ref bd) => {
                     indexes.into_iter().filter(|ndx| ndx.spec == *bd).collect::<Vec<_>>()
                 },
                 _ => panic!("must be name or index spec doc"),
@@ -283,7 +282,7 @@ impl Connection {
         }
     }
 
-    pub fn delete_indexes(&self, db: &str, coll: &str, index: &BsonValue) -> Result<(usize, usize)> {
+    pub fn delete_indexes(&self, db: &str, coll: &str, index: &bson::Value) -> Result<(usize, usize)> {
         let writer = try!(self.conn.begin_write());
         // TODO make the following filter DRY
         let indexes = try!(writer.list_indexes()).into_iter().filter(
@@ -333,7 +332,7 @@ impl Connection {
         Ok(deleted)
     }
 
-    pub fn delete(&self, db: &str, coll: &str, items: &Vec<BsonValue>) -> Result<usize> {
+    pub fn delete(&self, db: &str, coll: &str, items: &Vec<bson::Value>) -> Result<usize> {
         let mut count = 0;
         {
             let writer = try!(self.conn.begin_write());
@@ -367,7 +366,7 @@ impl Connection {
         Ok(count)
     }
 
-    pub fn create_collection(&self, db: &str, coll: &str, options: bson::BsonDocument) -> Result<bool> {
+    pub fn create_collection(&self, db: &str, coll: &str, options: bson::Document) -> Result<bool> {
         let writer = try!(self.conn.begin_write());
         let result = try!(writer.create_collection(db, coll, options));
         try!(writer.commit());
@@ -377,15 +376,15 @@ impl Connection {
     pub fn find(&self,
                 db: &str,
                 coll: &str,
-                query: bson::BsonDocument,
-                orderby: Option<&BsonValue>,
-                projection: Option<&bson::BsonDocument>,
-                min: Option<&BsonValue>,
-                max: Option<&BsonValue>,
-                hint: Option<&BsonValue>,
-                explain: Option<&BsonValue>
+                query: bson::Document,
+                orderby: Option<&bson::Value>,
+                projection: Option<&bson::Document>,
+                min: Option<&bson::Value>,
+                max: Option<&bson::Value>,
+                hint: Option<&bson::Value>,
+                explain: Option<&bson::Value>
                 ) 
-        -> Result<Box<StorageCollectionReader<Item=Result<BsonValue>> + 'static>>
+        -> Result<Box<StorageCollectionReader<Item=Result<bson::Value>> + 'static>>
     {
         let reader = try!(self.conn.begin_read());
         // TODO make the following filter DRY
