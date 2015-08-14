@@ -307,6 +307,10 @@ impl BsonValue {
         }
     }
 
+    pub fn tryGetValueEither(&self, k: &str) -> Option<&BsonValue> {
+        unimplemented!();
+    }
+
     fn tryGetValueForInsensitiveKey(&self, k: &str) -> Option<&BsonValue> {
         match self {
             &BsonValue::BDocument(ref pairs) => {
@@ -430,6 +434,7 @@ impl BsonValue {
         }
     }
 
+    // TODO should this and functions like it return Result?  or panic?
     pub fn getDocument(&self) -> Result<&Vec<(String,BsonValue)>> {
         match self {
             &BsonValue::BDocument(ref s) => Ok(s),

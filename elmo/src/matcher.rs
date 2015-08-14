@@ -2,6 +2,8 @@
 use std;
 use std::cmp::Ordering;
 
+use super::Result;
+
 extern crate bson;
 use bson::BsonValue;
 
@@ -36,6 +38,7 @@ enum Pred {
     LT(BsonValue),
     GTE(BsonValue),
     LTE(BsonValue),
+    // TODO regex should be in compiled form, not a string
     REGEX(String),
     Near(BsonValue),
     NearSphere(BsonValue),
@@ -247,6 +250,7 @@ fn cmp_in(d: &BsonValue, lit: &BsonValue) -> bool {
         &BsonValue::BRegex(ref expr, ref options) => {
             match d {
                 &BsonValue::BString(ref s) => {
+                    // TODO use expr and options to construct a regex and match s
                     unimplemented!();
                 },
                 _ => {
@@ -416,7 +420,15 @@ fn match_predicate<F: Fn(&str, usize)>(pred: &Pred, d: &BsonValue, cb_array_pos:
         &Pred::GT(ref lit) => cmp_gt(d, lit),
         &Pred::LTE(ref lit) => cmp_lte(d, lit),
         &Pred::GTE(ref lit) => cmp_gte(d, lit),
-        &Pred::REGEX(_) => unimplemented!(),
+        &Pred::REGEX(_) => {
+            match d {
+                &BsonValue::BString(ref s) => {
+                    // TODO use regex to match s
+                    unimplemented!();
+                },
+                _ => false,
+            }
+        },
         &Pred::Near(_) => unimplemented!(),
         &Pred::NearSphere(_) => unimplemented!(),
         &Pred::GeoWithin(_) => unimplemented!(),
@@ -442,13 +454,126 @@ fn match_predicate<F: Fn(&str, usize)>(pred: &Pred, d: &BsonValue, cb_array_pos:
 }
 
 fn match_pair_exists(pred: &Pred, path: &str, start: &BsonValue) -> bool {
-    // TODO
-    true
+    let dot = path.find('.');
+    let name = match dot { 
+        None => path,
+        Some(ndx) => &path[0 .. ndx]
+    };
+    match start.tryGetValueEither(name) {
+        Some(v) => {
+            match dot {
+                None => true,
+                Some(dot) => {
+                    let subpath = &path[dot+1 ..];
+                    match v {
+                        &BsonValue::BDocument(_) => {
+                            match_pair_exists(pred, subpath, v)
+                        },
+                        &BsonValue::BArray(ref a) => {
+                            let b = match_pair_exists(pred, subpath, v);
+                            if b {
+                                true
+                            } else {
+                                a.iter().any(|vsub| {
+                                    match vsub {
+                                        &BsonValue::BDocument(_) => match_pair_exists(pred, subpath, v),
+                                        _ => false,
+                                    }
+                                })
+                            }
+                        },
+                        _ => false,
+                    }
+                },
+            }
+        },
+        None => false,
+    }
 }
 
 fn match_pair_other<F: Fn(&str, usize)>(pred: &Pred, path: &str, start: &BsonValue, arr: bool, cb_array_pos: &F) -> bool {
-    // TODO
-    true
+    let dot = path.find('.');
+    let name = match dot { 
+        None => path,
+        Some(ndx) => &path[0 .. ndx]
+    };
+    match start.tryGetValueEither(name) {
+        Some(v) => {
+            match dot {
+                None => {
+                    if match_predicate(pred, v, cb_array_pos) {
+                        true
+                    } else if !arr {
+                        match pred {
+                            &Pred::Size(_) => false,
+                            &Pred::All(_) => false,
+                            &Pred::ElemMatchPreds(_) => false,
+                            _ => {
+                                match v {
+                                    &BsonValue::BArray(ref a) => {
+                                        match a.iter().position(|vsub| match_predicate(pred, vsub, cb_array_pos)) {
+                                            Some(ndx) => {
+                                                cb_array_pos("TODO", ndx);
+                                                true
+                                            },
+                                            None => false,
+                                        }
+                                    },
+                                    _ => false,
+                                }
+                            },
+                        }
+                    } else {
+                        false
+                    }
+                },
+                Some(dot) => {
+                    let subpath = &path[dot+1 ..];
+                    match v {
+                        &BsonValue::BDocument(_) => {
+                            match_pair_other(pred, subpath, v, false, cb_array_pos)
+                        },
+                        &BsonValue::BArray(ref a) => {
+                            let b = match_pair_other(pred, subpath, v, true, cb_array_pos);
+                            if b {
+                                true
+                            } else {
+                                let f = |vsub| {
+                                    match vsub {
+                                        &BsonValue::BDocument(_) => match_pair_other(pred, subpath, v, false, cb_array_pos),
+                                        _ => false,
+                                    }
+                                };
+                                match a.iter().position(f) {
+                                    Some(ndx) => {
+                                        cb_array_pos("TODO", ndx);
+                                        true
+                                    },
+                                    None => false,
+                                }
+                            }
+                        },
+                        _ => {
+                            match pred {
+                                &Pred::Type(n) => false,
+                                _ => match_predicate(pred, &BsonValue::BNull, cb_array_pos),
+                            }
+                        },
+                    }
+                },
+            }
+        },
+        None => {
+            if arr {
+                false
+            } else {
+                match pred {
+                    &Pred::Type(n) => false,
+                    _ => match_predicate(pred, &BsonValue::BNull, cb_array_pos),
+                }
+            }
+        },
+    }
 }
 
 fn match_pair<F: Fn(&str, usize)>(pred: &Pred, path: &str, start: &BsonValue, cb_array_pos: &F) -> bool {
@@ -524,6 +649,189 @@ fn match_query_doc<F: Fn(&str, usize)>(q: &QueryDoc, d: &BsonValue, cb_array_pos
         }
     }
     true
+}
+
+fn contains_no_dollar_keys(v: &BsonValue) -> bool {
+    match v {
+        &BsonValue::BDocument(ref pairs) => {
+            pairs.iter().all(|&(ref k, _)| !k.starts_with("$"))
+        },
+        _ => true,
+    }
+}
+
+fn is_valid_within_all(v: &BsonValue) -> bool {
+    contains_no_dollar_keys(v)
+}
+
+fn is_valid_within_in(v: &BsonValue) -> bool {
+    contains_no_dollar_keys(v)
+}
+
+// TODO I suppose this func could return &str slices into the QueryDoc?
+fn get_paths(q: &QueryDoc) -> Vec<String> {
+    fn f(a: &mut Vec<String>, q: &QueryDoc) {
+        let &QueryDoc::QueryDoc(ref items) = q;
+        for qit in items {
+            match qit {
+                &QueryItem::Compare(ref path, ref preds) => {
+                    a.push(path.clone());
+                },
+                &QueryItem::AND(ref docs) => {
+                    for d in docs {
+                        f(a, d);
+                    }
+                },
+                _ => {
+                },
+            }
+        }
+    }
+    let mut a = Vec::new();
+    f(&mut a, q);
+    let a = a.into_iter().collect::<std::collections::HashSet<_>>();
+    let a = a.into_iter().collect::<Vec<_>>();
+    a
+}
+
+fn get_eqs(q: &QueryDoc) -> Vec<(&str, &BsonValue)> {
+    fn f<'q>(a: &mut Vec<(&'q str, &'q BsonValue)>, q: &'q QueryDoc) {
+        let &QueryDoc::QueryDoc(ref items) = q;
+        for qit in items {
+            match qit {
+                &QueryItem::Compare(ref path, ref preds) => {
+                    for psub in preds {
+                        match psub {
+                            &Pred::EQ(ref v) => {
+                                a.push((path, v));
+                            },
+                            _ => {
+                            },
+                        }
+                    }
+                },
+                &QueryItem::AND(ref docs) => {
+                    for d in docs {
+                        f(a, d);
+                    }
+                },
+                _ => {
+                },
+            }
+        }
+    }
+    let mut a = Vec::new();
+    f(&mut a, q);
+    // TODO error if there are any duplicate keys
+    a
+}
+
+fn is_query_doc(v: &BsonValue) -> bool {
+    match v {
+        &BsonValue::BDocument(ref pairs) => {
+            let has_path = pairs.iter().any(|&(ref k, _)| !k.starts_with("$"));
+            let has_and = pairs.iter().any(|&(ref k, _)| k == "$and");
+            let has_or = pairs.iter().any(|&(ref k, _)| k == "$or");
+            let has_nor = pairs.iter().any(|&(ref k, _)| k == "$nor");
+            has_path || has_and || has_or || has_nor
+        },
+        _ => {
+            // TODO or panic?
+            false
+        }
+    }
+}
+
+fn parse_compare(k: &str, v: &BsonValue) -> Result<QueryItem> {
+    unimplemented!();
+}
+
+// TODO this func kinda wants to consume its argument
+fn parse_query_doc(v: &BsonValue) -> Result<Vec<QueryItem>> {
+    fn do_and_or(result: &mut Vec<QueryItem>, a: &Vec<BsonValue>, op: &str) -> Result<()> {
+        if a.len() == 0 {
+            // TODO no panic
+            panic!("array for $and $or cannot be empty");
+        } else if a.len() == 1 {
+            let subpairs = try!(parse_query_doc(&a[0]));
+            for it in subpairs {
+                result.push(it);
+            }
+        } else {
+            // TODO this wants to be a map+closure, but the error handling is weird
+            let mut m = Vec::new();
+            for d in a {
+                let d = try!(parse_query_doc(d));
+                let d = QueryDoc::QueryDoc(d);
+                m.push(d);
+            }
+            // TODO grrr.  this str compare hack is ugly.
+            if op == "$and" {
+                result.push(QueryItem::AND(m));
+            } else if op == "$or" {
+                result.push(QueryItem::OR(m));
+            } else {
+                unreachable!();
+            }
+        }
+        Ok(())
+    }
+
+    let mut result = Vec::new();
+    let pairs = try!(v.getDocument());
+    for &(ref k, ref v) in pairs {
+        match k.as_str() {
+            "$comment" => {
+            },
+            "$atomic" => {
+            },
+            "$where" => {
+                // TODO clone
+                result.push(QueryItem::Where(v.clone()));
+            },
+            "$and" => {
+                let a = try!(v.getArray());
+                do_and_or(&mut result, a, k);
+            },
+            "$or" => {
+                let a = try!(v.getArray());
+                do_and_or(&mut result, a, k);
+            },
+            "$text" => {
+                match v {
+                    &BsonValue::BDocument(ref pairs) => {
+                        match pairs.iter().find(|&&(ref k, _)| k == "$search") {
+                            Some(&(_, BsonValue::BString(ref s))) => {
+                                result.push(QueryItem::Text(s.clone()));
+                            },
+                            _ => panic!("invalid $text"),
+                        }
+                    },
+                    _ => panic!("invalid $text"),
+                }
+            },
+            "$nor" => {
+                let a = try!(v.getArray());
+                if a.len() == 0 {
+                    // TODO no panic
+                    panic!("array for $and $or cannot be empty");
+                }
+                // TODO what if just one?  canonicalize?
+                // TODO this wants to be a map+closure, but the error handling is weird
+                let mut m = Vec::new();
+                for d in a {
+                    let d = try!(parse_query_doc(d));
+                    let d = QueryDoc::QueryDoc(d);
+                    m.push(d);
+                }
+                result.push(QueryItem::NOR(m));
+            },
+            _ => {
+                result.push(try!(parse_compare(k, v)));
+            },
+        }
+    }
+    Ok(result)
 }
 
 
