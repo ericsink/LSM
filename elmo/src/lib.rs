@@ -121,15 +121,15 @@ mod matcher;
 pub struct CollectionInfo {
     pub db: String,
     pub coll: String,
-    pub options: BsonValue,
+    pub options: bson::BsonDocument,
 }
 
 pub struct IndexInfo {
     pub db: String,
     pub coll: String,
     pub name: String,
-    pub spec: BsonValue,
-    pub options: BsonValue,
+    pub spec: bson::BsonDocument,
+    pub options: bson::BsonDocument,
 }
 
 impl IndexInfo {
@@ -166,6 +166,8 @@ pub struct QueryPlan {
 // TODO the Item below should be a struct that contains both the BsonValue
 // and also the score (and maybe pos).
 
+// TODO should this be a seq of BsonDocument instead of BsonValue ?
+
 pub trait StorageCollectionReader : Iterator<Item=Result<BsonValue>> {
     fn get_total_keys_examined(&self) -> u64;
     fn get_total_docs_examined(&self) -> u64;
@@ -182,8 +184,9 @@ pub trait StorageBase {
 }
 
 pub trait StorageCollectionWriter {
-    fn insert(&mut self, v: &BsonValue) -> Result<()>;
-    fn update(&mut self, v: &BsonValue) -> Result<()>;
+    fn insert(&mut self, v: &bson::BsonDocument) -> Result<()>;
+    fn update(&mut self, v: &bson::BsonDocument) -> Result<()>;
+    // TODO arg to delete should be what?
     fn delete(&mut self, v: &BsonValue) -> Result<bool>;
 }
 
@@ -196,7 +199,7 @@ pub trait StorageReader : StorageBase {
 }
 
 pub trait StorageWriter : StorageBase {
-    fn create_collection(&self, db: &str, coll: &str, options: BsonValue) -> Result<bool>;
+    fn create_collection(&self, db: &str, coll: &str, options: bson::BsonDocument) -> Result<bool>;
     fn rename_collection(&self, old_name: &str, new_name: &str, drop_target: bool) -> Result<bool>;
     fn clear_collection(&self, db: &str, coll: &str) -> Result<bool>;
     fn drop_collection(&self, db: &str, coll: &str) -> Result<bool>;
@@ -233,7 +236,7 @@ impl Connection {
         }
     }
 
-    pub fn insert(&self, db: &str, coll: &str, docs: &Vec<BsonValue>) -> Result<Vec<Result<()>>> {
+    pub fn insert(&self, db: &str, coll: &str, docs: &Vec<bson::BsonDocument>) -> Result<Vec<Result<()>>> {
         // TODO make sure every doc has an _id
         let mut results = Vec::new();
         {
@@ -268,8 +271,8 @@ impl Connection {
                 &BsonValue::BString(ref s) => {
                     indexes.into_iter().filter(|ndx| ndx.name.as_str() == s.as_str()).collect::<Vec<_>>()
                 },
-                &BsonValue::BDocument(_) => {
-                    indexes.into_iter().filter(|ndx| ndx.spec == *desc).collect::<Vec<_>>()
+                &BsonValue::BDocument(ref bd) => {
+                    indexes.into_iter().filter(|ndx| ndx.spec == *bd).collect::<Vec<_>>()
                 },
                 _ => panic!("must be name or index spec doc"),
             };
@@ -364,7 +367,7 @@ impl Connection {
         Ok(count)
     }
 
-    pub fn create_collection(&self, db: &str, coll: &str, options: BsonValue) -> Result<bool> {
+    pub fn create_collection(&self, db: &str, coll: &str, options: bson::BsonDocument) -> Result<bool> {
         let writer = try!(self.conn.begin_write());
         let result = try!(writer.create_collection(db, coll, options));
         try!(writer.commit());
@@ -374,9 +377,9 @@ impl Connection {
     pub fn find(&self,
                 db: &str,
                 coll: &str,
-                query: BsonValue,
+                query: bson::BsonDocument,
                 orderby: Option<&BsonValue>,
-                projection: Option<&BsonValue>,
+                projection: Option<&bson::BsonDocument>,
                 min: Option<&BsonValue>,
                 max: Option<&BsonValue>,
                 hint: Option<&BsonValue>,

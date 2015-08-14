@@ -131,7 +131,7 @@ struct Reply {
     flags : i32,
     cursor_id : i64,
     starting_from : i32,
-    docs : Vec<BsonValue>,
+    docs : Vec<bson::BsonDocument>,
 }
 
 #[derive(Debug)]
@@ -142,8 +142,8 @@ struct MsgQuery {
     full_collection_name : String,
     number_to_skip : i32,
     number_to_return : i32,
-    query : BsonValue,
-    return_fields_selector : Option<BsonValue>,
+    query : bson::BsonDocument,
+    return_fields_selector : Option<bson::BsonDocument>,
 }
 
 #[derive(Debug)]
@@ -197,6 +197,10 @@ fn unwrap_vec_of_results<T,E>(v: Vec<std::result::Result<T,E>>) -> std::result::
         r.push(q);
     }
     Ok(r)
+}
+
+fn vec_to_docs(v: Vec<BsonValue>) -> Vec<bson::BsonDocument> {
+    unimplemented!();
 }
 
 fn parse_request(ba: &[u8]) -> Result<Request> {
@@ -285,7 +289,7 @@ fn read_message_bytes(stream: &mut Read) -> Result<Option<Box<[u8]>>> {
     Ok(Some(msg.into_boxed_slice()))
 }
 
-fn create_reply(req_id: i32, docs: Vec<BsonValue>, cursor_id: i64) -> Reply {
+fn create_reply(req_id: i32, docs: Vec<bson::BsonDocument>, cursor_id: i64) -> Reply {
     let msg = Reply {
         req_id: 0,
         response_to: req_id,
@@ -299,7 +303,7 @@ fn create_reply(req_id: i32, docs: Vec<BsonValue>, cursor_id: i64) -> Reply {
 }
 
 fn reply_err(req_id: i32, err: Error) -> Reply {
-    let mut doc = BsonValue::BDocument(vec![]);
+    let mut doc = bson::BsonDocument::new_empty();
     // TODO stack trace was nice here
     //pairs.push(("errmsg", BString("exception: " + errmsg)));
     //pairs.push(("code", BInt32(code)));
@@ -320,22 +324,22 @@ struct Server<'a> {
 impl<'b> Server<'b> {
 
     fn reply_whatsmyuri(&self, req: &MsgQuery) -> Result<Reply> {
-        let mut doc = BsonValue::BDocument(vec![]);
+        let mut doc = bson::BsonDocument::new_empty();
         doc.add_pair_str("you", "127.0.0.1:65460");
         doc.add_pair_i32("ok", 1);
         Ok(create_reply(req.req_id, vec![doc], 0))
     }
 
     fn reply_getlog(&self, req: &MsgQuery) -> Result<Reply> {
-        let mut doc = BsonValue::BDocument(vec![]);
+        let mut doc = bson::BsonDocument::new_empty();
         doc.add_pair_i32("totalLinesWritten", 1);
-        doc.add_pair("log", BsonValue::BArray(vec![]));
+        doc.add_pair_array("log", bson::BsonArray::new_empty());
         doc.add_pair_i32("ok", 1);
         Ok(create_reply(req.req_id, vec![doc], 0))
     }
 
     fn reply_replsetgetstatus(&self, req: &MsgQuery) -> Result<Reply> {
-        let mut mine = BsonValue::BDocument(vec![]);
+        let mut mine = bson::BsonDocument::new_empty();
         mine.add_pair_i32("_id", 0);
         mine.add_pair_str("name", "whatever");
         mine.add_pair_i32("state", 1);
@@ -348,8 +352,8 @@ impl<'b> Server<'b> {
         mine.add_pair_timestamp("electionDate", 0);
         mine.add_pair_bool("self", true);
 
-        let mut doc = BsonValue::BDocument(vec![]);
-        doc.add_pair("mine", mine);
+        let mut doc = bson::BsonDocument::new_empty();
+        doc.add_pair_document("mine", mine);
         doc.add_pair_str("set", "TODO");
         doc.add_pair_datetime("date", 0);
         doc.add_pair_i32("myState", 1);
@@ -359,7 +363,7 @@ impl<'b> Server<'b> {
     }
 
     fn reply_ismaster(&self, req: &MsgQuery) -> Result<Reply> {
-        let mut doc = BsonValue::BDocument(vec![]);
+        let mut doc = bson::BsonDocument::new_empty();
         doc.add_pair_bool("ismaster", true);
         doc.add_pair_bool("secondary", false);
         doc.add_pair_i32("maxWireVersion", 3);
@@ -375,26 +379,21 @@ impl<'b> Server<'b> {
     }
 
     fn reply_admin_cmd(&self, req: &MsgQuery, db: &str) -> Result<Reply> {
-        match req.query {
-            BsonValue::BDocument(ref pairs) => {
-                if pairs.is_empty() {
-                    Err(Error::Misc("empty query"))
-                } else {
-                    // this code assumes that the first key is always the command
-                    let cmd = pairs[0].0.as_str();
-                    // TODO let cmd = cmd.ToLower();
-                    let res =
-                        match cmd {
-                            "whatsmyuri" => self.reply_whatsmyuri(req),
-                            "getLog" => self.reply_getlog(req),
-                            "replSetGetStatus" => self.reply_replsetgetstatus(req),
-                            "isMaster" => self.reply_ismaster(req),
-                            _ => Err(Error::Misc("unknown cmd"))
-                        };
-                    res
-                }
-            },
-            _ => Err(Error::Misc("query must be a document")),
+        if req.query.pairs.is_empty() {
+            Err(Error::Misc("empty query"))
+        } else {
+            // this code assumes that the first key is always the command
+            let cmd = req.query.pairs[0].0.as_str();
+            // TODO let cmd = cmd.ToLower();
+            let res =
+                match cmd {
+                    "whatsmyuri" => self.reply_whatsmyuri(req),
+                    "getLog" => self.reply_getlog(req),
+                    "replSetGetStatus" => self.reply_replsetgetstatus(req),
+                    "isMaster" => self.reply_ismaster(req),
+                    _ => Err(Error::Misc("unknown cmd"))
+                };
+            res
         }
     }
 
@@ -404,31 +403,33 @@ impl<'b> Server<'b> {
         let deletes = try!(try!(q.getValueForKey("deletes")).getArray());
         // TODO limit
         // TODO ordered
-        let result = try!(self.conn.delete(db, coll, deletes));
-        let mut doc = BsonValue::BDocument(vec![]);
+        let result = try!(self.conn.delete(db, coll, &deletes.items));
+        let mut doc = bson::BsonDocument::new_empty();
         doc.add_pair_i32("ok", result as i32);
         doc.add_pair_i32("ok", 1);
         Ok(create_reply(req.req_id, vec![doc], 0))
     }
 
-    fn reply_insert(&self, req: &MsgQuery, db: &str) -> Result<Reply> {
-        let q = &req.query;
-        let coll = try!(try!(q.getValueForKey("insert")).getString());
-        let docs = try!(try!(q.getValueForKey("documents")).getArray());
+    fn reply_insert(&self, mut req: MsgQuery, db: &str) -> Result<Reply> {
+        let coll = try!(req.query.remove("insert").ok_or(Error::Misc("required key not found")));
+        let coll = try!(coll.into_string());
+        let docs = try!(req.query.remove("documents").ok_or(Error::Misc("required key not found")));
+        let docs = try!(docs.into_array());
+        let docs = vec_to_docs(docs.items);
         // TODO ordered
-        let results = try!(self.conn.insert(db, coll, &docs));
+        let results = try!(self.conn.insert(db, &coll, &docs));
         let mut errors = Vec::new();
         for i in 0 .. results.len() {
             if results[i].is_err() {
                 let msg = format!("{:?}", results[i]);
-                let err = BsonValue::BDocument(vec![(String::from("index"), BsonValue::BInt32(i as i32)), (String::from("errmsg"), BsonValue::BString(msg))]);
+                let err = BsonValue::BDocument(bson::BsonDocument {pairs: vec![(String::from("index"), BsonValue::BInt32(i as i32)), (String::from("errmsg"), BsonValue::BString(msg))]});
                 errors.push(err);
             }
         }
-        let mut doc = BsonValue::BDocument(vec![]);
+        let mut doc = bson::BsonDocument::new_empty();
         doc.add_pair_i32("n", ((results.len() - errors.len()) as i32));
         if errors.len() > 0 {
-            doc.add_pair("writeErrors", BsonValue::BArray(errors));
+            doc.add_pair_array("writeErrors", bson::BsonArray {items: errors});
         }
         doc.add_pair_i32("ok", 1);
         Ok(create_reply(req.req_id, vec![doc], 0))
@@ -465,7 +466,7 @@ impl<'b> Server<'b> {
     }
 
     // this is the older way of returning a cursor.
-    fn do_limit<T: Iterator<Item=Result<BsonValue>>>(ns: &str, seq: &mut T, number_to_return: i32) -> Result<(Vec<BsonValue>, bool)> {
+    fn do_limit<T: Iterator<Item=Result<BsonValue>>>(ns: &str, seq: &mut T, number_to_return: i32) -> Result<(Vec<bson::BsonDocument>, bool)> {
         if number_to_return < 0 || number_to_return == 1 {
             // hard limit.  do not return a cursor.
             let n = if number_to_return < 0 {
@@ -479,35 +480,39 @@ impl<'b> Server<'b> {
             }
             let docs = seq.take(n as usize).collect::<Vec<_>>();
             let docs = try!(unwrap_vec_of_results(docs));
+            let docs = vec_to_docs(docs);
             Ok((docs, false))
         } else if number_to_return == 0 {
             // return whatever the default size is
             // TODO for now, just return them all and close the cursor
             let docs = seq.collect::<Vec<_>>();
             let docs = try!(unwrap_vec_of_results(docs));
+            let docs = vec_to_docs(docs);
             Ok((docs, false))
         } else {
             // soft limit.  keep cursor open.
             let docs = Self::grab(seq, number_to_return as usize);
             if docs.len() > 0 {
                 let docs = try!(unwrap_vec_of_results(docs));
+                let docs = vec_to_docs(docs);
                 Ok((docs, true))
             } else {
                 let docs = try!(unwrap_vec_of_results(docs));
+                let docs = vec_to_docs(docs);
                 Ok((docs, false))
             }
         }
     }
 
     // this is a newer way of returning a cursor.  used by the agg framework.
-    fn reply_with_cursor<T: Iterator<Item=Result<BsonValue>> + 'static>(&mut self, ns: &str, mut seq: T, cursor_options: Option<&BsonValue>, default_batch_size: usize) -> Result<BsonValue> {
+    fn reply_with_cursor<T: Iterator<Item=Result<BsonValue>> + 'static>(&mut self, ns: &str, mut seq: T, cursor_options: Option<&BsonValue>, default_batch_size: usize) -> Result<bson::BsonDocument> {
         let number_to_return =
             match cursor_options {
-                Some(&BsonValue::BDocument(ref pairs)) => {
-                    if pairs.iter().any(|&(ref k, _)| k != "batchSize") {
+                Some(&BsonValue::BDocument(ref bd)) => {
+                    if bd.pairs.iter().any(|&(ref k, _)| k != "batchSize") {
                         return Err(Error::Misc("invalid cursor option"));
                     }
-                    match pairs.iter().find(|&&(ref k, ref _v)| k == "batchSize") {
+                    match bd.pairs.iter().find(|&&(ref k, ref _v)| k == "batchSize") {
                         Some(&(_, BsonValue::BInt32(n))) => {
                             if n < 0 {
                                 return Err(Error::Misc("batchSize < 0"));
@@ -582,16 +587,16 @@ impl<'b> Server<'b> {
             };
 
 
-        let mut doc = BsonValue::BDocument(vec![]);
+        let mut doc = bson::BsonDocument::new_empty();
         match cursor_id {
             Some(cursor_id) => {
-                let mut cursor = BsonValue::BDocument(vec![]);
+                let mut cursor = bson::BsonDocument::new_empty();
                 cursor.add_pair_i64("id", cursor_id);
                 cursor.add_pair_str("ns", ns);
-                cursor.add_pair_array("firstBatch", docs);
+                cursor.add_pair_array("firstBatch", bson::BsonArray { items: docs});
             },
             None => {
-                doc.add_pair_array("result", docs);
+                doc.add_pair_array("result", bson::BsonArray { items: docs});
             },
         }
         doc.add_pair_i32("ok", 1);
@@ -601,31 +606,31 @@ impl<'b> Server<'b> {
     fn reply_create_collection(&self, req: &MsgQuery, db: &str) -> Result<Reply> {
         let q = &req.query;
         let coll = try!(try!(q.getValueForKey("create")).getString());
-        let mut options = BsonValue::BDocument(vec![]);
+        let mut options = bson::BsonDocument::new_empty();
         // TODO maybe just pass everything through instead of looking for specific options
-        match q.tryGetValueForKey("autoIndexId") {
+        match q.get("autoIndexId") {
             Some(&BsonValue::BBoolean(b)) => options.add_pair_bool("autoIndexId", b),
             // TODO error on bad values?
             _ => (),
         }
-        match q.tryGetValueForKey("temp") {
+        match q.get("temp") {
             Some(&BsonValue::BBoolean(b)) => options.add_pair_bool("temp", b),
             // TODO error on bad values?
             _ => (),
         }
-        match q.tryGetValueForKey("capped") {
+        match q.get("capped") {
             Some(&BsonValue::BBoolean(b)) => options.add_pair_bool("capped", b),
             // TODO error on bad values?
             _ => (),
         }
-        match q.tryGetValueForKey("size") {
+        match q.get("size") {
             Some(&BsonValue::BInt32(n)) => options.add_pair_i64("size", n as i64),
             Some(&BsonValue::BInt64(n)) => options.add_pair_i64("size", n as i64),
             Some(&BsonValue::BDouble(n)) => options.add_pair_i64("size", n as i64),
             // TODO error on bad values?
             _ => (),
         }
-        match q.tryGetValueForKey("max") {
+        match q.get("max") {
             Some(&BsonValue::BInt32(n)) => options.add_pair_i64("max", n as i64),
             Some(&BsonValue::BInt64(n)) => options.add_pair_i64("max", n as i64),
             Some(&BsonValue::BDouble(n)) => options.add_pair_i64("max", n as i64),
@@ -634,7 +639,7 @@ impl<'b> Server<'b> {
         }
         // TODO more options here ?
         let result = try!(self.conn.create_collection(db, coll, options));
-        let mut doc = BsonValue::BDocument(vec![]);
+        let mut doc = bson::BsonDocument::new_empty();
         doc.add_pair_i32("ok", 1);
         Ok(create_reply(req.req_id, vec![doc], 0))
     }
@@ -642,11 +647,11 @@ impl<'b> Server<'b> {
     fn reply_create_indexes(&mut self, req: &MsgQuery, db: &str) -> Result<Reply> {
         let coll = try!(try!(req.query.getValueForKey("createIndexes")).getString());
         let indexes = try!(try!(req.query.getValueForKey("indexes")).getArray());
-        let indexes = indexes.into_iter().map(
+        let indexes = indexes.items.iter().map(
             |d| {
                 // TODO get these from d
-                let spec = BsonValue::BDocument(vec![]);
-                let options = BsonValue::BDocument(vec![]);
+                let spec = bson::BsonDocument::new_empty();
+                let options = bson::BsonDocument::new_empty();
                 elmo::IndexInfo {
                     db: String::from(db),
                     coll: String::from(coll),
@@ -661,7 +666,7 @@ impl<'b> Server<'b> {
         // TODO createdCollectionAutomatically
         // TODO numIndexesBefore
         // TODO numIndexesAfter
-        let mut doc = BsonValue::BDocument(vec![]);
+        let mut doc = bson::BsonDocument::new_empty();
         doc.add_pair_i32("ok", 1);
         Ok(create_reply(req.req_id, vec![doc], 0))
     }
@@ -675,7 +680,7 @@ impl<'b> Server<'b> {
         }
         let index = try!(req.query.getValueForKey("index"));
         let (count_indexes_before, num_indexes_deleted) = try!(self.conn.delete_indexes(db, coll, index));
-        let mut doc = BsonValue::BDocument(vec![]);
+        let mut doc = bson::BsonDocument::new_empty();
         doc.add_pair_i32("ok", 1);
         Ok(create_reply(req.req_id, vec![doc], 0))
     }
@@ -688,7 +693,7 @@ impl<'b> Server<'b> {
             self.remove_cursors_for_collection(&full_coll);
         }
         let deleted = try!(self.conn.drop_collection(db, coll));
-        let mut doc = BsonValue::BDocument(vec![]);
+        let mut doc = bson::BsonDocument::new_empty();
         if deleted {
             doc.add_pair_i32("ok", 1);
         } else {
@@ -702,7 +707,7 @@ impl<'b> Server<'b> {
     fn reply_drop_database(&mut self, req: &MsgQuery, db: &str) -> Result<Reply> {
         // TODO remove cursors?
         let deleted = try!(self.conn.drop_database(db));
-        let mut doc = BsonValue::BDocument(vec![]);
+        let mut doc = bson::BsonDocument::new_empty();
         if deleted {
             doc.add_pair_i32("ok", 1);
         } else {
@@ -723,10 +728,10 @@ impl<'b> Server<'b> {
             let results = results.into_iter().filter_map(
                 move |c| {
                     if db.as_str() == c.db {
-                        let mut doc = BsonValue::BDocument(vec![]);
+                        let mut doc = bson::BsonDocument::new_empty();
                         doc.add_pair_string("name", c.coll);
-                        doc.add_pair("options", c.options);
-                        Some(Ok(doc))
+                        doc.add_pair_document("options", c.options);
+                        Some(Ok(BsonValue::BDocument(doc)))
                     } else {
                         None
                     }
@@ -738,7 +743,7 @@ impl<'b> Server<'b> {
         // TODO filter in query?
 
         let default_batch_size = 100;
-        let cursor_options = req.query.tryGetValueForKey("cursor");
+        let cursor_options = req.query.get("cursor");
         let ns = format!("{}.$cmd.listCollections", db);
         let doc = try!(self.reply_with_cursor(&ns, seq, cursor_options, default_batch_size));
         // note that this uses the newer way of returning a cursor ID, so we pass 0 below
@@ -757,13 +762,13 @@ impl<'b> Server<'b> {
             let results = results.into_iter().filter_map(
                 move |ndx| {
                     if ndx.db.as_str() == db {
-                        let mut doc = BsonValue::BDocument(vec![]);
+                        let mut doc = bson::BsonDocument::new_empty();
                         doc.add_pair_string("ns", ndx.full_collection_name());
                         doc.add_pair_string("name", ndx.name);
-                        doc.add_pair("key", ndx.spec);
+                        doc.add_pair_document("key", ndx.spec);
                         // TODO it seems the automatic index on _id is NOT supposed to be marked unique
                         // TODO if unique && ndxInfo.ndx<>"_id_" then pairs.Add("unique", BBoolean unique)
-                        Some(Ok(doc))
+                        Some(Ok(BsonValue::BDocument(doc)))
                     } else {
                         None
                     }
@@ -775,7 +780,7 @@ impl<'b> Server<'b> {
         // TODO filter in query?
 
         let default_batch_size = 100;
-        let cursor_options = req.query.tryGetValueForKey("cursor");
+        let cursor_options = req.query.get("cursor");
         let ns = format!("{}.$cmd.listIndexes", db);
         let doc = try!(self.reply_with_cursor(&ns, seq, cursor_options, default_batch_size));
         // note that this uses the newer way of returning a cursor ID, so we pass 0 below
@@ -789,12 +794,12 @@ impl<'b> Server<'b> {
         }
     }
 
-    fn tryGetKeyWithOrWithoutDollarSignPrefix<'a>(v: &'a BsonValue, k: &str) -> Option<&'a BsonValue> {
+    fn tryGetKeyWithOrWithoutDollarSignPrefix<'a>(v: &'a bson::BsonDocument, k: &str) -> Option<&'a BsonValue> {
         assert_eq!(&k[0 .. 1], "$");
-        match v.tryGetValueForKey(k) {
+        match v.get(k) {
             Some(r) => Some(r),
             None => {
-                match v.tryGetValueForKey(&k[1 ..]) {
+                match v.get(&k[1 ..]) {
                     Some(r) => Some(r),
                     None => None,
                 }
@@ -802,12 +807,12 @@ impl<'b> Server<'b> {
         }
     }
 
-    fn try_remove_optional_prefix(v: &mut BsonValue, k: &str) -> Option<BsonValue> {
+    fn try_remove_optional_prefix(v: &mut bson::BsonDocument, k: &str) -> Option<BsonValue> {
         assert_eq!(&k[0 .. 1], "$");
-        match v.try_remove_key(k) {
+        match v.remove(k) {
             Some(r) => Some(r),
             None => {
-                match v.try_remove_key(&k[1 ..]) {
+                match v.remove(&k[1 ..]) {
                     Some(r) => Some(r),
                     None => None,
                 }
@@ -850,6 +855,7 @@ impl<'b> Server<'b> {
                     let max = Self::tryGetKeyWithOrWithoutDollarSignPrefix(&query, "$max");
                     let hint = Self::tryGetKeyWithOrWithoutDollarSignPrefix(&query, "$hint");
                     let explain = Self::tryGetKeyWithOrWithoutDollarSignPrefix(&query, "$explain");
+                    let q = try!(q.into_document());
                     let seq = try!(self.conn.find(
                             db, 
                             coll, 
@@ -905,41 +911,36 @@ impl<'b> Server<'b> {
         Ok(create_reply(req_id, docs, cursor_id))
     }
 
-    fn reply_cmd(&mut self, req: &MsgQuery, db: &str) -> Result<Reply> {
-        match req.query {
-            BsonValue::BDocument(ref pairs) => {
-                if pairs.is_empty() {
-                    Err(Error::Misc("empty query"))
-                } else {
-                    // this code assumes that the first key is always the command
-                    let cmd = pairs[0].0.as_str();
-                    // TODO let cmd = cmd.ToLower();
-                    let res =
-                        // TODO isMaster needs to be in here?
-                        match cmd {
-                            //"explain" => reply_explain req db
-                            //"aggregate" => reply_aggregate req db
-                            "insert" => self.reply_insert(req, db),
-                            "delete" => self.reply_delete(req, db),
-                            //"distinct" => reply_distinct req db
-                            //"update" => reply_Update req db
-                            //"findandmodify" => reply_FindAndModify req db
-                            //"count" => reply_Count req db
-                            //"validate" => reply_Validate req db
-                            "createindexes" => self.reply_create_indexes(req, db),
-                            "deleteindexes" => self.reply_delete_indexes(req, db),
-                            "drop" => self.reply_drop_collection(req, db),
-                            "dropdatabase" => self.reply_drop_database(req, db),
-                            "listcollections" => self.reply_list_collections(req, db),
-                            "listindexes" => self.reply_list_indexes(req, db),
-                            "create" => self.reply_create_collection(req, db),
-                            //"features" => reply_features req db
-                            _ => Err(Error::Misc("unknown cmd"))
-                        };
-                    res
-                }
-            },
-            _ => Err(Error::Misc("query must be a document")),
+    fn reply_cmd(&mut self, req: MsgQuery, db: &str) -> Result<Reply> {
+        if req.query.pairs.is_empty() {
+            Err(Error::Misc("empty query"))
+        } else {
+            // this code assumes that the first key is always the command
+            let cmd = req.query.pairs[0].0.clone();
+            // TODO let cmd = cmd.ToLower();
+            let res =
+                // TODO isMaster needs to be in here?
+                match cmd.as_str() {
+                    //"explain" => reply_explain req db
+                    //"aggregate" => reply_aggregate req db
+                    "insert" => self.reply_insert(req, db),
+                    "delete" => self.reply_delete(&req, db),
+                    //"distinct" => reply_distinct req db
+                    //"update" => reply_Update req db
+                    //"findandmodify" => reply_FindAndModify req db
+                    //"count" => reply_Count req db
+                    //"validate" => reply_Validate req db
+                    "createindexes" => self.reply_create_indexes(&req, db),
+                    "deleteindexes" => self.reply_delete_indexes(&req, db),
+                    "drop" => self.reply_drop_collection(&req, db),
+                    "dropdatabase" => self.reply_drop_database(&req, db),
+                    "listcollections" => self.reply_list_collections(&req, db),
+                    "listindexes" => self.reply_list_indexes(&req, db),
+                    "create" => self.reply_create_collection(&req, db),
+                    //"features" => reply_features &req db
+                    _ => Err(Error::Misc("unknown cmd"))
+                };
+            res
         }
     }
 
@@ -969,8 +970,7 @@ impl<'b> Server<'b> {
                             //reply_cmd_sys_inprog req db
                             Err(Error::Misc("TODO"))
                         } else {
-                            // TODO probably want to pass ownership of req down here
-                            self.reply_cmd(&req, db)
+                            self.reply_cmd(req, db)
                         }
                     } else if parts.len()==3 && parts[1]=="system" && parts[2]=="indexes" {
                         //reply_system_indexes req db

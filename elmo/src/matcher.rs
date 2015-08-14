@@ -121,29 +121,29 @@ fn cmp(d: &BsonValue, lit: &BsonValue) -> Ordering {
             let litv = litv as f64;
             cmp_f64(m, litv)
         },
-        (&BsonValue::BArray(ref m), &BsonValue::BArray(ref litv)) => {
-            let lenm = m.len();
-            let lenlitv = litv.len();
+        (&BsonValue::BArray(ref ba_m), &BsonValue::BArray(ref ba_litv)) => {
+            let lenm = ba_m.items.len();
+            let lenlitv = ba_litv.items.len();
             let len = std::cmp::min(lenm, lenlitv);
             for i in 0 .. len {
-                let c = cmp(&m[i], &litv[i]);
+                let c = cmp(&ba_m.items[i], &ba_litv.items[i]);
                 if c != Ordering::Equal {
                     return c;
                 }
             }
             lenm.cmp(&lenlitv)
         },
-        (&BsonValue::BDocument(ref m), &BsonValue::BDocument(ref litv)) => {
-            let lenm = m.len();
-            let lenlitv = litv.len();
+        (&BsonValue::BDocument(ref bd_m), &BsonValue::BDocument(ref bd_litv)) => {
+            let lenm = bd_m.pairs.len();
+            let lenlitv = bd_litv.pairs.len();
             let len = std::cmp::min(lenm, lenlitv);
             for i in 0 .. len {
-                if m[i].0 < litv[i].0 {
+                if bd_m.pairs[i].0 < bd_litv.pairs[i].0 {
                     return Ordering::Less;
-                } else if m[i].0 > litv[i].0 {
+                } else if bd_m.pairs[i].0 > bd_litv.pairs[i].0 {
                     return Ordering::Greater;
                 } else {
-                    let c = cmp(&m[i].1, &litv[i].1);
+                    let c = cmp(&bd_m.pairs[i].1, &bd_litv.pairs[i].1);
                     if c != Ordering::Equal {
                         return c;
                     }
@@ -197,12 +197,12 @@ fn cmpdir(d: &BsonValue, lit: &BsonValue, reverse: bool) -> Ordering {
             (&BsonValue::BArray(_), &BsonValue::BArray(_)) => {
                 cmp(d, lit)
             },
-            (&BsonValue::BArray(ref a), _) => {
+            (&BsonValue::BArray(ref ba), _) => {
                 let om =
                     if reverse {
-                        array_max(a)
+                        array_max(&ba.items)
                     } else {
-                        array_min(a)
+                        array_min(&ba.items)
                     };
                 match om {
                     Some(m) => cmp(m, lit),
@@ -210,12 +210,12 @@ fn cmpdir(d: &BsonValue, lit: &BsonValue, reverse: bool) -> Ordering {
                     None => cmp(d, lit),
                 }
             },
-            (_, &BsonValue::BArray(ref a)) => {
+            (_, &BsonValue::BArray(ref ba)) => {
                 let om =
                     if reverse {
-                        array_max(a)
+                        array_max(&ba.items)
                     } else {
-                        array_min(a)
+                        array_min(&ba.items)
                     };
                 match om {
                     Some(m) => cmp(d, m),
@@ -322,8 +322,8 @@ fn cmp_gte(d: &BsonValue, lit: &BsonValue) -> bool {
 
 fn do_elem_match_objects<F: Fn(&str, usize)>(doc: &QueryDoc, d: &BsonValue, cb_array_pos: &F) -> bool {
     match d {
-        &BsonValue::BArray(ref a) => {
-            for vsub in a {
+        &BsonValue::BArray(ref ba) => {
+            for vsub in &ba.items {
                 match vsub {
                     &BsonValue::BArray(_) | &BsonValue::BDocument(_) => {
                         if match_query_doc(doc, vsub, cb_array_pos) {
@@ -353,9 +353,9 @@ fn match_predicate<F: Fn(&str, usize)>(pred: &Pred, d: &BsonValue, cb_array_pos:
         },
         &Pred::ElemMatchObjects(ref doc) => {
             match d {
-                &BsonValue::BArray(ref a) => {
+                &BsonValue::BArray(ref ba) => {
                     let found = 
-                        a.iter().position(|vsub| {
+                        ba.items.iter().position(|vsub| {
                             match vsub {
                                 &BsonValue::BDocument(_) | &BsonValue::BArray(_) => match_query_doc(doc, vsub, cb_array_pos),
                                 _ => false,
@@ -374,9 +374,9 @@ fn match_predicate<F: Fn(&str, usize)>(pred: &Pred, d: &BsonValue, cb_array_pos:
         },
         &Pred::ElemMatchPreds(ref preds) => {
             match d {
-                &BsonValue::BArray(ref a) => {
+                &BsonValue::BArray(ref ba) => {
                     let found = 
-                        a.iter().position(|vsub| preds.iter().any(|p| !match_predicate(p, vsub, cb_array_pos)));
+                        ba.items.iter().position(|vsub| preds.iter().any(|p| !match_predicate(p, vsub, cb_array_pos)));
                     match found {
                         Some(n) => {
                             cb_array_pos("TODO", n);
@@ -404,8 +404,8 @@ fn match_predicate<F: Fn(&str, usize)>(pred: &Pred, d: &BsonValue, cb_array_pos:
                             true
                         } else {
                             match d {
-                                &BsonValue::BArray(ref a) => {
-                                    a.iter().any(|v| cmp_eq(v, lit))
+                                &BsonValue::BArray(ref ba) => {
+                                    ba.items.iter().any(|v| cmp_eq(v, lit))
                                 },
                                 _ => false,
                             }
@@ -438,7 +438,7 @@ fn match_predicate<F: Fn(&str, usize)>(pred: &Pred, d: &BsonValue, cb_array_pos:
         &Pred::Nin(ref lits) => !lits.iter().any(|v| cmp_in(d, v)),
         &Pred::Size(n) => {
             match d {
-                &BsonValue::BArray(ref a) => a.len() == (n as usize),
+                &BsonValue::BArray(ref ba) => ba.items.len() == (n as usize),
                 _ => false,
             }
         },
@@ -469,12 +469,12 @@ fn match_pair_exists(pred: &Pred, path: &str, start: &BsonValue) -> bool {
                         &BsonValue::BDocument(_) => {
                             match_pair_exists(pred, subpath, v)
                         },
-                        &BsonValue::BArray(ref a) => {
+                        &BsonValue::BArray(ref ba) => {
                             let b = match_pair_exists(pred, subpath, v);
                             if b {
                                 true
                             } else {
-                                a.iter().any(|vsub| {
+                                ba.items.iter().any(|vsub| {
                                     match vsub {
                                         &BsonValue::BDocument(_) => match_pair_exists(pred, subpath, v),
                                         _ => false,
@@ -510,8 +510,8 @@ fn match_pair_other<F: Fn(&str, usize)>(pred: &Pred, path: &str, start: &BsonVal
                             &Pred::ElemMatchPreds(_) => false,
                             _ => {
                                 match v {
-                                    &BsonValue::BArray(ref a) => {
-                                        match a.iter().position(|vsub| match_predicate(pred, vsub, cb_array_pos)) {
+                                    &BsonValue::BArray(ref ba) => {
+                                        match ba.items.iter().position(|vsub| match_predicate(pred, vsub, cb_array_pos)) {
                                             Some(ndx) => {
                                                 cb_array_pos("TODO", ndx);
                                                 true
@@ -533,7 +533,7 @@ fn match_pair_other<F: Fn(&str, usize)>(pred: &Pred, path: &str, start: &BsonVal
                         &BsonValue::BDocument(_) => {
                             match_pair_other(pred, subpath, v, false, cb_array_pos)
                         },
-                        &BsonValue::BArray(ref a) => {
+                        &BsonValue::BArray(ref ba) => {
                             let b = match_pair_other(pred, subpath, v, true, cb_array_pos);
                             if b {
                                 true
@@ -544,7 +544,7 @@ fn match_pair_other<F: Fn(&str, usize)>(pred: &Pred, path: &str, start: &BsonVal
                                         _ => false,
                                     }
                                 };
-                                match a.iter().position(f) {
+                                match ba.items.iter().position(f) {
                                     Some(ndx) => {
                                         cb_array_pos("TODO", ndx);
                                         true
@@ -653,8 +653,8 @@ fn match_query_doc<F: Fn(&str, usize)>(q: &QueryDoc, d: &BsonValue, cb_array_pos
 
 fn contains_no_dollar_keys(v: &BsonValue) -> bool {
     match v {
-        &BsonValue::BDocument(ref pairs) => {
-            pairs.iter().all(|&(ref k, _)| !k.starts_with("$"))
+        &BsonValue::BDocument(ref bd) => {
+            bd.pairs.iter().all(|&(ref k, _)| !k.starts_with("$"))
         },
         _ => true,
     }
@@ -728,11 +728,11 @@ fn get_eqs(q: &QueryDoc) -> Vec<(&str, &BsonValue)> {
 
 fn is_query_doc(v: &BsonValue) -> bool {
     match v {
-        &BsonValue::BDocument(ref pairs) => {
-            let has_path = pairs.iter().any(|&(ref k, _)| !k.starts_with("$"));
-            let has_and = pairs.iter().any(|&(ref k, _)| k == "$and");
-            let has_or = pairs.iter().any(|&(ref k, _)| k == "$or");
-            let has_nor = pairs.iter().any(|&(ref k, _)| k == "$nor");
+        &BsonValue::BDocument(ref bd) => {
+            let has_path = bd.pairs.iter().any(|&(ref k, _)| !k.starts_with("$"));
+            let has_and = bd.pairs.iter().any(|&(ref k, _)| k == "$and");
+            let has_or = bd.pairs.iter().any(|&(ref k, _)| k == "$or");
+            let has_nor = bd.pairs.iter().any(|&(ref k, _)| k == "$nor");
             has_path || has_and || has_or || has_nor
         },
         _ => {
@@ -747,13 +747,14 @@ fn parse_compare(k: &str, v: &BsonValue) -> Result<QueryItem> {
 }
 
 // TODO this func kinda wants to consume its argument
-fn parse_query_doc(v: &BsonValue) -> Result<Vec<QueryItem>> {
+fn parse_query_doc(bd: &bson::BsonDocument) -> Result<Vec<QueryItem>> {
     fn do_and_or(result: &mut Vec<QueryItem>, a: &Vec<BsonValue>, op: &str) -> Result<()> {
         if a.len() == 0 {
             // TODO no panic
             panic!("array for $and $or cannot be empty");
         } else if a.len() == 1 {
-            let subpairs = try!(parse_query_doc(&a[0]));
+            let d = try!(a[0].as_document());
+            let subpairs = try!(parse_query_doc(d));
             for it in subpairs {
                 result.push(it);
             }
@@ -761,6 +762,7 @@ fn parse_query_doc(v: &BsonValue) -> Result<Vec<QueryItem>> {
             // TODO this wants to be a map+closure, but the error handling is weird
             let mut m = Vec::new();
             for d in a {
+                let d = try!(d.as_document());
                 let d = try!(parse_query_doc(d));
                 let d = QueryDoc::QueryDoc(d);
                 m.push(d);
@@ -778,8 +780,7 @@ fn parse_query_doc(v: &BsonValue) -> Result<Vec<QueryItem>> {
     }
 
     let mut result = Vec::new();
-    let pairs = try!(v.getDocument());
-    for &(ref k, ref v) in pairs {
+    for &(ref k, ref v) in &bd.pairs {
         match k.as_str() {
             "$comment" => {
             },
@@ -790,17 +791,17 @@ fn parse_query_doc(v: &BsonValue) -> Result<Vec<QueryItem>> {
                 result.push(QueryItem::Where(v.clone()));
             },
             "$and" => {
-                let a = try!(v.getArray());
-                do_and_or(&mut result, a, k);
+                let ba = try!(v.getArray());
+                do_and_or(&mut result, &ba.items, k);
             },
             "$or" => {
-                let a = try!(v.getArray());
-                do_and_or(&mut result, a, k);
+                let ba = try!(v.getArray());
+                do_and_or(&mut result, &ba.items, k);
             },
             "$text" => {
                 match v {
-                    &BsonValue::BDocument(ref pairs) => {
-                        match pairs.iter().find(|&&(ref k, _)| k == "$search") {
+                    &BsonValue::BDocument(ref bd) => {
+                        match bd.pairs.iter().find(|&&(ref k, _)| k == "$search") {
                             Some(&(_, BsonValue::BString(ref s))) => {
                                 result.push(QueryItem::Text(s.clone()));
                             },
@@ -811,15 +812,16 @@ fn parse_query_doc(v: &BsonValue) -> Result<Vec<QueryItem>> {
                 }
             },
             "$nor" => {
-                let a = try!(v.getArray());
-                if a.len() == 0 {
+                let ba = try!(v.getArray());
+                if ba.items.len() == 0 {
                     // TODO no panic
                     panic!("array for $and $or cannot be empty");
                 }
                 // TODO what if just one?  canonicalize?
                 // TODO this wants to be a map+closure, but the error handling is weird
                 let mut m = Vec::new();
-                for d in a {
+                for d in &ba.items {
+                    let d = try!(d.as_document());
                     let d = try!(parse_query_doc(d));
                     let d = QueryDoc::QueryDoc(d);
                     m.push(d);
@@ -834,7 +836,7 @@ fn parse_query_doc(v: &BsonValue) -> Result<Vec<QueryItem>> {
     Ok(result)
 }
 
-pub fn parse_query(v: BsonValue) -> Result<QueryDoc> {
+pub fn parse_query(v: bson::BsonDocument) -> Result<QueryDoc> {
     let a = try!(parse_query_doc(&v));
     let q = QueryDoc::QueryDoc(a);
     Ok(q)
