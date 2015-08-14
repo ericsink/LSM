@@ -285,6 +285,23 @@ fn slurp_array(ba: &[u8], i: &mut usize) -> Result<BsonValue> {
 }
 
 impl BsonValue {
+    pub fn try_remove_key(&mut self, k: &str) -> Option<BsonValue> {
+        match self {
+            &mut BsonValue::BDocument(ref mut pairs) => {
+                match pairs.iter().position(|&(ref ksub, _)| ksub == k) {
+                    Some(i) => {
+                        let (_, v) = pairs.remove(i);
+                        return Some(v);
+                    },
+                    None => {
+                        return None;
+                    },
+                }
+            },
+            _ => return None, // TODO error?
+        }
+    }
+
     pub fn tryGetValueForKey(&self, k: &str) -> Option<&BsonValue> {
         match self {
             &BsonValue::BDocument(ref pairs) => {
