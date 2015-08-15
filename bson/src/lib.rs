@@ -261,6 +261,21 @@ impl Document {
         let d = try!(slurp_document(w, &mut cur));
         Ok(d)
     }
+
+    pub fn is_dbref(&self) -> bool {
+        let has_ref = slice_find(&self.pairs, "$ref").is_some();
+        let has_id =  slice_find(&self.pairs, "$id").is_some();
+        let has_db =  slice_find(&self.pairs, "$db").is_some();
+        let len = self.pairs.len();
+        if len==2 && has_ref && has_id {
+            true
+        } else if len==3 && has_ref && has_id && has_db {
+            true
+        } else {
+            false
+        }
+    }
+
 }
 
 #[derive(Clone,Debug)]
@@ -571,21 +586,6 @@ impl Value {
         match self {
             &Value::BDateTime(_) => true,
             _ => false,
-        }
-    }
-
-    // TODO move to document?
-    fn is_dbref(pairs: &[(String,Value)]) -> bool {
-        let has_ref = slice_find(pairs, "$ref").is_some();
-        let has_id =  slice_find(pairs, "$id").is_some();
-        let has_db =  slice_find(pairs, "$db").is_some();
-        let len = pairs.len();
-        if len==2 && has_ref && has_id {
-            true
-        } else if len==3 && has_ref && has_id && has_db {
-            true
-        } else {
-            false
         }
     }
 

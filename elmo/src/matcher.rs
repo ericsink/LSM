@@ -741,8 +741,35 @@ fn is_query_doc(v: &bson::Value) -> bool {
     }
 }
 
-fn parse_compare(k: &str, v: &bson::Value) -> Result<QueryItem> {
+fn parse_pred_list(pairs: &Vec<(String,bson::Value)>) -> Vec<Pred> {
     unimplemented!();
+}
+
+fn parse_compare(k: &str, v: &bson::Value) -> Result<QueryItem> {
+    if k.starts_with("$") {
+        return Err(super::Error::Misc("parse_compare $"));
+    }
+    let qit = 
+        match v {
+            &bson::Value::BDocument(ref bd) => {
+                if bd.is_dbref() {
+                    QueryItem::Compare(String::from(k), vec![Pred::EQ(v.clone())])
+                } else if bd.pairs.iter().any(|&(ref k, _)| k.starts_with("$")) {
+                    let preds = parse_pred_list(&bd.pairs);
+                    QueryItem::Compare(String::from(k), preds)
+                } else {
+                    QueryItem::Compare(String::from(k), vec![Pred::EQ(v.clone())])
+                }
+            },
+            &bson::Value::BRegex(ref expr, ref options) => {
+                QueryItem::Compare(String::from(k), vec![Pred::REGEX(String::from("TODO"))])
+            },
+            _ => {
+                // TODO clone
+                QueryItem::Compare(String::from(k), vec![Pred::EQ(v.clone())])
+            },
+        };
+    Ok(qit)
 }
 
 // TODO this func kinda wants to consume its argument
