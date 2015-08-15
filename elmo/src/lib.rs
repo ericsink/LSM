@@ -290,7 +290,7 @@ impl Connection {
             ).collect::<Vec<_>>();
         let count_before = indexes.len();
         let indexes = 
-            if index.is_string() && try!(index.getString()) == "*" {
+            if index.is_string() && try!(index.as_str()) == "*" {
                 indexes.into_iter().filter(
                     |ndx| ndx.name != "_id_"
                 ).collect::<Vec<_>>()

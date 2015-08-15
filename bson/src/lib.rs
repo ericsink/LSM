@@ -130,6 +130,16 @@ impl Document {
         return None;
     }
 
+    fn get_nocase(&self, k: &str) -> Option<&Value> {
+        for t in self.pairs.iter() {
+            let (ref ksub, ref vsub) = *t;
+            if std::ascii::AsciiExt::eq_ignore_ascii_case(ksub.as_str(), k) {
+                return Some(vsub);
+            }
+        }
+        return None;
+    }
+
     // TODO rm
     pub fn getValueForKey(&self, k: &str) -> Result<&Value> {
         match self.get(k) {
@@ -138,8 +148,21 @@ impl Document {
         }
     }
 
+    // TODO uh, deal with keeping keys unique
     fn add_pair(&mut self, k: &str, v: Value) {
         self.pairs.push((String::from(k), v));
+    }
+
+    // TODO probably use this and delete the one above
+    fn insert(&mut self, k: &str, v: Value) {
+        // TODO make this more efficient?
+        for i in 0 .. self.pairs.len() {
+            if self.pairs[i].0 == k {
+                self.pairs[i].1 = v;
+                return;
+            }
+        }
+        self.pairs.push((String::from_str(k), v));
     }
 
     // TODO all the following names don't need pair in them
@@ -269,6 +292,35 @@ impl Array {
             v.find_all_strings(dest);
         }
     }
+
+    fn tryGetValueAtIndex(&self, ndx: usize) -> Option<&Value> {
+        if ndx<0 {
+            return None
+        } else if ndx >= self.items.len() {
+            return None
+        } else {
+            return Some(&self.items[ndx])
+        }
+    }
+
+    fn setValueAtIndex(&mut self, ndx: usize, v: Value) {
+        if ndx > 1500001 { panic!( "too big"); } // TODO this limit passes test set7.js, but is a bad idea
+        if ndx >= self.items.len() {
+            // TODO
+        }
+        self.items[ndx] = v;
+    }
+
+    fn removeValueAtIndex(&mut self, ndx: usize) {
+        self.items.remove(ndx);
+    }
+
+    fn unsetValueAtIndex(&mut self, ndx: usize) {
+        if ndx >=0 && ndx < self.items.len() {
+            self.items[ndx] = Value::BNull;
+        }
+    }
+
 }
 
 #[derive(Clone,Debug)]
@@ -463,57 +515,18 @@ fn slurp_array(ba: &[u8], i: &mut usize) -> Result<Array> {
 
 impl Value {
     pub fn tryGetValueEither(&self, k: &str) -> Option<&Value> {
+        // TODO
         unimplemented!();
     }
 
-    // TODO move this to document
-    fn tryGetValueForInsensitiveKey(&self, k: &str) -> Option<&Value> {
-        match self {
-            &Value::BDocument(ref bd) => {
-                for t in bd.pairs.iter() {
-                    let (ref ksub, ref vsub) = *t;
-                    if std::ascii::AsciiExt::eq_ignore_ascii_case(ksub.as_str(), k) {
-                        return Some(vsub);
-                    }
-                }
-                return None;
-            },
-            _ => return None, // TODO error?
-        }
-    }
-
-    // TODO move this to array
-    fn tryGetValueAtIndex(&self, ndx: usize) -> Option<&Value> {
-        match self {
-            &Value::BArray(ref ba) => {
-                if ndx<0 {
-                    return None
-                } else if ndx >= ba.items.len() {
-                    return None
-                } else {
-                    return Some(&ba.items[ndx])
-                }
-            },
-            _ => return None, // TODO error?
-        }
-    }
-
-    // TODO move this to document
-    fn getValueForInsensitiveKey(&self, k: &str) -> Result<&Value> {
-        match self.tryGetValueForInsensitiveKey(k) {
-            Some(v) => Ok(v),
-            None => Err(Error::Misc("required key not found")),
-        }
-    }
-
-    fn isNull(&self) -> bool {
+    fn is_null(&self) -> bool {
         match self {
             &Value::BNull => true,
             _ => false,
         }
     }
 
-    fn isArray(&self) -> bool {
+    fn is_array(&self) -> bool {
         match self {
             &Value::BArray(_) => true,
             _ => false,
@@ -527,14 +540,14 @@ impl Value {
         }
     }
 
-    fn isDocument(&self) -> bool {
+    fn is_document(&self) -> bool {
         match self {
             &Value::BDocument(_) => true,
             _ => false,
         }
     }
 
-    fn isNumeric(&self) -> bool {
+    fn is_numeric(&self) -> bool {
         match self {
             &Value::BInt32(_) => true,
             &Value::BInt64(_) => true,
@@ -557,6 +570,7 @@ impl Value {
         }
     }
 
+    // TODO move to document?
     fn is_dbref(pairs: &[(String,Value)]) -> bool {
         let has_ref = slice_find(pairs, "$ref").is_some();
         let has_id =  slice_find(pairs, "$id").is_some();
@@ -578,15 +592,15 @@ impl Value {
         }
     }
 
-    // TODO as_str
-    pub fn getString(&self) -> Result<&str> {
+    // TODO how to make this function NOT sound like it is converting anything to a string?
+    pub fn as_str(&self) -> Result<&str> {
         match self {
             &Value::BString(ref s) => Ok(s),
             _ => Err(Error::Misc("must be string")),
         }
     }
 
-    pub fn getArray(&self) -> Result<&Array> {
+    pub fn as_array(&self) -> Result<&Array> {
         match self {
             &Value::BArray(ref s) => Ok(s),
             _ => Err(Error::Misc("must be array")),
@@ -689,75 +703,6 @@ impl Value {
         &Value::BInt64(a) => Ok(a as f64),
         &Value::BDouble(a) => Ok(a),
         _ => Err(Error::Misc("must be convertible to f64")),
-        }
-    }
-
-    // TODO move to array
-    fn setValueAtIndex(&mut self, ndx: usize, v: Value) {
-        match *self {
-        Value::BArray(ref mut ba) => {
-            if ndx > 1500001 { panic!( "too big"); } // TODO this limit passes test set7.js, but is a bad idea
-            if ndx >= ba.items.len() {
-                // TODO
-            }
-            ba.items[ndx] = v;
-        },
-        _ => panic!("wrong type?")
-        }
-    }
-
-    // TODO move to array
-    fn removeValueAtIndex(&mut self, ndx: usize) {
-        match *self {
-        Value::BArray(ref mut ba) => {
-            ba.items.remove(ndx);
-        },
-        _ => panic!("wrong type?")
-        }
-    }
-
-    // TODO move to array
-    fn unsetValueAtIndex(&mut self, ndx: usize) {
-        match *self {
-        Value::BArray(ref mut ba) => {
-            if ndx >=0 && ndx < ba.items.len() {
-                ba.items[ndx] = Value::BNull;
-            }
-        },
-        _ => panic!("wrong type?")
-        }
-    }
-
-    // TODO move to document
-    fn setValueForKey(&mut self, k: &str, v: Value) {
-        // TODO make this more efficient?
-        match *self {
-        Value::BDocument(ref mut bd) => {
-            for i in 0 .. bd.pairs.len() {
-                if bd.pairs[i].0 == k {
-                    bd.pairs[i].1 = v;
-                    return;
-                }
-            }
-            bd.pairs.push((String::from_str(k), v));
-        },
-        _ => panic!("wrong type?")
-        }
-    }
-
-    // TODO move to document
-    fn unsetValueForKey(&mut self, k: &str) {
-        // TODO make this more efficient?
-        match *self {
-        Value::BDocument(ref mut bd) => {
-            for i in 0 .. bd.pairs.len() {
-                if bd.pairs[i].0 == k {
-                    bd.pairs.remove(i);
-                    break;
-                }
-            }
-        },
-        _ => panic!("wrong type?")
         }
     }
 

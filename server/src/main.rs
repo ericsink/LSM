@@ -398,8 +398,8 @@ impl<'b> Server<'b> {
 
     fn reply_delete(&self, req: &MsgQuery, db: &str) -> Result<Reply> {
         let q = &req.query;
-        let coll = try!(try!(q.getValueForKey("delete")).getString());
-        let deletes = try!(try!(q.getValueForKey("deletes")).getArray());
+        let coll = try!(try!(q.getValueForKey("delete")).as_str());
+        let deletes = try!(try!(q.getValueForKey("deletes")).as_array());
         // TODO limit
         // TODO ordered
         let result = try!(self.conn.delete(db, coll, &deletes.items));
@@ -604,7 +604,7 @@ impl<'b> Server<'b> {
 
     fn reply_create_collection(&self, req: &MsgQuery, db: &str) -> Result<Reply> {
         let q = &req.query;
-        let coll = try!(try!(q.getValueForKey("create")).getString());
+        let coll = try!(try!(q.getValueForKey("create")).as_str());
         let mut options = bson::Document::new_empty();
         // TODO maybe just pass everything through instead of looking for specific options
         match q.get("autoIndexId") {
@@ -644,8 +644,8 @@ impl<'b> Server<'b> {
     }
 
     fn reply_create_indexes(&mut self, req: &MsgQuery, db: &str) -> Result<Reply> {
-        let coll = try!(try!(req.query.getValueForKey("createIndexes")).getString());
-        let indexes = try!(try!(req.query.getValueForKey("indexes")).getArray());
+        let coll = try!(try!(req.query.getValueForKey("createIndexes")).as_str());
+        let indexes = try!(try!(req.query.getValueForKey("indexes")).as_array());
         let indexes = indexes.items.iter().map(
             |d| {
                 // TODO get these from d
@@ -671,7 +671,7 @@ impl<'b> Server<'b> {
     }
 
     fn reply_delete_indexes(&mut self, req: &MsgQuery, db: &str) -> Result<Reply> {
-        let coll = try!(try!(req.query.getValueForKey("deleteIndexes")).getString());
+        let coll = try!(try!(req.query.getValueForKey("deleteIndexes")).as_str());
         {
             // TODO is it safe/correct/necessary to remove the cursors BEFORE?
             let full_coll = format!("{}.{}", db, coll);
@@ -685,7 +685,7 @@ impl<'b> Server<'b> {
     }
 
     fn reply_drop_collection(&mut self, req: &MsgQuery, db: &str) -> Result<Reply> {
-        let coll = try!(try!(req.query.getValueForKey("drop")).getString());
+        let coll = try!(try!(req.query.getValueForKey("drop")).as_str());
         {
             // TODO is it safe/correct/necessary to remove the cursors BEFORE?
             let full_coll = format!("{}.{}", db, coll);

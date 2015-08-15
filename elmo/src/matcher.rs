@@ -790,11 +790,11 @@ fn parse_query_doc(bd: &bson::Document) -> Result<Vec<QueryItem>> {
                 result.push(QueryItem::Where(v.clone()));
             },
             "$and" => {
-                let ba = try!(v.getArray());
+                let ba = try!(v.as_array());
                 do_and_or(&mut result, &ba.items, k);
             },
             "$or" => {
-                let ba = try!(v.getArray());
+                let ba = try!(v.as_array());
                 do_and_or(&mut result, &ba.items, k);
             },
             "$text" => {
@@ -811,7 +811,7 @@ fn parse_query_doc(bd: &bson::Document) -> Result<Vec<QueryItem>> {
                 }
             },
             "$nor" => {
-                let ba = try!(v.getArray());
+                let ba = try!(v.as_array());
                 if ba.items.len() == 0 {
                     // TODO no panic
                     panic!("array for $and $or cannot be empty");
