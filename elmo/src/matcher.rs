@@ -4,6 +4,7 @@ use std::cmp::Ordering;
 
 use super::Result;
 
+extern crate misc;
 extern crate bson;
 
 pub enum QueryDoc {
@@ -741,8 +742,33 @@ fn is_query_doc(v: &bson::Value) -> bool {
     }
 }
 
-fn parse_pred_list(pairs: &Vec<(String,bson::Value)>) -> Vec<Pred> {
+fn parse_pred(k: &str, v: bson::Value) -> Result<Pred> {
     unimplemented!();
+}
+
+fn parse_pred_list(pairs: Vec<(String,bson::Value)>) -> Result<Vec<Pred>> {
+    let (regex, other): (Vec<_>, Vec<_>) = pairs.into_iter().partition(|&(ref k,_)| k == "$regex" || k == "$options");
+    // TODO another case of an iterator closure calling something that returns Result
+    let preds = other.into_iter().map(|(k,v)| parse_pred(&k,v)).collect::<Vec<_>>();;
+    let preds = try!(misc::unwrap_vec_of_results(preds));
+    let expr = regex.iter().find(|&&(ref k, _)| k == "$regex");
+    let options = regex.iter().find(|&&(ref k, _)| k == "$options");
+    match (expr, options) {
+        (Some(expr), None) => {
+            unimplemented!();
+        },
+        (Some(expr), Some(options)) => {
+            unimplemented!();
+        },
+        (None, Some(_)) => {
+            // TODO error
+            unimplemented!();
+        },
+        (None, None) => {
+            // nothing to do here
+        },
+    }
+    Ok(preds)
 }
 
 fn parse_compare(k: &str, v: &bson::Value) -> Result<QueryItem> {
@@ -755,7 +781,8 @@ fn parse_compare(k: &str, v: &bson::Value) -> Result<QueryItem> {
                 if bd.is_dbref() {
                     QueryItem::Compare(String::from(k), vec![Pred::EQ(v.clone())])
                 } else if bd.pairs.iter().any(|&(ref k, _)| k.starts_with("$")) {
-                    let preds = parse_pred_list(&bd.pairs);
+                    // TODO clone
+                    let preds = try!(parse_pred_list(bd.pairs.clone()));
                     QueryItem::Compare(String::from(k), preds)
                 } else {
                     QueryItem::Compare(String::from(k), vec![Pred::EQ(v.clone())])

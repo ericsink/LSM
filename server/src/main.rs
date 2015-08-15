@@ -186,18 +186,6 @@ impl Reply {
     }
 }
 
-// TODO in cases where we collect() an iterator and then immediately call this func,
-// it would be better to do the result unwrap during the collect, while building the
-// first vec, instead of building a vec and then rebuilding it.
-fn unwrap_vec_of_results<T,E>(v: Vec<std::result::Result<T,E>>) -> std::result::Result<Vec<T>,E> {
-    let mut r = Vec::new();
-    for t in v {
-        let q = try!(t);
-        r.push(q);
-    }
-    Ok(r)
-}
-
 fn vec_to_docs(v: Vec<bson::Value>) -> Vec<bson::Document> {
     unimplemented!();
 }
@@ -479,25 +467,25 @@ impl<'b> Server<'b> {
                 panic!("overflow");
             }
             let docs = seq.take(n as usize).collect::<Vec<_>>();
-            let docs = try!(unwrap_vec_of_results(docs));
+            let docs = try!(misc::unwrap_vec_of_results(docs));
             let docs = vec_to_docs(docs);
             Ok((docs, false))
         } else if number_to_return == 0 {
             // return whatever the default size is
             // TODO for now, just return them all and close the cursor
             let docs = seq.collect::<Vec<_>>();
-            let docs = try!(unwrap_vec_of_results(docs));
+            let docs = try!(misc::unwrap_vec_of_results(docs));
             let docs = vec_to_docs(docs);
             Ok((docs, false))
         } else {
             // soft limit.  keep cursor open.
             let docs = Self::grab(seq, number_to_return as usize);
             if docs.len() > 0 {
-                let docs = try!(unwrap_vec_of_results(docs));
+                let docs = try!(misc::unwrap_vec_of_results(docs));
                 let docs = vec_to_docs(docs);
                 Ok((docs, true))
             } else {
-                let docs = try!(unwrap_vec_of_results(docs));
+                let docs = try!(misc::unwrap_vec_of_results(docs));
                 let docs = vec_to_docs(docs);
                 Ok((docs, false))
             }
@@ -555,7 +543,7 @@ impl<'b> Server<'b> {
             match number_to_return {
                 None => {
                     let docs = seq.collect::<Vec<_>>();
-                    let docs = try!(unwrap_vec_of_results(docs));
+                    let docs = try!(misc::unwrap_vec_of_results(docs));
                     (docs, None)
                 },
                 Some(0) => {
@@ -575,12 +563,12 @@ impl<'b> Server<'b> {
                         // if we grabbed the same number we asked for, we assume the
                         // sequence has more, so we store the cursor and return it.
                         let cursor_id = self.store_cursor(ns, seq);
-                        let docs = try!(unwrap_vec_of_results(docs));
+                        let docs = try!(misc::unwrap_vec_of_results(docs));
                         (docs, Some(cursor_id))
                     } else {
                         // but if we got less than we asked for, we assume we have
                         // consumed the whole sequence.
-                        let docs = try!(unwrap_vec_of_results(docs));
+                        let docs = try!(misc::unwrap_vec_of_results(docs));
                         (docs, None)
                     }
                 },
@@ -898,7 +886,7 @@ impl<'b> Server<'b> {
         );
 
         //let docs = Self::grab(&mut seq, number_to_return as usize);
-        //let docs = try!(unwrap_vec_of_results(docs));
+        //let docs = try!(misc::unwrap_vec_of_results(docs));
         //Ok(create_reply(req_id, docs, 0))
 
         let (docs, more) = try!(Self::do_limit(&full_collection_name, &mut seq, number_to_return));
