@@ -743,12 +743,41 @@ fn is_query_doc(v: &bson::Value) -> bool {
 }
 
 fn parse_pred(k: &str, v: bson::Value) -> Result<Pred> {
-    unimplemented!();
+    fn not_regex(v: bson::Value) -> Result<bson::Value> {
+        match v {
+            bson::Value::BRegex(_,_) => Err(super::Error::Misc("regex not allowed here")),
+            _ => Ok(v),
+        }
+    }
+
+    match k {
+        "$eq" => Ok(Pred::EQ(v)),
+        "$ne" => Ok(Pred::NE(try!(not_regex(v)))),
+        "$gt" => Ok(Pred::GT(try!(not_regex(v)))),
+        "$lt" => Ok(Pred::LT(try!(not_regex(v)))),
+        "$gte" => Ok(Pred::GTE(try!(not_regex(v)))),
+        "$lte" => Ok(Pred::LTE(try!(not_regex(v)))),
+        "$regex" => unimplemented!(),
+        "$exists" => Ok(Pred::Exists(try!(v.as_bool()))),
+        // TODO as_i32 below: should probably allow conversion
+        "$type" => Ok(Pred::Type(try!(v.as_i32()))),
+        "$size" => unimplemented!(),
+        "$all" => unimplemented!(),
+        "$in" => unimplemented!(),
+        "$nin" => unimplemented!(),
+        "$not" => unimplemented!(),
+        "$mod" => unimplemented!(),
+        "$elemMatch" => unimplemented!(),
+        "$near" => unimplemented!(),
+        "$nearSphere" => unimplemented!(),
+        "$geoWithin" => unimplemented!(),
+        "$geoIntersects" => unimplemented!(),
+        _ => Err(super::Error::Misc("unknown pred")),
+    }
 }
 
 fn parse_pred_list(pairs: Vec<(String,bson::Value)>) -> Result<Vec<Pred>> {
     let (regex, other): (Vec<_>, Vec<_>) = pairs.into_iter().partition(|&(ref k,_)| k == "$regex" || k == "$options");
-    // TODO another case of an iterator closure calling something that returns Result
     let preds = try!(other.into_iter().map(|(k,v)| parse_pred(&k,v)).collect::<Result<Vec<_>>>());
     let expr = regex.iter().find(|&&(ref k, _)| k == "$regex");
     let options = regex.iter().find(|&&(ref k, _)| k == "$options");

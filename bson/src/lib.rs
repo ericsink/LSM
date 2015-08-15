@@ -639,7 +639,7 @@ impl Value {
         }
     }
 
-    fn getBool(&self) -> Result<bool> {
+    pub fn as_bool(&self) -> Result<bool> {
         match self {
             &Value::BBoolean(ref s) => Ok(*s),
             _ => Err(Error::Misc("must be bool")),
@@ -653,7 +653,7 @@ impl Value {
         }
     }
 
-    fn getInt32(&self) -> Result<i32> {
+    pub fn as_i32(&self) -> Result<i32> {
         match self {
             &Value::BInt32(ref s) => Ok(*s),
             _ => Err(Error::Misc("must be i32")),
