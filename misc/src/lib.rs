@@ -749,6 +749,8 @@ impl Sqlite4Num {
 // TODO in cases where we collect() an iterator and then immediately call this func,
 // it would be better to do the result unwrap during the collect, while building the
 // first vec, instead of building a vec and then rebuilding it.
+// let preds = try!(other.into_iter().map(|(k,v)| parse_pred(&k,v)).collect::<Result<Vec<_>>>());
+#[cfg(remove_me)]
 pub fn unwrap_vec_of_results<T,E>(v: Vec<std::result::Result<T,E>>) -> std::result::Result<Vec<T>,E> {
     let mut r = Vec::new();
     for t in v {

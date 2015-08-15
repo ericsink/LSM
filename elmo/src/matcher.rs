@@ -749,8 +749,7 @@ fn parse_pred(k: &str, v: bson::Value) -> Result<Pred> {
 fn parse_pred_list(pairs: Vec<(String,bson::Value)>) -> Result<Vec<Pred>> {
     let (regex, other): (Vec<_>, Vec<_>) = pairs.into_iter().partition(|&(ref k,_)| k == "$regex" || k == "$options");
     // TODO another case of an iterator closure calling something that returns Result
-    let preds = other.into_iter().map(|(k,v)| parse_pred(&k,v)).collect::<Vec<_>>();;
-    let preds = try!(misc::unwrap_vec_of_results(preds));
+    let preds = try!(other.into_iter().map(|(k,v)| parse_pred(&k,v)).collect::<Result<Vec<_>>>());
     let expr = regex.iter().find(|&&(ref k, _)| k == "$regex");
     let options = regex.iter().find(|&&(ref k, _)| k == "$options");
     match (expr, options) {

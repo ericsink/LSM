@@ -438,7 +438,7 @@ impl<'b> Server<'b> {
 
     // grab is just a take() which doesn't take ownership of the iterator
     // TODO investigate by_ref()
-    fn grab<T: Iterator<Item=Result<bson::Value>>>(seq: &mut T, n: usize) -> Vec<Result<bson::Value>> {
+    fn grab<T: Iterator<Item=Result<bson::Value>>>(seq: &mut T, n: usize) -> Result<Vec<bson::Value>> {
         let mut r = Vec::new();
         for _ in 0 .. n {
             match seq.next() {
@@ -446,11 +446,11 @@ impl<'b> Server<'b> {
                     break;
                 },
                 Some(v) => {
-                    r.push(v);
+                    r.push(try!(v));
                 },
             }
         }
-        r
+        Ok(r)
     }
 
     // this is the older way of returning a cursor.
@@ -466,26 +466,22 @@ impl<'b> Server<'b> {
                 // TODO can rust overflow handling deal with this?
                 panic!("overflow");
             }
-            let docs = seq.take(n as usize).collect::<Vec<_>>();
-            let docs = try!(misc::unwrap_vec_of_results(docs));
+            let docs = try!(seq.take(n as usize).collect::<Result<Vec<_>>>());
             let docs = vec_to_docs(docs);
             Ok((docs, false))
         } else if number_to_return == 0 {
             // return whatever the default size is
             // TODO for now, just return them all and close the cursor
-            let docs = seq.collect::<Vec<_>>();
-            let docs = try!(misc::unwrap_vec_of_results(docs));
+            let docs = try!(seq.collect::<Result<Vec<_>>>());
             let docs = vec_to_docs(docs);
             Ok((docs, false))
         } else {
             // soft limit.  keep cursor open.
-            let docs = Self::grab(seq, number_to_return as usize);
+            let docs = try!(Self::grab(seq, number_to_return as usize));
             if docs.len() > 0 {
-                let docs = try!(misc::unwrap_vec_of_results(docs));
                 let docs = vec_to_docs(docs);
                 Ok((docs, true))
             } else {
-                let docs = try!(misc::unwrap_vec_of_results(docs));
                 let docs = vec_to_docs(docs);
                 Ok((docs, false))
             }
@@ -542,8 +538,7 @@ impl<'b> Server<'b> {
         let (docs, cursor_id) =
             match number_to_return {
                 None => {
-                    let docs = seq.collect::<Vec<_>>();
-                    let docs = try!(misc::unwrap_vec_of_results(docs));
+                    let docs = try!(seq.collect::<Result<Vec<_>>>());
                     (docs, None)
                 },
                 Some(0) => {
@@ -558,17 +553,15 @@ impl<'b> Server<'b> {
                     (Vec::new(), Some(cursor_id))
                 },
                 Some(n) => {
-                    let docs = Self::grab(&mut seq, n);
+                    let docs = try!(Self::grab(&mut seq, n));
                     if docs.len() == n {
                         // if we grabbed the same number we asked for, we assume the
                         // sequence has more, so we store the cursor and return it.
                         let cursor_id = self.store_cursor(ns, seq);
-                        let docs = try!(misc::unwrap_vec_of_results(docs));
                         (docs, Some(cursor_id))
                     } else {
                         // but if we got less than we asked for, we assume we have
                         // consumed the whole sequence.
-                        let docs = try!(misc::unwrap_vec_of_results(docs));
                         (docs, None)
                     }
                 },
@@ -885,8 +878,7 @@ impl<'b> Server<'b> {
             |r| r.map_err(wrap_err)
         );
 
-        //let docs = Self::grab(&mut seq, number_to_return as usize);
-        //let docs = try!(misc::unwrap_vec_of_results(docs));
+        //let docs = try!(Self::grab(&mut seq, number_to_return as usize));
         //Ok(create_reply(req_id, docs, 0))
 
         let (docs, more) = try!(Self::do_limit(&full_collection_name, &mut seq, number_to_return));
