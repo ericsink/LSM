@@ -306,7 +306,7 @@ fn reply_err(req_id: i32, err: Error) -> Reply {
     // TODO stack trace was nice here
     //pairs.push(("errmsg", BString("exception: " + errmsg)));
     //pairs.push(("code", BInt32(code)));
-    doc.add_pair_i32("ok", 0);
+    doc.set_i32("ok", 0);
     create_reply(req_id, vec![doc], 0)
 }
 
@@ -324,56 +324,56 @@ impl<'b> Server<'b> {
 
     fn reply_whatsmyuri(&self, req: &MsgQuery) -> Result<Reply> {
         let mut doc = bson::Document::new_empty();
-        doc.add_pair_str("you", "127.0.0.1:65460");
-        doc.add_pair_i32("ok", 1);
+        doc.set_str("you", "127.0.0.1:65460");
+        doc.set_i32("ok", 1);
         Ok(create_reply(req.req_id, vec![doc], 0))
     }
 
     fn reply_getlog(&self, req: &MsgQuery) -> Result<Reply> {
         let mut doc = bson::Document::new_empty();
-        doc.add_pair_i32("totalLinesWritten", 1);
-        doc.add_pair_array("log", bson::Array::new_empty());
-        doc.add_pair_i32("ok", 1);
+        doc.set_i32("totalLinesWritten", 1);
+        doc.set_array("log", bson::Array::new_empty());
+        doc.set_i32("ok", 1);
         Ok(create_reply(req.req_id, vec![doc], 0))
     }
 
     fn reply_replsetgetstatus(&self, req: &MsgQuery) -> Result<Reply> {
         let mut mine = bson::Document::new_empty();
-        mine.add_pair_i32("_id", 0);
-        mine.add_pair_str("name", "whatever");
-        mine.add_pair_i32("state", 1);
-        mine.add_pair_f64("health", 1.0);
-        mine.add_pair_str("stateStr", "PRIMARY");
-        mine.add_pair_i32("uptime", 0);
-        mine.add_pair_timestamp("optime", 0);
-        mine.add_pair_datetime("optimeDate", 0);
-        mine.add_pair_timestamp("electionTime", 0);
-        mine.add_pair_timestamp("electionDate", 0);
-        mine.add_pair_bool("self", true);
+        mine.set_i32("_id", 0);
+        mine.set_str("name", "whatever");
+        mine.set_i32("state", 1);
+        mine.set_f64("health", 1.0);
+        mine.set_str("stateStr", "PRIMARY");
+        mine.set_i32("uptime", 0);
+        mine.set_timestamp("optime", 0);
+        mine.set_datetime("optimeDate", 0);
+        mine.set_timestamp("electionTime", 0);
+        mine.set_timestamp("electionDate", 0);
+        mine.set_bool("self", true);
 
         let mut doc = bson::Document::new_empty();
-        doc.add_pair_document("mine", mine);
-        doc.add_pair_str("set", "TODO");
-        doc.add_pair_datetime("date", 0);
-        doc.add_pair_i32("myState", 1);
-        doc.add_pair_i32("ok", 1);
+        doc.set_document("mine", mine);
+        doc.set_str("set", "TODO");
+        doc.set_datetime("date", 0);
+        doc.set_i32("myState", 1);
+        doc.set_i32("ok", 1);
 
         Ok(create_reply(req.req_id, vec![doc], 0))
     }
 
     fn reply_ismaster(&self, req: &MsgQuery) -> Result<Reply> {
         let mut doc = bson::Document::new_empty();
-        doc.add_pair_bool("ismaster", true);
-        doc.add_pair_bool("secondary", false);
-        doc.add_pair_i32("maxWireVersion", 3);
-        doc.add_pair_i32("minWireVersion", 2);
+        doc.set_bool("ismaster", true);
+        doc.set_bool("secondary", false);
+        doc.set_i32("maxWireVersion", 3);
+        doc.set_i32("minWireVersion", 2);
         // ver >= 2:  we don't support the older fire-and-forget write operations. 
         // ver >= 3:  we don't support the older form of explain
         // TODO if we set minWireVersion to 3, which is what we want to do, so
         // that we can tell the client that we don't support the older form of
         // explain, what happens is that we start getting the old fire-and-forget
         // write operations instead of the write commands that we want.
-        doc.add_pair_i32("ok", 1);
+        doc.set_i32("ok", 1);
         Ok(create_reply(req.req_id, vec![doc], 0))
     }
 
@@ -398,23 +398,24 @@ impl<'b> Server<'b> {
 
     fn reply_delete(&self, req: &MsgQuery, db: &str) -> Result<Reply> {
         let q = &req.query;
-        let coll = try!(try!(q.getValueForKey("delete")).as_str());
-        let deletes = try!(try!(q.getValueForKey("deletes")).as_array());
+        let coll = try!(q.must_get_str("delete"));
+        let deletes = try!(q.must_get_array("deletes"));
         // TODO limit
         // TODO ordered
         let result = try!(self.conn.delete(db, coll, &deletes.items));
         let mut doc = bson::Document::new_empty();
-        doc.add_pair_i32("ok", result as i32);
-        doc.add_pair_i32("ok", 1);
+        doc.set_i32("ok", result as i32);
+        doc.set_i32("ok", 1);
         Ok(create_reply(req.req_id, vec![doc], 0))
     }
 
     fn reply_insert(&self, mut req: MsgQuery, db: &str) -> Result<Reply> {
-        let coll = try!(req.query.remove("insert").ok_or(Error::Misc("required key not found")));
-        let coll = try!(coll.into_string());
-        let docs = try!(req.query.remove("documents").ok_or(Error::Misc("required key not found")));
+        let coll = try!(req.query.must_remove_string("insert"));
+
+        let docs = try!(req.query.must_remove("documents"));
         let docs = try!(docs.into_array());
         let docs = vec_to_docs(docs.items);
+
         // TODO ordered
         let results = try!(self.conn.insert(db, &coll, &docs));
         let mut errors = Vec::new();
@@ -426,11 +427,11 @@ impl<'b> Server<'b> {
             }
         }
         let mut doc = bson::Document::new_empty();
-        doc.add_pair_i32("n", ((results.len() - errors.len()) as i32));
+        doc.set_i32("n", ((results.len() - errors.len()) as i32));
         if errors.len() > 0 {
-            doc.add_pair_array("writeErrors", bson::Array {items: errors});
+            doc.set_array("writeErrors", bson::Array {items: errors});
         }
-        doc.add_pair_i32("ok", 1);
+        doc.set_i32("ok", 1);
         Ok(create_reply(req.req_id, vec![doc], 0))
     }
 
@@ -590,62 +591,62 @@ impl<'b> Server<'b> {
         match cursor_id {
             Some(cursor_id) => {
                 let mut cursor = bson::Document::new_empty();
-                cursor.add_pair_i64("id", cursor_id);
-                cursor.add_pair_str("ns", ns);
-                cursor.add_pair_array("firstBatch", bson::Array { items: docs});
+                cursor.set_i64("id", cursor_id);
+                cursor.set_str("ns", ns);
+                cursor.set_array("firstBatch", bson::Array { items: docs});
             },
             None => {
-                doc.add_pair_array("result", bson::Array { items: docs});
+                doc.set_array("result", bson::Array { items: docs});
             },
         }
-        doc.add_pair_i32("ok", 1);
+        doc.set_i32("ok", 1);
         Ok(doc)
     }
 
     fn reply_create_collection(&self, req: &MsgQuery, db: &str) -> Result<Reply> {
         let q = &req.query;
-        let coll = try!(try!(q.getValueForKey("create")).as_str());
+        let coll = try!(req.query.must_get_str("create"));
         let mut options = bson::Document::new_empty();
         // TODO maybe just pass everything through instead of looking for specific options
         match q.get("autoIndexId") {
-            Some(&bson::Value::BBoolean(b)) => options.add_pair_bool("autoIndexId", b),
+            Some(&bson::Value::BBoolean(b)) => options.set_bool("autoIndexId", b),
             // TODO error on bad values?
             _ => (),
         }
         match q.get("temp") {
-            Some(&bson::Value::BBoolean(b)) => options.add_pair_bool("temp", b),
+            Some(&bson::Value::BBoolean(b)) => options.set_bool("temp", b),
             // TODO error on bad values?
             _ => (),
         }
         match q.get("capped") {
-            Some(&bson::Value::BBoolean(b)) => options.add_pair_bool("capped", b),
+            Some(&bson::Value::BBoolean(b)) => options.set_bool("capped", b),
             // TODO error on bad values?
             _ => (),
         }
         match q.get("size") {
-            Some(&bson::Value::BInt32(n)) => options.add_pair_i64("size", n as i64),
-            Some(&bson::Value::BInt64(n)) => options.add_pair_i64("size", n as i64),
-            Some(&bson::Value::BDouble(n)) => options.add_pair_i64("size", n as i64),
+            Some(&bson::Value::BInt32(n)) => options.set_i64("size", n as i64),
+            Some(&bson::Value::BInt64(n)) => options.set_i64("size", n as i64),
+            Some(&bson::Value::BDouble(n)) => options.set_i64("size", n as i64),
             // TODO error on bad values?
             _ => (),
         }
         match q.get("max") {
-            Some(&bson::Value::BInt32(n)) => options.add_pair_i64("max", n as i64),
-            Some(&bson::Value::BInt64(n)) => options.add_pair_i64("max", n as i64),
-            Some(&bson::Value::BDouble(n)) => options.add_pair_i64("max", n as i64),
+            Some(&bson::Value::BInt32(n)) => options.set_i64("max", n as i64),
+            Some(&bson::Value::BInt64(n)) => options.set_i64("max", n as i64),
+            Some(&bson::Value::BDouble(n)) => options.set_i64("max", n as i64),
             // TODO error on bad values?
             _ => (),
         }
         // TODO more options here ?
         let result = try!(self.conn.create_collection(db, coll, options));
         let mut doc = bson::Document::new_empty();
-        doc.add_pair_i32("ok", 1);
+        doc.set_i32("ok", 1);
         Ok(create_reply(req.req_id, vec![doc], 0))
     }
 
     fn reply_create_indexes(&mut self, req: &MsgQuery, db: &str) -> Result<Reply> {
-        let coll = try!(try!(req.query.getValueForKey("createIndexes")).as_str());
-        let indexes = try!(try!(req.query.getValueForKey("indexes")).as_array());
+        let coll = try!(req.query.must_get_str("createIndexes"));
+        let indexes = try!(req.query.must_get_array("indexes"));
         let indexes = indexes.items.iter().map(
             |d| {
                 // TODO get these from d
@@ -666,26 +667,26 @@ impl<'b> Server<'b> {
         // TODO numIndexesBefore
         // TODO numIndexesAfter
         let mut doc = bson::Document::new_empty();
-        doc.add_pair_i32("ok", 1);
+        doc.set_i32("ok", 1);
         Ok(create_reply(req.req_id, vec![doc], 0))
     }
 
     fn reply_delete_indexes(&mut self, req: &MsgQuery, db: &str) -> Result<Reply> {
-        let coll = try!(try!(req.query.getValueForKey("deleteIndexes")).as_str());
+        let coll = try!(req.query.must_get_str("deleteIndexes"));
         {
             // TODO is it safe/correct/necessary to remove the cursors BEFORE?
             let full_coll = format!("{}.{}", db, coll);
             self.remove_cursors_for_collection(&full_coll);
         }
-        let index = try!(req.query.getValueForKey("index"));
+        let index = try!(req.query.must_get("index"));
         let (count_indexes_before, num_indexes_deleted) = try!(self.conn.delete_indexes(db, coll, index));
         let mut doc = bson::Document::new_empty();
-        doc.add_pair_i32("ok", 1);
+        doc.set_i32("ok", 1);
         Ok(create_reply(req.req_id, vec![doc], 0))
     }
 
     fn reply_drop_collection(&mut self, req: &MsgQuery, db: &str) -> Result<Reply> {
-        let coll = try!(try!(req.query.getValueForKey("drop")).as_str());
+        let coll = try!(req.query.must_get_str("drop"));
         {
             // TODO is it safe/correct/necessary to remove the cursors BEFORE?
             let full_coll = format!("{}.{}", db, coll);
@@ -694,11 +695,11 @@ impl<'b> Server<'b> {
         let deleted = try!(self.conn.drop_collection(db, coll));
         let mut doc = bson::Document::new_empty();
         if deleted {
-            doc.add_pair_i32("ok", 1);
+            doc.set_i32("ok", 1);
         } else {
             // mongo shell apparently cares about this exact error message string
-            doc.add_pair_str("errmsg", "ns not found");
-            doc.add_pair_i32("ok", 0);
+            doc.set_str("errmsg", "ns not found");
+            doc.set_i32("ok", 0);
         }
         Ok(create_reply(req.req_id, vec![doc], 0))
     }
@@ -708,10 +709,10 @@ impl<'b> Server<'b> {
         let deleted = try!(self.conn.drop_database(db));
         let mut doc = bson::Document::new_empty();
         if deleted {
-            doc.add_pair_i32("ok", 1);
+            doc.set_i32("ok", 1);
         } else {
-            doc.add_pair_str("errmsg", "database not found");
-            doc.add_pair_i32("ok", 0);
+            doc.set_str("errmsg", "database not found");
+            doc.set_i32("ok", 0);
         }
         Ok(create_reply(req.req_id, vec![doc], 0))
     }
@@ -728,8 +729,8 @@ impl<'b> Server<'b> {
                 move |c| {
                     if db.as_str() == c.db {
                         let mut doc = bson::Document::new_empty();
-                        doc.add_pair_string("name", c.coll);
-                        doc.add_pair_document("options", c.options);
+                        doc.set_string("name", c.coll);
+                        doc.set_document("options", c.options);
                         Some(Ok(bson::Value::BDocument(doc)))
                     } else {
                         None
@@ -762,9 +763,9 @@ impl<'b> Server<'b> {
                 move |ndx| {
                     if ndx.db.as_str() == db {
                         let mut doc = bson::Document::new_empty();
-                        doc.add_pair_string("ns", ndx.full_collection_name());
-                        doc.add_pair_string("name", ndx.name);
-                        doc.add_pair_document("key", ndx.spec);
+                        doc.set_string("ns", ndx.full_collection_name());
+                        doc.set_string("name", ndx.name);
+                        doc.set_document("key", ndx.spec);
                         // TODO it seems the automatic index on _id is NOT supposed to be marked unique
                         // TODO if unique && ndxInfo.ndx<>"_id_" then pairs.Add("unique", BBoolean unique)
                         Some(Ok(bson::Value::BDocument(doc)))
@@ -821,13 +822,13 @@ impl<'b> Server<'b> {
 
     fn reply_query(&mut self, req: MsgQuery, db: &str) -> Result<Reply> {
         let MsgQuery {
-            req_id: req_id,
-            flags: flags,
-            full_collection_name: full_collection_name,
-            number_to_skip: number_to_skip,
-            number_to_return: number_to_return,
-            query: mut query,
-            return_fields_selector: return_fields_selector,
+            req_id,
+            flags,
+            full_collection_name,
+            number_to_skip,
+            number_to_return,
+            mut query,
+            return_fields_selector,
         } = req;
 
         let (db, coll) = try!(Self::splitname(&full_collection_name));

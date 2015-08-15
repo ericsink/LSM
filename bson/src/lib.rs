@@ -26,17 +26,12 @@
 #![feature(iter_arith)]
 #![feature(slice_position_elem)]
 
-// TODO turn the following warnings back on later
-#![allow(non_snake_case)]
-#![allow(non_camel_case_types)]
-
 extern crate misc;
 
 use misc::endian::*;
 use misc::bufndx;
 
 #[derive(Debug)]
-// TODO consider calling this just Error
 pub enum Error {
     // TODO remove Misc
     Misc(&'static str),
@@ -86,6 +81,7 @@ impl From<std::str::Utf8Error> for Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+// TODO this function doesn't seem to go here
 pub fn split_name(s: &str) -> (&str, &str) {
     // TODO
     (&s[0 .. 2], &s[2 .. 4])
@@ -108,6 +104,7 @@ impl Document {
         }
     }
 
+    // TODO consider calling this extract
     pub fn remove(&mut self, k: &str) -> Option<Value> {
         match self.pairs.iter().position(|&(ref ksub, _)| ksub == k) {
             Some(i) => {
@@ -118,6 +115,15 @@ impl Document {
                 return None;
             },
         }
+    }
+
+    pub fn must_remove(&mut self, k: &str) -> Result<Value> {
+        self.remove(k).ok_or(Error::Misc("required key not found"))
+    }
+
+    pub fn must_remove_string(&mut self, k: &str) -> Result<String> {
+        let v = try!(self.must_remove(k));
+        v.into_string()
     }
 
     pub fn get(&self, k: &str) -> Option<&Value> {
@@ -140,21 +146,21 @@ impl Document {
         return None;
     }
 
-    // TODO rm
-    pub fn getValueForKey(&self, k: &str) -> Result<&Value> {
-        match self.get(k) {
-            Some(v) => Ok(v),
-            None => Err(Error::Misc("required key not found")),
-        }
+    pub fn must_get(&self, k: &str) -> Result<&Value> {
+        self.get(k).ok_or(Error::Misc("required key not found"))
     }
 
-    // TODO uh, deal with keeping keys unique
-    fn add_pair(&mut self, k: &str, v: Value) {
-        self.pairs.push((String::from(k), v));
+    pub fn must_get_str(&self, k: &str) -> Result<&str> {
+        let v = try!(self.get(k).ok_or(Error::Misc("required key not found")));
+        v.as_str()
     }
 
-    // TODO probably use this and delete the one above
-    fn insert(&mut self, k: &str, v: Value) {
+    pub fn must_get_array(&self, k: &str) -> Result<&Array> {
+        let v = try!(self.get(k).ok_or(Error::Misc("required key not found")));
+        v.as_array()
+    }
+
+    pub fn set(&mut self, k: &str, v: Value) {
         // TODO make this more efficient?
         for i in 0 .. self.pairs.len() {
             if self.pairs[i].0 == k {
@@ -165,46 +171,44 @@ impl Document {
         self.pairs.push((String::from_str(k), v));
     }
 
-    // TODO all the following names don't need pair in them
-
-    pub fn add_pair_document(&mut self, k: &str, v: Document) {
-        self.add_pair(k, Value::BDocument(v));
+    pub fn set_document(&mut self, k: &str, v: Document) {
+        self.set(k, Value::BDocument(v));
     }
 
-    pub fn add_pair_array(&mut self, k: &str, v: Array) {
-        self.add_pair(k, Value::BArray(v));
+    pub fn set_array(&mut self, k: &str, v: Array) {
+        self.set(k, Value::BArray(v));
     }
 
-    pub fn add_pair_i32(&mut self, k: &str, v: i32) {
-        self.add_pair(k, Value::BInt32(v));
+    pub fn set_i32(&mut self, k: &str, v: i32) {
+        self.set(k, Value::BInt32(v));
     }
 
-    pub fn add_pair_i64(&mut self, k: &str, v: i64) {
-        self.add_pair(k, Value::BInt64(v));
+    pub fn set_i64(&mut self, k: &str, v: i64) {
+        self.set(k, Value::BInt64(v));
     }
 
-    pub fn add_pair_f64(&mut self, k: &str, v: f64) {
-        self.add_pair(k, Value::BDouble(v));
+    pub fn set_f64(&mut self, k: &str, v: f64) {
+        self.set(k, Value::BDouble(v));
     }
 
-    pub fn add_pair_bool(&mut self, k: &str, v: bool) {
-        self.add_pair(k, Value::BBoolean(v));
+    pub fn set_bool(&mut self, k: &str, v: bool) {
+        self.set(k, Value::BBoolean(v));
     }
 
-    pub fn add_pair_str(&mut self, k: &str, v: &str) {
-        self.add_pair(k, Value::BString(String::from(v)));
+    pub fn set_str(&mut self, k: &str, v: &str) {
+        self.set(k, Value::BString(String::from(v)));
     }
 
-    pub fn add_pair_string(&mut self, k: &str, v: String) {
-        self.add_pair(k, Value::BString(v));
+    pub fn set_string(&mut self, k: &str, v: String) {
+        self.set(k, Value::BString(v));
     }
 
-    pub fn add_pair_timestamp(&mut self, k: &str, v: i64) {
-        self.add_pair(k, Value::BTimeStamp(v));
+    pub fn set_timestamp(&mut self, k: &str, v: i64) {
+        self.set(k, Value::BTimeStamp(v));
     }
 
-    pub fn add_pair_datetime(&mut self, k: &str, v: i64) {
-        self.add_pair(k, Value::BDateTime(v));
+    pub fn set_datetime(&mut self, k: &str, v: i64) {
+        self.set(k, Value::BDateTime(v));
     }
 
     pub fn to_bson(&self, w: &mut Vec<u8>) {
