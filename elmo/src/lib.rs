@@ -123,6 +123,8 @@ pub struct CollectionInfo {
     pub options: bson::Document,
 }
 
+// TODO remove derive Clone later
+#[derive(Clone)]
 pub struct IndexInfo {
     pub db: String,
     pub coll: String,
@@ -380,7 +382,7 @@ impl Connection {
         Ok(v)
     }
 
-    fn try_find_index_by_name_or_spec(indexes: Vec<IndexInfo>, desc: &bson::Value) -> Option<IndexInfo> {
+    fn try_find_index_by_name_or_spec<'a>(indexes: &'a Vec<IndexInfo>, desc: &bson::Value) -> Option<&'a IndexInfo> {
         let mut a =
             match desc {
                 &bson::Value::BString(ref s) => {
@@ -407,13 +409,13 @@ impl Connection {
         let count_before = indexes.len();
         let indexes = 
             if index.is_string() && try!(index.as_str()) == "*" {
-                indexes.into_iter().filter(
+                indexes.iter().filter(
                     |ndx| ndx.name != "_id_"
                 ).collect::<Vec<_>>()
             } else {
                 // TODO we're supposed to disallow delete of _id_, right?
                 // TODO if let
-                match Self::try_find_index_by_name_or_spec(indexes, index) {
+                match Self::try_find_index_by_name_or_spec(&indexes, index) {
                     Some(ndx) => vec![ndx],
                     None => vec![],
                 }
@@ -517,6 +519,10 @@ impl Connection {
         ).collect::<Result<Vec<(_,_)>>>()
     }
 
+    fn find_compares_eq() {
+        // TODO
+    }
+
     fn find_index_for_min_max<'a>(indexes: &'a Vec<IndexInfo>, keys: &Vec<String>) -> Result<Option<&'a IndexInfo>> {
         for ndx in indexes {
             let (normspec, _) = try!(get_normalized_spec(ndx));
@@ -565,7 +571,7 @@ impl Connection {
                     if v.is_string() && try!(v.as_str()) == "$natural" {
                         (true, None)
                     } else {
-                        if let Some(ndx) = Self::try_find_index_by_name_or_spec(indexes, v) {
+                        if let Some(ndx) = Self::try_find_index_by_name_or_spec(&indexes, v) {
                             (false, Some(ndx))
                         } else {
                             return Err(Error::Misc("bad hint"));
@@ -575,40 +581,61 @@ impl Connection {
                 None => (false, None),
             };
         let plan =
+            // unless we're going to add comparisons to the query,
+            // the bounds for min/max need to be precise, since the matcher isn't
+            // going to help if they're not.  min is inclusive.  max is
+            // exclusive.
             match (min, max) {
-                (Some(min), Some(max)) => {
-                    unimplemented!();
-                },
-                (Some(min), None) => {
-                    let min = try!(Self::parse_index_min_max(min));
-                    let (keys, minvals): (Vec<_>, Vec<_>) = min.into_iter().unzip();
-                    //match try!(Self::find_index_for_min_max(&indexes, &keys)) {
-                        //Some(ndx) => {
-                        //},
-                        //None => {
-                        //},
-                    //}
-                    // match findIndexForMinMax indexes keys with
-                    // | Some ndx -> (ndx,plan.bounds.GTE(minvals)) |> plan.q.Plan |> Some
-                    // | None -> failwith "index not found" // TODO or None
-
-                    unimplemented!();
-                },
-                (None, Some(max)) => {
-                    unimplemented!();
-                },
                 (None, None) => {
                     if natural {
-                        //None
-                        unimplemented!();
+                        None
                     } else {
                         // TODO chooseIndex indexes m hint
                         unimplemented!();
                     }
                 },
+                (min, max) => {
+                    // TODO if natural, then fail?
+                    let pair =
+                        match (min, max) {
+                            (None, None) => {
+                                // we handled this case above
+                                unreachable!();
+                            },
+                            (Some(min), Some(max)) => {
+                                unimplemented!();
+                            },
+                            (Some(min), None) => {
+                                let min = try!(Self::parse_index_min_max(min));
+                                let (keys, minvals): (Vec<_>, Vec<_>) = min.into_iter().unzip();
+                                match try!(Self::find_index_for_min_max(&indexes, &keys)) {
+                                    Some(ndx) => {
+                                        let bounds = QueryBounds::GTE(minvals);
+                                        (ndx, bounds)
+                                    },
+                                    None => {
+                                        return Err(Error::Misc("index not found. TODO should be None?"));
+                                    },
+                                }
+                            },
+                            (None, Some(max)) => {
+                                unimplemented!();
+                            },
+                        };
+
+                    // TODO tests indicate that if there is a $min and/or $max as well as a $hint,
+                    // then we need to error if they don't match each other.
+
+                    let plan = QueryPlan {
+                        // TODO clone
+                        ndx: pair.0.clone(),
+                        bounds: pair.1,
+                    };
+                    Some(plan)
+                }
             };
 
-        let coll_reader = try!(reader.into_collection_reader(db, coll, None));
+        let coll_reader = try!(reader.into_collection_reader(db, coll, plan));
         Ok(coll_reader)
     }
 }
