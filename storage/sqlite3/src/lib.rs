@@ -160,16 +160,6 @@ struct MyPublicConn {
     myconn: std::rc::Rc<MyConn>,
 }
 
-// TODO I'm not sure this type is worth the trouble anymore.
-// maybe we should go back to just keeping a bool that specifies
-// whether we need to negate or not.
-#[derive(PartialEq,Copy,Clone)]
-enum IndexType {
-    Forward,
-    Backward,
-    Geo2d,
-}
-
 fn step_done(stmt: &mut sqlite3::PreparedStatement) -> Result<()> {
     let mut r = stmt.execute();
     match try!(r.step().map_err(elmo::wrap_err)) {
@@ -191,11 +181,11 @@ fn verify_changes(stmt: &sqlite3::PreparedStatement, shouldbe: u64) -> Result<()
     }
 }
 
-fn copy_dirs_from_normspec_to_vals(normspec: &Vec<(String, IndexType)>, vals: Vec<bson::Value>) -> Vec<(bson::Value, bool)> {
+fn copy_dirs_from_normspec_to_vals(normspec: &Vec<(String, elmo::IndexType)>, vals: Vec<bson::Value>) -> Vec<(bson::Value, bool)> {
     // TODO if normspec.len() < vals.len() then panic?
     let mut a = Vec::new();
     for (i,v) in vals.into_iter().enumerate() {
-        let neg = normspec[i].1 == IndexType::Backward;
+        let neg = normspec[i].1 == elmo::IndexType::Backward;
         a.push((v, neg));
     }
     a
@@ -211,8 +201,8 @@ fn get_table_name_for_index(db: &str, coll: &str, name: &str) -> String {
     format!("ndx.{}.{}.{}", db, coll, name) 
 }
 
-fn get_index_entries(new_doc: &bson::Document, normspec: &Vec<(String, IndexType)>, weights: &Option<std::collections::HashMap<String,i32>>, options: &bson::Document, entries: &mut Vec<Vec<(bson::Value,bool)>>) -> Result<()> {
-    fn find_index_entry_vals(normspec: &Vec<(String, IndexType)>, new_doc: &bson::Document, sparse: bool) -> Vec<(bson::Value,bool)> {
+fn get_index_entries(new_doc: &bson::Document, normspec: &Vec<(String, elmo::IndexType)>, weights: &Option<std::collections::HashMap<String,i32>>, options: &bson::Document, entries: &mut Vec<Vec<(bson::Value,bool)>>) -> Result<()> {
+    fn find_index_entry_vals(normspec: &Vec<(String, elmo::IndexType)>, new_doc: &bson::Document, sparse: bool) -> Vec<(bson::Value,bool)> {
         let mut r = Vec::new();
         for t in normspec {
             let k = &t.0;
@@ -239,7 +229,7 @@ fn get_index_entries(new_doc: &bson::Document, normspec: &Vec<(String, IndexType
                 };
             if keep {
                 v.replace_undefined();
-                let neg = IndexType::Backward == typ;
+                let neg = elmo::IndexType::Backward == typ;
                 r.push((v,neg));
             }
         }
@@ -345,111 +335,6 @@ fn get_index_entries(new_doc: &bson::Document, normspec: &Vec<(String, IndexType
     Ok(())
 }
 
-// TODO this is basically iter().position()
-fn slice_find(pairs: &[(String, bson::Value)], s: &str) -> Option<usize> {
-    for i in 0 .. pairs.len() {
-        match pairs[0].1 {
-            bson::Value::BString(ref t) => {
-                if t == s {
-                    return Some(i);
-                }
-            },
-            _ => (),
-        }
-    }
-    None
-}
-
-fn decode_index_type(v: &bson::Value) -> IndexType {
-    match v {
-        &bson::Value::BInt32(n) => if n<0 { IndexType::Backward } else { IndexType::Forward },
-        &bson::Value::BInt64(n) => if n<0 { IndexType::Backward } else { IndexType::Forward },
-        &bson::Value::BDouble(n) => if n<0.0 { IndexType::Backward } else { IndexType::Forward },
-        &bson::Value::BString(ref s) => if s == "2d" { 
-            IndexType::Geo2d 
-        } else { 
-            panic!("decode_index_type")
-        },
-        _ => panic!("decode_index_type")
-    }
-}
-
-// this function gets the index spec (its keys) into a form that
-// is simplified and cleaned up.
-//
-// if there are text indexes in index.spec, they are removed
-//
-// all text indexes, including any that were in index.spec, and
-// anything implied by options.weights, are stored in a new Map<string,int>
-// called weights.
-//
-// any non-text indexes that appeared in spec AFTER any text
-// indexes are discarded.  I *think* Mongo keeps these, but only
-// for the purpose of grabbing their data later when used as a covering
-// index, which we're ignoring.
-//
-fn get_normalized_spec(info: &elmo::IndexInfo) -> Result<(Vec<(String,IndexType)>,Option<std::collections::HashMap<String,i32>>)> {
-    //printfn "info: %A" info
-    let first_text = slice_find(&info.spec.pairs, "text");
-    let w1 = info.options.get("weights");
-    match (first_text, w1) {
-        (None, None) => {
-            let decoded = info.spec.pairs.iter().map(|&(ref k, ref v)| (k.clone(), decode_index_type(v))).collect::<Vec<(String,IndexType)>>();
-            //printfn "no text index: %A" decoded
-            Ok((decoded, None))
-        },
-        _ => {
-            let (scalar_keys, text_keys) = 
-                match first_text {
-                    Some(i) => {
-                        let scalar_keys = &info.spec.pairs[0 .. i];
-                        // note that any non-text index after the first text index is getting discarded
-                        let mut text_keys = Vec::new();
-                        for t in &info.spec.pairs {
-                            match t.1 {
-                                bson::Value::BString(ref s) => {
-                                    if s == "text" {
-                                        text_keys.push(t.0.clone());
-                                    }
-                                },
-                                _ => (),
-                            }
-                        }
-                        (scalar_keys, text_keys)
-                    },
-                    None => (&info.spec.pairs[0 ..], Vec::new())
-                };
-            let mut weights = std::collections::HashMap::new();
-            match w1 {
-                Some(&bson::Value::BDocument(ref bd)) => {
-                    for t in &bd.pairs {
-                        let n = 
-                            match &t.1 {
-                                &bson::Value::BInt32(n) => n,
-                                &bson::Value::BInt64(n) => n as i32,
-                                &bson::Value::BDouble(n) => n as i32,
-                                _ => panic!("weight must be numeric")
-                            };
-                        weights.insert(t.0.clone(), n);
-                    }
-                },
-                Some(_) => panic!( "weights must be a document"),
-                None => (),
-            };
-            for k in text_keys {
-                if !weights.contains_key(&k) {
-                    weights.insert(String::from(k), 1);
-                }
-            }
-            // TODO if the wildcard is present, remove everything else?
-            let decoded = scalar_keys.iter().map(|&(ref k, ref v)| (k.clone(), decode_index_type(v))).collect::<Vec<(String,IndexType)>>();
-            let r = Ok((decoded, Some(weights)));
-            //printfn "%A" r
-            r
-        }
-    }
-}
-
 fn get_index_info_from_row(r: &sqlite3::ResultRow) -> Result<elmo::IndexInfo> {
     let name = r.column_text(0).expect("NOT NULL");
     let spec = try!(bson::Document::from_bson(&r.column_slice(1).expect("NOT NULL")));
@@ -509,7 +394,7 @@ impl MyConn {
 
         // TODO the following is way too heavy.  all we need is the index types
         // so we can tell if they're supposed to be backwards or not.
-        let (normspec, _weights) = try!(get_normalized_spec(&plan.ndx));
+        let (normspec, _weights) = try!(elmo::get_normalized_spec(&plan.ndx));
 
         fn add_one(ba: &Vec<u8>) -> Vec<u8> {
             let a = ba.clone();
@@ -601,7 +486,7 @@ impl MyConn {
     fn get_text_index_scan_reader(myconn: std::rc::Rc<MyConn>, commit_on_drop: bool, ndx: &elmo::IndexInfo,  eq: elmo::QueryKey, terms: Vec<elmo::TextQueryTerm>) -> Result<MyCollectionReader> {
         let tbl_coll = get_table_name_for_collection(&ndx.db, &ndx.coll);
         let tbl_ndx = get_table_name_for_index(&ndx.db, &ndx.coll, &ndx.name);
-        let (normspec, weights) = try!(get_normalized_spec(&ndx));
+        let (normspec, weights) = try!(elmo::get_normalized_spec(&ndx));
         let weights = 
             match weights {
                 None => return Err(elmo::Error::Misc("non text index")),
@@ -897,7 +782,7 @@ impl MyCollectionWriter {
 
     fn update_indexes_insert(indexes: &mut Vec<IndexPrep>, rowid: i64, v: &bson::Document) -> Result<()> {
         for t in indexes {
-            let (normspec, weights) = try!(get_normalized_spec(&t.info));
+            let (normspec, weights) = try!(elmo::get_normalized_spec(&t.info));
             let mut entries = Vec::new();
             try!(get_index_entries(&v, &normspec, &weights, &t.info.options, &mut entries));
             let entries = entries.into_iter().collect::<std::collections::HashSet<_>>();
@@ -1017,7 +902,7 @@ impl MyWriter {
                         try!(self.myconn.conn.exec(&s).map_err(elmo::wrap_err));
                         try!(self.myconn.conn.exec(&format!("CREATE INDEX \"childndx_{}\" ON \"{}\" (doc_rowid)", tbl_ndx, tbl_ndx)).map_err(elmo::wrap_err));
                         // now insert index entries for every doc that already exists
-                        let (normspec, weights) = try!(get_normalized_spec(&info));
+                        let (normspec, weights) = try!(elmo::get_normalized_spec(&info));
                         let mut stmt2 = try!(self.myconn.conn.prepare(&format!("SELECT did,bson FROM \"{}\"", tbl_coll)).map_err(elmo::wrap_err));
                         let mut stmt_insert = try!(self.prepare_index_insert(&tbl_ndx));
                         let mut r = stmt2.execute();

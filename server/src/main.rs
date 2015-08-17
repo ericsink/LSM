@@ -775,7 +775,7 @@ impl<'b> Server<'b> {
         }
     }
 
-    fn tryGetKeyWithOrWithoutDollarSignPrefix<'a>(v: &'a bson::Document, k: &str) -> Option<&'a bson::Value> {
+    fn try_get_optional_prefix<'a>(v: &'a bson::Document, k: &str) -> Option<&'a bson::Value> {
         assert_eq!(&k[0 .. 1], "$");
         match v.get(k) {
             Some(r) => Some(r),
@@ -814,12 +814,6 @@ impl<'b> Server<'b> {
 
         let (db, coll) = try!(Self::splitname(&full_collection_name));
 
-        let projection =
-            match return_fields_selector {
-                Some(ref v) => Some(v),
-                None => None,
-            };
-
         // This *might* just have the query in it.  OR it might have the 
         // query in a key called query, which might also be called $query,
         // along with other stuff (like orderby) as well.
@@ -831,18 +825,18 @@ impl<'b> Server<'b> {
                 Some(q) => {
                     // TODO what if somebody queries on a field named query?  ambiguous.
 
-                    let orderby = Self::tryGetKeyWithOrWithoutDollarSignPrefix(&query, "$orderby");
-                    let min = Self::tryGetKeyWithOrWithoutDollarSignPrefix(&query, "$min");
-                    let max = Self::tryGetKeyWithOrWithoutDollarSignPrefix(&query, "$max");
-                    let hint = Self::tryGetKeyWithOrWithoutDollarSignPrefix(&query, "$hint");
-                    let explain = Self::tryGetKeyWithOrWithoutDollarSignPrefix(&query, "$explain");
+                    let orderby = Self::try_remove_optional_prefix(&mut query, "$orderby");
+                    let min = Self::try_remove_optional_prefix(&mut query, "$min");
+                    let max = Self::try_remove_optional_prefix(&mut query, "$max");
+                    let hint = Self::try_remove_optional_prefix(&mut query, "$hint");
+                    let explain = Self::try_remove_optional_prefix(&mut query, "$explain");
                     let q = try!(q.into_document());
                     let seq = try!(self.conn.find(
                             db, 
                             coll, 
                             q,
                             orderby,
-                            projection,
+                            return_fields_selector,
                             min,
                             max,
                             hint,

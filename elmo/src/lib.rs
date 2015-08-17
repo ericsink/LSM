@@ -215,6 +215,122 @@ pub trait StorageWriter : StorageBase {
 
 }
 
+// TODO I'm not sure this type is worth the trouble anymore.
+// maybe we should go back to just keeping a bool that specifies
+// whether we need to negate or not.
+#[derive(PartialEq,Copy,Clone)]
+pub enum IndexType {
+    Forward,
+    Backward,
+    Geo2d,
+}
+
+fn decode_index_type(v: &bson::Value) -> IndexType {
+    match v {
+        &bson::Value::BInt32(n) => if n<0 { IndexType::Backward } else { IndexType::Forward },
+        &bson::Value::BInt64(n) => if n<0 { IndexType::Backward } else { IndexType::Forward },
+        &bson::Value::BDouble(n) => if n<0.0 { IndexType::Backward } else { IndexType::Forward },
+        &bson::Value::BString(ref s) => if s == "2d" { 
+            IndexType::Geo2d 
+        } else { 
+            panic!("decode_index_type")
+        },
+        _ => panic!("decode_index_type")
+    }
+}
+
+// TODO this is basically iter().position()
+fn slice_find(pairs: &[(String, bson::Value)], s: &str) -> Option<usize> {
+    for i in 0 .. pairs.len() {
+        match pairs[0].1 {
+            bson::Value::BString(ref t) => {
+                if t == s {
+                    return Some(i);
+                }
+            },
+            _ => (),
+        }
+    }
+    None
+}
+
+// this function gets the index spec (its keys) into a form that
+// is simplified and cleaned up.
+//
+// if there are text indexes in index.spec, they are removed
+//
+// all text indexes, including any that were in index.spec, and
+// anything implied by options.weights, are stored in a new Map<string,int>
+// called weights.
+//
+// any non-text indexes that appeared in spec AFTER any text
+// indexes are discarded.  I *think* Mongo keeps these, but only
+// for the purpose of grabbing their data later when used as a covering
+// index, which we're ignoring.
+//
+pub fn get_normalized_spec(info: &IndexInfo) -> Result<(Vec<(String,IndexType)>,Option<std::collections::HashMap<String,i32>>)> {
+    //printfn "info: %A" info
+    let first_text = slice_find(&info.spec.pairs, "text");
+    let w1 = info.options.get("weights");
+    match (first_text, w1) {
+        (None, None) => {
+            let decoded = info.spec.pairs.iter().map(|&(ref k, ref v)| (k.clone(), decode_index_type(v))).collect::<Vec<(String,IndexType)>>();
+            //printfn "no text index: %A" decoded
+            Ok((decoded, None))
+        },
+        _ => {
+            let (scalar_keys, text_keys) = 
+                match first_text {
+                    Some(i) => {
+                        let scalar_keys = &info.spec.pairs[0 .. i];
+                        // note that any non-text index after the first text index is getting discarded
+                        let mut text_keys = Vec::new();
+                        for t in &info.spec.pairs {
+                            match t.1 {
+                                bson::Value::BString(ref s) => {
+                                    if s == "text" {
+                                        text_keys.push(t.0.clone());
+                                    }
+                                },
+                                _ => (),
+                            }
+                        }
+                        (scalar_keys, text_keys)
+                    },
+                    None => (&info.spec.pairs[0 ..], Vec::new())
+                };
+            let mut weights = std::collections::HashMap::new();
+            match w1 {
+                Some(&bson::Value::BDocument(ref bd)) => {
+                    for t in &bd.pairs {
+                        let n = 
+                            match &t.1 {
+                                &bson::Value::BInt32(n) => n,
+                                &bson::Value::BInt64(n) => n as i32,
+                                &bson::Value::BDouble(n) => n as i32,
+                                _ => panic!("weight must be numeric")
+                            };
+                        weights.insert(t.0.clone(), n);
+                    }
+                },
+                Some(_) => panic!( "weights must be a document"),
+                None => (),
+            };
+            for k in text_keys {
+                if !weights.contains_key(&k) {
+                    weights.insert(String::from(k), 1);
+                }
+            }
+            // TODO if the wildcard is present, remove everything else?
+            let decoded = scalar_keys.iter().map(|&(ref k, ref v)| (k.clone(), decode_index_type(v))).collect::<Vec<(String,IndexType)>>();
+            let r = Ok((decoded, Some(weights)));
+            //printfn "%A" r
+            r
+        }
+    }
+}
+
+
 pub trait StorageConnection {
     fn begin_write(&self) -> Result<Box<StorageWriter + 'static>>;
     fn begin_read(&self) -> Result<Box<StorageReader + 'static>>;
@@ -296,6 +412,7 @@ impl Connection {
                 ).collect::<Vec<_>>()
             } else {
                 // TODO we're supposed to disallow delete of _id_, right?
+                // TODO if let
                 match Self::try_find_index_by_name_or_spec(indexes, index) {
                     Some(ndx) => vec![ndx],
                     None => vec![],
@@ -373,16 +490,65 @@ impl Connection {
         Ok(result)
     }
 
+    fn parse_index_min_max(v: bson::Value) -> Result<Vec<(String,bson::Value)>> {
+        let v = try!(v.into_document());
+        let matcher::QueryDoc::QueryDoc(items) = try!(matcher::parse_query(v));
+        items.into_iter().map(
+            |it| match it {
+                // TODO wish we could pattern match on the vec.  can we?
+                matcher::QueryItem::Compare(k, mut preds) => {
+                    if preds.len() == 1 {
+                        match preds.pop().expect("just checked") {
+                            matcher::Pred::EQ(v) => {
+                                Ok((k, v))
+                            },
+                            _ => {
+                                Err(Error::Misc("bad min max"))
+                            },
+                        }
+                    } else {
+                        Err(Error::Misc("bad min max"))
+                    }
+                },
+                _ => {
+                    Err(Error::Misc("bad min max"))
+                },
+            }
+        ).collect::<Result<Vec<(_,_)>>>()
+    }
+
+    fn find_index_for_min_max<'a>(indexes: &'a Vec<IndexInfo>, keys: &Vec<String>) -> Result<Option<&'a IndexInfo>> {
+        for ndx in indexes {
+            let (normspec, _) = try!(get_normalized_spec(ndx));
+            let a = normspec.iter().map(|&(ref k,_)| k).collect::<Vec<_>>();
+            if a.len() != keys.len() {
+                continue;
+            }
+            // TODO this should just be a == *keys, or something similar
+            let mut same = true;
+            for i in 0 .. a.len() {
+                if a[i] != keys[i].as_str() {
+                    same = false;
+                    break;
+                }
+            }
+            if same {
+                return Ok(Some(ndx));
+            }
+        }
+        return Ok(None);
+    }
+
     pub fn find(&self,
                 db: &str,
                 coll: &str,
                 query: bson::Document,
-                orderby: Option<&bson::Value>,
-                projection: Option<&bson::Document>,
-                min: Option<&bson::Value>,
-                max: Option<&bson::Value>,
-                hint: Option<&bson::Value>,
-                explain: Option<&bson::Value>
+                orderby: Option<bson::Value>,
+                projection: Option<bson::Document>,
+                min: Option<bson::Value>,
+                max: Option<bson::Value>,
+                hint: Option<bson::Value>,
+                explain: Option<bson::Value>
                 ) 
         -> Result<Box<StorageCollectionReader<Item=Result<bson::Value>> + 'static>>
     {
@@ -391,7 +557,57 @@ impl Connection {
         let indexes = try!(reader.list_indexes()).into_iter().filter(
             |ndx| ndx.db == db && ndx.coll == coll
             ).collect::<Vec<_>>();
+        // TODO maybe we should get normalized index specs for all the indexes now.
         let m = matcher::parse_query(query);
+        let (natural, hint) = 
+            match hint {
+                Some(ref v) => {
+                    if v.is_string() && try!(v.as_str()) == "$natural" {
+                        (true, None)
+                    } else {
+                        if let Some(ndx) = Self::try_find_index_by_name_or_spec(indexes, v) {
+                            (false, Some(ndx))
+                        } else {
+                            return Err(Error::Misc("bad hint"));
+                        }
+                    }
+                },
+                None => (false, None),
+            };
+        let plan =
+            match (min, max) {
+                (Some(min), Some(max)) => {
+                    unimplemented!();
+                },
+                (Some(min), None) => {
+                    let min = try!(Self::parse_index_min_max(min));
+                    let (keys, minvals): (Vec<_>, Vec<_>) = min.into_iter().unzip();
+                    //match try!(Self::find_index_for_min_max(&indexes, &keys)) {
+                        //Some(ndx) => {
+                        //},
+                        //None => {
+                        //},
+                    //}
+                    // match findIndexForMinMax indexes keys with
+                    // | Some ndx -> (ndx,plan.bounds.GTE(minvals)) |> plan.q.Plan |> Some
+                    // | None -> failwith "index not found" // TODO or None
+
+                    unimplemented!();
+                },
+                (None, Some(max)) => {
+                    unimplemented!();
+                },
+                (None, None) => {
+                    if natural {
+                        //None
+                        unimplemented!();
+                    } else {
+                        // TODO chooseIndex indexes m hint
+                        unimplemented!();
+                    }
+                },
+            };
+
         let coll_reader = try!(reader.into_collection_reader(db, coll, None));
         Ok(coll_reader)
     }

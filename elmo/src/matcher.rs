@@ -11,7 +11,7 @@ pub enum QueryDoc {
     QueryDoc(Vec<QueryItem>),
 }
 
-enum QueryItem {
+pub enum QueryItem {
     Compare(String, Vec<Pred>),
     AND(Vec<QueryDoc>),
     OR(Vec<QueryDoc>),
@@ -20,7 +20,8 @@ enum QueryItem {
     Text(String),
 }
 
-enum Pred {
+// TODO does this need to be public?  index min/max code is using it.
+pub enum Pred {
     Exists(bool),
     Size(i32),
     Type(i32),
