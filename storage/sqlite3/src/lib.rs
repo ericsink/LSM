@@ -125,6 +125,7 @@ impl<'a> Iterator for ResultSetBsonValueIterator<'a> {
     }
 }
 
+// TODO std::iter::Empty?
 struct MyEmptyIterator;
 
 impl Iterator for MyEmptyIterator {
