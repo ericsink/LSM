@@ -529,7 +529,7 @@ impl Connection {
         ).collect::<Result<Vec<(_,_)>>>()
     }
 
-    fn find_compares_eq(m: &matcher::QueryDoc) -> Result<HashMap<&str, Vec<&bson::Value>>> {
+    fn find_compares_eq(m: &matcher::QueryDoc) -> Result<HashMap<&str, &bson::Value>> {
         fn find<'a>(m: &'a matcher::QueryDoc, dest: &mut Vec<(&'a str, &'a bson::Value)>) {
             let &matcher::QueryDoc::QueryDoc(ref a) = m;
             for it in a {
@@ -566,21 +566,28 @@ impl Connection {
         // which will include the one above, and the matcher will then also
         // make sure that the 4 is there as well.
 
-        for (ref k, ref mut v) in mc.iter_mut() {
-            // TODO this should actually just return the one value instead of
-            // a vec with the one value in it.
-            if v.len() > 1 {
-                let distinct = {
-                    let uniq : HashSet<_> = v.iter().collect();
-                    uniq.len()
-                };
-                if distinct > 1 {
-                    return Err(Error::Misc("conflict $eq"));
-                } else {
-                    v.truncate(1);
-                }
-            }
-        }
+        let mc = 
+            try!(mc.into_iter().map(
+                    |(k, mut v)| 
+                    if v.len() == 0 {
+                        Err(Error::Misc("cannot happen"))
+                    } else if v.len() == 1 {
+                        let v = v.pop().expect("len() == 1");
+                        Ok((k, v))
+                    } else {
+                        let count_distinct = {
+                            let uniq : HashSet<_> = v.iter().collect();
+                            uniq.len()
+                        };
+                        if count_distinct > 1 {
+                            Err(Error::Misc("conflicting $eq"))
+                        } else {
+                            let v = v.pop().expect("len() > 0");
+                            Ok((k, v))
+                        }
+                    }
+                    ).collect::<Result<HashMap<_,_>>>()
+                );
 
         Ok(mc)
     }
