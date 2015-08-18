@@ -778,3 +778,13 @@ pub fn group_by_key<TK : Eq + std::hash::Hash,TV>(pairs: Vec<(TK,TV)>) -> HashMa
     mc
 }
 
+pub fn remove_first_if_exists<T>(v: &mut Vec<T>) -> Option<T> {
+    //gt.reverse();
+    //gt.pop()
+    if v.len() == 0 {
+        None
+    } else {
+        Some(v.remove(0))
+    }
+}
+

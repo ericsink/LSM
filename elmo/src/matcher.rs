@@ -63,7 +63,8 @@ fn cmp_f64(m: f64, litv: f64) -> Ordering {
     }
 }
 
-fn cmp(d: &bson::Value, lit: &bson::Value) -> Ordering {
+// TODO should probably be impl Ord
+pub fn cmp(d: &bson::Value, lit: &bson::Value) -> Ordering {
     match (d,lit) {
         (&bson::Value::BObjectID(m), &bson::Value::BObjectID(litv)) => {
             m.cmp(&litv)

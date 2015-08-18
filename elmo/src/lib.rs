@@ -20,6 +20,7 @@
 
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::cmp::Ordering;
 
 extern crate misc;
 
@@ -167,10 +168,34 @@ pub struct QueryPlan {
     pub bounds: QueryBounds,
 }
 
+#[derive(PartialEq,Copy,Clone)]
 enum OpIneq {
     LT,
     GT,
     LTE,
+    GTE,
+}
+
+impl OpIneq {
+    fn is_gt(self) -> bool {
+        match self {
+            OpIneq::LT => false,
+            OpIneq::LTE => false,
+            OpIneq::GT => true,
+            OpIneq::GTE => true,
+        }
+    }
+}
+
+#[derive(PartialEq,Copy,Clone)]
+enum OpLt {
+    LT,
+    LTE,
+}
+
+#[derive(PartialEq,Copy,Clone)]
+enum OpGt {
+    GT,
     GTE,
 }
 
@@ -592,7 +617,7 @@ impl Connection {
         Ok(mc)
     }
 
-    fn find_compares_ineq(m: &matcher::QueryDoc) -> Result<HashMap<&str, (OpIneq, Vec<&bson::Value>)>> {
+    fn find_compares_ineq(m: &matcher::QueryDoc) -> Result<HashMap<&str, (Option<(OpGt, &bson::Value)>, Option<(OpLt, &bson::Value)>)>> {
         fn find<'a>(m: &'a matcher::QueryDoc, dest: &mut Vec<(&'a str, (OpIneq, &'a bson::Value))>) {
             let &matcher::QueryDoc::QueryDoc(ref a) = m;
             for it in a {
@@ -619,12 +644,92 @@ impl Connection {
             }
         }
 
+        fn cmp_gt(t1: &(OpGt, &bson::Value), t2: &(OpGt, &bson::Value)) -> Ordering {
+            let c = matcher::cmp(t1.1, t2.1);
+            match c {
+                Ordering::Less => c,
+                Ordering::Greater => c,
+                Ordering::Equal => {
+                    match (t1.0, t2.0) {
+                        (OpGt::GT, OpGt::GT) => Ordering::Equal,
+                        (OpGt::GTE, OpGt::GTE) => Ordering::Equal,
+                        (OpGt::GT, OpGt::GTE) => Ordering::Less,
+                        (OpGt::GTE, OpGt::GT) => Ordering::Greater,
+                    }
+                },
+            }
+        }
+
+        fn cmp_lt(t1: &(OpLt, &bson::Value), t2: &(OpLt, &bson::Value)) -> Ordering {
+            let c = matcher::cmp(t1.1, t2.1);
+            match c {
+                Ordering::Less => c,
+                Ordering::Greater => c,
+                Ordering::Equal => {
+                    match (t1.0, t2.0) {
+                        (OpLt::LT, OpLt::LT) => Ordering::Equal,
+                        (OpLt::LTE, OpLt::LTE) => Ordering::Equal,
+                        (OpLt::LT, OpLt::LTE) => Ordering::Less,
+                        (OpLt::LTE, OpLt::LT) => Ordering::Greater,
+                    }
+                },
+            }
+        }
+
+        fn to_lt(op: OpIneq) -> Option<OpLt> {
+            match op {
+                OpIneq::LT => Some(OpLt::LT),
+                OpIneq::LTE => Some(OpLt::LTE),
+                OpIneq::GT => None,
+                OpIneq::GTE => None,
+            }
+        }
+
+        fn to_gt(op: OpIneq) -> Option<OpGt> {
+            match op {
+                OpIneq::LT => None,
+                OpIneq::LTE => None,
+                OpIneq::GT => Some(OpGt::GT),
+                OpIneq::GTE => Some(OpGt::GTE),
+            }
+        }
+
         let mut comps = vec![];
         find(m, &mut comps);
 
         let mut mc = misc::group_by_key(comps);
 
-        unimplemented!();
+        let mut m2 = HashMap::new();
+
+        for (k, a) in mc {
+            let (gt, lt): (Vec<_>, Vec<_>) = a.into_iter().partition(|&(op, _)| op.is_gt());
+
+            let mut gt = 
+                gt
+                .into_iter()
+                // TODO in the following line, since we already partitioned, else/None should be unreachable
+                .filter_map(|(op, v)| if let Some(gt) = to_gt(op) { Some((gt, v)) } else { None })
+                .collect::<Vec<_>>();
+            let gt = {
+                gt.sort_by(cmp_gt);
+                misc::remove_first_if_exists(&mut gt)
+            };
+            
+            let mut lt = 
+                lt
+                .into_iter()
+                // TODO in the following line, since we already partitioned, else/None should be unreachable
+                .filter_map(|(op, v)| if let Some(lt) = to_lt(op) { Some((lt, v)) } else { None })
+                .collect::<Vec<_>>();
+            let lt = {
+                lt.sort_by(cmp_lt);
+                misc::remove_first_if_exists(&mut lt)
+            };
+            
+            m2.insert(k, (gt, lt));
+        }
+
+        Ok(m2)
     }
 
     fn find_index_for_min_max<'a>(indexes: &'a Vec<IndexInfo>, keys: &Vec<String>) -> Result<Option<&'a IndexInfo>> {
