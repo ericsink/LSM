@@ -726,8 +726,36 @@ impl Connection {
                 misc::remove_first_if_exists(&mut lt)
             };
             
+            // Note that if we wanted to disallow > and < the same value, this is
+            // where we would do it, but mongo allows this according to test case
+            // find8.js
+
+            // TODO issue here of diving into elemMatch or not:
+            // TODO we cannot do a query with both bounds unless the two
+            // comparisons came from the same elemMatch.
+            // for example:
+            // {x:{$gt:2,$lt:5}}
+            // this query has to match the following document:
+            // {x:[1,7]}
+            // because the array x has
+            // something that matches x>2 (the 7)
+            // AND
+            // something that matches x<5 (the 1)
+            // even those two somethings are not the same thing,
+            // they came from the same x.
+            // we can choose x>2 or x<5 as our index, but we can't choose both.
+            // unless elemMatch.
+            //
+            // note that if we have to satisfy two gt on x, such as:
+            // x>5
+            // x>9
+            // it doesn't really matter which one we choose for the index.
+            // both will be correct.  but choosing x>9 will result in us reviewing
+            // fewer documents.
+
             m2.insert(k, (gt, lt));
         }
+
 
         Ok(m2)
     }
