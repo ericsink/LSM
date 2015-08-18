@@ -520,22 +520,27 @@ impl Connection {
     }
 
     fn find_compares_eq() {
-        fn find(m: &matcher::QueryDoc) -> Box<Iterator<Item=(&str, &bson::Value)>> {
+        fn find<'a>(m: &'a matcher::QueryDoc, dest: &mut Vec<(&'a str, &'a bson::Value)>) {
             let &matcher::QueryDoc::QueryDoc(ref a) = m;
-            a.iter().flat_map(|it|  match it {
-                &matcher::QueryItem::Compare(ref k, ref preds) => {
-                    preds.iter().filter_map(|p| match p {
-                        &matcher::Pred::EQ(ref v) => Some((k,v)),
-                        _ => None,
-                    })
-                },
-                &matcher::QueryItem::AND(ref docs) => {
-                    docs.iter().flat_map(|d| find(d))
-                },
-                _ => {
-                    std::iter::Empty
-                },
-            })
+            for it in a {
+                match it {
+                    &matcher::QueryItem::Compare(ref k, ref preds) => {
+                        for p in preds {
+                            match p {
+                                &matcher::Pred::EQ(ref v) => dest.push((k,v)),
+                                _ => (),
+                            }
+                        }
+                    },
+                    &matcher::QueryItem::AND(ref docs) => {
+                        for d in docs {
+                            find(d, dest);
+                        }
+                    },
+                    _ => {
+                    },
+                }
+            }
         }
 
         // TODO
