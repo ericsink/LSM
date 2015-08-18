@@ -519,7 +519,7 @@ impl Connection {
         ).collect::<Result<Vec<(_,_)>>>()
     }
 
-    fn find_compares_eq() {
+    fn find_compares_eq(m: &matcher::QueryDoc) -> Result<std::collections::HashMap<&str, Vec<&bson::Value>>> {
         fn find<'a>(m: &'a matcher::QueryDoc, dest: &mut Vec<(&'a str, &'a bson::Value)>) {
             let &matcher::QueryDoc::QueryDoc(ref a) = m;
             for it in a {
@@ -543,7 +543,44 @@ impl Connection {
             }
         }
 
-        // TODO
+        let mut comps = vec![];
+        find(m, &mut comps);
+        let mut mc = std::collections::HashMap::new();
+        for (k,v) in comps {
+            let a = match mc.entry(k) {
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    e.insert(vec![])
+                },
+                std::collections::hash_map::Entry::Occupied(e) => {
+                    e.into_mut()
+                },
+            };
+            a.push(v);
+        }
+
+        // query for x=3 && x=4 is legit in mongo.
+        // it can match a doc where x is an array that contains both 3 and 4
+        // {x:[1,2,3,4,5]}
+        // in terms of choosing an index to use, we can pick either one.
+        // the index will give us, for example, "all documents where x is 3",
+        // which will include the one above, and the matcher will then also
+        // make sure that the 4 is there as well.
+
+        for (ref k, ref mut v) in mc.iter_mut() {
+            if v.len() > 1 {
+                let distinct = {
+                    let uniq : std::collections::HashSet<_> = v.iter().collect();
+                    uniq.len()
+                };
+                if distinct > 1 {
+                    return Err(Error::Misc("conflict $eq"));
+                } else {
+                    v.truncate(1);
+                }
+            }
+        }
+
+        Ok(mc)
     }
 
     fn find_index_for_min_max<'a>(indexes: &'a Vec<IndexInfo>, keys: &Vec<String>) -> Result<Option<&'a IndexInfo>> {
