@@ -18,6 +18,9 @@
 #![feature(box_syntax)]
 #![feature(associated_consts)]
 
+use std::collections::HashMap;
+use std::collections::HashSet;
+
 extern crate misc;
 
 use misc::endian;
@@ -164,6 +167,13 @@ pub struct QueryPlan {
     pub bounds: QueryBounds,
 }
 
+enum OpIneq {
+    LT,
+    GT,
+    LTE,
+    GTE,
+}
+
 // TODO the Item below should be a struct that contains both the bson::Value
 // and also the score (and maybe pos).
 
@@ -270,7 +280,7 @@ fn slice_find(pairs: &[(String, bson::Value)], s: &str) -> Option<usize> {
 // for the purpose of grabbing their data later when used as a covering
 // index, which we're ignoring.
 //
-pub fn get_normalized_spec(info: &IndexInfo) -> Result<(Vec<(String,IndexType)>,Option<std::collections::HashMap<String,i32>>)> {
+pub fn get_normalized_spec(info: &IndexInfo) -> Result<(Vec<(String,IndexType)>,Option<HashMap<String,i32>>)> {
     //printfn "info: %A" info
     let first_text = slice_find(&info.spec.pairs, "text");
     let w1 = info.options.get("weights");
@@ -301,7 +311,7 @@ pub fn get_normalized_spec(info: &IndexInfo) -> Result<(Vec<(String,IndexType)>,
                     },
                     None => (&info.spec.pairs[0 ..], Vec::new())
                 };
-            let mut weights = std::collections::HashMap::new();
+            let mut weights = HashMap::new();
             match w1 {
                 Some(&bson::Value::BDocument(ref bd)) => {
                     for t in &bd.pairs {
@@ -519,7 +529,7 @@ impl Connection {
         ).collect::<Result<Vec<(_,_)>>>()
     }
 
-    fn find_compares_eq(m: &matcher::QueryDoc) -> Result<std::collections::HashMap<&str, Vec<&bson::Value>>> {
+    fn find_compares_eq(m: &matcher::QueryDoc) -> Result<HashMap<&str, Vec<&bson::Value>>> {
         fn find<'a>(m: &'a matcher::QueryDoc, dest: &mut Vec<(&'a str, &'a bson::Value)>) {
             let &matcher::QueryDoc::QueryDoc(ref a) = m;
             for it in a {
@@ -545,18 +555,8 @@ impl Connection {
 
         let mut comps = vec![];
         find(m, &mut comps);
-        let mut mc = std::collections::HashMap::new();
-        for (k,v) in comps {
-            let a = match mc.entry(k) {
-                std::collections::hash_map::Entry::Vacant(e) => {
-                    e.insert(vec![])
-                },
-                std::collections::hash_map::Entry::Occupied(e) => {
-                    e.into_mut()
-                },
-            };
-            a.push(v);
-        }
+
+        let mut mc = misc::group_by_key(comps);
 
         // query for x=3 && x=4 is legit in mongo.
         // it can match a doc where x is an array that contains both 3 and 4
@@ -567,9 +567,11 @@ impl Connection {
         // make sure that the 4 is there as well.
 
         for (ref k, ref mut v) in mc.iter_mut() {
+            // TODO this should actually just return the one value instead of
+            // a vec with the one value in it.
             if v.len() > 1 {
                 let distinct = {
-                    let uniq : std::collections::HashSet<_> = v.iter().collect();
+                    let uniq : HashSet<_> = v.iter().collect();
                     uniq.len()
                 };
                 if distinct > 1 {
@@ -581,6 +583,41 @@ impl Connection {
         }
 
         Ok(mc)
+    }
+
+    fn find_compares_ineq(m: &matcher::QueryDoc) -> Result<HashMap<&str, (OpIneq, Vec<&bson::Value>)>> {
+        fn find<'a>(m: &'a matcher::QueryDoc, dest: &mut Vec<(&'a str, (OpIneq, &'a bson::Value))>) {
+            let &matcher::QueryDoc::QueryDoc(ref a) = m;
+            for it in a {
+                match it {
+                    &matcher::QueryItem::Compare(ref k, ref preds) => {
+                        for p in preds {
+                            match p {
+                                &matcher::Pred::LT(ref v) => dest.push((k, (OpIneq::LT,v))),
+                                &matcher::Pred::GT(ref v) => dest.push((k, (OpIneq::GT,v))),
+                                &matcher::Pred::LTE(ref v) => dest.push((k, (OpIneq::LTE,v))),
+                                &matcher::Pred::GTE(ref v) => dest.push((k, (OpIneq::GTE,v))),
+                                _ => (),
+                            }
+                        }
+                    },
+                    &matcher::QueryItem::AND(ref docs) => {
+                        for d in docs {
+                            find(d, dest);
+                        }
+                    },
+                    _ => {
+                    },
+                }
+            }
+        }
+
+        let mut comps = vec![];
+        find(m, &mut comps);
+
+        let mut mc = misc::group_by_key(comps);
+
+        unimplemented!();
     }
 
     fn find_index_for_min_max<'a>(indexes: &'a Vec<IndexInfo>, keys: &Vec<String>) -> Result<Option<&'a IndexInfo>> {

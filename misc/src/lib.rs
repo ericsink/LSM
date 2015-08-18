@@ -17,6 +17,8 @@
 #![feature(associated_consts)]
 #![feature(clone_from_slice)]
 
+use std::collections::HashMap;
+
 pub fn tid() -> String {
     // TODO use the rand crate
     fn bytes() -> std::io::Result<[u8;16]> {
@@ -760,4 +762,19 @@ pub fn unwrap_vec_of_results<T,E>(v: Vec<std::result::Result<T,E>>) -> std::resu
     Ok(r)
 }
 
+pub fn group_by_key<TK : Eq + std::hash::Hash,TV>(pairs: Vec<(TK,TV)>) -> HashMap<TK,Vec<TV>> {
+    let mut mc = HashMap::new();
+    for (k,v) in pairs {
+        let a = match mc.entry(k) {
+            std::collections::hash_map::Entry::Vacant(e) => {
+                e.insert(vec![])
+            },
+            std::collections::hash_map::Entry::Occupied(e) => {
+                e.into_mut()
+            },
+        };
+        a.push(v);
+    }
+    mc
+}
 
