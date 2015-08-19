@@ -145,6 +145,7 @@ impl IndexInfo {
 
 pub type QueryKey = Vec<bson::Value>;
 
+#[derive(Hash,PartialEq,Eq,Debug)]
 pub enum TextQueryTerm {
     Word(bool, String),
     Phrase(bool, String),
@@ -758,6 +759,132 @@ impl Connection {
 
 
         Ok(m2)
+    }
+
+    fn try_fit_index_to_query(
+        ndx: &IndexInfo, 
+        comps_eq: HashMap<&str, &bson::Value>, 
+        comps_ineq: HashMap<&str, (Option<(OpGt, &bson::Value)>, Option<(OpLt, &bson::Value)>)>, 
+        text_query: i32
+        ) 
+        -> Result<()> 
+    {
+        let (scalar_keys, weights) = try!(get_normalized_spec(ndx));
+        unimplemented!();
+    }
+
+    fn parse_text_query(s: &Vec<char>) -> Result<Vec<TextQueryTerm>> {
+        fn is_delim(c: char) -> bool {
+            match c {
+            ' ' => true,
+            ',' => true,
+            ';' => true,
+            '.' => true,
+            _ => false,
+            }
+        }
+
+        let mut i = 0;
+        let len = s.len();
+        let mut a = vec![];
+        loop {
+            //printfn "get_token: %s" (s.Substring(!i))
+            while i<len && is_delim(s[i]) {
+                i = i + 1;
+            }
+            //printfn "after skip_delim: %s" (s.Substring(!i))
+            if i >= len {
+                break;
+            } else {
+                let neg =
+                    if '-' == s[i] {
+                        i = i + 1;
+                        true
+                    } else {
+                        false
+                    };
+
+                // TODO do we allow space between the - and the word or phrase?
+
+                if i >= len {
+                    return Err(Error::Misc("negate of nothing"));
+                }
+
+                if '"' == s[i] {
+                    let tokStart = i + 1;
+                    //printfn "in phrase"
+                    i = i + 1;
+                    while i < len && s[i] != '"' {
+                        i = i + 1;
+                    }
+                    //printfn "after look for other quote: %s" (s.Substring(!i))
+                    let tokLen = 
+                        if i < len { 
+                            i - tokStart
+                        } else {
+                            return Err(Error::Misc("unmatched phrase quote"));
+                        };
+                    //printfn "phrase tokLen: %d" tokLen
+                    i = i + 1;
+                    // TODO need to get the individual words out of the phrase here?
+                    // TODO what if the phrase is an empty string?  error?
+                    if tokLen > 0 {
+                        let sub = &s[tokStart .. tokStart + tokLen];
+                        let s = sub.iter().cloned().collect::<String>();
+                        let term = TextQueryTerm::Phrase(neg, s);
+                        a.push(term);
+                    } else {
+                        // TODO isn't this always an error?
+                        break;
+                    }
+                } else {
+                    let tokStart = i;
+                    while i < len && !is_delim(s[i]) {
+                        i = i + 1;
+                    }
+                    let tokLen = i - tokStart;
+                    if tokLen > 0 {
+                        let sub = &s[tokStart .. tokStart + tokLen];
+                        let s = sub.iter().cloned().collect::<String>();
+                        let term = TextQueryTerm::Word(neg, s);
+                        a.push(term);
+                    } else {
+                        // TODO isn't this always an error?
+                        break;
+                    }
+                }
+            }
+        }
+
+        let terms = a.into_iter().collect::<HashSet<_>>().into_iter().collect::<Vec<_>>();
+        Ok(terms)
+    }
+
+    fn find_text_query(m: &matcher::QueryDoc) -> Result<Option<&str>> {
+        let &matcher::QueryDoc::QueryDoc(ref items) = m;
+        let mut a = 
+            items
+            .iter()
+            .filter_map(|it| if let &matcher::QueryItem::Text(ref s) = it { Some(s.as_str()) } else { None })
+            .collect::<Vec<_>>();
+        if a.len() > 1 {
+            Err(Error::Misc("only one $text in a query"))
+        } else {
+            let s = misc::remove_first_if_exists(&mut a);
+            Ok(s)
+        }
+    }
+
+    fn find_fit_indexes<'a>(indexes: &'a Vec<IndexInfo>, m: &matcher::QueryDoc) -> Result<()> {
+        let text_query = if let Some(s) = try!(Self::find_text_query(m)) {
+            let v = s.chars().collect::<Vec<char>>();
+            Some(Self::parse_text_query(&v))
+        } else {
+            None
+        };
+        let comps_eq = Self::find_compares_eq(m);
+        let comps_ineq = Self::find_compares_ineq(m);
+        unimplemented!();
     }
 
     fn find_index_for_min_max<'a>(indexes: &'a Vec<IndexInfo>, keys: &Vec<String>) -> Result<Option<&'a IndexInfo>> {
