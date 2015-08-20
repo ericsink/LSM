@@ -53,11 +53,16 @@ impl StatementBsonValueIterator {
         // the implementation of execute() and realize that it doesn't
         // actually do anything of substance, so we call it every
         // time.  Ugly.
+        // TODO this won't work.  the stmt gets reset when the ResultSet
+        // gets dropped.
         match try!(self.stmt.execute().step().map_err(elmo::wrap_err)) {
-            None => Ok(None),
+            None => {
+                Ok(None)
+            },
             Some(r) => {
                 let b = r.column_blob(0).expect("NOT NULL");
                 let v = try!(bson::Document::from_bson(&b));
+                //println!("doc: {:?}", v);
                 let v = bson::Value::BDocument(v);
                 Ok(Some(v))
             },

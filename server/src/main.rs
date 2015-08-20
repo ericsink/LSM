@@ -186,8 +186,9 @@ impl Reply {
     }
 }
 
-fn vec_to_docs(v: Vec<bson::Value>) -> Vec<bson::Document> {
-    unimplemented!();
+fn vec_to_docs(v: Vec<bson::Value>) -> Result<Vec<bson::Document>> {
+    let a = try!(v.into_iter().map(|d| d.into_document()).collect::<std::result::Result<Vec<_>, bson::Error>>());
+    Ok(a)
 }
 
 fn parse_request(ba: &[u8]) -> Result<Request> {
@@ -402,7 +403,7 @@ impl<'b> Server<'b> {
 
         let docs = try!(req.query.must_remove("documents"));
         let docs = try!(docs.into_array());
-        let docs = vec_to_docs(docs.items);
+        let docs = try!(vec_to_docs(docs.items));
 
         // TODO ordered
         let results = try!(self.conn.insert(db, &coll, &docs));
@@ -467,22 +468,22 @@ impl<'b> Server<'b> {
                 panic!("overflow");
             }
             let docs = try!(seq.take(n as usize).collect::<Result<Vec<_>>>());
-            let docs = vec_to_docs(docs);
+            let docs = try!(vec_to_docs(docs));
             Ok((docs, false))
         } else if number_to_return == 0 {
             // return whatever the default size is
             // TODO for now, just return them all and close the cursor
             let docs = try!(seq.collect::<Result<Vec<_>>>());
-            let docs = vec_to_docs(docs);
+            let docs = try!(vec_to_docs(docs));
             Ok((docs, false))
         } else {
             // soft limit.  keep cursor open.
             let docs = try!(Self::grab(seq, number_to_return as usize));
             if docs.len() > 0 {
-                let docs = vec_to_docs(docs);
+                let docs = try!(vec_to_docs(docs));
                 Ok((docs, true))
             } else {
-                let docs = vec_to_docs(docs);
+                let docs = try!(vec_to_docs(docs));
                 Ok((docs, false))
             }
         }
