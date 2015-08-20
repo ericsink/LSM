@@ -145,7 +145,7 @@ impl IndexInfo {
 
 pub type QueryKey = Vec<bson::Value>;
 
-#[derive(Hash,PartialEq,Eq,Debug)]
+#[derive(Hash,PartialEq,Eq,Debug,Clone)]
 pub enum TextQueryTerm {
     Word(bool, String),
     Phrase(bool, String),
@@ -153,6 +153,7 @@ pub enum TextQueryTerm {
 
 pub enum QueryBounds {
     EQ(QueryKey),
+    // TODO tempted to make the QueryKey in Text be an option
     Text(QueryKey,Vec<TextQueryTerm>),
     GT(QueryKey),
     GTE(QueryKey),
@@ -761,16 +762,240 @@ impl Connection {
         Ok(m2)
     }
 
-    fn try_fit_index_to_query(
+    fn fit_index_to_query(
         ndx: &IndexInfo, 
-        comps_eq: HashMap<&str, &bson::Value>, 
-        comps_ineq: HashMap<&str, (Option<(OpGt, &bson::Value)>, Option<(OpLt, &bson::Value)>)>, 
-        text_query: i32
+        comps_eq: &HashMap<&str, &bson::Value>, 
+        comps_ineq: &HashMap<&str, (Option<(OpGt, &bson::Value)>, Option<(OpLt, &bson::Value)>)>, 
+        text_query: &Option<Vec<TextQueryTerm>>
         ) 
-        -> Result<()> 
+        -> Result<Option<QueryPlan>> 
     {
         let (scalar_keys, weights) = try!(get_normalized_spec(ndx));
-        unimplemented!();
+        if weights.is_none() && text_query.is_some() {
+            // if there is a textQuery but this is not a text index, give up now
+            Ok(None)
+        } else {
+            // TODO this code assumes that everything is either scalar or text, which
+            // will be wrong when geo comes along.
+            if scalar_keys.len() == 0 {
+                match weights {
+                    Some(ref weights) => {
+                        match text_query {
+                            &None => {
+                                // if there is no textQuery, give up
+                                Ok(None)
+                            },
+                            &Some(ref text_query) => {
+                                // TODO clone
+                                let bounds = QueryBounds::Text(vec![], text_query.clone());
+                                let plan = QueryPlan {
+                                    // TODO clone
+                                    ndx: ndx.clone(),
+                                    bounds: bounds,
+                                };
+                                Ok(Some(plan))
+                            },
+                        }
+                    },
+                    None => {
+                        // er, why are we here?
+                        // index with no keys
+                        // TODO or return Err?
+                        unreachable!();
+                    },
+                }
+            } else {
+                // we have some scalar keys, and maybe a text index after it.
+                // for every scalar key, find comparisons from the query.
+                let matching_ineqs = 
+                    scalar_keys.iter().map(
+                        |&(ref k,_)| {
+                            match comps_ineq.get(k.as_str()) {
+                                Some(a) => Some(a),
+                                None => None,
+                            }
+                        }
+                        ).collect::<Vec<_>>();
+                let mut first_no_eqs = None;
+                let mut matching_eqs = vec![];
+                for (i, &(ref k, _)) in scalar_keys.iter().enumerate() {
+                    match comps_eq.get(k.as_str()) {
+                        Some(a) => {
+                            // TODO clone
+                            matching_eqs.push((*a).clone());
+                        },
+                        None => {
+                            first_no_eqs = Some(i);
+                            break;
+                        },
+                    }
+                }
+
+                match text_query {
+                    &Some(ref text_query) => {
+                        match first_no_eqs {
+                            Some(_) => {
+                                // if there is a text index, we need an EQ for every scalar key.
+                                // so this won't work.
+                                Ok(None)
+                            },
+                            None => {
+                                // we have an EQ for every key.  this index will work.
+                                // TODO clone
+                                let bounds = QueryBounds::Text(matching_eqs, text_query.clone());
+                                let plan = QueryPlan {
+                                    // TODO clone
+                                    ndx: ndx.clone(),
+                                    bounds: bounds,
+                                };
+                                Ok(Some(plan))
+                            },
+                        }
+                    },
+                    &None => {
+                        // there is no text query.  note that this might still be a text index,
+                        // but at this point we don't care.  we are considering whether we can
+                        // use the scalar keys to the left of the text index.
+
+                        match first_no_eqs {
+                            None => {
+                                if matching_eqs.len() > 0 {
+                                    let bounds = QueryBounds::EQ(matching_eqs);
+                                    let plan = QueryPlan {
+                                        // TODO clone
+                                        ndx: ndx.clone(),
+                                        bounds: bounds,
+                                    };
+                                    Ok(Some(plan))
+                                } else {
+                                    // we can't use this index at all
+                                    Ok(None)
+                                }
+                            },
+                            Some(num_eq) => {
+                                match matching_ineqs[num_eq] {
+                                    None | Some(&(None,None)) => {
+                                        if num_eq>0 {
+                                            let bounds = QueryBounds::EQ(matching_eqs);
+                                            let plan = QueryPlan {
+                                                // TODO clone
+                                                ndx: ndx.clone(),
+                                                bounds: bounds,
+                                            };
+                                            Ok(Some(plan))
+                                        } else {
+                                            // we can't use this index at all
+                                            Ok(None)
+                                        }
+                                    },
+                                    Some(&(Some(min),None)) => {
+                                        let (op, v) = min;
+                                        // TODO clone
+                                        matching_eqs.push(v.clone());
+                                        match op {
+                                            OpGt::GT => {
+                                                let bounds = QueryBounds::GT(matching_eqs);
+                                                let plan = QueryPlan {
+                                                    // TODO clone
+                                                    ndx: ndx.clone(),
+                                                    bounds: bounds,
+                                                };
+                                                Ok(Some(plan))
+                                            },
+                                            OpGt::GTE => {
+                                                let bounds = QueryBounds::GTE(matching_eqs);
+                                                let plan = QueryPlan {
+                                                    // TODO clone
+                                                    ndx: ndx.clone(),
+                                                    bounds: bounds,
+                                                };
+                                                Ok(Some(plan))
+                                            },
+                                        }
+                                    },
+                                    Some(&(None,Some(max))) => {
+                                        let (op, v) = max;
+                                        // TODO clone
+                                        matching_eqs.push(v.clone());
+                                        match op {
+                                            OpLt::LT => {
+                                                let bounds = QueryBounds::LT(matching_eqs);
+                                                let plan = QueryPlan {
+                                                    // TODO clone
+                                                    ndx: ndx.clone(),
+                                                    bounds: bounds,
+                                                };
+                                                Ok(Some(plan))
+                                            },
+                                            OpLt::LTE => {
+                                                let bounds = QueryBounds::LTE(matching_eqs);
+                                                let plan = QueryPlan {
+                                                    // TODO clone
+                                                    ndx: ndx.clone(),
+                                                    bounds: bounds,
+                                                };
+                                                Ok(Some(plan))
+                                            },
+                                        }
+                                    },
+                                    Some(&(Some(min),Some(max))) => {
+                                        // this can probably only happen when the comps came
+                                        // from an elemMatch
+                                        let (op_gt, vmin) = min;
+                                        let (op_lt, vmax) = max;
+
+                                        // TODO clone disaster
+                                        let mut minvals = matching_eqs.clone();
+                                        minvals.push(vmin.clone());
+                                        let mut maxvals = matching_eqs.clone();
+                                        maxvals.push(vmax.clone());
+
+                                        match (op_gt, op_lt) {
+                                            (OpGt::GT, OpLt::LT) => {
+                                                let bounds = QueryBounds::GT_LT(minvals, maxvals);
+                                                let plan = QueryPlan {
+                                                    // TODO clone
+                                                    ndx: ndx.clone(),
+                                                    bounds: bounds,
+                                                };
+                                                Ok(Some(plan))
+                                            },
+                                            (OpGt::GT, OpLt::LTE) => {
+                                                let bounds = QueryBounds::GT_LTE(minvals, maxvals);
+                                                let plan = QueryPlan {
+                                                    // TODO clone
+                                                    ndx: ndx.clone(),
+                                                    bounds: bounds,
+                                                };
+                                                Ok(Some(plan))
+                                            },
+                                            (OpGt::GTE, OpLt::LT) => {
+                                                let bounds = QueryBounds::GTE_LT(minvals, maxvals);
+                                                let plan = QueryPlan {
+                                                    // TODO clone
+                                                    ndx: ndx.clone(),
+                                                    bounds: bounds,
+                                                };
+                                                Ok(Some(plan))
+                                            },
+                                            (OpGt::GTE, OpLt::LTE) => {
+                                                let bounds = QueryBounds::GTE_LTE(minvals, maxvals);
+                                                let plan = QueryPlan {
+                                                    // TODO clone
+                                                    ndx: ndx.clone(),
+                                                    bounds: bounds,
+                                                };
+                                                Ok(Some(plan))
+                                            },
+                                        }
+                                    },
+                                }
+                            },
+                        }
+                    },
+                }
+            }
+        }
     }
 
     fn parse_text_query(s: &Vec<char>) -> Result<Vec<TextQueryTerm>> {
@@ -811,25 +1036,25 @@ impl Connection {
                 }
 
                 if '"' == s[i] {
-                    let tokStart = i + 1;
+                    let tok_start = i + 1;
                     //printfn "in phrase"
                     i = i + 1;
                     while i < len && s[i] != '"' {
                         i = i + 1;
                     }
                     //printfn "after look for other quote: %s" (s.Substring(!i))
-                    let tokLen = 
+                    let tok_len = 
                         if i < len { 
-                            i - tokStart
+                            i - tok_start
                         } else {
                             return Err(Error::Misc("unmatched phrase quote"));
                         };
-                    //printfn "phrase tokLen: %d" tokLen
+                    //printfn "phrase tok_len: %d" tok_len
                     i = i + 1;
                     // TODO need to get the individual words out of the phrase here?
                     // TODO what if the phrase is an empty string?  error?
-                    if tokLen > 0 {
-                        let sub = &s[tokStart .. tokStart + tokLen];
+                    if tok_len > 0 {
+                        let sub = &s[tok_start .. tok_start + tok_len];
                         let s = sub.iter().cloned().collect::<String>();
                         let term = TextQueryTerm::Phrase(neg, s);
                         a.push(term);
@@ -838,13 +1063,13 @@ impl Connection {
                         break;
                     }
                 } else {
-                    let tokStart = i;
+                    let tok_start = i;
                     while i < len && !is_delim(s[i]) {
                         i = i + 1;
                     }
-                    let tokLen = i - tokStart;
-                    if tokLen > 0 {
-                        let sub = &s[tokStart .. tokStart + tokLen];
+                    let tok_len = i - tok_start;
+                    if tok_len > 0 {
+                        let sub = &s[tok_start .. tok_start + tok_len];
                         let s = sub.iter().cloned().collect::<String>();
                         let term = TextQueryTerm::Word(neg, s);
                         a.push(term);
@@ -875,16 +1100,68 @@ impl Connection {
         }
     }
 
-    fn find_fit_indexes<'a>(indexes: &'a Vec<IndexInfo>, m: &matcher::QueryDoc) -> Result<()> {
+    fn find_fit_indexes<'a>(indexes: &'a Vec<IndexInfo>, m: &matcher::QueryDoc) -> Result<(Vec<QueryPlan>, Option<Vec<TextQueryTerm>>)> {
         let text_query = if let Some(s) = try!(Self::find_text_query(m)) {
             let v = s.chars().collect::<Vec<char>>();
-            Some(Self::parse_text_query(&v))
+            Some(try!(Self::parse_text_query(&v)))
         } else {
             None
         };
-        let comps_eq = Self::find_compares_eq(m);
-        let comps_ineq = Self::find_compares_ineq(m);
-        unimplemented!();
+        let comps_eq = try!(Self::find_compares_eq(m));
+        let comps_ineq = try!(Self::find_compares_ineq(m));
+        let mut fits = Vec::new();
+        for ndx in indexes {
+            if let Some(x) = try!(Self::fit_index_to_query(ndx, &comps_eq, &comps_ineq, &text_query)) {
+                fits.push(x);
+            }
+        }
+        Ok((fits, text_query))
+    }
+
+    fn choose_from_possibles(mut possibles: Vec<QueryPlan>) -> Option<QueryPlan> {
+        if possibles.len() == 0 {
+            None
+        } else {
+            // prefer the _id_ index if we can use it
+            // TODO otherwise prefer any unique index
+            // TODO otherwise prefer any EQ index
+            // TODO or any index which has both min_max bounds
+            // otherwise any index at all.  just take the first one.
+            let mut winner = None;
+            for plan in possibles {
+                if winner.is_none() || plan.ndx.name == "_id_" {
+                    winner = Some(plan);
+                }
+            }
+            winner
+        }
+    }
+
+    fn choose_index<'a>(indexes: &'a Vec<IndexInfo>, m: &matcher::QueryDoc, hint: Option<&IndexInfo>) -> Result<Option<QueryPlan>> {
+        let (mut fits, text_query) = try!(Self::find_fit_indexes(indexes, m));
+        match text_query {
+            Some(_) => {
+                // TODO if there is a $text query, disallow hint
+                if fits.len() == 0 {
+                    Err(Error::Misc("$text without index"))
+                } else {
+                    assert!(fits.len() == 1);
+                    Ok(Some(fits.remove(0)))
+                }
+            },
+            None => {
+                // TODO the jstests seem to indicate that hint will be forced
+                // even if it does not fit the query.  how does this work?
+                // what bounds are used?
+
+                match hint {
+                    Some(hint) => {
+                        unimplemented!();
+                    },
+                    None => Ok(Self::choose_from_possibles(fits))
+                }
+            },
+        }
     }
 
     fn find_index_for_min_max<'a>(indexes: &'a Vec<IndexInfo>, keys: &Vec<String>) -> Result<Option<&'a IndexInfo>> {
@@ -928,7 +1205,7 @@ impl Connection {
             |ndx| ndx.db == db && ndx.coll == coll
             ).collect::<Vec<_>>();
         // TODO maybe we should get normalized index specs for all the indexes now.
-        let m = matcher::parse_query(query);
+        let m = try!(matcher::parse_query(query));
         let (natural, hint) = 
             match hint {
                 Some(ref v) => {
@@ -954,8 +1231,7 @@ impl Connection {
                     if natural {
                         None
                     } else {
-                        // TODO chooseIndex indexes m hint
-                        unimplemented!();
+                        try!(Self::choose_index(&indexes, &m, hint))
                     }
                 },
                 (min, max) => {
