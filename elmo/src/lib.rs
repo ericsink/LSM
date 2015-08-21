@@ -201,15 +201,16 @@ enum OpGt {
     GTE,
 }
 
-// TODO the Item below should be a struct that contains both the bson::Value
-// and also the score (and maybe pos).
-
-// TODO should this be a seq of Document instead of bson::Value ?
-
-pub trait StorageCollectionReader : Iterator<Item=Result<bson::Value>> {
-    fn get_total_keys_examined(&self) -> u64;
-    fn get_total_docs_examined(&self) -> u64;
-    // TODO more explain stuff here?
+// TODO I dislike the name of this.  also, consider making it a trait.
+pub struct Row {
+    // TODO I wish this were bson::Document.  but when you have a reference to a
+    // bson::Document and what you need is a bson::Value, you can't get there,
+    // because you need ownership and you don't have it.  So clone.  Which is
+    // awful.
+    pub doc: bson::Value,
+    // TODO score
+    // TODO pos
+    // TODO stats for explain
 }
 
 pub trait StorageBase {
@@ -218,7 +219,7 @@ pub trait StorageBase {
     fn list_collections(&self) -> Result<Vec<CollectionInfo>>;
     fn list_indexes(&self) -> Result<Vec<IndexInfo>>;
 
-    fn get_collection_reader(&self, db: &str, coll: &str, plan: Option<QueryPlan>) -> Result<Box<StorageCollectionReader<Item=Result<bson::Value>> + 'static>>;
+    fn get_collection_reader(&self, db: &str, coll: &str, plan: Option<QueryPlan>) -> Result<Box<Iterator<Item=Result<Row>> + 'static>>;
 }
 
 pub trait StorageCollectionWriter {
@@ -233,7 +234,7 @@ pub trait StorageCollectionWriter {
 // TODO or is it enough that the actual implementation of this trait impl Drop?
 
 pub trait StorageReader : StorageBase {
-    fn into_collection_reader(self: Box<Self>, db: &str, coll: &str, plan: Option<QueryPlan>) -> Result<Box<StorageCollectionReader<Item=Result<bson::Value>> + 'static>>;
+    fn into_collection_reader(self: Box<Self>, db: &str, coll: &str, plan: Option<QueryPlan>) -> Result<Box<Iterator<Item=Result<Row>> + 'static>>;
 }
 
 pub trait StorageWriter : StorageBase {
@@ -1197,7 +1198,7 @@ impl Connection {
                 hint: Option<bson::Value>,
                 explain: Option<bson::Value>
                 ) 
-        -> Result<Box<StorageCollectionReader<Item=Result<bson::Value>> + 'static>>
+        -> Result<Box<Iterator<Item=Result<Row>> + 'static>>
     {
         let reader = try!(self.conn.begin_read());
         // TODO make the following filter DRY
@@ -1282,13 +1283,13 @@ impl Connection {
             .filter(
                 |r| {
                     if let &Ok(d) = r {
-                        matcher::match_query(&m, &d)
+                        matcher::match_query(&m, &d.doc)
                     } else {
                         true
                     }
                 }
         );
-        Ok(matched)
+        Ok(box matched)
 */
     }
 }

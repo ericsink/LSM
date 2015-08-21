@@ -186,9 +186,17 @@ impl Reply {
     }
 }
 
-fn vec_to_docs(v: Vec<bson::Value>) -> Result<Vec<bson::Document>> {
+fn vec_rows_to_values(v: Vec<elmo::Row>) -> Vec<bson::Value> {
+    v.into_iter().map(|r| r.doc).collect::<Vec<_>>()
+}
+
+fn vec_values_to_docs(v: Vec<bson::Value>) -> Result<Vec<bson::Document>> {
     let a = try!(v.into_iter().map(|d| d.into_document()).collect::<std::result::Result<Vec<_>, bson::Error>>());
     Ok(a)
+}
+
+fn vec_docs_to_values(v: Vec<bson::Document>) -> Vec<bson::Value> {
+    v.into_iter().map(|d| bson::Value::BDocument(d)).collect::<Vec<_>>()
 }
 
 fn parse_request(ba: &[u8]) -> Result<Request> {
@@ -306,7 +314,7 @@ struct Server<'a> {
     cursor_num: i64,
     // TODO this is problematic when/if the Iterator has a reference to or the same lifetime
     // as self.conn.
-    cursors: std::collections::HashMap<i64, (String, Box<Iterator<Item=Result<bson::Value>> + 'a>)>,
+    cursors: std::collections::HashMap<i64, (String, Box<Iterator<Item=Result<elmo::Row>> + 'a>)>,
 }
 
 impl<'b> Server<'b> {
@@ -403,7 +411,7 @@ impl<'b> Server<'b> {
 
         let docs = try!(req.query.must_remove("documents"));
         let docs = try!(docs.into_array());
-        let docs = try!(vec_to_docs(docs.items));
+        let docs = try!(vec_values_to_docs(docs.items));
 
         // TODO ordered
         let results = try!(self.conn.insert(db, &coll, &docs));
@@ -424,7 +432,7 @@ impl<'b> Server<'b> {
         Ok(create_reply(req.req_id, vec![doc], 0))
     }
 
-    fn store_cursor<T: Iterator<Item=Result<bson::Value>> + 'b>(&mut self, ns: &str, seq: T) -> i64 {
+    fn store_cursor<T: Iterator<Item=Result<elmo::Row>> + 'b>(&mut self, ns: &str, seq: T) -> i64 {
         self.cursor_num = self.cursor_num + 1;
         self.cursors.insert(self.cursor_num, (String::from(ns), box seq));
         self.cursor_num
@@ -439,7 +447,7 @@ impl<'b> Server<'b> {
 
     // grab is just a take() which doesn't take ownership of the iterator
     // TODO investigate by_ref()
-    fn grab<T: Iterator<Item=Result<bson::Value>>>(seq: &mut T, n: usize) -> Result<Vec<bson::Value>> {
+    fn grab<T: Iterator<Item=Result<elmo::Row>>>(seq: &mut T, n: usize) -> Result<Vec<elmo::Row>> {
         let mut r = Vec::new();
         for _ in 0 .. n {
             match seq.next() {
@@ -455,7 +463,7 @@ impl<'b> Server<'b> {
     }
 
     // this is the older way of returning a cursor.
-    fn do_limit<T: Iterator<Item=Result<bson::Value>>>(ns: &str, seq: &mut T, number_to_return: i32) -> Result<(Vec<bson::Document>, bool)> {
+    fn do_limit<T: Iterator<Item=Result<elmo::Row>>>(ns: &str, seq: &mut T, number_to_return: i32) -> Result<(Vec<elmo::Row>, bool)> {
         if number_to_return < 0 || number_to_return == 1 {
             // hard limit.  do not return a cursor.
             let n = if number_to_return < 0 {
@@ -468,29 +476,25 @@ impl<'b> Server<'b> {
                 panic!("overflow");
             }
             let docs = try!(seq.take(n as usize).collect::<Result<Vec<_>>>());
-            let docs = try!(vec_to_docs(docs));
             Ok((docs, false))
         } else if number_to_return == 0 {
             // return whatever the default size is
             // TODO for now, just return them all and close the cursor
             let docs = try!(seq.collect::<Result<Vec<_>>>());
-            let docs = try!(vec_to_docs(docs));
             Ok((docs, false))
         } else {
             // soft limit.  keep cursor open.
             let docs = try!(Self::grab(seq, number_to_return as usize));
             if docs.len() > 0 {
-                let docs = try!(vec_to_docs(docs));
                 Ok((docs, true))
             } else {
-                let docs = try!(vec_to_docs(docs));
                 Ok((docs, false))
             }
         }
     }
 
     // this is a newer way of returning a cursor.  used by the agg framework.
-    fn reply_with_cursor<T: Iterator<Item=Result<bson::Value>> + 'static>(&mut self, ns: &str, mut seq: T, cursor_options: Option<&bson::Value>, default_batch_size: usize) -> Result<bson::Document> {
+    fn reply_with_cursor<T: Iterator<Item=Result<elmo::Row>> + 'static>(&mut self, ns: &str, mut seq: T, cursor_options: Option<&bson::Value>, default_batch_size: usize) -> Result<bson::Document> {
         let number_to_return =
             match cursor_options {
                 Some(&bson::Value::BDocument(ref bd)) => {
@@ -575,10 +579,10 @@ impl<'b> Server<'b> {
                 let mut cursor = bson::Document::new_empty();
                 cursor.set_i64("id", cursor_id);
                 cursor.set_str("ns", ns);
-                cursor.set_array("firstBatch", bson::Array { items: docs});
+                cursor.set_array("firstBatch", bson::Array { items: vec_rows_to_values(docs)});
             },
             None => {
-                doc.set_array("result", bson::Array { items: docs});
+                doc.set_array("result", bson::Array { items: vec_rows_to_values(docs)});
             },
         }
         doc.set_i32("ok", 1);
@@ -713,7 +717,10 @@ impl<'b> Server<'b> {
                         let mut doc = bson::Document::new_empty();
                         doc.set_string("name", c.coll);
                         doc.set_document("options", c.options);
-                        Some(Ok(bson::Value::BDocument(doc)))
+                        let r = elmo::Row {
+                            doc: bson::Value::BDocument(doc),
+                        };
+                        Some(Ok(r))
                     } else {
                         None
                     }
@@ -750,7 +757,10 @@ impl<'b> Server<'b> {
                         doc.set_document("key", ndx.spec);
                         // TODO it seems the automatic index on _id is NOT supposed to be marked unique
                         // TODO if unique && ndxInfo.ndx<>"_id_" then pairs.Add("unique", BBoolean unique)
-                        Some(Ok(bson::Value::BDocument(doc)))
+                        let r = elmo::Row {
+                            doc: bson::Value::BDocument(doc),
+                        };
+                        Some(Ok(r))
                     } else {
                         None
                     }
@@ -883,6 +893,8 @@ impl<'b> Server<'b> {
         } else {
             0
         };
+        let docs = vec_rows_to_values(docs);
+        let docs = try!(vec_values_to_docs(docs));
         Ok(create_reply(req_id, docs, cursor_id))
     }
 
@@ -971,7 +983,15 @@ impl<'b> Server<'b> {
                 match Self::do_limit(&ns, seq, req.number_to_return) {
                     Ok((docs, more)) => {
                         // TODO if !more remove the cursor
-                        create_reply(req.req_id, docs, 0)
+                        let docs = vec_rows_to_values(docs);
+                        match vec_values_to_docs(docs) {
+                            Ok(docs) => {
+                                create_reply(req.req_id, docs, 0)
+                            },
+                            Err(e) => {
+                                reply_err(req.req_id, Error::Misc("TODO"))
+                            },
+                        }
                     },
                     Err(e) => {
                         reply_err(req.req_id, Error::Misc("TODO"))

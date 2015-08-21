@@ -46,7 +46,7 @@ struct StatementBsonValueIterator {
 }
 
 impl StatementBsonValueIterator {
-    fn iter_next(&mut self) -> Result<Option<bson::Value>> {
+    fn iter_next(&mut self) -> Result<Option<elmo::Row>> {
         match try!(self.stmt.step().map_err(elmo::wrap_err)) {
             None => {
                 Ok(None)
@@ -56,14 +56,17 @@ impl StatementBsonValueIterator {
                 let v = try!(bson::Document::from_bson(&b));
                 //println!("doc: {:?}", v);
                 let v = bson::Value::BDocument(v);
-                Ok(Some(v))
+                let row = elmo::Row {
+                    doc: v,
+                };
+                Ok(Some(row))
             },
         }
     }
 }
 
 impl Iterator for StatementBsonValueIterator {
-    type Item = Result<bson::Value>;
+    type Item = Result<elmo::Row>;
     fn next(&mut self) -> Option<Self::Item> {
         match self.iter_next() {
             Err(e) => {
@@ -92,7 +95,7 @@ struct RefStatementBsonValueIterator<'a> {
 }
 
 impl<'a> RefStatementBsonValueIterator<'a> {
-    fn iter_next(&mut self) -> Result<Option<bson::Value>> {
+    fn iter_next(&mut self) -> Result<Option<elmo::Row>> {
         match try!(self.stmt.step().map_err(elmo::wrap_err)) {
             None => {
                 Ok(None)
@@ -102,14 +105,17 @@ impl<'a> RefStatementBsonValueIterator<'a> {
                 let v = try!(bson::Document::from_bson(&b));
                 //println!("doc: {:?}", v);
                 let v = bson::Value::BDocument(v);
-                Ok(Some(v))
+                let row = elmo::Row {
+                    doc: v,
+                };
+                Ok(Some(row))
             },
         }
     }
 }
 
 impl<'a> Iterator for RefStatementBsonValueIterator<'a> {
-    type Item = Result<bson::Value>;
+    type Item = Result<elmo::Row>;
     fn next(&mut self) -> Option<Self::Item> {
         match self.iter_next() {
             Err(e) => {
@@ -133,7 +139,7 @@ impl<'a> Iterator for RefStatementBsonValueIterator<'a> {
 struct MyEmptyIterator;
 
 impl Iterator for MyEmptyIterator {
-    type Item = Result<bson::Value>;
+    type Item = Result<elmo::Row>;
     fn next(&mut self) -> Option<Self::Item> {
         None
     }
@@ -141,7 +147,7 @@ impl Iterator for MyEmptyIterator {
 
 struct MyCollectionReader {
     commit_on_drop: bool,
-    seq: Box<Iterator<Item=Result<bson::Value>>>,
+    seq: Box<Iterator<Item=Result<elmo::Row>>>,
     myconn: std::rc::Rc<MyConn>,
 
     // TODO need counts here
@@ -649,7 +655,7 @@ impl MyConn {
                 };
             for r in rdr {
                 let r = try!(r);
-                let keep = check_phrase(&terms, &weights, &r);
+                let keep = check_phrase(&terms, &weights, &r.doc);
                 if keep {
                     // TODO if keep, calc a score for each one too
                     // let score = List.sum w |> float // TODO this is not the way mongo does this calculation
@@ -1214,14 +1220,14 @@ impl Drop for MyCollectionReader {
 }
 
 impl Iterator for MyCollectionReader {
-    type Item = Result<bson::Value>;
+    type Item = Result<elmo::Row>;
     fn next(&mut self) -> Option<Self::Item> {
         self.seq.next()
     }
 }
 
 impl elmo::StorageBase for MyReader {
-    fn get_collection_reader(&self, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> Result<Box<elmo::StorageCollectionReader<Item=Result<bson::Value>> + 'static>> {
+    fn get_collection_reader(&self, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> Result<Box<Iterator<Item=Result<elmo::Row>> + 'static>> {
         let rdr = try!(self.myconn.get_collection_reader(self.myconn.clone(), false, db, coll, plan));
         Ok(box rdr)
     }
@@ -1237,7 +1243,7 @@ impl elmo::StorageBase for MyReader {
 }
 
 impl elmo::StorageReader for MyReader {
-    fn into_collection_reader(mut self: Box<Self>, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> Result<Box<elmo::StorageCollectionReader<Item=Result<bson::Value>> + 'static>> {
+    fn into_collection_reader(mut self: Box<Self>, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> Result<Box<Iterator<Item=Result<elmo::Row>> + 'static>> {
         self.in_tx = false;
         let rdr = try!(self.myconn.get_collection_reader(self.myconn.clone(), true, db, coll, plan));
         Ok(box rdr)
@@ -1246,7 +1252,7 @@ impl elmo::StorageReader for MyReader {
 }
 
 impl elmo::StorageBase for MyWriter {
-    fn get_collection_reader(&self, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> Result<Box<elmo::StorageCollectionReader<Item=Result<bson::Value>> + 'static>> {
+    fn get_collection_reader(&self, db: &str, coll: &str, plan: Option<elmo::QueryPlan>) -> Result<Box<Iterator<Item=Result<elmo::Row>> + 'static>> {
         let rdr = try!(self.myconn.get_collection_reader(self.myconn.clone(), false, db, coll, plan));
         Ok(box rdr)
     }
@@ -1279,19 +1285,6 @@ impl elmo::StorageConnection for MyPublicConn {
         };
         Ok(box r)
     }
-}
-
-impl elmo::StorageCollectionReader for MyCollectionReader {
-    fn get_total_keys_examined(&self) -> u64 {
-        // TODO
-        0
-    }
-
-    fn get_total_docs_examined(&self) -> u64 {
-        // TODO
-        0
-    }
-
 }
 
 fn base_connect(name: &str) -> sqlite3::SqliteResult<sqlite3::DatabaseConnection> {
