@@ -213,6 +213,10 @@ pub struct Row {
     // TODO stats for explain
 }
 
+pub fn cmp_row(d: &Row, lit: &Row) -> Ordering {
+    matcher::cmp(&d.doc, &lit.doc)
+}
+
 pub trait StorageBase {
     // TODO maybe these two should return an iterator
     // TODO maybe these two should accept params to limit the rows returned
@@ -1276,8 +1280,8 @@ impl Connection {
                 }
             };
 
-        let coll_reader = try!(reader.into_collection_reader(db, coll, plan));
-        let matched = coll_reader
+        let mut seq: Box<Iterator<Item=Result<Row>>> = try!(reader.into_collection_reader(db, coll, plan));
+        seq = box seq
             .filter(
                 move |r| {
                     if let &Ok(ref d) = r {
@@ -1288,9 +1292,17 @@ impl Connection {
                     }
                 }
         );
-        // TODO sort
+        match orderby {
+            Some(orderby) => {
+                let mut a = try!(seq.collect::<Result<Vec<_>>>());
+                a.sort_by(cmp_row);
+                seq = box a.into_iter().map(|d| Ok(d))
+            },
+            None => {
+            },
+        }
         // TODO projection
-        Ok(box matched)
+        Ok(seq)
     }
 }
 
