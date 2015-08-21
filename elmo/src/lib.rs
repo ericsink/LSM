@@ -1277,6 +1277,19 @@ impl Connection {
 
         let coll_reader = try!(reader.into_collection_reader(db, coll, plan));
         Ok(coll_reader)
+/*
+        let matched = coll_reader
+            .filter(
+                |r| {
+                    if let &Ok(d) = r {
+                        matcher::match_query(&m, &d)
+                    } else {
+                        true
+                    }
+                }
+        );
+        Ok(matched)
+*/
     }
 }
 

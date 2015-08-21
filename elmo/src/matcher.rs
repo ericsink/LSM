@@ -322,7 +322,7 @@ fn cmp_gte(d: &bson::Value, lit: &bson::Value) -> bool {
     cmp_lte_gte(d, lit, Ordering::Greater)
 }
 
-fn do_elem_match_objects<F: Fn(&str, usize)>(doc: &QueryDoc, d: &bson::Value, cb_array_pos: &F) -> bool {
+fn do_elem_match_objects<F: Fn(usize)>(doc: &QueryDoc, d: &bson::Value, cb_array_pos: &F) -> bool {
     match d {
         &bson::Value::BArray(ref ba) => {
             for vsub in &ba.items {
@@ -344,7 +344,7 @@ fn do_elem_match_objects<F: Fn(&str, usize)>(doc: &QueryDoc, d: &bson::Value, cb
     }
 }
 
-fn match_predicate<F: Fn(&str, usize)>(pred: &Pred, d: &bson::Value, cb_array_pos: &F) -> bool {
+fn match_predicate<F: Fn(usize)>(pred: &Pred, d: &bson::Value, cb_array_pos: &F) -> bool {
     match pred {
         &Pred::Exists(b) => {
             unreachable!();
@@ -365,7 +365,7 @@ fn match_predicate<F: Fn(&str, usize)>(pred: &Pred, d: &bson::Value, cb_array_po
                         });
                     match found {
                         Some(n) => {
-                            cb_array_pos("TODO", n);
+                            cb_array_pos(n);
                             true
                         },
                         None => false
@@ -381,7 +381,7 @@ fn match_predicate<F: Fn(&str, usize)>(pred: &Pred, d: &bson::Value, cb_array_po
                         ba.items.iter().position(|vsub| preds.iter().any(|p| !match_predicate(p, vsub, cb_array_pos)));
                     match found {
                         Some(n) => {
-                            cb_array_pos("TODO", n);
+                            cb_array_pos(n);
                             true
                         },
                         None => false
@@ -493,7 +493,7 @@ fn match_pair_exists(pred: &Pred, path: &str, start: &bson::Value) -> bool {
     }
 }
 
-fn match_pair_other<F: Fn(&str, usize)>(pred: &Pred, path: &str, start: &bson::Value, arr: bool, cb_array_pos: &F) -> bool {
+fn match_pair_other<F: Fn(usize)>(pred: &Pred, path: &str, start: &bson::Value, arr: bool, cb_array_pos: &F) -> bool {
     let dot = path.find('.');
     let name = match dot { 
         None => path,
@@ -515,7 +515,7 @@ fn match_pair_other<F: Fn(&str, usize)>(pred: &Pred, path: &str, start: &bson::V
                                     &bson::Value::BArray(ref ba) => {
                                         match ba.items.iter().position(|vsub| match_predicate(pred, vsub, cb_array_pos)) {
                                             Some(ndx) => {
-                                                cb_array_pos("TODO", ndx);
+                                                cb_array_pos(ndx);
                                                 true
                                             },
                                             None => false,
@@ -548,7 +548,7 @@ fn match_pair_other<F: Fn(&str, usize)>(pred: &Pred, path: &str, start: &bson::V
                                 };
                                 match ba.items.iter().position(f) {
                                     Some(ndx) => {
-                                        cb_array_pos("TODO", ndx);
+                                        cb_array_pos(ndx);
                                         true
                                     },
                                     None => false,
@@ -578,7 +578,7 @@ fn match_pair_other<F: Fn(&str, usize)>(pred: &Pred, path: &str, start: &bson::V
     }
 }
 
-fn match_pair<F: Fn(&str, usize)>(pred: &Pred, path: &str, start: &bson::Value, cb_array_pos: &F) -> bool {
+fn match_pair<F: Fn(usize)>(pred: &Pred, path: &str, start: &bson::Value, cb_array_pos: &F) -> bool {
     // not all predicates do their path searching in the same way
     // TODO consider a reusable function which generates all possible paths
     
@@ -618,7 +618,7 @@ fn match_pair<F: Fn(&str, usize)>(pred: &Pred, path: &str, start: &bson::Value, 
     }
 }
 
-fn match_query_item<F: Fn(&str, usize)>(qit: &QueryItem, d: &bson::Value, cb_array_pos: &F) -> bool {
+fn match_query_item<F: Fn(usize)>(qit: &QueryItem, d: &bson::Value, cb_array_pos: &F) -> bool {
     match qit {
         &QueryItem::Compare(ref path, ref preds) => {
             preds.iter().all(|v| match_pair(v, path, d, cb_array_pos))
@@ -642,7 +642,7 @@ fn match_query_item<F: Fn(&str, usize)>(qit: &QueryItem, d: &bson::Value, cb_arr
     }
 }
 
-fn match_query_doc<F: Fn(&str, usize)>(q: &QueryDoc, d: &bson::Value, cb_array_pos: &F) -> bool {
+fn match_query_doc<F: Fn(usize)>(q: &QueryDoc, d: &bson::Value, cb_array_pos: &F) -> bool {
     let &QueryDoc::QueryDoc(ref items) = q;
     // AND
     for qit in items {
@@ -651,6 +651,13 @@ fn match_query_doc<F: Fn(&str, usize)>(q: &QueryDoc, d: &bson::Value, cb_array_p
         }
     }
     true
+}
+
+pub fn match_query(m: &QueryDoc, d: &bson::Value) -> bool {
+    // TODO
+    let cb = |_| ();
+    let b = match_query_doc(m, d, &cb);
+    b
 }
 
 fn contains_no_dollar_keys(v: &bson::Value) -> bool {
