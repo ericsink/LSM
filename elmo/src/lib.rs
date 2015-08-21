@@ -1277,20 +1277,20 @@ impl Connection {
             };
 
         let coll_reader = try!(reader.into_collection_reader(db, coll, plan));
-        Ok(coll_reader)
-/*
         let matched = coll_reader
             .filter(
-                |r| {
-                    if let &Ok(d) = r {
+                move |r| {
+                    if let &Ok(ref d) = r {
                         matcher::match_query(&m, &d.doc)
                     } else {
+                        // TODO so when we have an error we just let it through?
                         true
                     }
                 }
         );
+        // TODO sort
+        // TODO projection
         Ok(box matched)
-*/
     }
 }
 

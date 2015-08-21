@@ -534,8 +534,11 @@ fn slurp_array(ba: &[u8], i: &mut usize) -> Result<Array> {
 
 impl Value {
     pub fn tryGetValueEither(&self, k: &str) -> Option<&Value> {
-        // TODO
-        unimplemented!();
+        match self {
+            &Value::BDocument(ref bd) => bd.get(k),
+            &Value::BArray(ref ba) => unimplemented!(),
+            _ => None,
+        }
     }
 
     fn is_null(&self) -> bool {
