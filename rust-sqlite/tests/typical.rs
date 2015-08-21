@@ -23,8 +23,7 @@ fn typical_usage(conn: &mut DatabaseConnection) -> SqliteResult<String> {
         let mut stmt = try!(conn.prepare(
             "insert into items (id, description, price)
            values (1, 'stuff', 10)"));
-        let mut results = stmt.execute();
-        match try!(results.step()) {
+        match try!(stmt.step()) {
             None => (),
             Some(_) => panic!("row from insert?!"),
         };
@@ -34,8 +33,7 @@ fn typical_usage(conn: &mut DatabaseConnection) -> SqliteResult<String> {
     {
         let mut stmt = try!(conn.prepare(
             "select * from items"));
-        let mut results = stmt.execute();
-        let res = match results.step() {
+        let res = match stmt.step() {
             Ok(Some(ref mut row1)) => {
                 let id = row1.column_int(0);
                 let desc_opt = row1.column_text(1).expect("desc_opt should be non-null");

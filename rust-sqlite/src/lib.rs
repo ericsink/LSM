@@ -100,7 +100,7 @@ use std::fmt::Display;
 use std::fmt;
 
 pub use core::Access;
-pub use core::{DatabaseConnection, PreparedStatement, ResultSet, ResultRow};
+pub use core::{DatabaseConnection, PreparedStatement, ResultRow};
 pub use core::{ColIx, ParamIx};
 pub use types::{FromSql, ToSql};
 
@@ -141,8 +141,7 @@ impl StatementUpdate for core::PreparedStatement {
               values: &[&ToSql]) -> SqliteResult<u64> {
         let check = {
             try!(bind_values(self, values));
-            let mut results = self.execute();
-            match try!(results.step()) {
+            match try!(self.step()) {
                 None => Ok(()),
                 Some(_row) => Err(SqliteError {
                     kind: SQLITE_MISUSE,
@@ -180,9 +179,8 @@ impl<F> Query<F> for core::PreparedStatement
              ) -> SqliteResult<()>
     {
         try!(bind_values(self, values));
-        let mut results = self.execute();
         loop {
-            match try!(results.step()) {
+            match try!(self.step()) {
                 None => break,
                 Some(ref mut row) => try!(each_row(row)),
             }
@@ -213,7 +211,7 @@ pub trait ResultRowAccess {
     fn get_opt<I: RowIndex + Display + Clone, T: FromSql>(&mut self, idx: I) -> SqliteResult<T>;
 }
 
-impl<'res, 'row> ResultRowAccess for core::ResultRow<'res, 'row> {
+impl<'stmt> ResultRowAccess for core::ResultRow<'stmt> {
     fn get<I: RowIndex + Display + Clone, T: FromSql>(&mut self, idx: I) -> T {
         match self.get_opt(idx.clone()) {
             Ok(ok) => ok,
@@ -355,9 +353,10 @@ enum_from_primitive! {
 
 #[cfg(test)]
 mod bind_tests {
-    use super::{DatabaseConnection, ResultSet};
+    use super::{DatabaseConnection};
     use super::{ResultRowAccess};
     use super::{SqliteResult};
+    use super::{PreparedStatement};
 
     #[test]
     fn bind_fun() {
@@ -377,14 +376,12 @@ mod bind_tests {
                 try!(tx.bind_int(1, 2));
                 try!(tx.bind_text(2, "Jane Doe"));
                 try!(tx.bind_text(3, "345 e Walnut"));
-                let mut results = tx.execute();
-                assert!(results.step().ok().unwrap().is_none());
+                assert!(tx.step().ok().unwrap().is_none());
             }
             assert_eq!(database.changes(), 1);
 
             let mut q = try!(database.prepare("select * from test order by id"));
-            let mut rows = q.execute();
-            match rows.step() {
+            match q.step() {
                 Ok(Some(ref mut row)) => {
                     assert_eq!(row.get::<u32, i32>(0), 1);
                     // TODO let name = q.get_text(1);
@@ -393,7 +390,7 @@ mod bind_tests {
                 _ => panic!()
             }
 
-            match rows.step() {
+            match q.step() {
                 Ok(Some(ref mut row)) => {
                     assert_eq!(row.get::<u32, i32>(0), 2);
                     //TODO let addr = q.get_text(2);
@@ -410,12 +407,11 @@ mod bind_tests {
     }
 
     fn with_query<T, F>(sql: &str, mut f: F) -> SqliteResult<T>
-        where F: FnMut(&mut ResultSet) -> T
+        where F: FnMut(&mut PreparedStatement) -> T
     {
         let db = try!(DatabaseConnection::in_memory());
         let mut s = try!(db.prepare(sql));
-        let mut rows = s.execute();
-        let x = f(&mut rows);
+        let x = f(&mut s);
         return Ok(x);
     }
 

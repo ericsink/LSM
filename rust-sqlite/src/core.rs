@@ -31,8 +31,7 @@
 //!         let mut stmt = try!(conn.prepare(
 //!             "insert into items (id, description, price)
 //!            values (1, 'stuff', 10)"));
-//!         let mut results = stmt.execute();
-//!         match try!(results.step()) {
+//!         match try!(stmt.step()) {
 //!             None => (),
 //!             Some(_) => panic!("row from insert?!")
 //!         };
@@ -42,8 +41,7 @@
 //!     {
 //!         let mut stmt = try!(conn.prepare(
 //!             "select * from items"));
-//!         let mut results = stmt.execute();
-//!         match results.step() {
+//!         match stmt.step() {
 //!             Ok(Some(ref mut row1)) => {
 //!                 let id = row1.column_int(0);
 //!                 let desc_opt = row1.column_text(1).expect("desc_opt should be non-null");
@@ -399,9 +397,20 @@ impl Drop for PreparedStatement {
 pub type ParamIx = u16;
 
 impl PreparedStatement {
-    /// Begin executing a statement.
-    pub fn execute(&mut self) -> ResultSet {
-        ResultSet { statement: self }
+    /// Execute the next step of a prepared statement.
+    ///
+    /// An sqlite "row" only lasts until the next call to `ffi::sqlite3_step()`,
+    /// so we need a lifetime constraint. The unfortunate result is that
+    /// we cannot implement the `Iterator` trait here.
+    pub fn step<'stmt>(&'stmt mut self) -> SqliteResult<Option<ResultRow<'stmt>>> {
+        let result = unsafe { ffi::sqlite3_step(self.stmt) };
+        match Step::from_i32(result) {
+            Some(SQLITE_ROW) => {
+                Ok(Some(ResultRow{ statement: self }))
+            },
+            Some(SQLITE_DONE) => Ok(None),
+            None => Err(error_result(result, "step", self.get_detail()))
+        }
     }
 }
 
@@ -514,13 +523,18 @@ impl PreparedStatement {
         let count = unsafe { ffi::sqlite3_changes(dbh) };
         count as u64
     }
+
+    pub fn reset(&self) {
+        // We ignore the return code from reset because it has already
+        // been reported:
+        //
+        // "If the most recent call to sqlite3_step(S) for the prepared
+        // statement S indicated an error, then sqlite3_reset(S)
+        // returns an appropriate error code."
+        unsafe { ffi::sqlite3_reset(self.stmt) };
+    }
 }
 
-
-/// Results of executing a `prepare()`d statement.
-pub struct ResultSet<'res> {
-    statement: &'res mut PreparedStatement,
-}
 
 enum_from_primitive! {
     #[derive(Debug, PartialEq, Eq)]
@@ -531,42 +545,9 @@ enum_from_primitive! {
     }
 }
 
-impl<'res> Drop for ResultSet<'res> {
-    fn drop(&mut self) {
-
-        // We ignore the return code from reset because it has already
-        // been reported:
-        //
-        // "If the most recent call to sqlite3_step(S) for the prepared
-        // statement S indicated an error, then sqlite3_reset(S)
-        // returns an appropriate error code."
-        unsafe { ffi::sqlite3_reset(self.statement.stmt) };
-    }
-}
-
-
-impl<'res:'row, 'row> ResultSet<'res> {
-    /// Execute the next step of a prepared statement.
-    ///
-    /// An sqlite "row" only lasts until the next call to `ffi::sqlite3_step()`,
-    /// so we need a lifetime constraint. The unfortunate result is that
-    ///  `ResultSet` cannot implement the `Iterator` trait.
-    pub fn step(&'row mut self) -> SqliteResult<Option<ResultRow<'res, 'row>>> {
-        let result = unsafe { ffi::sqlite3_step(self.statement.stmt) };
-        match Step::from_i32(result) {
-            Some(SQLITE_ROW) => {
-                Ok(Some(ResultRow{ rows: self }))
-            },
-            Some(SQLITE_DONE) => Ok(None),
-            None => Err(error_result(result, "step", self.statement.get_detail()))
-        }
-    }
-}
-
-
 /// Access to columns of a row.
-pub struct ResultRow<'res:'row, 'row> {
-    rows: &'row mut ResultSet<'res>
+pub struct ResultRow<'stmt> {
+    statement: &'stmt mut PreparedStatement
 }
 
 /// Column index for accessing parts of a row.
@@ -581,7 +562,7 @@ pub type ColIx = u32;
 /// `sqlite3_column_type()` is undefined."[1]
 ///
 /// [1]: http://www.sqlite.org/c3ref/column_blob.html
-impl<'res, 'row> ResultRow<'res, 'row> {
+impl<'stmt> ResultRow<'stmt> {
 
     /// cf `sqlite3_column_count`
     ///
@@ -589,7 +570,7 @@ impl<'res, 'row> ResultRow<'res, 'row> {
     /// "This routine returns 0 if pStmt is an SQL statement that does
     /// not return data (for example an UPDATE)."*
     pub fn column_count(&self) -> ColIx {
-        let stmt = self.rows.statement.stmt;
+        let stmt = self.statement.stmt;
         let result = unsafe { ffi::sqlite3_column_count(stmt) };
         result as ColIx
     }
@@ -600,7 +581,7 @@ impl<'res, 'row> ResultRow<'res, 'row> {
     ///
     /// cf `sqlite_column_name`
     pub fn with_column_name<T, F: Fn(&str) -> T>(&mut self, i: ColIx, default: T, f: F) -> T {
-        let stmt = self.rows.statement.stmt;
+        let stmt = self.statement.stmt;
         let n = i as c_int;
         let result = unsafe { ffi::sqlite3_column_name(stmt, n) };
         match charstar_str(&result) {
@@ -613,7 +594,7 @@ impl<'res, 'row> ResultRow<'res, 'row> {
     ///
     /// Return `SQLITE_NULL` if there is no such `col`.
     pub fn column_type(&self, col: ColIx) -> ColumnType {
-        let stmt = self.rows.statement.stmt;
+        let stmt = self.statement.stmt;
         let i_col = col as c_int;
         let result = unsafe { ffi::sqlite3_column_type(stmt, i_col) };
         // fail on out-of-range result instead?
@@ -622,21 +603,21 @@ impl<'res, 'row> ResultRow<'res, 'row> {
 
     /// Get `int` value of a column.
     pub fn column_int(&self, col: ColIx) -> i32 {
-        let stmt = self.rows.statement.stmt;
+        let stmt = self.statement.stmt;
         let i_col = col as c_int;
         unsafe { ffi::sqlite3_column_int(stmt, i_col) }
     }
 
     /// Get `int64` value of a column.
     pub fn column_int64(&self, col: ColIx) -> i64 {
-        let stmt = self.rows.statement.stmt;
+        let stmt = self.statement.stmt;
         let i_col = col as c_int;
         unsafe { ffi::sqlite3_column_int64(stmt, i_col) }
     }
 
     /// Get `f64` (aka double) value of a column.
     pub fn column_double(&self, col: ColIx) -> f64 {
-        let stmt = self.rows.statement.stmt;
+        let stmt = self.statement.stmt;
         let i_col = col as c_int;
         unsafe { ffi::sqlite3_column_double(stmt, i_col) }
     }
@@ -658,7 +639,7 @@ impl<'res, 'row> ResultRow<'res, 'row> {
 
     /// Get `Option<&[u8]>` (aka blob) value of a column.
     pub fn column_slice<'a>(&'a self, col: ColIx) -> Option<&'a [u8]> {
-        let stmt = self.rows.statement.stmt;
+        let stmt = self.statement.stmt;
         let i_col = col as c_int;
         let bs = unsafe { ffi::sqlite3_column_blob(stmt, i_col) } as *const ::libc::c_uchar;
         if bs == ptr::null() {
@@ -730,7 +711,7 @@ mod test_opening {
 
 #[cfg(test)]
 mod tests {
-    use super::{DatabaseConnection, SqliteResult, ResultSet};
+    use super::{DatabaseConnection, SqliteResult, PreparedStatement};
     use std::str;
 
     #[test]
@@ -745,12 +726,11 @@ mod tests {
 
 
     fn with_query<T, F>(sql: &str, mut f: F) -> SqliteResult<T>
-        where F: FnMut(&mut ResultSet) -> T
+        where F: FnMut(&mut PreparedStatement) -> T
     {
         let db = try!(DatabaseConnection::in_memory());
         let mut s = try!(db.prepare(sql));
-        let mut rows = s.execute();
-        Ok(f(&mut rows))
+        Ok(f(&mut s))
     }
 
     #[test]
@@ -825,8 +805,7 @@ mod tests {
     #[test]
     fn non_utf8_str() {
         let mut stmt = DatabaseConnection::in_memory().unwrap().prepare("SELECT x'4546FF'").unwrap();
-        let mut rows = stmt.execute();
-        let row = rows.step().unwrap().unwrap();
+        let row = stmt.step().unwrap().unwrap();
         assert_eq!(row.column_str(0), None);
         assert!(str::from_utf8(&[0x45u8, 0x46, 0xff]).is_err());
     }

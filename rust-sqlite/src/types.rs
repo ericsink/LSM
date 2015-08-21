@@ -158,16 +158,15 @@ impl FromSql for time::Timespec {
 #[cfg(test)]
 mod tests {
     use time::Tm;
-    use super::super::{DatabaseConnection, SqliteResult, ResultSet};
+    use super::super::{DatabaseConnection, SqliteResult, PreparedStatement};
     use super::super::{ResultRowAccess};
 
     fn with_query<T, F>(sql: &str, mut f: F) -> SqliteResult<T>
-        where F: FnMut(&mut ResultSet) -> T
+        where F: FnMut(&mut PreparedStatement) -> T
     {
         let db = try!(DatabaseConnection::in_memory());
         let mut s = try!(db.prepare(sql));
-        let mut rows = s.execute();
-        Ok(f(&mut rows))
+        Ok(f(&mut s))
     }
 
     #[test]
@@ -176,8 +175,7 @@ mod tests {
             let conn = try!(DatabaseConnection::in_memory());
             let mut stmt = try!(
                 conn.prepare("select datetime('2001-01-01', 'weekday 3', '3 hours')"));
-            let mut results = stmt.execute();
-            match results.step() {
+            match stmt.step() {
                 Ok(Some(ref mut row)) => {
                     assert_eq!(
                         row.get::<u32, Tm>(0),

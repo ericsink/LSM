@@ -47,15 +47,7 @@ struct StatementBsonValueIterator {
 
 impl StatementBsonValueIterator {
     fn iter_next(&mut self) -> Result<Option<bson::Value>> {
-        // TODO can't find a way to store the ResultSet from execute()
-        // in the same struct as its statement, because the ResultSet()
-        // contains a mut reference to the statement.  So we look at
-        // the implementation of execute() and realize that it doesn't
-        // actually do anything of substance, so we call it every
-        // time.  Ugly.
-        // TODO this won't work.  the stmt gets reset when the ResultSet
-        // gets dropped.
-        match try!(self.stmt.execute().step().map_err(elmo::wrap_err)) {
+        match try!(self.stmt.step().map_err(elmo::wrap_err)) {
             None => {
                 Ok(None)
             },
@@ -91,17 +83,24 @@ impl Iterator for StatementBsonValueIterator {
     }
 }
 
-struct ResultSetBsonValueIterator<'a> {
-    rows: sqlite3::ResultSet<'a>,
+// TODO it is sad to have two completely distinct versions of
+// this iterator, one which owns the statement, and one which
+// does not.
+
+struct RefStatementBsonValueIterator<'a> {
+    stmt: &'a mut sqlite3::PreparedStatement,
 }
 
-impl<'a> ResultSetBsonValueIterator<'a> {
+impl<'a> RefStatementBsonValueIterator<'a> {
     fn iter_next(&mut self) -> Result<Option<bson::Value>> {
-        match try!(self.rows.step().map_err(elmo::wrap_err)) {
-            None => Ok(None),
+        match try!(self.stmt.step().map_err(elmo::wrap_err)) {
+            None => {
+                Ok(None)
+            },
             Some(r) => {
                 let b = r.column_blob(0).expect("NOT NULL");
                 let v = try!(bson::Document::from_bson(&b));
+                //println!("doc: {:?}", v);
                 let v = bson::Value::BDocument(v);
                 Ok(Some(v))
             },
@@ -109,7 +108,7 @@ impl<'a> ResultSetBsonValueIterator<'a> {
     }
 }
 
-impl<'a> Iterator for ResultSetBsonValueIterator<'a> {
+impl<'a> Iterator for RefStatementBsonValueIterator<'a> {
     type Item = Result<bson::Value>;
     fn next(&mut self) -> Option<Self::Item> {
         match self.iter_next() {
@@ -167,8 +166,7 @@ struct MyPublicConn {
 }
 
 fn step_done(stmt: &mut sqlite3::PreparedStatement) -> Result<()> {
-    let mut r = stmt.execute();
-    match try!(r.step().map_err(elmo::wrap_err)) {
+    match try!(stmt.step().map_err(elmo::wrap_err)) {
         Some(_) => {
             Err(elmo::Error::Misc("step_done() returned a row"))
         },
@@ -384,8 +382,7 @@ impl MyConn {
         try!(stmt.bind_text(1, db).map_err(elmo::wrap_err));
         try!(stmt.bind_text(2, coll).map_err(elmo::wrap_err));
         // TODO step_row() ?
-        let mut r = stmt.execute();
-        match try!(r.step().map_err(elmo::wrap_err)) {
+        match try!(stmt.step().map_err(elmo::wrap_err)) {
             None => Ok(None),
             Some(r) => {
                 let v = try!(bson::Document::from_bson(&r.column_slice(0).expect("NOT NULL")));
@@ -517,10 +514,9 @@ impl MyConn {
             stmt.clear_bindings();
             try!(stmt.bind_blob(1, &kmin).map_err(elmo::wrap_err));
             try!(stmt.bind_blob(2, &kmax).map_err(elmo::wrap_err));
-            let mut r = stmt.execute();
             let mut entries = Vec::new();
             loop {
-                match try!(r.step().map_err(elmo::wrap_err)) {
+                match try!(stmt.step().map_err(elmo::wrap_err)) {
                     None => break,
                     Some(row) => {
                         let k = row.column_slice(0).expect("NOT NULL");
@@ -647,10 +643,9 @@ impl MyConn {
         let mut res = Vec::new();
         for (did, cur_weights) in doc_weights {
             try!(stmt.bind_int64(1, did).map_err(elmo::wrap_err));
-            let rows = stmt.execute();
             let rdr = 
-                ResultSetBsonValueIterator {
-                    rows: rows,
+                RefStatementBsonValueIterator {
+                    stmt: &mut stmt,
                 };
             for r in rdr {
                 let r = try!(r);
@@ -712,8 +707,7 @@ impl MyConn {
         try!(stmt.bind_text(1, db).map_err(elmo::wrap_err));
         try!(stmt.bind_text(2, coll).map_err(elmo::wrap_err));
         try!(stmt.bind_text(3, name).map_err(elmo::wrap_err));
-        let mut r = stmt.execute();
-        match try!(r.step().map_err(elmo::wrap_err)) {
+        match try!(stmt.step().map_err(elmo::wrap_err)) {
             None => Ok(None),
             Some(row) => {
                 let info = try!(get_index_info_from_row(&row));
@@ -725,10 +719,9 @@ impl MyConn {
     fn base_list_indexes(&self) -> Result<Vec<elmo::IndexInfo>> {
         // TODO DRY this string, above
         let mut stmt = try!(self.conn.prepare("SELECT ndxName, spec, options, dbName, collName FROM \"indexes\"").map_err(elmo::wrap_err));
-        let mut r = stmt.execute();
         let mut v = Vec::new();
         loop {
-            match try!(r.step().map_err(elmo::wrap_err)) {
+            match try!(stmt.step().map_err(elmo::wrap_err)) {
                 None => break,
                 Some(row) => {
                     let info = try!(get_index_info_from_row(&row));
@@ -741,10 +734,9 @@ impl MyConn {
 
     fn base_list_collections(&self) -> Result<Vec<elmo::CollectionInfo>> {
         let mut stmt = try!(self.conn.prepare("SELECT dbName, collName, options FROM \"collections\" ORDER BY collName ASC").map_err(elmo::wrap_err));
-        let mut r = stmt.execute();
         let mut v = Vec::new();
         loop {
-            match try!(r.step().map_err(elmo::wrap_err)) {
+            match try!(stmt.step().map_err(elmo::wrap_err)) {
                 None => break,
                 Some(row) => {
                     let info = try!(get_collection_info_from_row(&row));
@@ -765,8 +757,7 @@ impl MyCollectionWriter {
                         stmt.clear_bindings();
                         let ba = bson::Value::encode_one_for_index(v, false);
                         try!(stmt.bind_blob(1, &ba).map_err(elmo::wrap_err));
-                        let mut r = stmt.execute();
-                        match try!(r.step().map_err(elmo::wrap_err)) {
+                        match try!(stmt.step().map_err(elmo::wrap_err)) {
                             None => Ok(None),
                             Some(r) => {
                                 let rowid = r.column_int64(0);
@@ -891,8 +882,7 @@ impl MyWriter {
                 try!(stmt.bind_text(3, &info.name).map_err(elmo::wrap_err));
                 try!(stmt.bind_blob(4, &ba_spec).map_err(elmo::wrap_err));
                 try!(stmt.bind_blob(5, &ba_options).map_err(elmo::wrap_err));
-                let mut r = stmt.execute();
-                match try!(r.step().map_err(elmo::wrap_err)) {
+                match try!(stmt.step().map_err(elmo::wrap_err)) {
                     None => {
                         let tbl_coll = get_table_name_for_collection(&info.db, &info.coll);
                         let tbl_ndx = get_table_name_for_index(&info.db, &info.coll, &info.name);
@@ -911,9 +901,8 @@ impl MyWriter {
                         let (normspec, weights) = try!(elmo::get_normalized_spec(&info));
                         let mut stmt2 = try!(self.myconn.conn.prepare(&format!("SELECT did,bson FROM \"{}\"", tbl_coll)).map_err(elmo::wrap_err));
                         let mut stmt_insert = try!(self.prepare_index_insert(&tbl_ndx));
-                        let mut r = stmt2.execute();
                         loop {
-                            match try!(r.step().map_err(elmo::wrap_err)) {
+                            match try!(stmt2.step().map_err(elmo::wrap_err)) {
                                 None => break,
                                 Some(row) => {
                                     let doc_rowid = row.column_int64(0);
@@ -1010,8 +999,7 @@ impl MyWriter {
                 try!(stmt.bind_text(1, db).map_err(elmo::wrap_err));
                 try!(stmt.bind_text(2, coll).map_err(elmo::wrap_err));
                 try!(stmt.bind_blob(3, &v_options).map_err(elmo::wrap_err));
-                let mut r = stmt.execute();
-                match try!(r.step().map_err(elmo::wrap_err)) {
+                match try!(stmt.step().map_err(elmo::wrap_err)) {
                     None => {
                         let tbl = get_table_name_for_collection(db, coll);
                         try!(self.myconn.conn.exec(&format!("CREATE TABLE \"{}\" (did INTEGER PRIMARY KEY, bson BLOB NOT NULL)", tbl)).map_err(elmo::wrap_err));
