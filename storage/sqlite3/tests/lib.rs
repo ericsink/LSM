@@ -2,14 +2,12 @@
 extern crate misc;
 extern crate bson;
 extern crate elmo;
-extern crate storage_sqlite3;
-
-use bson::BsonValue;
+extern crate elmo_sqlite3;
 
 #[test]
 fn just_connect() {
     fn f() -> elmo::Result<()> {
-        let db = try!(storage_sqlite3::connect(&misc::tempfile("just_connect")));
+        let db = try!(elmo_sqlite3::connect(&misc::tempfile("just_connect")));
         drop(db);
         Ok(())
     }
@@ -21,7 +19,7 @@ fn just_connect() {
 #[test]
 fn prepare_write() {
     fn f() -> elmo::Result<()> {
-        let db = try!(storage_sqlite3::connect(&misc::tempfile("prepare_write")));
+        let db = try!(elmo_sqlite3::connect(&misc::tempfile("prepare_write")));
         {
             let tx = try!(db.begin_write());
             {
@@ -38,16 +36,15 @@ fn prepare_write() {
 #[test]
 fn insert() {
     fn f() -> elmo::Result<()> {
-        let db = try!(storage_sqlite3::connect(&misc::tempfile("insert")));
+        let db = try!(elmo_sqlite3::connect(&misc::tempfile("insert")));
         {
             let tx = try!(db.begin_write());
             {
                 let mut p = try!(tx.get_collection_writer("foo", "bar"));
 
-                let mut pairs = Vec::new();
-                pairs.push((String::from("_id"), BsonValue::BString(misc::tid())));
-                pairs.push((String::from("ok"), BsonValue::BInt32(0)));
-                let doc = BsonValue::BDocument(pairs);
+                let mut doc = bson::Document::new_empty();
+                doc.set_string("_id", misc::tid());
+                doc.set_i32("ok", 0);
 
                 try!(p.insert(&doc));
             }
