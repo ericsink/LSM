@@ -171,6 +171,10 @@ impl Document {
         self.pairs.push((String::from_str(k), v));
     }
 
+    pub fn set_objectid(&mut self, k: &str, v: [u8; 12]) {
+        self.set(k, Value::BObjectID(v));
+    }
+
     pub fn set_document(&mut self, k: &str, v: Document) {
         self.set(k, Value::BDocument(v));
     }

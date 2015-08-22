@@ -395,8 +395,17 @@ impl Connection {
         }
     }
 
-    pub fn insert(&self, db: &str, coll: &str, docs: &Vec<bson::Document>) -> Result<Vec<Result<()>>> {
-        // TODO make sure every doc has an _id
+    pub fn insert(&self, db: &str, coll: &str, docs: &mut Vec<bson::Document>) -> Result<Vec<Result<()>>> {
+        // make sure every doc has an _id
+        for d in docs.iter_mut() {
+            match d.get("_id") {
+                Some(_) => {
+                },
+                None => {
+                    d.set_objectid("_id", misc::new_bson_objectid_rand());
+                },
+            }
+        }
         let mut results = Vec::new();
         {
             let writer = try!(self.conn.begin_write());

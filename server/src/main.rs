@@ -411,10 +411,11 @@ impl<'b> Server<'b> {
 
         let docs = try!(req.query.must_remove("documents"));
         let docs = try!(docs.into_array());
-        let docs = try!(vec_values_to_docs(docs.items));
+        let mut docs = try!(vec_values_to_docs(docs.items));
 
         // TODO ordered
-        let results = try!(self.conn.insert(db, &coll, &docs));
+        // TODO do we need to keep ownership of docs?
+        let results = try!(self.conn.insert(db, &coll, &mut docs));
         let mut errors = Vec::new();
         for i in 0 .. results.len() {
             if results[i].is_err() {
@@ -978,11 +979,14 @@ impl<'b> Server<'b> {
     }
 
     fn reply_2005(&mut self, req: MsgGetMore) -> Reply {
-        match self.cursors.get_mut(&req.cursor_id) {
-            Some(&mut (ref ns, ref mut seq)) => {
-                match Self::do_limit(&ns, seq, req.number_to_return) {
+        match self.cursors.remove(&req.cursor_id) {
+            Some((ns, mut seq)) => {
+                match Self::do_limit(&ns, &mut seq, req.number_to_return) {
                     Ok((docs, more)) => {
-                        // TODO if !more remove the cursor
+                        if more {
+                            // put the cursor back for next time
+                            self.cursors.insert(req.cursor_id, (ns, box seq));
+                        }
                         let docs = vec_rows_to_values(docs);
                         match vec_values_to_docs(docs) {
                             Ok(docs) => {

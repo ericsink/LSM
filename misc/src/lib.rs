@@ -21,7 +21,7 @@ use std::collections::HashMap;
 
 pub fn tid() -> String {
     // TODO use the rand crate
-    fn bytes() -> std::io::Result<[u8;16]> {
+    fn bytes() -> std::io::Result<[u8; 16]> {
         use std::fs::OpenOptions;
         let mut f = try!(OpenOptions::new()
                 .read(true)
@@ -40,6 +40,22 @@ pub fn tid() -> String {
 
     let ba = bytes().unwrap();
     to_hex_string(&ba)
+}
+
+pub fn new_bson_objectid_rand() -> [u8; 12] {
+    // TODO use the rand crate
+    fn bytes() -> std::io::Result<[u8; 12]> {
+        use std::fs::OpenOptions;
+        let mut f = try!(OpenOptions::new()
+                .read(true)
+                .open("/dev/urandom"));
+        let mut ba = [0;12];
+        try!(io::read_fully(&mut f, &mut ba));
+        Ok(ba)
+    }
+
+    let ba = bytes().unwrap();
+    ba
 }
 
 pub fn tempfile(base: &str) -> String {
