@@ -217,6 +217,29 @@ pub fn cmp_row(d: &Row, lit: &Row) -> Ordering {
     matcher::cmp(&d.doc, &lit.doc)
 }
 
+enum UpdateOp {
+    Min(String, bson::Value),
+    Max(String, bson::Value),
+    Inc(String, bson::Value),
+    Mul(String, bson::Value),
+    Set(String, bson::Value),
+    PullValue(String, bson::Value),
+    SetOnInsert(String, bson::Value),
+    BitAnd(String, i64),
+    BitOr(String, i64),
+    BitXor(String, i64),
+    Unset(String),
+    Date(String),
+    TimeStamp(String),
+    Rename(String, String),
+    AddToSet(String, Vec<bson::Value>),
+    PullAll(String, Vec<bson::Value>),
+    // TODO push
+    PullQuery(String, matcher::QueryDoc),
+    PullPredicates(String, Vec<matcher::Pred>),
+    Pop(String, i32),
+}
+
 pub trait StorageBase {
     // TODO maybe these two should return an iterator
     // TODO maybe these two should accept params to limit the rows returned
@@ -395,6 +418,86 @@ impl Connection {
         }
     }
 
+    fn apply_update_ops(doc: &mut bson::Document, ops: &Vec<UpdateOp>, is_upsert: bool, pos: Option<usize>) {
+        for op in ops {
+            match op {
+                &UpdateOp::Min(ref path, ref v) => {
+                    panic!("TODO UpdateOp::Min");
+                },
+                &UpdateOp::Max(ref path, ref v) => {
+                    panic!("TODO UpdateOp::Max");
+                },
+                &UpdateOp::Inc(ref path, ref v) => {
+                    panic!("TODO UpdateOp::Inc");
+                },
+                &UpdateOp::Mul(ref path, ref v) => {
+                    panic!("TODO UpdateOp::Mul");
+                },
+                &UpdateOp::Set(ref path, ref v) => {
+                    panic!("TODO UpdateOp::Set");
+                },
+                &UpdateOp::PullValue(ref path, ref v) => {
+                    panic!("TODO UpdateOp::PullValue");
+                },
+                &UpdateOp::SetOnInsert(ref path, ref v) => {
+                    panic!("TODO UpdateOp::SetOnInsert");
+                },
+                &UpdateOp::BitAnd(ref path, v) => {
+                    panic!("TODO UpdateOp::BitAnd");
+                },
+                &UpdateOp::BitOr(ref path, v) => {
+                    panic!("TODO UpdateOp::BitOr");
+                },
+                &UpdateOp::BitXor(ref path, v) => {
+                    panic!("TODO UpdateOp::BitXor");
+                },
+                &UpdateOp::Unset(ref path) => {
+                    panic!("TODO UpdateOp::Unset");
+                },
+                &UpdateOp::Date(ref path) => {
+                    panic!("TODO UpdateOp::Date");
+                },
+                &UpdateOp::TimeStamp(ref path) => {
+                    panic!("TODO UpdateOp::Timestamp");
+                },
+                &UpdateOp::Rename(ref path, ref name) => {
+                    panic!("TODO UpdateOp::Rename");
+                },
+                &UpdateOp::AddToSet(ref path, ref v) => {
+                    panic!("TODO UpdateOp::AddToSet");
+                },
+                &UpdateOp::PullAll(ref path, ref v) => {
+                    panic!("TODO UpdateOp::PullAll");
+                },
+                &UpdateOp::PullQuery(ref path, ref qd) => {
+                    panic!("TODO UpdateOp::PullQuery");
+                },
+                &UpdateOp::PullPredicates(ref path, ref preds) => {
+                    panic!("TODO UpdateOp::PullPredicates");
+                },
+                &UpdateOp::Pop(ref path, i) => {
+                    panic!("TODO UpdateOp::Pop");
+                },
+            }
+        }
+    }
+
+    fn parse_update_doc(d: bson::Document) -> Result<Vec<UpdateOp>> {
+        // TODO benefit of map/collect over for loop is that it forces something for every item
+        let mut result = vec![];
+        for (k, v) in d.pairs {
+            match k.as_str() {
+                "$min" => {
+                    for (path, v) in try!(v.into_document()).pairs {
+                        result.push(UpdateOp::Min(path, v));
+                    }
+                },
+                _ => return Err(Error::Misc(format!("unknown update op: {}", k))),
+            }
+        }
+        Ok(result)
+    }
+
     fn get_one_match(db: &str, coll: &str, w: &StorageWriter, m: &matcher::QueryDoc) -> Result<Option<Row>> {
         let indexes = try!(w.list_indexes()).into_iter().filter(
             |ndx| ndx.db == db && ndx.coll == coll
@@ -418,6 +521,8 @@ impl Connection {
         Ok(d)
     }
 
+    // TODO this func needs to return the 4-tuple
+    // (count_matches, count_modified, Option<TODO>, Option<TODO>)
     pub fn update(&self, db: &str, coll: &str, updates: &mut Vec<bson::Document>) -> Result<Vec<Result<()>>> {
         // TODO need separate conn?
         let mut results = Vec::new();
@@ -434,7 +539,36 @@ impl Connection {
                     let m = try!(matcher::parse_query(q));
                     let has_update_operators = u.pairs.iter().any(|&(ref k, _)| !k.starts_with("$"));
                     if has_update_operators {
-                        panic!("TODO update operators");
+                        let ops = try!(Self::parse_update_doc(u));
+                        let (count_matches, count_modified) =
+                            if multi {
+                                panic!("TODO update operators multi");
+                            } else {
+                                match try!(Self::get_one_match(db, coll, &*writer, &m)) {
+                                    Some(row) => {
+                                        let mut doc = try!(row.doc.into_document());
+                                        Self::apply_update_ops(&mut doc, &ops, false, None);
+                                        // TODO make sure _id did not change
+                                        // TODO only do the actual update if a change happened.  clone and compare?
+                                        // TODO basic_update, validate_keys
+                                        collwriter.update(&doc);
+                                        // TODO return (1, 0) if the change didn't happen
+                                        (1, 1)
+                                    },
+                                    None => (0, 0),
+                                }
+                            };
+                        if count_matches == 0 {
+                            if upsert {
+                                panic!("TODO update operators upsert");
+                            } else {
+                                Ok(())
+                                //Ok((count_matches, count_modified, None, None))
+                            }
+                        } else {
+                            Ok(())
+                            //Ok((count_matches, count_modified, None, None))
+                        }
                     } else {
                         // TODO what happens if the update document has no update operators
                         // but it has keys which are dotted?
