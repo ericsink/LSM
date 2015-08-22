@@ -545,7 +545,13 @@ impl Value {
     pub fn tryGetValueEither(&self, k: &str) -> Option<&Value> {
         match self {
             &Value::BDocument(ref bd) => bd.get(k),
-            &Value::BArray(ref ba) => unimplemented!(),
+            &Value::BArray(ref ba) => {
+                match k.parse::<usize>() {
+                    Ok(n) => ba.tryGetValueAtIndex(n),
+                    // TODO or should we propagate the error?
+                    Err(_) => None,
+                }
+            },
             _ => None,
         }
     }

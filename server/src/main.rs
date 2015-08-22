@@ -44,6 +44,7 @@ use std::io::Write;
 enum Error {
     // TODO remove Misc
     Misc(&'static str),
+    MiscString(String),
 
     // TODO more detail within CorruptFile
     CorruptFile(&'static str),
@@ -69,6 +70,7 @@ impl std::fmt::Display for Error {
             Error::Io(ref err) => write!(f, "IO error: {}", err),
             Error::Utf8(ref err) => write!(f, "Utf8 error: {}", err),
             Error::Misc(s) => write!(f, "Misc error: {}", s),
+            Error::MiscString(ref s) => write!(f, "Misc error: {}", s),
             Error::CorruptFile(s) => write!(f, "Corrupt file: {}", s),
             Error::Whatever(ref err) => write!(f, "Other error: {}", err),
         }
@@ -83,6 +85,7 @@ impl std::error::Error for Error {
             Error::Io(ref err) => std::error::Error::description(err),
             Error::Utf8(ref err) => std::error::Error::description(err),
             Error::Misc(s) => s,
+            Error::MiscString(ref s) => &s,
             Error::CorruptFile(s) => s,
             Error::Whatever(ref err) => std::error::Error::description(&**err),
         }
@@ -375,19 +378,19 @@ impl<'b> Server<'b> {
     }
 
     fn reply_admin_cmd(&self, req: &MsgQuery, db: &str) -> Result<Reply> {
+        use std::ascii::AsciiExt;
         if req.query.pairs.is_empty() {
             Err(Error::Misc("empty query"))
         } else {
             // this code assumes that the first key is always the command
-            let cmd = req.query.pairs[0].0.as_str();
-            // TODO let cmd = cmd.ToLower();
+            let cmd = req.query.pairs[0].0.clone().to_ascii_lowercase();
             let res =
-                match cmd {
+                match cmd.as_str() {
                     "whatsmyuri" => self.reply_whatsmyuri(req),
-                    "getLog" => self.reply_getlog(req),
-                    "replSetGetStatus" => self.reply_replsetgetstatus(req),
-                    "isMaster" => self.reply_ismaster(req),
-                    _ => Err(Error::Misc("unknown cmd"))
+                    "getlog" => self.reply_getlog(req),
+                    "replsetgetstatus" => self.reply_replsetgetstatus(req),
+                    "ismaster" => self.reply_ismaster(req),
+                    _ => Err(Error::MiscString(format!("unknown admin cmd: {}", cmd)))
                 };
             res
         }
@@ -402,7 +405,6 @@ impl<'b> Server<'b> {
         let result = try!(self.conn.delete(db, coll, &deletes.items));
         let mut doc = bson::Document::new_empty();
         doc.set_i32("ok", result as i32);
-        doc.set_i32("ok", 1);
         Ok(create_reply(req.req_id, vec![doc], 0))
     }
 
@@ -907,7 +909,7 @@ impl<'b> Server<'b> {
         // TODO let s = crud.seqOnlyDoc s
 
         if number_to_skip < 0 {
-            unimplemented!();
+            panic!("TODO negative skip");
         }
 
         let seq = seq.skip(number_to_skip as usize);
@@ -932,12 +934,12 @@ impl<'b> Server<'b> {
     }
 
     fn reply_cmd(&mut self, req: MsgQuery, db: &str) -> Result<Reply> {
+        use std::ascii::AsciiExt;
         if req.query.pairs.is_empty() {
             Err(Error::Misc("empty query"))
         } else {
             // this code assumes that the first key is always the command
-            let cmd = req.query.pairs[0].0.clone();
-            // TODO let cmd = cmd.ToLower();
+            let cmd = req.query.pairs[0].0.clone().to_ascii_lowercase();
             let res =
                 // TODO isMaster needs to be in here?
                 match cmd.as_str() {
@@ -950,15 +952,15 @@ impl<'b> Server<'b> {
                     //"findandmodify" => reply_FindAndModify req db
                     "count" => self.reply_count(req, db),
                     //"validate" => reply_Validate req db
-                    "createindexes" => self.reply_create_indexes(&req, db),
-                    "deleteindexes" => self.reply_delete_indexes(&req, db),
+                    "TODO createindexes" => self.reply_create_indexes(&req, db),
+                    "TODO deleteindexes" => self.reply_delete_indexes(&req, db),
                     "drop" => self.reply_drop_collection(&req, db),
                     "dropdatabase" => self.reply_drop_database(&req, db),
                     "listcollections" => self.reply_list_collections(&req, db),
                     "listindexes" => self.reply_list_indexes(&req, db),
                     "create" => self.reply_create_collection(&req, db),
                     //"features" => reply_features &req db
-                    _ => Err(Error::Misc("unknown cmd"))
+                    _ => Err(Error::MiscString(format!("unknown cmd: {}", cmd)))
                 };
             res
         }

@@ -253,7 +253,7 @@ fn cmp_in(d: &bson::Value, lit: &bson::Value) -> bool {
             match d {
                 &bson::Value::BString(ref s) => {
                     // TODO use expr and options to construct a regex and match s
-                    unimplemented!();
+                    panic!("TODO regex");
                 },
                 _ => {
                     false
@@ -426,15 +426,15 @@ fn match_predicate<F: Fn(usize)>(pred: &Pred, d: &bson::Value, cb_array_pos: &F)
             match d {
                 &bson::Value::BString(ref s) => {
                     // TODO use regex to match s
-                    unimplemented!();
+                    panic!("TODO regex");
                 },
                 _ => false,
             }
         },
-        &Pred::Near(_) => unimplemented!(),
-        &Pred::NearSphere(_) => unimplemented!(),
-        &Pred::GeoWithin(_) => unimplemented!(),
-        &Pred::GeoIntersects(_) => unimplemented!(),
+        &Pred::Near(_) => panic!("TODO geo"),
+        &Pred::NearSphere(_) => panic!("TODO geo"),
+        &Pred::GeoWithin(_) => panic!("TODO geo"),
+        &Pred::GeoIntersects(_) => panic!("TODO geo"),
         &Pred::Type(n) => (d.getTypeNumber_u8() as i32) == n,
         &Pred::In(ref lits) => lits.iter().any(|v| cmp_in(d, v)),
         &Pred::Nin(ref lits) => !lits.iter().any(|v| cmp_in(d, v)),
@@ -766,21 +766,21 @@ fn parse_pred(k: &str, v: bson::Value) -> Result<Pred> {
         "$lt" => Ok(Pred::LT(try!(not_regex(v)))),
         "$gte" => Ok(Pred::GTE(try!(not_regex(v)))),
         "$lte" => Ok(Pred::LTE(try!(not_regex(v)))),
-        "$regex" => unimplemented!(),
+        "$regex" => panic!("TODO regex"),
         "$exists" => Ok(Pred::Exists(try!(v.as_bool()))),
         // TODO as_i32 below: should probably allow conversion
         "$type" => Ok(Pred::Type(try!(v.as_i32()))),
-        "$size" => unimplemented!(),
-        "$all" => unimplemented!(),
-        "$in" => unimplemented!(),
-        "$nin" => unimplemented!(),
-        "$not" => unimplemented!(),
-        "$mod" => unimplemented!(),
-        "$elemMatch" => unimplemented!(),
-        "$near" => unimplemented!(),
-        "$nearSphere" => unimplemented!(),
-        "$geoWithin" => unimplemented!(),
-        "$geoIntersects" => unimplemented!(),
+        "$size" => panic!("TODO $size"),
+        "$all" => panic!("TODO $all"),
+        "$in" => panic!("TODO $in"),
+        "$nin" => panic!("TODO $nin"),
+        "$not" => panic!("TODO $not"),
+        "$mod" => panic!("TODO $mod"),
+        "$elemMatch" => panic!("TODO $elemMatch"),
+        "$near" => panic!("TODO $near"),
+        "$nearSphere" => panic!("TODO $nearSphere"),
+        "$geoWithin" => panic!("TODO $geoWithin"),
+        "$geoIntersects" => panic!("TODO $geoIntersects"),
         _ => Err(super::Error::Misc("unknown pred")),
     }
 }
@@ -792,14 +792,14 @@ fn parse_pred_list(pairs: Vec<(String,bson::Value)>) -> Result<Vec<Pred>> {
     let options = regex.iter().find(|&&(ref k, _)| k == "$options");
     match (expr, options) {
         (Some(expr), None) => {
-            unimplemented!();
+            panic!("TODO regex");
         },
         (Some(expr), Some(options)) => {
-            unimplemented!();
+            panic!("TODO regex");
         },
         (None, Some(_)) => {
             // TODO error
-            unimplemented!();
+            panic!("TODO regex");
         },
         (None, None) => {
             // nothing to do here

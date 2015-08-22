@@ -128,7 +128,7 @@ pub struct CollectionInfo {
 }
 
 // TODO remove derive Clone later
-#[derive(Clone)]
+#[derive(Clone,Debug)]
 pub struct IndexInfo {
     pub db: String,
     pub coll: String,
@@ -472,7 +472,7 @@ impl Connection {
                 }
             };
         try!(writer.commit());
-        unimplemented!();
+        panic!("TODO delete_indexes");
     }
 
     pub fn create_indexes(&self, indexes: Vec<IndexInfo>) -> Result<Vec<bool>> {
@@ -815,6 +815,7 @@ impl Connection {
                         // er, why are we here?
                         // index with no keys
                         // TODO or return Err?
+                        println!("index with no keys: {:?}", ndx);
                         unreachable!();
                     },
                 }
@@ -1170,7 +1171,7 @@ impl Connection {
 
                 match hint {
                     Some(hint) => {
-                        unimplemented!();
+                        panic!("TODO hint");
                     },
                     None => Ok(Self::choose_from_possibles(fits))
                 }
@@ -1257,7 +1258,7 @@ impl Connection {
                                 unreachable!();
                             },
                             (Some(min), Some(max)) => {
-                                unimplemented!();
+                                panic!("TODO query bounds min and max");
                             },
                             (Some(min), None) => {
                                 let min = try!(Self::parse_index_min_max(min));
@@ -1273,7 +1274,7 @@ impl Connection {
                                 }
                             },
                             (None, Some(max)) => {
-                                unimplemented!();
+                                panic!("TODO query bounds max");
                             },
                         };
 
