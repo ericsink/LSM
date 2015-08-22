@@ -1008,8 +1008,8 @@ impl<'b> Server<'b> {
         }
     }
 
-    fn handle_one_message(&mut self, stream: &mut std::net::TcpStream) -> Result<()> {
-        fn send_reply(stream: &mut std::net::TcpStream, resp: Reply) -> Result<()> {
+    fn handle_one_message(&mut self, stream: &mut std::net::TcpStream) -> Result<bool> {
+        fn send_reply(stream: &mut std::net::TcpStream, resp: Reply) -> Result<bool> {
             //println!("resp: {:?}", resp);
             let ba = resp.encode();
             //println!("ba: {:?}", ba);
@@ -1017,13 +1017,16 @@ impl<'b> Server<'b> {
             if wrote != ba.len() {
                 return Err(Error::Misc("network write failed"));
             } else {
-                Ok(())
+                Ok(true)
             }
         }
 
         let ba = try!(read_message_bytes(stream));
         match ba {
-            None => Ok(()),
+            None => {
+                println!("no request");
+                Ok(false)
+            },
             Some(ba) => {
                 //println!("{:?}", ba);
                 let msg = try!(parse_request(&ba));
@@ -1034,7 +1037,7 @@ impl<'b> Server<'b> {
                             self.cursors.remove(&cursor_id);
                         }
                         // there is no reply to this
-                        Ok(())
+                        Ok(true)
                     },
                     Request::Query(req) => {
                         let resp = self.reply_2004(req);
@@ -1051,10 +1054,16 @@ impl<'b> Server<'b> {
 
     fn handle_client(&mut self, mut stream: std::net::TcpStream) -> Result<()> {
         loop {
-            let r = self.handle_one_message(&mut stream);
-            if r.is_err() {
-                // TODO if this is just plain end of file, no need to error.
-                return r;
+            match self.handle_one_message(&mut stream) {
+                Ok(false) => {
+                    return Ok(());
+                },
+                Ok(true) => {
+                    // keep going
+                },
+                Err(e) => {
+                    return Err(e);
+                },
             }
         }
     }
@@ -1072,7 +1081,7 @@ pub fn serve() {
                 std::thread::spawn(move|| {
                     // connection succeeded
                     // TODO how to use filename arg.  lifetime problem.
-                    let conn = elmo_sqlite3::connect("foo.db").expect("TODO");
+                    let conn = elmo_sqlite3::connect("elmodata.db").expect("TODO");
                     let conn = elmo::Connection::new(conn);
                     let mut s = Server {
                         conn: conn,
