@@ -121,6 +121,11 @@ impl Document {
         self.remove(k).ok_or(Error::Misc("required key not found"))
     }
 
+    pub fn must_remove_bool(&mut self, k: &str) -> Result<bool> {
+        let v = try!(self.must_remove(k));
+        v.as_bool()
+    }
+
     pub fn must_remove_string(&mut self, k: &str) -> Result<String> {
         let v = try!(self.must_remove(k));
         v.into_string()
@@ -129,6 +134,11 @@ impl Document {
     pub fn must_remove_document(&mut self, k: &str) -> Result<Document> {
         let v = try!(self.must_remove(k));
         v.into_document()
+    }
+
+    pub fn must_remove_array(&mut self, k: &str) -> Result<Array> {
+        let v = try!(self.must_remove(k));
+        v.into_array()
     }
 
     pub fn get(&self, k: &str) -> Option<&Value> {
@@ -654,6 +664,13 @@ impl Value {
         match self {
             Value::BArray(s) => Ok(s),
             _ => Err(Error::Misc("must be array")),
+        }
+    }
+
+    pub fn as_objectid(&self) -> Result<[u8; 12]> {
+        match self {
+            &Value::BObjectID(a) => Ok(a),
+            _ => Err(Error::Misc("must be objectid")),
         }
     }
 

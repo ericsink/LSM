@@ -34,7 +34,7 @@ extern crate bson;
 // TODO do we really want this public?
 pub enum Error {
     // TODO remove Misc
-    Misc(&'static str),
+    Misc(String),
 
     // TODO more detail within CorruptFile
     CorruptFile(&'static str),
@@ -52,7 +52,7 @@ impl std::fmt::Display for Error {
             Error::Io(ref err) => write!(f, "IO error: {}", err),
             Error::Utf8(ref err) => write!(f, "Utf8 error: {}", err),
             Error::Whatever(ref err) => write!(f, "Other error: {}", err),
-            Error::Misc(s) => write!(f, "Misc error: {}", s),
+            Error::Misc(ref s) => write!(f, "Misc error: {}", s),
             Error::CorruptFile(s) => write!(f, "Corrupt file: {}", s),
         }
     }
@@ -65,7 +65,7 @@ impl std::error::Error for Error {
             Error::Io(ref err) => std::error::Error::description(err),
             Error::Utf8(ref err) => std::error::Error::description(err),
             Error::Whatever(ref err) => std::error::Error::description(&**err),
-            Error::Misc(s) => s,
+            Error::Misc(ref s) => s.as_str(),
             Error::CorruptFile(s) => s,
         }
     }
@@ -395,6 +395,86 @@ impl Connection {
         }
     }
 
+    fn get_one_match(db: &str, coll: &str, w: &StorageWriter, m: &matcher::QueryDoc) -> Result<Option<Row>> {
+        let indexes = try!(w.list_indexes()).into_iter().filter(
+            |ndx| ndx.db == db && ndx.coll == coll
+            ).collect::<Vec<_>>();
+        let plan = try!(Self::choose_index(&indexes, &m, None));
+        let mut seq: Box<Iterator<Item=Result<Row>>> = try!(w.get_collection_reader(db, coll, plan));
+        seq = box seq
+            .filter(
+                move |r| {
+                    if let &Ok(ref d) = r {
+                        matcher::match_query(&m, &d.doc)
+                    } else {
+                        // TODO so when we have an error we just let it through?
+                        true
+                    }
+                }
+        );
+        // TODO is take() the right thing here?
+        let mut a = try!(seq.take(1).collect::<Result<Vec<_>>>());
+        let d = misc::remove_first_if_exists(&mut a);
+        Ok(d)
+    }
+
+    pub fn update(&self, db: &str, coll: &str, updates: &mut Vec<bson::Document>) -> Result<Vec<Result<()>>> {
+        // TODO need separate conn?
+        let mut results = Vec::new();
+        {
+            let writer = try!(self.conn.begin_write());
+            {
+                let mut collwriter = try!(writer.get_collection_writer(db, coll));
+                // TODO why does this closure need to be mut?
+                let mut one_update_or_upsert = |upd: &mut bson::Document| -> Result<()> {
+                    let q = try!(upd.must_remove_document("q"));
+                    let mut u = try!(upd.must_remove_document("u"));
+                    let multi = try!(upd.must_remove_bool("multi"));
+                    let upsert = try!(upd.must_remove_bool("upsert"));
+                    let m = try!(matcher::parse_query(q));
+                    let has_update_operators = u.pairs.iter().any(|&(ref k, _)| !k.starts_with("$"));
+                    if has_update_operators {
+                        panic!("TODO update operators");
+                    } else {
+                        // TODO what happens if the update document has no update operators
+                        // but it has keys which are dotted?
+                        if multi {
+                            return Err(Error::Misc(String::from("multi update requires $ update operators")));
+                        }
+                        match try!(Self::get_one_match(db, coll, &*writer, &m)) {
+                            Some(row) => {
+                                let doc = try!(row.doc.as_document());
+                                let id1 = try!(doc.get("_id").ok_or(Error::Misc(String::from("_id not found in doc being updated"))));
+                                let id1 = try!(id1.as_objectid());
+                                // TODO if u has _id, make sure it's the same
+                                u.set_objectid("_id", id1);
+                                // TODO basic_update, validate_keys
+                                collwriter.update(&u);
+                                // TODO return something
+                                Ok(())
+                            },
+                            None => {
+                                if upsert {
+                                    panic!("TODO upsert");
+                                } else {
+                                    // TODO (0,0,None,None)
+                                    panic!("TODO nothing updated");
+                                }
+                            },
+                        }
+                    }
+                };
+
+                for upd in updates {
+                    let r = one_update_or_upsert(upd);
+                    results.push(r);
+                }
+            }
+            try!(writer.commit());
+        }
+        Ok(results)
+    }
+
     pub fn insert(&self, db: &str, coll: &str, docs: &mut Vec<bson::Document>) -> Result<Vec<Result<()>>> {
         // make sure every doc has an _id
         for d in docs.iter_mut() {
@@ -412,6 +492,7 @@ impl Connection {
             {
                 let mut collwriter = try!(writer.get_collection_writer(db, coll));
                 for doc in docs {
+                    // TODO basic_insert, validate_keys
                     let r = collwriter.insert(doc);
                     results.push(r);
                 }
@@ -556,15 +637,15 @@ impl Connection {
                                 Ok((k, v))
                             },
                             _ => {
-                                Err(Error::Misc("bad min max"))
+                                Err(Error::Misc(String::from("bad min max")))
                             },
                         }
                     } else {
-                        Err(Error::Misc("bad min max"))
+                        Err(Error::Misc(String::from("bad min max")))
                     }
                 },
                 _ => {
-                    Err(Error::Misc("bad min max"))
+                    Err(Error::Misc(String::from("bad min max")))
                 },
             }
         ).collect::<Result<Vec<(_,_)>>>()
@@ -611,7 +692,7 @@ impl Connection {
             try!(mc.into_iter().map(
                     |(k, mut v)| 
                     if v.len() == 0 {
-                        Err(Error::Misc("cannot happen"))
+                        unreachable!();
                     } else if v.len() == 1 {
                         let v = v.pop().expect("len() == 1");
                         Ok((k, v))
@@ -621,7 +702,7 @@ impl Connection {
                             uniq.len()
                         };
                         if count_distinct > 1 {
-                            Err(Error::Misc("conflicting $eq"))
+                            Err(Error::Misc(String::from("conflicting $eq")))
                         } else {
                             let v = v.pop().expect("len() > 0");
                             Ok((k, v))
@@ -815,7 +896,6 @@ impl Connection {
                         // er, why are we here?
                         // index with no keys
                         // TODO or return Err?
-                        println!("index with no keys: {:?}", ndx);
                         unreachable!();
                     },
                 }
@@ -1047,7 +1127,7 @@ impl Connection {
                 // TODO do we allow space between the - and the word or phrase?
 
                 if i >= len {
-                    return Err(Error::Misc("negate of nothing"));
+                    return Err(Error::Misc(String::from("negate of nothing")));
                 }
 
                 if '"' == s[i] {
@@ -1062,7 +1142,7 @@ impl Connection {
                         if i < len { 
                             i - tok_start
                         } else {
-                            return Err(Error::Misc("unmatched phrase quote"));
+                            return Err(Error::Misc(String::from("unmatched phrase quote")));
                         };
                     //printfn "phrase tok_len: %d" tok_len
                     i = i + 1;
@@ -1108,7 +1188,7 @@ impl Connection {
             .filter_map(|it| if let &matcher::QueryItem::Text(ref s) = it { Some(s.as_str()) } else { None })
             .collect::<Vec<_>>();
         if a.len() > 1 {
-            Err(Error::Misc("only one $text in a query"))
+            Err(Error::Misc(String::from("only one $text in a query")))
         } else {
             let s = misc::remove_first_if_exists(&mut a);
             Ok(s)
@@ -1158,7 +1238,7 @@ impl Connection {
             Some(_) => {
                 // TODO if there is a $text query, disallow hint
                 if fits.len() == 0 {
-                    Err(Error::Misc("$text without index"))
+                    Err(Error::Misc(String::from("$text without index")))
                 } else {
                     assert!(fits.len() == 1);
                     Ok(Some(fits.remove(0)))
@@ -1230,7 +1310,7 @@ impl Connection {
                         if let Some(ndx) = Self::try_find_index_by_name_or_spec(&indexes, v) {
                             (false, Some(ndx))
                         } else {
-                            return Err(Error::Misc("bad hint"));
+                            return Err(Error::Misc(String::from("bad hint")));
                         }
                     }
                 },
@@ -1269,7 +1349,7 @@ impl Connection {
                                         (ndx, bounds)
                                     },
                                     None => {
-                                        return Err(Error::Misc("index not found. TODO should be None?"));
+                                        return Err(Error::Misc(String::from("index not found. TODO should be None?")));
                                     },
                                 }
                             },

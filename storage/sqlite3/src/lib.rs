@@ -174,7 +174,7 @@ struct MyPublicConn {
 fn step_done(stmt: &mut sqlite3::PreparedStatement) -> Result<()> {
     match try!(stmt.step().map_err(elmo::wrap_err)) {
         Some(_) => {
-            Err(elmo::Error::Misc("step_done() returned a row"))
+            Err(elmo::Error::Misc(String::from("step_done() returned a row")))
         },
         None => {
             Ok(())
@@ -187,7 +187,7 @@ fn verify_changes(stmt: &sqlite3::PreparedStatement, shouldbe: u64) -> Result<()
         Ok(())
     } else {
         // TODO or should this be an assert?
-        Err(elmo::Error::Misc("changes() is wrong"))
+        Err(elmo::Error::Misc(String::from("changes() is wrong")))
     }
 }
 
@@ -498,7 +498,7 @@ impl MyConn {
         let (normspec, weights) = try!(elmo::get_normalized_spec(&ndx));
         let weights = 
             match weights {
-                None => return Err(elmo::Error::Misc("non text index")),
+                None => return Err(elmo::Error::Misc(String::from("non text index"))),
                 Some(w) => w,
             };
 
@@ -802,10 +802,10 @@ impl MyCollectionWriter {
 impl elmo::StorageCollectionWriter for MyCollectionWriter {
     fn update(&mut self, v: &bson::Document) -> Result<()> {
         match v.get("_id") {
-            None => Err(elmo::Error::Misc("cannot update without _id")),
+            None => Err(elmo::Error::Misc(String::from("cannot update without _id"))),
             Some(id) => {
                 match try!(self.find_rowid(&id).map_err(elmo::wrap_err)) {
-                    None => Err(elmo::Error::Misc("update but does not exist")),
+                    None => Err(elmo::Error::Misc(String::from("update but does not exist"))),
                     Some(rowid) => {
                                 let ba = v.to_bson_array();
                                 self.update.clear_bindings();
@@ -838,7 +838,7 @@ impl elmo::StorageCollectionWriter for MyCollectionWriter {
                         } else if count == 0 {
                             Ok(false)
                         } else {
-                            Err(elmo::Error::Misc("changes() after delete is wrong"))
+                            Err(elmo::Error::Misc(String::from("changes() after delete is wrong")))
                         }
                     },
                 }
@@ -871,7 +871,7 @@ impl MyWriter {
                 if already.spec != info.spec {
                     // note that we do not compare the options.
                     // I think mongo does it this way too.
-                    Err(elmo::Error::Misc("index already exists with different keys"))
+                    Err(elmo::Error::Misc(String::from("index already exists with different keys")))
                 } else {
                     Ok(false)
                 }
@@ -926,7 +926,7 @@ impl MyWriter {
                         Ok(true)
                     },
                     Some(_) => {
-                        Err(elmo::Error::Misc("insert stmt step() returned a row"))
+                        Err(elmo::Error::Misc(String::from("insert stmt step() returned a row")))
                     },
                 }
             },
@@ -955,10 +955,10 @@ impl MyWriter {
         // that collection is system.users, which is "whitelisted".  for now, we emulate this behavior, even
         // though system.users isn't supported.
         if old_coll != "system.users" && old_coll.starts_with("system.") {
-            return Err(elmo::Error::Misc("renameCollection with a system collection not allowed."))
+            return Err(elmo::Error::Misc(String::from("renameCollection with a system collection not allowed.")))
         }
         if new_coll != "system.users" && new_coll.starts_with("system.") {
-            return Err(elmo::Error::Misc("renameCollection with a system collection not allowed."))
+            return Err(elmo::Error::Misc(String::from("renameCollection with a system collection not allowed.")))
         }
 
         if drop_target {
@@ -1026,7 +1026,7 @@ impl MyWriter {
                         Ok(true)
                     },
                     Some(_) => {
-                        Err(elmo::Error::Misc("insert stmt step() returned a row"))
+                        Err(elmo::Error::Misc(String::from("insert stmt step() returned a row")))
                     },
                 }
             },

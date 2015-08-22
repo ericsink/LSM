@@ -754,7 +754,7 @@ fn is_query_doc(v: &bson::Value) -> bool {
 fn parse_pred(k: &str, v: bson::Value) -> Result<Pred> {
     fn not_regex(v: bson::Value) -> Result<bson::Value> {
         match v {
-            bson::Value::BRegex(_,_) => Err(super::Error::Misc("regex not allowed here")),
+            bson::Value::BRegex(_,_) => Err(super::Error::Misc(String::from("regex not allowed here"))),
             _ => Ok(v),
         }
     }
@@ -781,7 +781,7 @@ fn parse_pred(k: &str, v: bson::Value) -> Result<Pred> {
         "$nearSphere" => panic!("TODO $nearSphere"),
         "$geoWithin" => panic!("TODO $geoWithin"),
         "$geoIntersects" => panic!("TODO $geoIntersects"),
-        _ => Err(super::Error::Misc("unknown pred")),
+        _ => Err(super::Error::Misc(format!("unknown pred: {}", k))),
     }
 }
 
@@ -810,7 +810,7 @@ fn parse_pred_list(pairs: Vec<(String,bson::Value)>) -> Result<Vec<Pred>> {
 
 fn parse_compare(k: &str, v: &bson::Value) -> Result<QueryItem> {
     if k.starts_with("$") {
-        return Err(super::Error::Misc("parse_compare $"));
+        return Err(super::Error::Misc(String::from("parse_compare $")));
     }
     let qit = 
         match v {

@@ -43,8 +43,7 @@ use std::io::Write;
 #[derive(Debug)]
 enum Error {
     // TODO remove Misc
-    Misc(&'static str),
-    MiscString(String),
+    Misc(String),
 
     // TODO more detail within CorruptFile
     CorruptFile(&'static str),
@@ -69,8 +68,7 @@ impl std::fmt::Display for Error {
             Error::Elmo(ref err) => write!(f, "elmo error: {}", err),
             Error::Io(ref err) => write!(f, "IO error: {}", err),
             Error::Utf8(ref err) => write!(f, "Utf8 error: {}", err),
-            Error::Misc(s) => write!(f, "Misc error: {}", s),
-            Error::MiscString(ref s) => write!(f, "Misc error: {}", s),
+            Error::Misc(ref s) => write!(f, "Misc error: {}", s),
             Error::CorruptFile(s) => write!(f, "Corrupt file: {}", s),
             Error::Whatever(ref err) => write!(f, "Other error: {}", err),
         }
@@ -84,8 +82,7 @@ impl std::error::Error for Error {
             Error::Elmo(ref err) => std::error::Error::description(err),
             Error::Io(ref err) => std::error::Error::description(err),
             Error::Utf8(ref err) => std::error::Error::description(err),
-            Error::Misc(s) => s,
-            Error::MiscString(ref s) => &s,
+            Error::Misc(ref s) => &s,
             Error::CorruptFile(s) => s,
             Error::Whatever(ref err) => std::error::Error::description(&**err),
         }
@@ -380,7 +377,7 @@ impl<'b> Server<'b> {
     fn reply_admin_cmd(&self, req: &MsgQuery, db: &str) -> Result<Reply> {
         use std::ascii::AsciiExt;
         if req.query.pairs.is_empty() {
-            Err(Error::Misc("empty query"))
+            Err(Error::Misc(String::from("empty query")))
         } else {
             // this code assumes that the first key is always the command
             let cmd = req.query.pairs[0].0.clone().to_ascii_lowercase();
@@ -390,7 +387,7 @@ impl<'b> Server<'b> {
                     "getlog" => self.reply_getlog(req),
                     "replsetgetstatus" => self.reply_replsetgetstatus(req),
                     "ismaster" => self.reply_ismaster(req),
-                    _ => Err(Error::MiscString(format!("unknown admin cmd: {}", cmd)))
+                    _ => Err(Error::Misc(format!("unknown admin cmd: {}", cmd)))
                 };
             res
         }
@@ -408,11 +405,22 @@ impl<'b> Server<'b> {
         Ok(create_reply(req.req_id, vec![doc], 0))
     }
 
+    fn reply_update(&self, mut req: MsgQuery, db: &str) -> Result<Reply> {
+        let coll = try!(req.query.must_remove_string("update"));
+        let updates = try!(req.query.must_remove_array("updates"));
+        let mut updates = try!(vec_values_to_docs(updates.items));
+        // TODO ordered
+        // TODO do we need to keep ownership of updates?
+        let results = try!(self.conn.update(db, &coll, &mut updates));
+        let mut doc = bson::Document::new_empty();
+        doc.set_i32("ok", 1);
+        Ok(create_reply(req.req_id, vec![doc], 0))
+    }
+
     fn reply_insert(&self, mut req: MsgQuery, db: &str) -> Result<Reply> {
         let coll = try!(req.query.must_remove_string("insert"));
 
-        let docs = try!(req.query.must_remove("documents"));
-        let docs = try!(docs.into_array());
+        let docs = try!(req.query.must_remove_array("documents"));
         let mut docs = try!(vec_values_to_docs(docs.items));
 
         // TODO ordered
@@ -502,29 +510,29 @@ impl<'b> Server<'b> {
             match cursor_options {
                 Some(&bson::Value::BDocument(ref bd)) => {
                     if bd.pairs.iter().any(|&(ref k, _)| k != "batchSize") {
-                        return Err(Error::Misc("invalid cursor option"));
+                        return Err(Error::Misc(String::from("invalid cursor option")));
                     }
                     match bd.pairs.iter().find(|&&(ref k, ref _v)| k == "batchSize") {
                         Some(&(_, bson::Value::BInt32(n))) => {
                             if n < 0 {
-                                return Err(Error::Misc("batchSize < 0"));
+                                return Err(Error::Misc(String::from("batchSize < 0")));
                             }
                             Some(n as usize)
                         },
                         Some(&(_, bson::Value::BDouble(n))) => {
                             if n < 0.0 {
-                                return Err(Error::Misc("batchSize < 0"));
+                                return Err(Error::Misc(String::from("batchSize < 0")));
                             }
                             Some(n as usize)
                         },
                         Some(&(_, bson::Value::BInt64(n))) => {
                             if n < 0 {
-                                return Err(Error::Misc("batchSize < 0"));
+                                return Err(Error::Misc(String::from("batchSize < 0")));
                             }
                             Some(n as usize)
                         },
                         Some(_) => {
-                            return Err(Error::Misc("batchSize not numeric"));
+                            return Err(Error::Misc(String::from("batchSize not numeric")));
                         },
                         None => {
                             Some(default_batch_size)
@@ -532,7 +540,7 @@ impl<'b> Server<'b> {
                     }
                 },
                 Some(_) => {
-                    return Err(Error::Misc("invalid cursor option"));
+                    return Err(Error::Misc(String::from("invalid cursor option")));
                 },
                 None => {
                     // TODO in the case where the cursor is not requested, how
@@ -633,25 +641,28 @@ impl<'b> Server<'b> {
         Ok(create_reply(req.req_id, vec![doc], 0))
     }
 
-    fn reply_create_indexes(&mut self, req: &MsgQuery, db: &str) -> Result<Reply> {
-        let coll = try!(req.query.must_get_str("createIndexes"));
-        let indexes = try!(req.query.must_get_array("indexes"));
-        let indexes = indexes.items.iter().map(
-            |d| {
-                // TODO get these from d
-                let spec = bson::Document::new_empty();
-                let options = bson::Document::new_empty();
+    fn reply_create_indexes(&mut self, mut req: MsgQuery, db: &str) -> Result<Reply> {
+        let coll = try!(req.query.must_remove_string("createIndexes"));
+        let indexes = try!(req.query.must_remove_array("indexes"));
+        let mut a = vec![];
+        for d in indexes.items {
+            let mut d = try!(d.into_document());
+            let name = try!(d.must_remove_string("name"));
+            let spec = try!(d.must_remove_document("key"));
+            // TODO look for specific options here like the fs version?
+            let options = try!(d.must_remove_document("options"));
+            let ndx = 
                 elmo::IndexInfo {
                     db: String::from(db),
-                    coll: String::from(coll),
-                    name: String::from("TODO"),
+                    coll: coll.clone(),
+                    name: name,
                     spec: spec,
                     options: options,
-                }
-            }
-            ).collect::<Vec<_>>();
+                };
+            a.push(ndx);
+        }
 
-        let result = try!(self.conn.create_indexes(indexes));
+        let result = try!(self.conn.create_indexes(a));
         // TODO createdCollectionAutomatically
         // TODO numIndexesBefore
         // TODO numIndexesAfter
@@ -784,7 +795,7 @@ impl<'b> Server<'b> {
 
     fn splitname(s: &str) -> Result<(&str, &str)> {
         match s.find('.') {
-            None => Err(Error::Misc("bad namespace")),
+            None => Err(Error::Misc(String::from("bad namespace"))),
             Some(dot) => Ok((&s[0 .. dot], &s[dot+1 ..]))
         }
     }
@@ -936,7 +947,7 @@ impl<'b> Server<'b> {
     fn reply_cmd(&mut self, req: MsgQuery, db: &str) -> Result<Reply> {
         use std::ascii::AsciiExt;
         if req.query.pairs.is_empty() {
-            Err(Error::Misc("empty query"))
+            Err(Error::Misc(String::from("empty query")))
         } else {
             // this code assumes that the first key is always the command
             let cmd = req.query.pairs[0].0.clone().to_ascii_lowercase();
@@ -948,19 +959,19 @@ impl<'b> Server<'b> {
                     "insert" => self.reply_insert(req, db),
                     "delete" => self.reply_delete(&req, db),
                     //"distinct" => reply_distinct req db
-                    //"update" => reply_Update req db
+                    "update" => self.reply_update(req, db),
                     //"findandmodify" => reply_FindAndModify req db
                     "count" => self.reply_count(req, db),
                     //"validate" => reply_Validate req db
-                    "TODO createindexes" => self.reply_create_indexes(&req, db),
-                    "TODO deleteindexes" => self.reply_delete_indexes(&req, db),
+                    "createindexes" => self.reply_create_indexes(req, db),
+                    "deleteindexes" => self.reply_delete_indexes(&req, db),
                     "drop" => self.reply_drop_collection(&req, db),
                     "dropdatabase" => self.reply_drop_database(&req, db),
                     "listcollections" => self.reply_list_collections(&req, db),
                     "listindexes" => self.reply_list_indexes(&req, db),
                     "create" => self.reply_create_collection(&req, db),
                     //"features" => reply_features &req db
-                    _ => Err(Error::MiscString(format!("unknown cmd: {}", cmd)))
+                    _ => Err(Error::Misc(format!("unknown cmd: {}", cmd)))
                 };
             res
         }
@@ -974,7 +985,7 @@ impl<'b> Server<'b> {
         let r = 
             if parts.len() < 2 {
                 // TODO failwith (sprintf "bad collection name: %s" (req.full_collection_name))
-                Err(Error::Misc("bad collection name"))
+                Err(Error::Misc(String::from("bad collection name")))
             } else {
                 let db = &parts[0];
                 if db == "admin" {
@@ -984,22 +995,22 @@ impl<'b> Server<'b> {
                         self.reply_admin_cmd(&req, db)
                     } else {
                         //failwith "not implemented"
-                        Err(Error::Misc("TODO"))
+                        Err(Error::Misc(String::from("TODO")))
                     }
                 } else {
                     if parts[1] == "$cmd" {
                         if parts.len() == 4 && parts[2]=="sys" && parts[3]=="inprog" {
                             //reply_cmd_sys_inprog req db
-                            Err(Error::Misc("TODO"))
+                            Err(Error::Misc(String::from("TODO")))
                         } else {
                             self.reply_cmd(req, db)
                         }
                     } else if parts.len()==3 && parts[1]=="system" && parts[2]=="indexes" {
                         //reply_system_indexes req db
-                        Err(Error::Misc("TODO"))
+                        Err(Error::Misc(String::from("TODO")))
                     } else if parts.len()==3 && parts[1]=="system" && parts[2]=="namespaces" {
                         //reply_system_namespaces req db
-                        Err(Error::Misc("TODO"))
+                        Err(Error::Misc(String::from("TODO")))
                     } else {
                         self.reply_query(req, db)
                     }
@@ -1027,17 +1038,17 @@ impl<'b> Server<'b> {
                                 create_reply(req.req_id, docs, 0)
                             },
                             Err(e) => {
-                                reply_err(req.req_id, Error::Misc("TODO"))
+                                reply_err(req.req_id, Error::Misc(String::from("TODO")))
                             },
                         }
                     },
                     Err(e) => {
-                        reply_err(req.req_id, Error::Misc("TODO"))
+                        reply_err(req.req_id, Error::Misc(String::from("TODO")))
                     },
                 }
             },
             None => {
-                reply_err(req.req_id, Error::Misc("TODO"))
+                reply_err(req.req_id, Error::Misc(String::from("TODO")))
             },
         }
     }
@@ -1049,7 +1060,7 @@ impl<'b> Server<'b> {
             //println!("ba: {:?}", ba);
             let wrote = try!(misc::io::write_fully(stream, &ba));
             if wrote != ba.len() {
-                return Err(Error::Misc("network write failed"));
+                return Err(Error::Misc(String::from("network write failed")));
             } else {
                 Ok(true)
             }
