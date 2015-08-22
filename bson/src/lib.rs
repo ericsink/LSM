@@ -126,6 +126,11 @@ impl Document {
         v.into_string()
     }
 
+    pub fn must_remove_document(&mut self, k: &str) -> Result<Document> {
+        let v = try!(self.must_remove(k));
+        v.into_document()
+    }
+
     pub fn get(&self, k: &str) -> Option<&Value> {
         for t in self.pairs.iter() {
             let (ref ksub, ref vsub) = *t;

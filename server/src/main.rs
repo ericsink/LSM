@@ -813,6 +813,38 @@ impl<'b> Server<'b> {
         }
     }
 
+    fn reply_count(&mut self, req: MsgQuery, db: &str) -> Result<Reply> {
+        let MsgQuery {
+            req_id,
+            flags,
+            full_collection_name,
+            number_to_skip,
+            number_to_return,
+            mut query,
+            return_fields_selector,
+        } = req;
+        let coll = try!(query.must_remove_string("count"));
+        let hint = query.remove("hint");
+        let q = try!(query.must_remove_document("query"));
+        let seq = try!(self.conn.find(
+                db, 
+                &coll, 
+                q,
+                None,
+                None,
+                None,
+                None,
+                hint,
+                None
+                ));
+        let count = seq.count();
+        // TODO skip/limit
+        let mut doc = bson::Document::new_empty();
+        doc.set_i32("n", count as i32);
+        doc.set_i32("ok", 1);
+        Ok(create_reply(req.req_id, vec![doc], 0))
+    }
+
     fn reply_query(&mut self, req: MsgQuery, db: &str) -> Result<Reply> {
         let MsgQuery {
             req_id,
@@ -916,7 +948,7 @@ impl<'b> Server<'b> {
                     //"distinct" => reply_distinct req db
                     //"update" => reply_Update req db
                     //"findandmodify" => reply_FindAndModify req db
-                    //"count" => reply_Count req db
+                    "count" => self.reply_count(req, db),
                     //"validate" => reply_Validate req db
                     "createindexes" => self.reply_create_indexes(&req, db),
                     "deleteindexes" => self.reply_delete_indexes(&req, db),
