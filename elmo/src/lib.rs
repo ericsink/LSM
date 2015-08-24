@@ -471,16 +471,16 @@ impl Connection {
                     }
                     match try!(doc.entry(&path)) {
                         bson::Entry::Found(mut e) => {
-                            if try!(v.to_i64()) != 0 {
+                            if try!(v.numeric_to_i64()) != 0 {
                                 match e.get_mut() {
                                     &mut bson::Value::BInt32(ref mut n) => {
-                                        *n = *n + try!(v.to_i32())
+                                        *n = *n + try!(v.numeric_to_i32())
                                     },
                                     &mut bson::Value::BInt64(ref mut n) => {
-                                        *n = *n + try!(v.to_i64())
+                                        *n = *n + try!(v.numeric_to_i64())
                                     },
                                     &mut bson::Value::BDouble(ref mut n) => {
-                                        *n = *n + try!(v.to_f64())
+                                        *n = *n + try!(v.numeric_to_f64())
                                     },
                                     _ => return Err(Error::Misc(format!("can't $inc to this type"))),
                                 }
@@ -503,13 +503,13 @@ impl Connection {
                         bson::Entry::Found(mut e) => {
                             match e.get_mut() {
                                 &mut bson::Value::BInt32(ref mut n) => {
-                                    *n = *n * try!(v.to_i32())
+                                    *n = *n * try!(v.numeric_to_i32())
                                 },
                                 &mut bson::Value::BInt64(ref mut n) => {
-                                    *n = *n * try!(v.to_i64())
+                                    *n = *n * try!(v.numeric_to_i64())
                                 },
                                 &mut bson::Value::BDouble(ref mut n) => {
-                                    *n = *n * try!(v.to_f64())
+                                    *n = *n * try!(v.numeric_to_f64())
                                 },
                                 _ => return Err(Error::Misc(format!("can't $mul to this type"))),
                             }

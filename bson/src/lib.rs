@@ -919,7 +919,7 @@ impl Value {
         }
     }
 
-    pub fn to_i32(&self) -> Result<i32> {
+    pub fn numeric_to_i32(&self) -> Result<i32> {
         match self {
             &Value::BInt32(ref s) => Ok((*s) as i32),
             &Value::BInt64(ref s) => Ok((*s) as i32),
@@ -928,7 +928,7 @@ impl Value {
         }
     }
 
-    pub fn to_i64(&self) -> Result<i64> {
+    pub fn numeric_to_i64(&self) -> Result<i64> {
         match self {
             &Value::BInt32(ref s) => Ok((*s) as i64),
             &Value::BInt64(ref s) => Ok((*s) as i64),
@@ -937,7 +937,7 @@ impl Value {
         }
     }
 
-    pub fn to_f64(&self) -> Result<f64> {
+    pub fn numeric_to_f64(&self) -> Result<f64> {
         match self {
             &Value::BInt32(ref s) => Ok((*s) as f64),
             &Value::BInt64(ref s) => Ok((*s) as f64),
