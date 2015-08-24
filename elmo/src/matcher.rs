@@ -769,7 +769,7 @@ fn parse_pred(k: &str, v: bson::Value) -> Result<Pred> {
         "$lt" => Ok(Pred::LT(try!(not_regex(v)))),
         "$gte" => Ok(Pred::GTE(try!(not_regex(v)))),
         "$lte" => Ok(Pred::LTE(try!(not_regex(v)))),
-        "$regex" => panic!("TODO regex"),
+        "$regex" => panic!("TODO parse_pred regex"),
         "$exists" => Ok(Pred::Exists(try!(v.as_bool()))),
         // TODO as_i32 below: should probably allow conversion
         "$type" => Ok(Pred::Type(try!(v.as_i32()))),
@@ -804,16 +804,43 @@ fn parse_pred(k: &str, v: bson::Value) -> Result<Pred> {
                 _ => Err(super::Error::Misc(format!("bad arg to $size: {:?}", v)))
             }
         },
-        "$all" => panic!("TODO $all"),
-        "$in" => panic!("TODO $in"),
-        "$nin" => panic!("TODO $nin"),
-        "$not" => panic!("TODO $not"),
-        "$mod" => panic!("TODO $mod"),
-        "$elemMatch" => panic!("TODO $elemMatch"),
-        "$near" => panic!("TODO $near"),
-        "$nearSphere" => panic!("TODO $nearSphere"),
-        "$geoWithin" => panic!("TODO $geoWithin"),
-        "$geoIntersects" => panic!("TODO $geoIntersects"),
+        "$all" => panic!("TODO parse_pred $all"),
+        "$in" => {
+            let a = try!(v.into_array());
+            if a.items.iter().any(|v| !is_valid_within_in(v)) {
+                Err(super::Error::Misc(format!("$in allows literals only: {:?}", a)))
+            } else {
+                Ok(Pred::In(a.items))
+            }
+        },
+        "$nin" => {
+            let a = try!(v.into_array());
+            if a.items.iter().any(|v| !is_valid_within_in(v)) {
+                Err(super::Error::Misc(format!("$nin allows literals only: {:?}", a)))
+            } else {
+                Ok(Pred::Nin(a.items))
+            }
+        },
+        "$not" => panic!("TODO parse_pred $not"),
+        "$mod" => {
+            let a = try!(v.into_array());
+            if a.items.len() != 2 {
+                Err(super::Error::Misc(format!("$mod arg must be array of len 2: {:?}", a)))
+            } else {
+                let div = try!(a.items[0].numeric_to_i64());
+                let rem = try!(a.items[0].numeric_to_i64());
+                if div == 0 {
+                    Err(super::Error::Misc(format!("$mod div by 0, error 16810: {:?}", a)))
+                } else {
+                    Ok(Pred::Mod(div, rem))
+                }
+            }
+        },
+        "$elemMatch" => panic!("TODO parse_pred $elemMatch"),
+        "$near" => panic!("TODO parse_pred $near"),
+        "$nearSphere" => panic!("TODO parse_pred $nearSphere"),
+        "$geoWithin" => panic!("TODO parse_pred $geoWithin"),
+        "$geoIntersects" => panic!("TODO parse_pred $geoIntersects"),
         _ => Err(super::Error::Misc(format!("unknown pred: {}", k))),
     }
 }
