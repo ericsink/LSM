@@ -804,7 +804,42 @@ fn parse_pred(k: &str, v: bson::Value) -> Result<Pred> {
                 _ => Err(super::Error::Misc(format!("bad arg to $size: {:?}", v)))
             }
         },
-        "$all" => panic!("TODO parse_pred $all"),
+        "$all" => {
+            let a = try!(v.into_array());
+            if a.items.iter().any(
+                |bv| {
+                    match bv {
+                        &bson::Value::BDocument(ref bd) => {
+                            // TODO make sure ALL of the items are elemMatch
+                            if bd.pairs.len() == 1 {
+                                bd.pairs[0].0 == "$elemMatch"
+                            } else {
+                                false
+                            }
+                        },
+                        _ => false,
+                    }
+                }) {
+                let a2 = a.items.into_iter().map(
+                    |bv| {
+                        let mut bd = try!(bv.into_document());
+                        let (k,v) = bd.pairs.pop().expect("already checked this? TODO");
+                        let bd = try!(v.into_document());
+                        let d = try!(parse_query_doc(&bd));
+                        let d = QueryDoc::QueryDoc(d);
+                        Ok(d)
+                    }
+                    ).collect::<Result<Vec<_>>>();
+                let a2 = try!(a2);
+                Ok(Pred::AllElemMatchObjects(a2))
+            } else {
+                if a.items.iter().any(|v| !is_valid_within_all(v)) {
+                    Err(super::Error::Misc(format!("$all allows literals only: {:?}", a)))
+                } else {
+                    Ok(Pred::All(a.items))
+                }
+            }
+        },
         "$in" => {
             let a = try!(v.into_array());
             if a.items.iter().any(|v| !is_valid_within_in(v)) {
