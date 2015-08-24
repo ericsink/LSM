@@ -54,7 +54,7 @@ impl StatementBsonValueIterator {
             Some(r) => {
                 let b = r.column_blob(0).expect("NOT NULL");
                 let v = try!(bson::Document::from_bson(&b));
-                println!("doc in row: {:?}", v);
+                //println!("doc in row: {:?}", v);
                 let v = bson::Value::BDocument(v);
                 let row = elmo::Row {
                     doc: v,
@@ -374,8 +374,6 @@ fn get_collection_info_from_row(r: &sqlite3::ResultRow) -> Result<elmo::Collecti
 }
 
 fn index_insert_step(stmt: &mut sqlite3::PreparedStatement, k: Vec<u8>, doc_rowid: i64) -> Result<()> {
-    println!("index_insert_step, k: {:?}", k);
-    println!("index_insert_step, rowid: {:?}", doc_rowid);
     stmt.clear_bindings();
     try!(stmt.bind_blob(1, &k).map_err(elmo::wrap_err));
     try!(stmt.bind_int64(2, doc_rowid).map_err(elmo::wrap_err));
@@ -400,7 +398,6 @@ impl MyConn {
     }
 
     fn get_stmt_for_index_scan(myconn: &MyConn, plan: elmo::QueryPlan) -> Result<sqlite3::PreparedStatement> {
-        println!("in get_stmt_for_index_scan");
         let tbl_coll = get_table_name_for_collection(&plan.ndx.db, &plan.ndx.coll);
         let tbl_ndx = get_table_name_for_index(&plan.ndx.db, &plan.ndx.coll, &plan.ndx.name);
 
@@ -436,9 +433,6 @@ impl MyConn {
 
         let f_twok = |kmin: Vec<u8>, kmax: Vec<u8>, op1: &str, op2: &str| -> Result<sqlite3::PreparedStatement> {
             let sql = format!("SELECT DISTINCT d.bson FROM \"{}\" d INNER JOIN \"{}\" i ON (d.did = i.doc_rowid) WHERE k {} ? AND k {} ?", tbl_coll, tbl_ndx, op1, op2);
-            println!("twok sql: {}", sql);
-            println!("twok kmin: {:?}", kmin);
-            println!("twok kmax: {:?}", kmax);
             let mut stmt = try!(myconn.conn.prepare(&sql).map_err(elmo::wrap_err));
             try!(stmt.bind_blob(1, &kmin).map_err(elmo::wrap_err));
             try!(stmt.bind_blob(2, &kmax).map_err(elmo::wrap_err));
@@ -454,7 +448,6 @@ impl MyConn {
         let f_one = |vals: elmo::QueryKey, op: &str| -> Result<sqlite3::PreparedStatement> {
             let k = bson::Value::encode_multi_for_index(copy_dirs_from_normspec_to_vals(&normspec, vals));
             let sql = format!("SELECT DISTINCT d.bson FROM \"{}\" d INNER JOIN \"{}\" i ON (d.did = i.doc_rowid) WHERE k {} ?", tbl_coll, tbl_ndx, op);
-            println!("one sql: {}", sql);
             let mut stmt = try!(myconn.conn.prepare(&sql).map_err(elmo::wrap_err));
             try!(stmt.bind_blob(1, &k).map_err(elmo::wrap_err));
             Ok(stmt)
@@ -795,7 +788,6 @@ impl MyCollectionWriter {
     }
 
     fn update_indexes_delete(indexes: &mut Vec<IndexPrep>, rowid: i64) -> Result<()> {
-        println!("update_indexes_delete");
         for t in indexes {
             t.stmt_delete.clear_bindings();
             try!(t.stmt_delete.bind_int64(1, rowid).map_err(elmo::wrap_err));
@@ -805,12 +797,10 @@ impl MyCollectionWriter {
     }
 
     fn update_indexes_insert(indexes: &mut Vec<IndexPrep>, rowid: i64, v: &bson::Document) -> Result<()> {
-        println!("update_indexes_insert");
         for t in indexes {
             let (normspec, weights) = try!(elmo::get_normalized_spec(&t.info));
             let mut entries = Vec::new();
             try!(get_index_entries(&v, &normspec, &weights, &t.info.options, &mut entries));
-            println!("index entries: {:?}", entries);
             let entries = entries.into_iter().collect::<std::collections::HashSet<_>>();
             for vals in entries {
                 let k = bson::Value::encode_multi_for_index(vals);
@@ -888,7 +878,6 @@ impl MyWriter {
     }
 
     fn create_index(&self, info: elmo::IndexInfo) -> Result<bool> {
-        println!("create_index: {:?}", info);
         let _created = try!(self.base_create_collection(&info.db, &info.coll, bson::Document::new_empty()));
         match try!(self.myconn.get_index_info(&info.db, &info.coll, &info.name)) {
             Some(already) => {
@@ -1077,7 +1066,6 @@ impl MyWriter {
                 try!(step_done(&mut stmt));
                 try!(verify_changes(&stmt, 1));
                 let tbl = get_table_name_for_index(db, coll, name);
-                println!("base_drop_index");
                 try!(self.myconn.conn.exec(&format!("DROP TABLE \"{}\"", tbl)).map_err(elmo::wrap_err));
                 Ok(true)
             },
@@ -1132,7 +1120,6 @@ impl elmo::StorageWriter for MyWriter {
         let indexes = indexes.into_iter().filter(
             |ndx| ndx.db == db && ndx.coll == coll
             ).collect::<Vec<_>>();
-        println!("in get_collection_writer: indexes: {:?}", indexes);
         let mut find_rowid = None;
         for info in &indexes {
             if info.name == "_id_" {

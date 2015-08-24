@@ -773,7 +773,37 @@ fn parse_pred(k: &str, v: bson::Value) -> Result<Pred> {
         "$exists" => Ok(Pred::Exists(try!(v.as_bool()))),
         // TODO as_i32 below: should probably allow conversion
         "$type" => Ok(Pred::Type(try!(v.as_i32()))),
-        "$size" => panic!("TODO $size"),
+        "$size" => {
+            match v {
+                bson::Value::BInt32(n) => Ok(Pred::Size(n)),
+                bson::Value::BString(_) => Ok(Pred::Size(0)),
+                bson::Value::BInt64(n) => {
+                    // protect from overflow issues converting really large negative int64
+                    // to int32.  if it started out negative, just leave it negative.
+                    // mongo jira SERVER-11952
+                    // TODO what about large positive?
+                    let n = 
+                        if n<0 {
+                         -1 as i32
+                        } else {
+                            n as i32
+                        };
+                    Ok(Pred::Size(n))
+                },
+                bson::Value::BDouble(f) => {
+                    let n = f as i32;
+                    let f2 = n as f64;
+                    let n =
+                        if f == f2 {
+                            n
+                        } else {
+                            -1
+                        };
+                    Ok(Pred::Size(n))
+                },
+                _ => Err(super::Error::Misc(format!("bad arg to $size: {:?}", v)))
+            }
+        },
         "$all" => panic!("TODO $all"),
         "$in" => panic!("TODO $in"),
         "$nin" => panic!("TODO $nin"),

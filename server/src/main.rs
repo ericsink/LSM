@@ -374,6 +374,13 @@ impl<'b> Server<'b> {
         Ok(create_reply(req.req_id, vec![doc], 0))
     }
 
+    fn reply_cmd_sys_inprog(&self, req: &MsgQuery, db: &str) -> Result<Reply> {
+        let mut doc = bson::Document::new_empty();
+        doc.set_array("inprog", bson::Array::new_empty());
+        doc.set_i32("ok", 1);
+        Ok(create_reply(req.req_id, vec![doc], 0))
+    }
+
     fn reply_admin_cmd(&self, req: &MsgQuery, db: &str) -> Result<Reply> {
         use std::ascii::AsciiExt;
         if req.query.pairs.is_empty() {
@@ -826,6 +833,24 @@ impl<'b> Server<'b> {
         }
     }
 
+    fn reply_validate(&mut self, req: MsgQuery, db: &str) -> Result<Reply> {
+        let MsgQuery {
+            req_id,
+            flags,
+            full_collection_name,
+            number_to_skip,
+            number_to_return,
+            mut query,
+            return_fields_selector,
+        } = req;
+        let coll = try!(query.must_remove_string("validate"));
+        // TODO what is this supposed to actually do?
+        let mut doc = bson::Document::new_empty();
+        doc.set_bool("valid", true);
+        doc.set_i32("ok", 1);
+        Ok(create_reply(req.req_id, vec![doc], 0))
+    }
+
     fn reply_count(&mut self, req: MsgQuery, db: &str) -> Result<Reply> {
         let MsgQuery {
             req_id,
@@ -962,7 +987,7 @@ impl<'b> Server<'b> {
                     "update" => self.reply_update(req, db),
                     //"findandmodify" => reply_FindAndModify req db
                     "count" => self.reply_count(req, db),
-                    //"validate" => reply_Validate req db
+                    "validate" => self.reply_validate(req, db),
                     "createindexes" => self.reply_create_indexes(req, db),
                     "deleteindexes" => self.reply_delete_indexes(&req, db),
                     "drop" => self.reply_drop_collection(&req, db),
@@ -994,23 +1019,22 @@ impl<'b> Server<'b> {
                         // TODO probably want to pass ownership of req down here
                         self.reply_admin_cmd(&req, db)
                     } else {
-                        //failwith "not implemented"
-                        Err(Error::Misc(String::from("TODO")))
+                        Err(Error::Misc(format!("TODO: {:?}", req)))
                     }
                 } else {
                     if parts[1] == "$cmd" {
                         if parts.len() == 4 && parts[2]=="sys" && parts[3]=="inprog" {
-                            //reply_cmd_sys_inprog req db
-                            Err(Error::Misc(String::from("TODO")))
+                            self.reply_cmd_sys_inprog(&req, db)
+                            //Err(Error::Misc(format!("TODO: {:?}", req)))
                         } else {
                             self.reply_cmd(req, db)
                         }
                     } else if parts.len()==3 && parts[1]=="system" && parts[2]=="indexes" {
                         //reply_system_indexes req db
-                        Err(Error::Misc(String::from("TODO")))
+                        Err(Error::Misc(format!("TODO: {:?}", req)))
                     } else if parts.len()==3 && parts[1]=="system" && parts[2]=="namespaces" {
                         //reply_system_namespaces req db
-                        Err(Error::Misc(String::from("TODO")))
+                        Err(Error::Misc(format!("TODO: {:?}", req)))
                     } else {
                         self.reply_query(req, db)
                     }

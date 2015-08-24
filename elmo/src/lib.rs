@@ -304,10 +304,10 @@ fn decode_index_type(v: &bson::Value) -> IndexType {
         &bson::Value::BString(ref s) => 
             if s == "2d" { 
                 IndexType::Geo2d 
+            } else if s == "text" {
+                panic!("decode_index_type: text")
             } else {
-                // a text index should never get here
-                println!("index type: {}", s);
-                panic!("decode_index_type")
+                panic!("decode_index_type: unknown type")
             },
         _ => panic!("decode_index_type")
     }
@@ -396,7 +396,7 @@ pub fn get_normalized_spec(info: &IndexInfo) -> Result<(Vec<(String,IndexType)>,
                 }
             }
             // TODO if the wildcard is present, remove everything else?
-            println!("scalar_keys: {:?}", scalar_keys);
+            //println!("scalar_keys: {:?}", scalar_keys);
             let decoded = scalar_keys.iter().map(|&(ref k, ref v)| (k.clone(), decode_index_type(v))).collect::<Vec<(String,IndexType)>>();
             let r = Ok((decoded, Some(weights)));
             //printfn "%A" r
@@ -696,9 +696,9 @@ impl Connection {
         let indexes = try!(w.list_indexes()).into_iter().filter(
             |ndx| ndx.db == db && ndx.coll == coll
             ).collect::<Vec<_>>();
-        println!("indexes: {:?}", indexes);
+        //println!("indexes: {:?}", indexes);
         let plan = try!(Self::choose_index(&indexes, &m, None));
-        println!("plan: {:?}", plan);
+        //println!("plan: {:?}", plan);
         let mut seq: Box<Iterator<Item=Result<Row>>> = try!(w.get_collection_reader(db, coll, plan));
         seq = box seq
             .filter(
@@ -720,7 +720,7 @@ impl Connection {
     // TODO this func needs to return the 4-tuple
     // (count_matches, count_modified, Option<TODO>, Option<TODO>)
     pub fn update(&self, db: &str, coll: &str, updates: &mut Vec<bson::Document>) -> Result<Vec<Result<()>>> {
-        println!("in update: {:?}", updates);
+        //println!("in update: {:?}", updates);
         // TODO need separate conn?
         let mut results = Vec::new();
         {
@@ -729,7 +729,7 @@ impl Connection {
                 let mut collwriter = try!(writer.get_collection_writer(db, coll));
                 // TODO why does this closure need to be mut?
                 let mut one_update_or_upsert = |upd: &mut bson::Document| -> Result<()> {
-                    println!("in closure: {:?}", upd);
+                    //println!("in closure: {:?}", upd);
                     let q = try!(upd.must_remove_document("q"));
                     let mut u = try!(upd.must_remove_document("u"));
                     let multi = try!(upd.must_remove_bool("multi"));
@@ -738,14 +738,14 @@ impl Connection {
                     let has_update_operators = u.pairs.iter().any(|&(ref k, _)| k.starts_with("$"));
                     if has_update_operators {
                         let ops = try!(Self::parse_update_doc(u));
-                        println!("ops: {:?}", ops);
+                        //println!("ops: {:?}", ops);
                         let (count_matches, count_modified) =
                             if multi {
                                 panic!("TODO update operators multi");
                             } else {
                                 match try!(Self::get_one_match(db, coll, &*writer, &m)) {
                                     Some(row) => {
-                                        println!("row found for update: {:?}", row);
+                                        //println!("row found for update: {:?}", row);
                                         let mut doc = try!(row.doc.into_document());
                                         let count_changes = try!(Self::apply_update_ops(&mut doc, &ops, false, None));
                                         // TODO make sure _id did not change
@@ -756,7 +756,7 @@ impl Connection {
                                         (1, 1)
                                     },
                                     None => {
-                                        println!("get_one_match found nothing");
+                                        //println!("get_one_match found nothing");
                                         (0, 0)
                                     },
                                 }
@@ -778,7 +778,6 @@ impl Connection {
                         if multi {
                             return Err(Error::Misc(String::from("multi update requires $ update operators")));
                         }
-                        println!("HERE: {:?}", u);
                         match try!(Self::get_one_match(db, coll, &*writer, &m)) {
                             Some(row) => {
                                 let doc = try!(row.doc.as_document());
