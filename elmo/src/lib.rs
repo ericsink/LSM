@@ -151,6 +151,7 @@ pub enum TextQueryTerm {
     Phrase(bool, String),
 }
 
+#[derive(Debug)]
 pub enum QueryBounds {
     EQ(QueryKey),
     // TODO tempted to make the QueryKey in Text be an option
@@ -165,6 +166,7 @@ pub enum QueryBounds {
     GTE_LTE(QueryKey, QueryKey),
 }
 
+#[derive(Debug)]
 pub struct QueryPlan {
     pub ndx: IndexInfo,
     pub bounds: QueryBounds,
@@ -202,6 +204,7 @@ enum OpGt {
 }
 
 // TODO I dislike the name of this.  also, consider making it a trait.
+#[derive(Debug)]
 pub struct Row {
     // TODO I wish this were bson::Document.  but when you have a reference to a
     // bson::Document and what you need is a bson::Value, you can't get there,
@@ -217,6 +220,7 @@ pub fn cmp_row(d: &Row, lit: &Row) -> Ordering {
     matcher::cmp(&d.doc, &lit.doc)
 }
 
+#[derive(Debug)]
 enum UpdateOp {
     Min(String, bson::Value),
     Max(String, bson::Value),
@@ -297,11 +301,14 @@ fn decode_index_type(v: &bson::Value) -> IndexType {
         &bson::Value::BInt32(n) => if n<0 { IndexType::Backward } else { IndexType::Forward },
         &bson::Value::BInt64(n) => if n<0 { IndexType::Backward } else { IndexType::Forward },
         &bson::Value::BDouble(n) => if n<0.0 { IndexType::Backward } else { IndexType::Forward },
-        &bson::Value::BString(ref s) => if s == "2d" { 
-            IndexType::Geo2d 
-        } else { 
-            panic!("decode_index_type")
-        },
+        &bson::Value::BString(ref s) => 
+            if s == "2d" { 
+                IndexType::Geo2d 
+            } else {
+                // a text index should never get here
+                println!("index type: {}", s);
+                panic!("decode_index_type")
+            },
         _ => panic!("decode_index_type")
     }
 }
@@ -389,6 +396,7 @@ pub fn get_normalized_spec(info: &IndexInfo) -> Result<(Vec<(String,IndexType)>,
                 }
             }
             // TODO if the wildcard is present, remove everything else?
+            println!("scalar_keys: {:?}", scalar_keys);
             let decoded = scalar_keys.iter().map(|&(ref k, ref v)| (k.clone(), decode_index_type(v))).collect::<Vec<(String,IndexType)>>();
             let r = Ok((decoded, Some(weights)));
             //printfn "%A" r
@@ -688,7 +696,9 @@ impl Connection {
         let indexes = try!(w.list_indexes()).into_iter().filter(
             |ndx| ndx.db == db && ndx.coll == coll
             ).collect::<Vec<_>>();
+        println!("indexes: {:?}", indexes);
         let plan = try!(Self::choose_index(&indexes, &m, None));
+        println!("plan: {:?}", plan);
         let mut seq: Box<Iterator<Item=Result<Row>>> = try!(w.get_collection_reader(db, coll, plan));
         seq = box seq
             .filter(
@@ -710,6 +720,7 @@ impl Connection {
     // TODO this func needs to return the 4-tuple
     // (count_matches, count_modified, Option<TODO>, Option<TODO>)
     pub fn update(&self, db: &str, coll: &str, updates: &mut Vec<bson::Document>) -> Result<Vec<Result<()>>> {
+        println!("in update: {:?}", updates);
         // TODO need separate conn?
         let mut results = Vec::new();
         {
@@ -718,20 +729,23 @@ impl Connection {
                 let mut collwriter = try!(writer.get_collection_writer(db, coll));
                 // TODO why does this closure need to be mut?
                 let mut one_update_or_upsert = |upd: &mut bson::Document| -> Result<()> {
+                    println!("in closure: {:?}", upd);
                     let q = try!(upd.must_remove_document("q"));
                     let mut u = try!(upd.must_remove_document("u"));
                     let multi = try!(upd.must_remove_bool("multi"));
                     let upsert = try!(upd.must_remove_bool("upsert"));
                     let m = try!(matcher::parse_query(q));
-                    let has_update_operators = u.pairs.iter().any(|&(ref k, _)| !k.starts_with("$"));
+                    let has_update_operators = u.pairs.iter().any(|&(ref k, _)| k.starts_with("$"));
                     if has_update_operators {
                         let ops = try!(Self::parse_update_doc(u));
+                        println!("ops: {:?}", ops);
                         let (count_matches, count_modified) =
                             if multi {
                                 panic!("TODO update operators multi");
                             } else {
                                 match try!(Self::get_one_match(db, coll, &*writer, &m)) {
                                     Some(row) => {
+                                        println!("row found for update: {:?}", row);
                                         let mut doc = try!(row.doc.into_document());
                                         let count_changes = try!(Self::apply_update_ops(&mut doc, &ops, false, None));
                                         // TODO make sure _id did not change
@@ -741,7 +755,10 @@ impl Connection {
                                         // TODO return (1, 0) if the change didn't happen
                                         (1, 1)
                                     },
-                                    None => (0, 0),
+                                    None => {
+                                        println!("get_one_match found nothing");
+                                        (0, 0)
+                                    },
                                 }
                             };
                         if count_matches == 0 {
@@ -761,6 +778,7 @@ impl Connection {
                         if multi {
                             return Err(Error::Misc(String::from("multi update requires $ update operators")));
                         }
+                        println!("HERE: {:?}", u);
                         match try!(Self::get_one_match(db, coll, &*writer, &m)) {
                             Some(row) => {
                                 let doc = try!(row.doc.as_document());
@@ -769,16 +787,23 @@ impl Connection {
                                 // TODO if u has _id, make sure it's the same
                                 u.set_objectid("_id", id1);
                                 // TODO basic_update, validate_keys
+                                // TODO handle error in following line
                                 collwriter.update(&u);
                                 // TODO return something
                                 Ok(())
                             },
                             None => {
                                 if upsert {
-                                    panic!("TODO upsert");
+                                    // TODO let (id, doc) = build_simple_upsert(&q, u);
+                                    // TODO basic_insert, validate_keys
+                                    // TODO handle error in following line
+                                    collwriter.insert(&u);
+                                    // TODO return something
+                                    Ok(())
                                 } else {
                                     // TODO (0,0,None,None)
-                                    panic!("TODO nothing updated");
+                                    //panic!("TODO nothing updated");
+                                    Ok(())
                                 }
                             },
                         }

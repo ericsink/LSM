@@ -7,10 +7,12 @@ use super::Result;
 extern crate misc;
 extern crate bson;
 
+#[derive(Debug)]
 pub enum QueryDoc {
     QueryDoc(Vec<QueryItem>),
 }
 
+#[derive(Debug)]
 pub enum QueryItem {
     Compare(String, Vec<Pred>),
     AND(Vec<QueryDoc>),
@@ -21,6 +23,7 @@ pub enum QueryItem {
 }
 
 // TODO does this need to be public?  index min/max code is using it.
+#[derive(Debug)]
 pub enum Pred {
     Exists(bool),
     Size(i32),

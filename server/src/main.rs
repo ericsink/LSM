@@ -650,14 +650,14 @@ impl<'b> Server<'b> {
             let name = try!(d.must_remove_string("name"));
             let spec = try!(d.must_remove_document("key"));
             // TODO look for specific options here like the fs version?
-            let options = try!(d.must_remove_document("options"));
+            // anything left in d should be options
             let ndx = 
                 elmo::IndexInfo {
                     db: String::from(db),
                     coll: coll.clone(),
                     name: name,
                     spec: spec,
-                    options: options,
+                    options: d,
                 };
             a.push(ndx);
         }
