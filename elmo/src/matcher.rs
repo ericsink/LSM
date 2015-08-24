@@ -821,7 +821,24 @@ fn parse_pred(k: &str, v: bson::Value) -> Result<Pred> {
                 Ok(Pred::Nin(a.items))
             }
         },
-        "$not" => panic!("TODO parse_pred $not"),
+        "$not" => {
+            match v {
+                bson::Value::BDocument(bd) => {
+                    if bd.pairs.is_empty() {
+                        Err(super::Error::Misc(format!("empty $not")))
+                    } else {
+                        let preds = try!(parse_pred_list(bd.pairs));
+                        Ok(Pred::Not(preds))
+                    }
+                },
+                bson::Value::BRegex(_,_) => {
+                    panic!("TODO regex");
+                },
+                _ => {
+                    Err(super::Error::Misc(format!("invalid $not: {:?}", v)))
+                },
+            }
+        },
         "$mod" => {
             let a = try!(v.into_array());
             if a.items.len() != 2 {
@@ -836,7 +853,18 @@ fn parse_pred(k: &str, v: bson::Value) -> Result<Pred> {
                 }
             }
         },
-        "$elemMatch" => panic!("TODO parse_pred $elemMatch"),
+        "$elemMatch" => {
+            if is_query_doc(&v) {
+                let bd = try!(v.into_document());
+                let d = try!(parse_query_doc(&bd));
+                let d = QueryDoc::QueryDoc(d);
+                Ok(Pred::ElemMatchObjects(d))
+            } else {
+                let bd = try!(v.into_document());
+                let preds = try!(parse_pred_list(bd.pairs));
+                Ok(Pred::Not(preds))
+            }
+        },
         "$near" => panic!("TODO parse_pred $near"),
         "$nearSphere" => panic!("TODO parse_pred $nearSphere"),
         "$geoWithin" => panic!("TODO parse_pred $geoWithin"),
