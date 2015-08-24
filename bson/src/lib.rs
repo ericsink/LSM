@@ -34,7 +34,7 @@ use misc::bufndx;
 #[derive(Debug)]
 pub enum Error {
     // TODO remove Misc
-    Misc(&'static str),
+    Misc(String),
 
     // TODO more detail within CorruptFile
     CorruptFile(&'static str),
@@ -48,7 +48,7 @@ impl std::fmt::Display for Error {
         match *self {
             Error::Io(ref err) => write!(f, "IO error: {}", err),
             Error::Utf8(ref err) => write!(f, "Utf8 error: {}", err),
-            Error::Misc(s) => write!(f, "Misc error: {}", s),
+            Error::Misc(ref s) => write!(f, "Misc error: {}", s),
             Error::CorruptFile(s) => write!(f, "Corrupt file: {}", s),
         }
     }
@@ -59,7 +59,7 @@ impl std::error::Error for Error {
         match *self {
             Error::Io(ref err) => std::error::Error::description(err),
             Error::Utf8(ref err) => std::error::Error::description(err),
-            Error::Misc(s) => s,
+            Error::Misc(ref s) => s,
             Error::CorruptFile(s) => s,
         }
     }
@@ -118,7 +118,7 @@ impl Document {
     }
 
     pub fn must_remove(&mut self, k: &str) -> Result<Value> {
-        self.remove(k).ok_or(Error::Misc("required key not found"))
+        self.remove(k).ok_or(Error::Misc(format!("required key not found: {}", k)))
     }
 
     pub fn must_remove_bool(&mut self, k: &str) -> Result<bool> {
@@ -166,7 +166,7 @@ impl Document {
                                 v.entry(subpath)
                             },
                             _ => {
-                                Err(Error::Misc("trying to dive into non-object"))
+                                Err(Error::Misc(String::from("trying to dive into non-object")))
                             },
                         }
                     },
@@ -234,16 +234,16 @@ impl Document {
     }
 
     pub fn must_get(&self, k: &str) -> Result<&Value> {
-        self.get(k).ok_or(Error::Misc("required key not found"))
+        self.get(k).ok_or(Error::Misc(format!("required key not found: {}", k)))
     }
 
     pub fn must_get_str(&self, k: &str) -> Result<&str> {
-        let v = try!(self.get(k).ok_or(Error::Misc("required key not found")));
+        let v = try!(self.must_get(k));
         v.as_str()
     }
 
     pub fn must_get_array(&self, k: &str) -> Result<&Array> {
-        let v = try!(self.get(k).ok_or(Error::Misc("required key not found")));
+        let v = try!(self.must_get(k));
         v.as_array()
     }
 
@@ -410,7 +410,7 @@ impl Array {
                                     v.entry(subpath)
                                 },
                                 _ => {
-                                    Err(Error::Misc("trying to dive into non-object"))
+                                    Err(Error::Misc(String::from("trying to dive into non-object")))
                                 },
                             }
                         },
@@ -432,7 +432,7 @@ impl Array {
                 }
             },
             Err(_) => {
-                Err(Error::Misc("trying to dive into array with non-integer name"))
+                Err(Error::Misc(format!("trying to dive into array with non-integer name: {}", name)))
             },
         }
     }
@@ -844,7 +844,7 @@ impl Value {
     pub fn into_string(self) -> Result<String> {
         match self {
             Value::BString(s) => Ok(s),
-            _ => Err(Error::Misc("must be string")),
+            _ => Err(Error::Misc(format!("string required, but found {:?}", self))),
         }
     }
 
@@ -852,14 +852,14 @@ impl Value {
     pub fn as_str(&self) -> Result<&str> {
         match self {
             &Value::BString(ref s) => Ok(s),
-            _ => Err(Error::Misc("must be string")),
+            _ => Err(Error::Misc(format!("string required, but found {:?}", self))),
         }
     }
 
     pub fn as_array(&self) -> Result<&Array> {
         match self {
             &Value::BArray(ref s) => Ok(s),
-            _ => Err(Error::Misc("must be array")),
+            _ => Err(Error::Misc(format!("array required, but found {:?}", self))),
         }
     }
 
@@ -873,49 +873,49 @@ impl Value {
     pub fn as_document(&self) -> Result<&Document> {
         match self {
             &Value::BDocument(ref s) => Ok(s),
-            _ => Err(Error::Misc("must be document")),
+            _ => Err(Error::Misc(format!("document required, but found {:?}", self))),
         }
     }
 
     pub fn into_document(self) -> Result<Document> {
         match self {
             Value::BDocument(s) => Ok(s),
-            _ => Err(Error::Misc("must be document")),
+            _ => Err(Error::Misc(format!("document required, but found {:?}", self))),
         }
     }
 
     pub fn into_array(self) -> Result<Array> {
         match self {
             Value::BArray(s) => Ok(s),
-            _ => Err(Error::Misc("must be array")),
+            _ => Err(Error::Misc(format!("array required, but found {:?}", self))),
         }
     }
 
     pub fn as_objectid(&self) -> Result<[u8; 12]> {
         match self {
             &Value::BObjectID(a) => Ok(a),
-            _ => Err(Error::Misc("must be objectid")),
+            _ => Err(Error::Misc(format!("objectid required, but found {:?}", self))),
         }
     }
 
     pub fn as_bool(&self) -> Result<bool> {
         match self {
             &Value::BBoolean(ref s) => Ok(*s),
-            _ => Err(Error::Misc("must be bool")),
+            _ => Err(Error::Misc(format!("bool required, but found {:?}", self))),
         }
     }
 
     fn getDate(&self) -> Result<i64> {
         match self {
             &Value::BDateTime(ref s) => Ok(*s),
-            _ => Err(Error::Misc("must be DateTime")),
+            _ => Err(Error::Misc(String::from("must be DateTime"))),
         }
     }
 
     pub fn as_i32(&self) -> Result<i32> {
         match self {
             &Value::BInt32(ref s) => Ok(*s),
-            _ => Err(Error::Misc("must be i32")),
+            _ => Err(Error::Misc(String::from("must be i32"))),
         }
     }
 
@@ -924,7 +924,7 @@ impl Value {
             &Value::BInt32(ref s) => Ok((*s) as i32),
             &Value::BInt64(ref s) => Ok((*s) as i32),
             &Value::BDouble(ref s) => Ok((*s) as i32),
-            _ => Err(Error::Misc("must be numeric")),
+            _ => Err(Error::Misc(format!("numeric required, but found {:?}", self))),
         }
     }
 
@@ -933,7 +933,7 @@ impl Value {
             &Value::BInt32(ref s) => Ok((*s) as i64),
             &Value::BInt64(ref s) => Ok((*s) as i64),
             &Value::BDouble(ref s) => Ok((*s) as i64),
-            _ => Err(Error::Misc("must be numeric")),
+            _ => Err(Error::Misc(format!("numeric required, but found {:?}", self))),
         }
     }
 
@@ -942,7 +942,7 @@ impl Value {
             &Value::BInt32(ref s) => Ok((*s) as f64),
             &Value::BInt64(ref s) => Ok((*s) as f64),
             &Value::BDouble(ref s) => Ok((*s) as f64),
-            _ => Err(Error::Misc("must be numeric")),
+            _ => Err(Error::Misc(format!("numeric required, but found {:?}", self))),
         }
     }
 
@@ -964,7 +964,7 @@ impl Value {
         &Value::BInt32(i) => Ok(i!=0),
         &Value::BInt64(i) => Ok(i!=0),
         &Value::BDouble(f) => Ok((f as i32)!=0),
-        _ => Err(Error::Misc("must be convertible to bool")),
+        _ => Err(Error::Misc(String::from("must be convertible to bool"))),
         }
     }
 
@@ -973,7 +973,7 @@ impl Value {
         &Value::BInt32(a) => Ok(a),
         &Value::BInt64(a) => Ok(a as i32),
         &Value::BDouble(a) => Ok(a as i32),
-        _ => Err(Error::Misc("must be convertible to int32")),
+        _ => Err(Error::Misc(String::from("must be convertible to int32"))),
         }
     }
 
@@ -983,7 +983,7 @@ impl Value {
         &Value::BInt64(a) => Ok(a),
         &Value::BDouble(a) => Ok(a as i64),
         &Value::BDateTime(a) => Ok(a as i64),
-        _ => Err(Error::Misc("must be convertible to int64")),
+        _ => Err(Error::Misc(String::from("must be convertible to int64"))),
         }
     }
 
@@ -992,7 +992,7 @@ impl Value {
         &Value::BInt32(a) => Ok(a as f64),
         &Value::BInt64(a) => Ok(a as f64),
         &Value::BDouble(a) => Ok(a),
-        _ => Err(Error::Misc("must be convertible to f64")),
+        _ => Err(Error::Misc(String::from("must be convertible to f64"))),
         }
     }
 
@@ -1072,6 +1072,29 @@ impl Value {
         }
     }
 
+    pub fn get_type_name(&self) -> &'static str {
+        match self {
+            &Value::BDouble(_) => "f64",
+            &Value::BString(_) => "string",
+            &Value::BDocument(_) => "document",
+            &Value::BArray(_) => "array",
+            &Value::BBinary(_, _) => "binary",
+            &Value::BUndefined => "undefined",
+            &Value::BObjectID(_) => "objectid",
+            &Value::BBoolean(_) => "bool",
+            &Value::BDateTime(_) => "datetime",
+            &Value::BNull => "null",
+            &Value::BRegex(_, _) => "regex",
+            &Value::BJSCode(_) => "jscode",
+            &Value::BJSCodeWithScope(_) => "jscodewithscope",
+            &Value::BInt32(_) => "i32",
+            &Value::BTimeStamp(_) => "timestamp",
+            &Value::BInt64(_) => "i64",
+            &Value::BMinKey => "minkey",
+            &Value::BMaxKey => "maxkey",
+        }
+    }
+
     pub fn for_all_strings<F : Fn(&str) -> ()>(&self, func: &F) {
         match self {
             &Value::BDouble(_) => (),
@@ -1130,13 +1153,13 @@ impl Value {
         let n = 1 + k.rposition_elem(&0u8).expect("TODO");
         let ord_shouldbe = Value::BInt32(0).get_type_order() as u8;
         if k[n] != ord_shouldbe {
-            return Err(Error::Misc("bad type order byte"));
+            return Err(Error::Misc(String::from("bad type order byte")));
         }
         let e = (k[n+1] as i32) - 23;
         // exponent is number of times the mantissa must be multiplied times 100
         // if we assume that all mantissa digits are to the right of the decimal point.
         if e <= 0 {
-            return Err(Error::Misc("bad e"));
+            return Err(Error::Misc(String::from("bad e")));
         }
         let e = e as usize;
         let n = n + 2;
