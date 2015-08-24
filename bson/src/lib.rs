@@ -141,9 +141,81 @@ impl Document {
         v.into_array()
     }
 
+    pub fn entry<'v,'p>(&'v mut self, path: &'p str) -> Result<Entry<'v,'p>> {
+        let dot = path.find('.');
+        let name = match dot { 
+            None => path,
+            Some(ndx) => &path[0 .. ndx]
+        };
+        match self.position(name) {
+            Some(i) => {
+                // current name is present
+                match dot {
+                    None => {
+                        // no more diving.  what do we do with this?
+                        let e = EntryFound::DocumentParent(self, i);
+                        let e = Entry::Found(e);
+                        Ok(e)
+                    },
+                    Some(dot) => {
+                        // gotta dive more
+                        let subpath = &path[dot + 1 ..];
+                        let v = &mut self.pairs[i].1;
+                        match v {
+                            &mut Value::BDocument(_) | &mut Value::BArray(_) => {
+                                v.entry(subpath)
+                            },
+                            _ => {
+                                Err(Error::Misc("trying to dive into non-object"))
+                            },
+                        }
+                    },
+                }
+            },
+            None => {
+                // current name is not present
+                match dot {
+                    None => {
+                        // no more diving.  add it?
+                        let e = EntryAbsent::DocumentParent(self, name);
+                        let e = Entry::Absent(e);
+                        Ok(e)
+                    },
+                    Some(dot) => {
+                        // gotta dive more.  but there is nothing to dive into.
+                        let e = EntryAbsent::DocumentAncestor(self, path);
+                        let e = Entry::Absent(e);
+                        Ok(e)
+                    },
+                }
+            },
+        }
+    }
+
+    fn position(&self, k: &str) -> Option<usize> {
+        for i in 0 .. self.pairs.len() {
+            if self.pairs[i].0 == k {
+                return Some(i);
+            }
+        }
+        return None;
+    }
+
     pub fn get(&self, k: &str) -> Option<&Value> {
+        // TODO Call self.position?
         for t in self.pairs.iter() {
             let (ref ksub, ref vsub) = *t;
+            if ksub == k {
+                return Some(vsub);
+            }
+        }
+        return None;
+    }
+
+    // TODO not sure we need this?
+    pub fn get_mut(&mut self, k: &str) -> Option<&mut Value> {
+        for t in self.pairs.iter_mut() {
+            let (ref ksub, ref mut vsub) = *t;
             if ksub == k {
                 return Some(vsub);
             }
@@ -267,6 +339,7 @@ impl Document {
             Some(ndx) => {
                 let v = &self.pairs[ndx].1;
                 match dot {
+                    // TODO ouch.  horrifying clone.
                     None => v.clone(),
                     Some(dot) => v.find_path(&path[dot+1..])
                 }
@@ -307,6 +380,60 @@ impl Array {
     pub fn new_empty() -> Self {
         Array {
             items: vec![],
+        }
+    }
+
+    pub fn entry<'v,'p>(&'v mut self, path: &'p str) -> Result<Entry<'v,'p>> {
+        let dot = path.find('.');
+        let name = match dot { 
+            None => path,
+            Some(ndx) => &path[0 .. ndx]
+        };
+        match name.parse::<usize>() {
+            Ok(i) => {
+                // it's an integer.
+                if i < self.items.len() {
+                    // this array position already exists
+                    match dot {
+                        None => {
+                            // no more diving.  now what?
+                            let e = EntryFound::ArrayParent(self, i);
+                            let e = Entry::Found(e);
+                            Ok(e)
+                        },
+                        Some(dot) => {
+                            // gotta dive more
+                            let subpath = &path[dot + 1 ..];
+                            let v = &mut self.items[i];
+                            match v {
+                                &mut Value::BDocument(_) | &mut Value::BArray(_) => {
+                                    v.entry(subpath)
+                                },
+                                _ => {
+                                    Err(Error::Misc("trying to dive into non-object"))
+                                },
+                            }
+                        },
+                    }
+                } else {
+                    match dot {
+                        None => {
+                            let e = EntryAbsent::ArrayParent(self, i);
+                            let e = Entry::Absent(e);
+                            Ok(e)
+                        },
+                        Some(dot) => {
+                            // gotta dive more, but the array isn't big enough
+                            let e = EntryAbsent::ArrayAncestor(self, path);
+                            let e = Entry::Absent(e);
+                            Ok(e)
+                        },
+                    }
+                }
+            },
+            Err(_) => {
+                Err(Error::Misc("trying to dive into array with non-integer name"))
+            },
         }
     }
 
@@ -551,7 +678,102 @@ fn slurp_array(ba: &[u8], i: &mut usize) -> Result<Array> {
     Ok(Array { items: a})
 }
 
+pub enum EntryFound<'v> {
+    DocumentParent(&'v mut Document, usize),
+    ArrayParent(&'v mut Array, usize),
+}
+
+impl<'v> EntryFound<'v> {
+    pub fn get(&self) -> &Value {
+        match self {
+            &EntryFound::DocumentParent(ref bd, i) => {
+                &bd.pairs[i].1
+            },
+            &EntryFound::ArrayParent(ref ba, i) => {
+                &ba.items[i]
+            },
+        }
+    }
+
+    pub fn get_mut(&mut self) -> &Value {
+        match self {
+            &mut EntryFound::DocumentParent(ref mut bd, i) => {
+                &mut bd.pairs[i].1
+            },
+            &mut EntryFound::ArrayParent(ref mut ba, i) => {
+                &mut ba.items[i]
+            },
+        }
+    }
+
+    pub fn remove(self) -> Value {
+        match self {
+            EntryFound::DocumentParent(bd, i) => {
+                bd.pairs.remove(i).1
+            },
+            EntryFound::ArrayParent(ba, i) => {
+                ba.items.remove(i)
+            },
+        }
+    }
+
+    pub fn replace(self, v: Value) -> Value {
+        match self {
+            EntryFound::DocumentParent(bd, i) => {
+                let (k,old) = bd.pairs.remove(i);
+                bd.pairs.insert(i, (k, v));
+                old
+            },
+            EntryFound::ArrayParent(ba, i) => {
+                let old = ba.items.remove(i);
+                ba.items.insert(i, v);
+                old
+            },
+        }
+    }
+}
+
+pub enum EntryAbsent<'v,'p> {
+    DocumentParent(&'v mut Document, &'p str),
+    ArrayParent(&'v mut Array, usize),
+    DocumentAncestor(&'v mut Document, &'p str),
+    ArrayAncestor(&'v mut Array, &'p str),
+}
+
+impl<'v,'p> EntryAbsent<'v,'p> {
+    // TODO return mut ref to it?
+    pub fn insert(self, v: Value) {
+        match self {
+            EntryAbsent::DocumentParent(bd, k) => {
+                bd.pairs.push((String::from_str(k), v));
+            },
+            EntryAbsent::ArrayParent(ba, i) => {
+                panic!("TODO EntryAbsent::ArrayParent insert");
+            },
+            EntryAbsent::DocumentAncestor(bd, path) => {
+                panic!("TODO EntryAbsent::DocumentAncestor insert");
+            },
+            EntryAbsent::ArrayAncestor(ba, path) => {
+                panic!("TODO EntryAbsent::ArrayAncestor insert");
+            },
+        }
+    }
+}
+
+pub enum Entry<'v,'p> {
+    Found(EntryFound<'v>),
+    Absent(EntryAbsent<'v,'p>),
+}
+
 impl Value {
+    pub fn entry<'v,'p>(&'v mut self, path: &'p str) -> Result<Entry<'v,'p>> {
+        match self {
+            &mut Value::BDocument(ref mut bd) => bd.entry(path),
+            &mut Value::BArray(ref mut ba) => ba.entry(path),
+            _ => unreachable!(),
+        }
+    }
+
     pub fn tryGetValueEither(&self, k: &str) -> Option<&Value> {
         match self {
             &Value::BDocument(ref bd) => bd.get(k),
@@ -745,6 +967,8 @@ impl Value {
         }
     }
 
+    // TODO it's awful that this returns a clone, simply because
+    // it sometimes has to construct an array.
     pub fn find_path(&self, path: &str) -> Value {
         let dot = path.find('.');
         let name = match dot { 

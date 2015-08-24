@@ -418,11 +418,27 @@ impl Connection {
         }
     }
 
-    fn apply_update_ops(doc: &mut bson::Document, ops: &Vec<UpdateOp>, is_upsert: bool, pos: Option<usize>) {
+    fn apply_update_ops(doc: &mut bson::Document, ops: &Vec<UpdateOp>, is_upsert: bool, pos: Option<usize>) -> Result<()> {
         for op in ops {
             match op {
                 &UpdateOp::Min(ref path, ref v) => {
-                    panic!("TODO UpdateOp::Min");
+                    match try!(doc.entry(path)) {
+                        bson::Entry::Found(e) => {
+                            let c = {
+                                let cur = e.get();
+                                matcher::cmp(v, cur)
+                            };
+                            if c == Ordering::Less {
+                                // TODO clone
+                                e.replace(v.clone());
+                            }
+                        },
+                        bson::Entry::Absent(e) => {
+                            // when the key isn't found, $min works like $set
+                            // TODO clone
+                            e.insert(v.clone());
+                        },
+                    }
                 },
                 &UpdateOp::Max(ref path, ref v) => {
                     panic!("TODO UpdateOp::Max");
@@ -480,6 +496,8 @@ impl Connection {
                 },
             }
         }
+        // TODO return what?
+        Ok(())
     }
 
     fn parse_update_doc(d: bson::Document) -> Result<Vec<UpdateOp>> {
