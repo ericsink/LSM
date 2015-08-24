@@ -418,39 +418,122 @@ impl Connection {
         }
     }
 
-    fn apply_update_ops(doc: &mut bson::Document, ops: &Vec<UpdateOp>, is_upsert: bool, pos: Option<usize>) -> Result<()> {
+    fn fix_positional(s: &str, pos: Option<usize>) -> String {
+        match pos {
+            None => String::from(s),
+            Some(i) => s.replace(".$", &format!(".{}", i)),
+        }
+    }
+
+    // TODO maybe this could/should take ownership of ops?
+    fn apply_update_ops(doc: &mut bson::Document, ops: &Vec<UpdateOp>, is_upsert: bool, pos: Option<usize>) -> Result<usize> {
+        let mut count = 0;
         for op in ops {
             match op {
                 &UpdateOp::Min(ref path, ref v) => {
-                    match try!(doc.entry(path)) {
+                    let path = Self::fix_positional(path, pos);
+                    match try!(doc.entry(&path)) {
                         bson::Entry::Found(e) => {
-                            let c = {
-                                let cur = e.get();
-                                matcher::cmp(v, cur)
-                            };
+                            let c = matcher::cmp(v, e.get());
                             if c == Ordering::Less {
-                                // TODO clone
                                 e.replace(v.clone());
+                                count = count + 1;
                             }
                         },
                         bson::Entry::Absent(e) => {
-                            // when the key isn't found, $min works like $set
-                            // TODO clone
+                            // when the key isn't found, this works like $set
                             e.insert(v.clone());
+                            count = count + 1;
                         },
                     }
                 },
                 &UpdateOp::Max(ref path, ref v) => {
-                    panic!("TODO UpdateOp::Max");
+                    let path = Self::fix_positional(path, pos);
+                    match try!(doc.entry(&path)) {
+                        bson::Entry::Found(e) => {
+                            let c = matcher::cmp(v, e.get());
+                            if c == Ordering::Greater {
+                                e.replace(v.clone());
+                                count = count + 1;
+                            }
+                        },
+                        bson::Entry::Absent(e) => {
+                            // when the key isn't found, this works like $set
+                            e.insert(v.clone());
+                            count = count + 1;
+                        },
+                    }
                 },
                 &UpdateOp::Inc(ref path, ref v) => {
-                    panic!("TODO UpdateOp::Inc");
+                    let path = Self::fix_positional(path, pos);
+                    if !v.is_numeric() {
+                        return Err(Error::Misc(format!("argument to $inc must be numeric")));
+                    }
+                    match try!(doc.entry(&path)) {
+                        bson::Entry::Found(mut e) => {
+                            if try!(v.to_i64()) != 0 {
+                                match e.get_mut() {
+                                    &mut bson::Value::BInt32(ref mut n) => {
+                                        *n = *n + try!(v.to_i32())
+                                    },
+                                    &mut bson::Value::BInt64(ref mut n) => {
+                                        *n = *n + try!(v.to_i64())
+                                    },
+                                    &mut bson::Value::BDouble(ref mut n) => {
+                                        *n = *n + try!(v.to_f64())
+                                    },
+                                    _ => return Err(Error::Misc(format!("can't $inc to this type"))),
+                                }
+                                count = count + 1;
+                            }
+                        },
+                        bson::Entry::Absent(e) => {
+                            // when the key isn't found, this works like $set
+                            e.insert(v.clone());
+                            count = count + 1;
+                        },
+                    }
                 },
                 &UpdateOp::Mul(ref path, ref v) => {
-                    panic!("TODO UpdateOp::Mul");
+                    let path = Self::fix_positional(path, pos);
+                    if !v.is_numeric() {
+                        return Err(Error::Misc(format!("argument to $mul must be numeric")));
+                    }
+                    match try!(doc.entry(&path)) {
+                        bson::Entry::Found(mut e) => {
+                            match e.get_mut() {
+                                &mut bson::Value::BInt32(ref mut n) => {
+                                    *n = *n * try!(v.to_i32())
+                                },
+                                &mut bson::Value::BInt64(ref mut n) => {
+                                    *n = *n * try!(v.to_i64())
+                                },
+                                &mut bson::Value::BDouble(ref mut n) => {
+                                    *n = *n * try!(v.to_f64())
+                                },
+                                _ => return Err(Error::Misc(format!("can't $mul to this type"))),
+                            }
+                            count = count + 1;
+                        },
+                        bson::Entry::Absent(e) => {
+                            // when the key isn't found, this works like $set
+                            e.insert(v.clone());
+                            count = count + 1;
+                        },
+                    }
                 },
                 &UpdateOp::Set(ref path, ref v) => {
-                    panic!("TODO UpdateOp::Set");
+                    let path = Self::fix_positional(path, pos);
+                    match try!(doc.entry(&path)) {
+                        bson::Entry::Found(e) => {
+                            e.replace(v.clone());
+                            count = count + 1;
+                        },
+                        bson::Entry::Absent(e) => {
+                            e.insert(v.clone());
+                            count = count + 1;
+                        },
+                    }
                 },
                 &UpdateOp::PullValue(ref path, ref v) => {
                     panic!("TODO UpdateOp::PullValue");
@@ -459,16 +542,75 @@ impl Connection {
                     panic!("TODO UpdateOp::SetOnInsert");
                 },
                 &UpdateOp::BitAnd(ref path, v) => {
-                    panic!("TODO UpdateOp::BitAnd");
+                    let path = Self::fix_positional(path, pos);
+                    match try!(doc.entry(&path)) {
+                        bson::Entry::Found(mut e) => {
+                            match e.get_mut() {
+                                &mut bson::Value::BInt32(ref mut n) => {
+                                    *n = *n & (v as i32)
+                                },
+                                &mut bson::Value::BInt64(ref mut n) => {
+                                    *n = *n & v
+                                },
+                                _ => return Err(Error::Misc(format!("can't $bit.and to this type"))),
+                            }
+                            count = count + 1;
+                        },
+                        bson::Entry::Absent(e) => {
+                            return Err(Error::Misc(format!("$bit.and path not found")));
+                        },
+                    }
                 },
                 &UpdateOp::BitOr(ref path, v) => {
-                    panic!("TODO UpdateOp::BitOr");
+                    let path = Self::fix_positional(path, pos);
+                    match try!(doc.entry(&path)) {
+                        bson::Entry::Found(mut e) => {
+                            match e.get_mut() {
+                                &mut bson::Value::BInt32(ref mut n) => {
+                                    *n = *n | (v as i32)
+                                },
+                                &mut bson::Value::BInt64(ref mut n) => {
+                                    *n = *n | v
+                                },
+                                _ => return Err(Error::Misc(format!("can't $bit.or to this type"))),
+                            }
+                            count = count + 1;
+                        },
+                        bson::Entry::Absent(e) => {
+                            return Err(Error::Misc(format!("$bit.or path not found")));
+                        },
+                    }
                 },
                 &UpdateOp::BitXor(ref path, v) => {
-                    panic!("TODO UpdateOp::BitXor");
+                    let path = Self::fix_positional(path, pos);
+                    match try!(doc.entry(&path)) {
+                        bson::Entry::Found(mut e) => {
+                            match e.get_mut() {
+                                &mut bson::Value::BInt32(ref mut n) => {
+                                    *n = *n ^ (v as i32)
+                                },
+                                &mut bson::Value::BInt64(ref mut n) => {
+                                    *n = *n ^ v
+                                },
+                                _ => return Err(Error::Misc(format!("can't $bit.xor to this type"))),
+                            }
+                            count = count + 1;
+                        },
+                        bson::Entry::Absent(e) => {
+                            return Err(Error::Misc(format!("$bit.xor path not found")));
+                        },
+                    }
                 },
                 &UpdateOp::Unset(ref path) => {
-                    panic!("TODO UpdateOp::Unset");
+                    let path = Self::fix_positional(path, pos);
+                    match try!(doc.entry(&path)) {
+                        bson::Entry::Found(e) => {
+                            e.remove();
+                            count = count + 1;
+                        },
+                        bson::Entry::Absent(e) => {
+                        },
+                    }
                 },
                 &UpdateOp::Date(ref path) => {
                     panic!("TODO UpdateOp::Date");
@@ -496,8 +638,9 @@ impl Connection {
                 },
             }
         }
-        // TODO return what?
-        Ok(())
+        // TODO not sure if the housekeeping necessary to return an accurate
+        // change count is worth the trouble.
+        Ok(count)
     }
 
     fn parse_update_doc(d: bson::Document) -> Result<Vec<UpdateOp>> {
@@ -508,6 +651,31 @@ impl Connection {
                 "$min" => {
                     for (path, v) in try!(v.into_document()).pairs {
                         result.push(UpdateOp::Min(path, v));
+                    }
+                },
+                "$max" => {
+                    for (path, v) in try!(v.into_document()).pairs {
+                        result.push(UpdateOp::Max(path, v));
+                    }
+                },
+                "$inc" => {
+                    for (path, v) in try!(v.into_document()).pairs {
+                        result.push(UpdateOp::Inc(path, v));
+                    }
+                },
+                "$mul" => {
+                    for (path, v) in try!(v.into_document()).pairs {
+                        result.push(UpdateOp::Mul(path, v));
+                    }
+                },
+                "$set" => {
+                    for (path, v) in try!(v.into_document()).pairs {
+                        result.push(UpdateOp::Set(path, v));
+                    }
+                },
+                "$unset" => {
+                    for (path, _) in try!(v.into_document()).pairs {
+                        result.push(UpdateOp::Unset(path));
                     }
                 },
                 _ => return Err(Error::Misc(format!("unknown update op: {}", k))),
@@ -565,7 +733,7 @@ impl Connection {
                                 match try!(Self::get_one_match(db, coll, &*writer, &m)) {
                                     Some(row) => {
                                         let mut doc = try!(row.doc.into_document());
-                                        Self::apply_update_ops(&mut doc, &ops, false, None);
+                                        let count_changes = try!(Self::apply_update_ops(&mut doc, &ops, false, None));
                                         // TODO make sure _id did not change
                                         // TODO only do the actual update if a change happened.  clone and compare?
                                         // TODO basic_update, validate_keys

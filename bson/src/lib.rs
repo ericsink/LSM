@@ -695,7 +695,9 @@ impl<'v> EntryFound<'v> {
         }
     }
 
-    pub fn get_mut(&mut self) -> &Value {
+    // TODO why does self need to be mut here when it does not
+    // for remove() and replace() below?
+    pub fn get_mut(&mut self) -> &mut Value {
         match self {
             &mut EntryFound::DocumentParent(ref mut bd, i) => {
                 &mut bd.pairs[i].1
@@ -816,7 +818,7 @@ impl Value {
         }
     }
 
-    fn is_numeric(&self) -> bool {
+    pub fn is_numeric(&self) -> bool {
         match self {
             &Value::BInt32(_) => true,
             &Value::BInt64(_) => true,
@@ -914,6 +916,33 @@ impl Value {
         match self {
             &Value::BInt32(ref s) => Ok(*s),
             _ => Err(Error::Misc("must be i32")),
+        }
+    }
+
+    pub fn to_i32(&self) -> Result<i32> {
+        match self {
+            &Value::BInt32(ref s) => Ok((*s) as i32),
+            &Value::BInt64(ref s) => Ok((*s) as i32),
+            &Value::BDouble(ref s) => Ok((*s) as i32),
+            _ => Err(Error::Misc("must be numeric")),
+        }
+    }
+
+    pub fn to_i64(&self) -> Result<i64> {
+        match self {
+            &Value::BInt32(ref s) => Ok((*s) as i64),
+            &Value::BInt64(ref s) => Ok((*s) as i64),
+            &Value::BDouble(ref s) => Ok((*s) as i64),
+            _ => Err(Error::Misc("must be numeric")),
+        }
+    }
+
+    pub fn to_f64(&self) -> Result<f64> {
+        match self {
+            &Value::BInt32(ref s) => Ok((*s) as f64),
+            &Value::BInt64(ref s) => Ok((*s) as f64),
+            &Value::BDouble(ref s) => Ok((*s) as f64),
+            _ => Err(Error::Misc("must be numeric")),
         }
     }
 
