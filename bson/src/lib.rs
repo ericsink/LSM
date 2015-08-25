@@ -1247,7 +1247,7 @@ impl Value {
         }
         let e = e as usize;
         let n = n + 2;
-        let a = &k[n .. k.len()-n+1];
+        let a = &k[n .. ];
 
         // remaining bytes are mantissa, base 100
         // last byte of mantissa is 2*x
@@ -1264,7 +1264,7 @@ impl Value {
 
         let a =
             if a.len() > e {
-                &a[0 .. e+1]
+                &a[0 .. e]
             } else {
                 a
             };
