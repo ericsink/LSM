@@ -706,7 +706,7 @@ fn get_paths(q: &QueryDoc) -> Vec<String> {
     a
 }
 
-fn get_eqs(q: &QueryDoc) -> Vec<(&str, &bson::Value)> {
+pub fn get_eqs(q: &QueryDoc) -> Vec<(&str, &bson::Value)> {
     fn f<'q>(a: &mut Vec<(&'q str, &'q bson::Value)>, q: &'q QueryDoc) {
         let &QueryDoc::QueryDoc(ref items) = q;
         for qit in items {

@@ -304,6 +304,26 @@ impl Document {
         self.pairs.push((String::from_str(k), v));
     }
 
+    pub fn ensure_id(&mut self) {
+        match self.get("_id") {
+            Some(_) => {
+            },
+            None => {
+                self.set_objectid("_id", misc::new_bson_objectid_rand());
+            },
+        }
+    }
+
+    pub fn set_path(&mut self, path: &str, v: Value) -> Result<()> {
+        match try!(self.entry(path)) {
+            Entry::Found(e) => {
+                let _ = e.replace(v);
+            },
+            Entry::Absent(e) => e.insert(v),
+        }
+        Ok(())
+    }
+
     pub fn set_objectid(&mut self, k: &str, v: [u8; 12]) {
         self.set(k, Value::BObjectID(v));
     }

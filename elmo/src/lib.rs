@@ -532,16 +532,11 @@ impl Connection {
                 },
                 &UpdateOp::Set(ref path, ref v) => {
                     let path = Self::fix_positional(path, pos);
-                    match try!(doc.entry(&path)) {
-                        bson::Entry::Found(e) => {
-                            e.replace(v.clone());
-                            count = count + 1;
-                        },
-                        bson::Entry::Absent(e) => {
-                            e.insert(v.clone());
-                            count = count + 1;
-                        },
-                    }
+                    try!(doc.set_path(&path, v.clone()));
+                    // TODO this is an example of a place where we increment the counter
+                    // but we don't actually know if the document changed, since we might
+                    // have set the same value as was already there.
+                    count = count + 1;
                 },
                 &UpdateOp::PullValue(ref path, ref v) => {
                     panic!("TODO UpdateOp::PullValue");
@@ -717,6 +712,19 @@ impl Connection {
         Ok(d)
     }
 
+    fn build_upsert_with_update_operators(m: &matcher::QueryDoc, ops: &Vec<UpdateOp>) -> Result<bson::Document> {
+        let a = matcher::get_eqs(m);
+        let mut doc = bson::Document::new_empty();
+        for (path, v) in a {
+            try!(doc.set_path(&path, v.clone()));
+        }
+        // TODO save the id so we can make sure it didn't change
+        let count_changes = try!(Self::apply_update_ops(&mut doc, ops, true, None));
+        // TODO make sure the id didn't change
+        doc.ensure_id();
+        Ok(doc)
+    }
+
     fn build_simple_upsert(id_q: Option<bson::Value>, u: &mut bson::Document) -> Result<()> {
         // TODO I hate this code.  I want to match on u.get("_id"), but the
         // borrow survives the whole match, which means I can't modify it
@@ -753,6 +761,7 @@ impl Connection {
         try!(d.validate_id());
         try!(d.validate_keys(0));
         // TODO validate depth
+        // TODO return id?
         Ok(())
     }
 
@@ -809,7 +818,12 @@ impl Connection {
                             };
                         if count_matches == 0 {
                             if upsert {
-                                panic!("TODO update operators upsert");
+                                let mut doc = try!(Self::build_upsert_with_update_operators(&m, &ops));
+                                try!(Self::validate_for_storage(&mut doc));
+                                // TODO handle error in following line
+                                collwriter.insert(&doc);
+                                // TODO return something
+                                Ok(())
                             } else {
                                 Ok(())
                                 //Ok((count_matches, count_modified, None, None))
@@ -868,13 +882,7 @@ impl Connection {
     pub fn insert(&self, db: &str, coll: &str, docs: &mut Vec<bson::Document>) -> Result<Vec<Result<()>>> {
         // make sure every doc has an _id
         for d in docs.iter_mut() {
-            match d.get("_id") {
-                Some(_) => {
-                },
-                None => {
-                    d.set_objectid("_id", misc::new_bson_objectid_rand());
-                },
-            }
+            d.ensure_id();
         }
         let mut results = Vec::new();
         {
