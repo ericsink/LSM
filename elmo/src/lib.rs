@@ -1595,7 +1595,12 @@ impl Connection {
 
                 match hint {
                     Some(hint) => {
-                        panic!("TODO hint");
+                        match fits.iter().position(|plan| plan.ndx.spec == hint.spec) {
+                            Some(i) => {
+                                Ok(Some(fits.remove(i)))
+                            },
+                            None => Ok(Self::choose_from_possibles(fits))
+                        }
                     },
                     None => Ok(Self::choose_from_possibles(fits))
                 }
