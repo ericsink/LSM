@@ -293,15 +293,17 @@ impl Document {
         v.as_array()
     }
 
-    pub fn set(&mut self, k: &str, v: Value) {
+    pub fn set(&mut self, k: &str, v: Value) -> &mut Value {
         // TODO make this more efficient?
         for i in 0 .. self.pairs.len() {
             if self.pairs[i].0 == k {
                 self.pairs[i].1 = v;
-                return;
+                return &mut self.pairs[i].1;
             }
         }
         self.pairs.push((String::from_str(k), v));
+        let i = self.pairs.len() - 1;
+        return &mut self.pairs[i].1;
     }
 
     pub fn ensure_id(&mut self) {
@@ -319,7 +321,7 @@ impl Document {
             Entry::Found(e) => {
                 let _ = e.replace(v);
             },
-            Entry::Absent(e) => e.insert(v),
+            Entry::Absent(e) => try!(e.insert(v)),
         }
         Ok(())
     }
@@ -328,12 +330,12 @@ impl Document {
         self.set(k, Value::BObjectID(v));
     }
 
-    pub fn set_document(&mut self, k: &str, v: Document) {
-        self.set(k, Value::BDocument(v));
+    pub fn set_document(&mut self, k: &str, v: Document) -> &mut Value {
+        self.set(k, Value::BDocument(v))
     }
 
-    pub fn set_array(&mut self, k: &str, v: Array) {
-        self.set(k, Value::BArray(v));
+    pub fn set_array(&mut self, k: &str, v: Array) -> &mut Value {
+        self.set(k, Value::BArray(v))
     }
 
     pub fn set_i32(&mut self, k: &str, v: i32) {
@@ -449,6 +451,10 @@ impl Array {
         }
     }
 
+    pub fn len(&self) -> usize {
+        self.items.len()
+    }
+
     pub fn validate_keys(&self, depth: usize) -> Result<()> {
         for v in &self.items {
             match v {
@@ -456,6 +462,16 @@ impl Array {
                 &Value::BArray(ref ba) => try!(ba.validate_keys(1 + depth)),
                 _ => ()
             }
+        }
+        Ok(())
+    }
+
+    pub fn set_path(&mut self, path: &str, v: Value) -> Result<()> {
+        match try!(self.entry(path)) {
+            Entry::Found(e) => {
+                let _ = e.replace(v);
+            },
+            Entry::Absent(e) => try!(e.insert(v)),
         }
         Ok(())
     }
@@ -821,21 +837,34 @@ pub enum EntryAbsent<'v,'p> {
 
 impl<'v,'p> EntryAbsent<'v,'p> {
     // TODO return mut ref to it?
-    pub fn insert(self, v: Value) {
+    pub fn insert(self, v: Value) -> Result<()> {
         match self {
             EntryAbsent::DocumentParent(bd, k) => {
                 bd.pairs.push((String::from_str(k), v));
             },
             EntryAbsent::ArrayParent(ba, i) => {
-                panic!("TODO EntryAbsent::ArrayParent insert");
+                panic!("TODO EntryAbsent::ArrayParent insert: len={}, i={}", ba.len(), i);
             },
             EntryAbsent::DocumentAncestor(bd, path) => {
-                panic!("TODO EntryAbsent::DocumentAncestor insert");
+                let dot = path.find('.').expect("should not be here if no dot");
+                let name = &path[0 .. dot];
+                let subpath = &path[dot + 1 ..];
+                match name.parse::<usize>() {
+                    Ok(n) => {
+                        let sub = bd.set_array(name, Array::new_empty());
+                        try!(sub.set_path(subpath, v));
+                    },
+                    Err(_) => {
+                        let sub = bd.set_document(name, Document::new_empty());
+                        try!(sub.set_path(subpath, v));
+                    },
+                }
             },
             EntryAbsent::ArrayAncestor(ba, path) => {
-                panic!("TODO EntryAbsent::ArrayAncestor insert");
+                panic!("TODO EntryAbsent::ArrayAncestor insert: len={}, path={}", ba.len(), path);
             },
         }
+        Ok(())
     }
 }
 
@@ -845,10 +874,20 @@ pub enum Entry<'v,'p> {
 }
 
 impl Value {
+    pub fn set_path(&mut self, path: &str, v: Value) -> Result<()> {
+        match self {
+            &mut Value::BDocument(ref mut bd) => bd.set_path(path, v),
+            &mut Value::BArray(ref mut ba) => ba.set_path(path, v),
+            // TODO the following line should probably be Err
+            _ => unreachable!(),
+        }
+    }
+
     pub fn entry<'v,'p>(&'v mut self, path: &'p str) -> Result<Entry<'v,'p>> {
         match self {
             &mut Value::BDocument(ref mut bd) => bd.entry(path),
             &mut Value::BArray(ref mut ba) => ba.entry(path),
+            // TODO the following line should probably be Err
             _ => unreachable!(),
         }
     }
