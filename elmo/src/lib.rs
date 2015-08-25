@@ -950,8 +950,14 @@ impl Connection {
                     None => vec![],
                 }
             };
+        let mut count_deleted = 0;
+        for ndx in indexes {
+            if try!(writer.drop_index(&ndx.db, &ndx.coll, &ndx.name)) {
+                count_deleted = count_deleted + 1;
+            }
+        }
         try!(writer.commit());
-        panic!("TODO delete_indexes");
+        Ok((count_before, count_deleted))
     }
 
     pub fn create_indexes(&self, indexes: Vec<IndexInfo>) -> Result<Vec<bool>> {
