@@ -1026,8 +1026,7 @@ fn parse_query_doc(bd: &bson::Document) -> Result<Vec<QueryItem>> {
             "$nor" => {
                 let ba = try!(v.as_array());
                 if ba.items.len() == 0 {
-                    // TODO no panic
-                    panic!("array for $and $or cannot be empty");
+                    return Err(super::Error::Misc(String::from("array arg for $nor cannot be empty")));
                 }
                 // TODO what if just one?  canonicalize?
                 // TODO this wants to be a map+closure, but the error handling is weird
