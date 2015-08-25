@@ -117,6 +117,52 @@ impl Document {
         }
     }
 
+    pub fn validate_keys(&self, depth: usize) -> Result<()> {
+        if depth > 0 && self.is_dbref() {
+            Ok(())
+        } else {
+            for &(ref k, ref v) in &self.pairs {
+                if k.starts_with("$") {
+                    return Err(Error::Misc(String::from("key cannot start with $")));
+                } else if k.contains(".") {
+                    return Err(Error::Misc(String::from("key cannot contain .")));
+                } else {
+                    match v {
+                        &Value::BDocument(ref bd) => try!(bd.validate_keys(1 + depth)),
+                        &Value::BArray(ref ba) => try!(ba.validate_keys(1 + depth)),
+                        _ => ()
+                    }
+                }
+            }
+            Ok(())
+        }
+    }
+
+    pub fn validate_id(&mut self) -> Result<()> {
+        match self.pairs.iter().position(|&(ref k, ref v)| k == "_id") {
+            Some(i) => {
+                if self.pairs[i].1.is_array() {
+                    Err(Error::Misc(String::from("_id cannot be an array")))
+                } else if self.pairs[i].1.is_undefined() {
+                    Err(Error::Misc(String::from("_id cannot be undefined")))
+                } else if i == 0{
+                    Ok(())
+                } else {
+                    // when the _id is not the first thing in the document, we must
+                    // move it to the front.  it is important that we do this by
+                    // shifting everything else forward, not by swapping the _id
+                    // with whatever was first.
+                    let id = self.pairs.remove(i);
+                    self.pairs.insert(0, id);
+                    Ok(())
+                }
+            },
+            None => {
+                Err(Error::Misc(String::from("no id")))
+            },
+        }
+    }
+
     pub fn must_remove(&mut self, k: &str) -> Result<Value> {
         self.remove(k).ok_or(Error::Misc(format!("required key not found: {}", k)))
     }
@@ -381,6 +427,17 @@ impl Array {
         Array {
             items: vec![],
         }
+    }
+
+    pub fn validate_keys(&self, depth: usize) -> Result<()> {
+        for v in &self.items {
+            match v {
+                &Value::BDocument(ref bd) => try!(bd.validate_keys(1 + depth)),
+                &Value::BArray(ref ba) => try!(ba.validate_keys(1 + depth)),
+                _ => ()
+            }
+        }
+        Ok(())
     }
 
     pub fn entry<'v,'p>(&'v mut self, path: &'p str) -> Result<Entry<'v,'p>> {
@@ -800,6 +857,13 @@ impl Value {
     fn is_array(&self) -> bool {
         match self {
             &Value::BArray(_) => true,
+            _ => false,
+        }
+    }
+
+    fn is_undefined(&self) -> bool {
+        match self {
+            &Value::BUndefined => true,
             _ => false,
         }
     }

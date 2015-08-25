@@ -717,6 +717,45 @@ impl Connection {
         Ok(d)
     }
 
+    fn build_simple_upsert(id_q: Option<bson::Value>, u: &mut bson::Document) -> Result<()> {
+        // TODO I hate this code.  I want to match on u.get("_id"), but the
+        // borrow survives the whole match, which means I can't modify it
+        // in the None case.  This approach requires me to re-do the get()
+        // just below, with an unwrap().  Ugly.  Use Entry?
+        if u.get("_id").is_some() {
+            match id_q {
+                Some(id_q) => {
+                    if id_q != *u.get("_id").unwrap() {
+                        Err(Error::Misc(String::from("can't change _id")))
+                    } else {
+                        Ok(())
+                    }
+                },
+                None => {
+                    Ok(())
+                },
+            }
+        } else {
+            match id_q {
+                Some(id_q) => {
+                    u.set("_id", id_q);
+                    Ok(())
+                },
+                None => {
+                    u.set_objectid("_id", misc::new_bson_objectid_rand());
+                    Ok(())
+                },
+            }
+        }
+    }
+
+    fn validate_for_storage(d: &mut bson::Document) -> Result<()> {
+        try!(d.validate_id());
+        try!(d.validate_keys(0));
+        // TODO validate depth
+        Ok(())
+    }
+
     // TODO this func needs to return the 4-tuple
     // (count_matches, count_modified, Option<TODO>, Option<TODO>)
     pub fn update(&self, db: &str, coll: &str, updates: &mut Vec<bson::Document>) -> Result<Vec<Result<()>>> {
@@ -734,6 +773,12 @@ impl Connection {
                     let mut u = try!(upd.must_remove_document("u"));
                     let multi = try!(upd.must_remove_bool("multi"));
                     let upsert = try!(upd.must_remove_bool("upsert"));
+                    // rescue _id from q if possible
+                    let q_id =
+                        match q.get("_id") {
+                            Some(id) => Some(id.clone()),
+                            None => None,
+                        };
                     let m = try!(matcher::parse_query(q));
                     let has_update_operators = u.pairs.iter().any(|&(ref k, _)| k.starts_with("$"));
                     if has_update_operators {
@@ -750,7 +795,8 @@ impl Connection {
                                         let count_changes = try!(Self::apply_update_ops(&mut doc, &ops, false, None));
                                         // TODO make sure _id did not change
                                         // TODO only do the actual update if a change happened.  clone and compare?
-                                        // TODO basic_update, validate_keys
+                                        try!(Self::validate_for_storage(&mut doc));
+                                        // TODO error in the following line?
                                         collwriter.update(&doc);
                                         // TODO return (1, 0) if the change didn't happen
                                         (1, 1)
@@ -785,7 +831,7 @@ impl Connection {
                                 let id1 = try!(id1.as_objectid());
                                 // TODO if u has _id, make sure it's the same
                                 u.set_objectid("_id", id1);
-                                // TODO basic_update, validate_keys
+                                try!(Self::validate_for_storage(&mut u));
                                 // TODO handle error in following line
                                 collwriter.update(&u);
                                 // TODO return something
@@ -793,8 +839,8 @@ impl Connection {
                             },
                             None => {
                                 if upsert {
-                                    // TODO let (id, doc) = build_simple_upsert(&q, u);
-                                    // TODO basic_insert, validate_keys
+                                    try!(Self::build_simple_upsert(q_id, &mut u));
+                                    try!(Self::validate_for_storage(&mut u));
                                     // TODO handle error in following line
                                     collwriter.insert(&u);
                                     // TODO return something
@@ -835,8 +881,8 @@ impl Connection {
             let writer = try!(self.conn.begin_write());
             {
                 let mut collwriter = try!(writer.get_collection_writer(db, coll));
-                for doc in docs {
-                    // TODO basic_insert, validate_keys
+                for mut doc in docs {
+                    try!(Self::validate_for_storage(&mut doc));
                     let r = collwriter.insert(doc);
                     results.push(r);
                 }
