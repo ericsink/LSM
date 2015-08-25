@@ -1690,6 +1690,16 @@ impl Connection {
         return Ok(None);
     }
 
+    pub fn aggregate(&self,
+                db: &str,
+                coll: &str,
+                pipeline: bson::Array
+                ) 
+        -> Result<(Option<String>, Box<Iterator<Item=Result<Row>> + 'static>)>
+    {
+        panic!("TODO agg");
+    }
+
     pub fn find(&self,
                 db: &str,
                 coll: &str,

@@ -40,88 +40,8 @@ use std::io;
 use std::io::Read;
 use std::io::Write;
 
-#[derive(Debug)]
-enum Error {
-    // TODO remove Misc
-    Misc(String),
-
-    // TODO more detail within CorruptFile
-    CorruptFile(&'static str),
-
-    Whatever(Box<std::error::Error>),
-
-    // TODO do we need the following now that we have Whatever?
-    Bson(bson::Error),
-    Io(std::io::Error),
-    Utf8(std::str::Utf8Error),
-    Elmo(elmo::Error),
-}
-
-fn wrap_err<E: std::error::Error + 'static>(err: E) -> Error {
-    Error::Whatever(box err)
-}
-
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match *self {
-            Error::Bson(ref err) => write!(f, "bson error: {}", err),
-            Error::Elmo(ref err) => write!(f, "elmo error: {}", err),
-            Error::Io(ref err) => write!(f, "IO error: {}", err),
-            Error::Utf8(ref err) => write!(f, "Utf8 error: {}", err),
-            Error::Misc(ref s) => write!(f, "Misc error: {}", s),
-            Error::CorruptFile(s) => write!(f, "Corrupt file: {}", s),
-            Error::Whatever(ref err) => write!(f, "Other error: {}", err),
-        }
-    }
-}
-
-impl std::error::Error for Error {
-    fn description(&self) -> &str {
-        match *self {
-            Error::Bson(ref err) => std::error::Error::description(err),
-            Error::Elmo(ref err) => std::error::Error::description(err),
-            Error::Io(ref err) => std::error::Error::description(err),
-            Error::Utf8(ref err) => std::error::Error::description(err),
-            Error::Misc(ref s) => &s,
-            Error::CorruptFile(s) => s,
-            Error::Whatever(ref err) => std::error::Error::description(&**err),
-        }
-    }
-
-    // TODO cause
-}
-
-impl From<bson::Error> for Error {
-    fn from(err: bson::Error) -> Error {
-        Error::Bson(err)
-    }
-}
-
-impl From<elmo::Error> for Error {
-    fn from(err: elmo::Error) -> Error {
-        Error::Elmo(err)
-    }
-}
-
-impl From<io::Error> for Error {
-    fn from(err: io::Error) -> Error {
-        Error::Io(err)
-    }
-}
-
-impl From<std::str::Utf8Error> for Error {
-    fn from(err: std::str::Utf8Error) -> Error {
-        Error::Utf8(err)
-    }
-}
-
-impl From<Box<std::error::Error>> for Error {
-    fn from(err: Box<std::error::Error>) -> Error {
-        Error::Whatever(err)
-    }
-}
-
-pub type Result<T> = std::result::Result<T, Error>;
+use elmo::Error;
+use elmo::Result;
 
 #[derive(Debug)]
 struct Reply {
@@ -866,6 +786,39 @@ impl<'b> Server<'b> {
         Ok(create_reply(req.req_id, vec![doc], 0))
     }
 
+    fn reply_aggregate(&mut self, req: MsgQuery, db: &str) -> Result<Reply> {
+        let MsgQuery {
+            req_id,
+            flags,
+            full_collection_name,
+            number_to_skip,
+            number_to_return,
+            mut query,
+            return_fields_selector,
+        } = req;
+        let coll = try!(query.must_remove_string("aggregate"));
+        let pipeline = try!(query.must_remove_array("pipeline"));
+        let cursor_options = query.get("cursor");
+        match cursor_options {
+            Some(&bson::Value::BDocument(_)) => (),
+            Some(_) => return Err(Error::Misc(format!("aggregate.cursor must be a document: {:?}", cursor_options))),
+            None => (),
+        }
+        let (out, seq) = try!(self.conn.aggregate(db, &coll, pipeline));
+        match out {
+            Some(new_coll_name) => {
+                panic!("TODO aggregate out");
+            },
+            None => {
+                let default_batch_size = 100;
+                let ns = format!("{}.{}", db, coll);
+                let doc = try!(self.reply_with_cursor(&ns, seq, cursor_options, default_batch_size));
+                // note that this uses the newer way of returning a cursor ID, so we pass 0 below
+                Ok(create_reply(req.req_id, vec![doc], 0))
+            },
+        }
+    }
+
     fn reply_count(&mut self, req: MsgQuery, db: &str) -> Result<Reply> {
         let MsgQuery {
             req_id,
@@ -966,7 +919,7 @@ impl<'b> Server<'b> {
         let seq = seq.skip(number_to_skip as usize);
 
         let mut seq = seq.map(
-            |r| r.map_err(wrap_err)
+            |r| r.map_err(elmo::wrap_err)
         );
 
         //let docs = try!(Self::grab(&mut seq, number_to_return as usize));
@@ -995,7 +948,7 @@ impl<'b> Server<'b> {
                 // TODO isMaster needs to be in here?
                 match cmd.as_str() {
                     //"explain" => reply_explain req db
-                    //"aggregate" => reply_aggregate req db
+                    "aggregate" => self.reply_aggregate(req, db),
                     "insert" => self.reply_insert(req, db),
                     "delete" => self.reply_delete(&req, db),
                     //"distinct" => reply_distinct req db
