@@ -963,8 +963,7 @@ fn parse_compare(k: &str, v: &bson::Value) -> Result<QueryItem> {
 fn parse_query_doc(bd: &bson::Document) -> Result<Vec<QueryItem>> {
     fn do_and_or(result: &mut Vec<QueryItem>, a: &Vec<bson::Value>, op: &str) -> Result<()> {
         if a.len() == 0 {
-            // TODO no panic
-            panic!("array for $and $or cannot be empty");
+            return Err(super::Error::Misc(String::from("array arg for $and+$or cannot be empty")));
         } else if a.len() == 1 {
             let d = try!(a[0].as_document());
             let subpairs = try!(parse_query_doc(d));
@@ -1005,11 +1004,11 @@ fn parse_query_doc(bd: &bson::Document) -> Result<Vec<QueryItem>> {
             },
             "$and" => {
                 let ba = try!(v.as_array());
-                do_and_or(&mut result, &ba.items, k);
+                try!(do_and_or(&mut result, &ba.items, k));
             },
             "$or" => {
                 let ba = try!(v.as_array());
-                do_and_or(&mut result, &ba.items, k);
+                try!(do_and_or(&mut result, &ba.items, k));
             },
             "$text" => {
                 match v {

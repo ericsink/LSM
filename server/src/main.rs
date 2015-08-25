@@ -298,11 +298,26 @@ fn create_reply(req_id: i32, docs: Vec<bson::Document>, cursor_id: i64) -> Reply
     msg
 }
 
+fn reply_code(req_id: i32, err: Error) -> Reply {
+    let mut doc = bson::Document::new_empty();
+    doc.set_string("errmsg", format!("{:?}", err));
+    // TODO pairs.push(("code", BInt32(code)));
+    doc.set_i32("ok", 0);
+    create_reply(req_id, vec![doc], 0)
+}
+
 fn reply_err(req_id: i32, err: Error) -> Reply {
     let mut doc = bson::Document::new_empty();
-    // TODO stack trace was nice here
-    //pairs.push(("errmsg", BString("exception: " + errmsg)));
-    //pairs.push(("code", BInt32(code)));
+    doc.set_string("$err", format!("{:?}", err));
+    doc.set_i32("ok", 0);
+    let mut r = create_reply(req_id, vec![doc], 0);
+    r.flags = 2;
+    r
+}
+
+fn reply_errmsg(req_id: i32, err: Error) -> Reply {
+    let mut doc = bson::Document::new_empty();
+    doc.set_string("errmsg", format!("{:?}", err));
     doc.set_i32("ok", 0);
     create_reply(req_id, vec![doc], 0)
 }
@@ -1002,10 +1017,11 @@ impl<'b> Server<'b> {
         }
     }
 
-    fn reply_2004(&mut self, req: MsgQuery) -> Reply {
+    fn reply_2004(&mut self, req: MsgQuery) -> Result<Reply> {
         // reallocating the strings here so we can pass ownership of req down the line.
         // TODO we could deconstruct req now?
         let parts = req.full_collection_name.split('.').map(|s| String::from(s)).collect::<Vec<_>>();
+        // TODO check for bad collection name here
         let req_id = req.req_id;
         let r = 
             if parts.len() < 2 {
@@ -1036,18 +1052,19 @@ impl<'b> Server<'b> {
                         //reply_system_namespaces req db
                         Err(Error::Misc(format!("TODO: {:?}", req)))
                     } else {
-                        self.reply_query(req, db)
+                        match self.reply_query(req, db) {
+                            Ok(r) => Ok(r),
+                            Err(e) => Ok(reply_err(req_id, e)),
+                        }
                     }
                 }
             };
         println!("reply: {:?}", r);
-        match r {
-            Ok(r) => r,
-            Err(e) => reply_err(req_id, e),
-        }
+        r
     }
 
     fn reply_2005(&mut self, req: MsgGetMore) -> Reply {
+        // TODO this function should be using reply_code
         match self.cursors.remove(&req.cursor_id) {
             Some((ns, mut seq)) => {
                 match Self::do_limit(&ns, &mut seq, req.number_to_return) {
@@ -1109,7 +1126,12 @@ impl<'b> Server<'b> {
                         Ok(true)
                     },
                     Request::Query(req) => {
-                        let resp = self.reply_2004(req);
+                        let req_id = req.req_id;
+                        let resp = 
+                            match self.reply_2004(req) {
+                                Ok(r) => r,
+                                Err(e) => reply_errmsg(req_id, e),
+                            };
                         send_reply(stream, resp)
                     },
                     Request::GetMore(req) => {
