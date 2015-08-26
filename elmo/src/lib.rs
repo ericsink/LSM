@@ -31,7 +31,6 @@ use misc::varint;
 extern crate bson;
 
 #[derive(Debug)]
-// TODO do we really want this public?
 pub enum Error {
     // TODO remove Misc
     Misc(String),
@@ -73,7 +72,6 @@ impl std::error::Error for Error {
     // TODO cause
 }
 
-// TODO why is 'static needed here?  Doesn't this take ownership?
 pub fn wrap_err<E: std::error::Error + 'static>(err: E) -> Error {
     Error::Whatever(box err)
 }
@@ -417,6 +415,98 @@ pub trait StorageConnection {
 
 pub struct Connection {
     conn: Box<StorageConnection>,
+}
+
+// TODO this type was created so that all the projection operations
+// could be done in the order they appeared, which we are not really
+// doing.  So now the parser is constructing these values and then
+// we unconstruct them later.  Messy.
+#[derive(Debug)]
+enum AggProj {
+    Include,
+    Expr(Expr),
+}
+
+#[derive(Debug)]
+enum GroupAccum {
+    Sum(Expr),
+    Avg(Expr),
+    First(Expr),
+    Last(Expr),
+    Max(Expr),
+    Min(Expr),
+    Push(Expr),
+    AddToSet(Expr),
+}
+
+#[derive(Debug)]
+enum AggOp {
+    Skip(i32),
+    Limit(i32),
+    Sort(bson::Value),
+    Out(String),
+    Unwind(String),
+    Match(matcher::QueryDoc),
+    Project(Vec<(String,AggProj)>),
+    Group(bson::Value, Vec<(String, GroupAccum)>),
+    GeoNear(bson::Value),
+    Redact(Expr),
+}
+
+#[derive(Debug)]
+enum Expr {
+    Var(String),
+    Literal(bson::Value),
+
+    AllElementsTrue(Box<Expr>),
+    AnyElementTrue(Box<Expr>),
+    DayOfMonth(Box<Expr>),
+    DayOfWeek(Box<Expr>),
+    DayOfYear(Box<Expr>),
+    Hour(Box<Expr>),
+    Millisecond(Box<Expr>),
+    Minute(Box<Expr>),
+    Month(Box<Expr>),
+    Not(Box<Expr>),
+    Second(Box<Expr>),
+    Size(Box<Expr>),
+    ToLower(Box<Expr>),
+    ToUpper(Box<Expr>),
+    Week(Box<Expr>),
+    Year(Box<Expr>),
+
+    Cmp(Box<(Expr, Expr)>),
+    Eq(Box<(Expr, Expr)>),
+    Ne(Box<(Expr, Expr)>),
+    Gt(Box<(Expr, Expr)>),
+    Lt(Box<(Expr, Expr)>),
+    Gte(Box<(Expr, Expr)>),
+    Lte(Box<(Expr, Expr)>),
+    Subtract(Box<(Expr, Expr)>),
+    Divide(Box<(Expr, Expr)>),
+    Mod(Box<(Expr, Expr)>),
+    IfNull(Box<(Expr, Expr)>),
+    SetDifference(Box<(Expr, Expr)>),
+    SetIsSubset(Box<(Expr, Expr)>),
+    StrCaseCmp(Box<(Expr, Expr)>),
+
+    Substr(Box<(Expr, Expr, Expr)>),
+    Cond(Box<(Expr, Expr, Expr)>),
+
+    And(Vec<Expr>),
+    Or(Vec<Expr>),
+    Add(Vec<Expr>),
+    Multiply(Vec<Expr>),
+    Concat(Vec<Expr>),
+    SetEquals(Vec<Expr>),
+    SetIntersection(Vec<Expr>),
+    SetUnion(Vec<Expr>),
+
+    Let(Vec<(String, Expr)>, Box<Expr>),
+    Map(Box<Expr>, String, Box<Expr>),
+    DateToString(String, Box<Expr>),
+
+    // TODO meta
 }
 
 impl Connection {
@@ -1690,6 +1780,214 @@ impl Connection {
         return Ok(None);
     }
 
+    fn parse_expr(v: bson::Value) -> Result<Expr> {
+        let get_one_arg = |mut v: bson::Value| -> Result<Expr> {
+            match v {
+                bson::Value::BArray(mut a) => {
+                    if a.len() != 1 {
+                        Err(Error::Misc(String::from("16020 wrong number of args")))
+                    } else {
+                        Self::parse_expr(a.items.remove(0))
+                    }
+                },
+                _ => Self::parse_expr(v),
+            }
+        };
+
+        let get_two_args = |mut v: bson::Value| -> Result<(Expr,Expr)> {
+            match v {
+                bson::Value::BArray(mut a) => {
+                    if a.len() != 2 {
+                        Err(Error::Misc(String::from("16020 wrong number of args")))
+                    } else {
+                        let v1 = a.items.remove(1);
+                        let v0 = a.items.remove(0);
+                        let e0 = try!(Self::parse_expr(v0));
+                        let e1 = try!(Self::parse_expr(v1));
+                        Ok((e0, e1))
+                    }
+                },
+                _ => Err(Error::Misc(String::from("16020 wrong number of args")))
+            }
+        };
+
+        match v {
+            bson::Value::BString(s) => {
+                if s.starts_with("$$") {
+                    Ok(Expr::Var(String::from(&s[2 ..])))
+                } else if s.starts_with("$") {
+                    Ok(Expr::Var(format!("CURRENT.{}", &s[1 ..])))
+                } else {
+                    Ok(Expr::Literal(bson::Value::BString(s)))
+                }
+            },
+            bson::Value::BDocument(mut bd) => {
+                if bd.pairs.len() == 1 {
+                    let (k, v) = bd.pairs.remove(0);
+                    if k.starts_with("$") {
+                        match k.as_str() {
+                            "$allElementsTrue" => {
+                                Ok(Expr::AllElementsTrue(box try!(get_one_arg(v))))
+                            },
+                            "$anyElementTrue" => {
+                                Ok(Expr::AnyElementTrue(box try!(get_one_arg(v))))
+                            },
+                            "$dayOfMonth" => {
+                                Ok(Expr::DayOfMonth(box try!(get_one_arg(v))))
+                            },
+                            "$dayOfWeek" => {
+                                Ok(Expr::DayOfWeek(box try!(get_one_arg(v))))
+                            },
+                            "$dayOfYear" => {
+                                Ok(Expr::DayOfYear(box try!(get_one_arg(v))))
+                            },
+                            "$hour" => {
+                                Ok(Expr::Hour(box try!(get_one_arg(v))))
+                            },
+                            "$millisecond" => {
+                                Ok(Expr::Millisecond(box try!(get_one_arg(v))))
+                            },
+                            "$minute" => {
+                                Ok(Expr::Minute(box try!(get_one_arg(v))))
+                            },
+                            "$month" => {
+                                Ok(Expr::Month(box try!(get_one_arg(v))))
+                            },
+                            "$not" => {
+                                Ok(Expr::Not(box try!(get_one_arg(v))))
+                            },
+                            "$second" => {
+                                Ok(Expr::Second(box try!(get_one_arg(v))))
+                            },
+                            "$size" => {
+                                Ok(Expr::Size(box try!(get_one_arg(v))))
+                            },
+                            "$toLower" => {
+                                Ok(Expr::ToLower(box try!(get_one_arg(v))))
+                            },
+                            "$toUpper" => {
+                                Ok(Expr::ToUpper(box try!(get_one_arg(v))))
+                            },
+                            "$week" => {
+                                Ok(Expr::Week(box try!(get_one_arg(v))))
+                            },
+                            "$year" => {
+                                Ok(Expr::Year(box try!(get_one_arg(v))))
+                            },
+
+                            "$cmp" => {
+                                Ok(Expr::Cmp(box try!(get_two_args(v))))
+                            },
+                            "$eq" => {
+                                Ok(Expr::Eq(box try!(get_two_args(v))))
+                            },
+                            "$ne" => {
+                                Ok(Expr::Ne(box try!(get_two_args(v))))
+                            },
+                            "$gt" => {
+                                Ok(Expr::Gt(box try!(get_two_args(v))))
+                            },
+                            "$lt" => {
+                                Ok(Expr::Lt(box try!(get_two_args(v))))
+                            },
+                            "$gte" => {
+                                Ok(Expr::Gte(box try!(get_two_args(v))))
+                            },
+                            "$lte" => {
+                                Ok(Expr::Lte(box try!(get_two_args(v))))
+                            },
+                            "$subtract" => {
+                                Ok(Expr::Subtract(box try!(get_two_args(v))))
+                            },
+                            "$divide" => {
+                                Ok(Expr::Divide(box try!(get_two_args(v))))
+                            },
+                            "$mod" => {
+                                Ok(Expr::Mod(box try!(get_two_args(v))))
+                            },
+                            "$ifNull" => {
+                                Ok(Expr::IfNull(box try!(get_two_args(v))))
+                            },
+                            "$setDifference" => {
+                                Ok(Expr::SetDifference(box try!(get_two_args(v))))
+                            },
+                            "$setIsSubset" => {
+                                Ok(Expr::SetIsSubset(box try!(get_two_args(v))))
+                            },
+                            "$strcasecmp" => {
+                                Ok(Expr::StrCaseCmp(box try!(get_two_args(v))))
+                            },
+
+                            _ => {
+                                Err(Error::Misc(format!("invalid expression operator: {}", k)))
+                            },
+                        }
+                    } else {
+                        Err(Error::Misc(String::from("TODO no match key")))
+                    }
+                } else {
+                    // TODO any cases where this is not a literal need to have
+                    // been handled before this point.
+                    Ok(Expr::Literal(bson::Value::BDocument(bd)))
+                }
+            },
+            _ => {
+                // TODO any cases where this is not a literal need to have
+                // been handled before this point.
+                Ok(Expr::Literal(v))
+            },
+        }
+    }
+
+    fn parse_agg(a: bson::Array) -> Result<Vec<AggOp>> {
+        a.items.into_iter().map(
+            |d| {
+                let mut d = try!(d.into_document());
+                if d.pairs.len() != 1 {
+                    Err(Error::Misc(String::from("agg pipeline stage spec must have one item in it")))
+                } else {
+                    let (k, v) = d.pairs.pop().expect("just checked this");
+                    match k.as_str() {
+                        "$limit" => {
+                            Ok(AggOp::Limit(try!(v.numeric_to_i32())))
+                        },
+                        "$skip" => {
+                            Ok(AggOp::Skip(try!(v.numeric_to_i32())))
+                        },
+                        "$sort" => {
+                            Ok(AggOp::Sort(v))
+                        },
+                        "$out" => {
+                            Ok(AggOp::Out(try!(v.into_string())))
+                        },
+                        "$unwind" => {
+                            Ok(AggOp::Unwind(try!(v.into_string())))
+                        },
+                        "$match" => {
+                            let v = try!(v.into_document());
+                            let m = try!(matcher::parse_query(v));
+                            // TODO disallow $where
+                            // TODO disallow $near
+                            Ok(AggOp::Match(m))
+                        },
+                        "$project" => {
+                            Err(Error::Misc(format!("agg pipeline TODO: {}", k)))
+                        },
+                        "$group" => {
+                            Err(Error::Misc(format!("agg pipeline TODO: {}", k)))
+                        },
+                        "$redact" => {
+                            Err(Error::Misc(format!("agg pipeline TODO: {}", k)))
+                        },
+                        "$geoNear" => {
+                            Err(Error::Misc(format!("agg pipeline TODO: {}", k)))
+                        },
+                        _ => Err(Error::Misc(format!("16435 invalid agg pipeline stage name: {}", k)))
+                    }
+                }
+            }).collect::<Result<Vec<AggOp>>>()
+    }
+
     pub fn aggregate(&self,
                 db: &str,
                 coll: &str,
@@ -1697,7 +1995,44 @@ impl Connection {
                 ) 
         -> Result<(Option<String>, Box<Iterator<Item=Result<Row>> + 'static>)>
     {
-        panic!("TODO agg");
+        let ops = try!(Self::parse_agg(pipeline));
+        //Err(Error::Misc(format!("agg pipeline TODO: {:?}", ops)))
+        // TODO check for plan
+        let plan = None;
+        let reader = try!(self.conn.begin_read());
+        let mut seq: Box<Iterator<Item=Result<Row>>> = try!(reader.into_collection_reader(db, coll, plan));
+        for op in ops {
+            match op {
+                AggOp::Skip(n) => {
+                    seq = box seq.skip(n as usize);
+                },
+                AggOp::Limit(n) => {
+                    seq = box seq.take(n as usize);
+                },
+                AggOp::Match(m) => {
+                    seq = box seq
+                        .filter(
+                            move |r| {
+                                if let &Ok(ref d) = r {
+                                    matcher::match_query(&m, &d.doc)
+                                } else {
+                                    // TODO so when we have an error we just let it through?
+                                    true
+                                }
+                            }
+                    );
+                },
+                AggOp::Sort(k) => {
+                    let mut a = try!(seq.collect::<Result<Vec<_>>>());
+                    a.sort_by(cmp_row);
+                    seq = box a.into_iter().map(|d| Ok(d))
+                },
+                _ => {
+                    //return Err(Error::Misc(format!("agg pipeline TODO: {:?}", ops)))
+                },
+            }
+        }
+        Ok((None, seq))
     }
 
     pub fn find(&self,
