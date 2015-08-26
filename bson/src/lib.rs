@@ -301,7 +301,7 @@ impl Document {
                 return &mut self.pairs[i].1;
             }
         }
-        self.pairs.push((String::from_str(k), v));
+        self.pairs.push((String::from(k), v));
         let i = self.pairs.len() - 1;
         return &mut self.pairs[i].1;
     }
@@ -657,7 +657,7 @@ fn slurp_bson_string(ba: &[u8], i: &mut usize) -> Result<String> {
 
     let s = try!(std::str::from_utf8(&ba[*i .. *i + len - 1]));
     *i = *i + len;
-    Ok(String::from_str(s))
+    Ok(String::from(s))
 }
 
 fn slurp_bson_value(ba: &[u8], i: &mut usize, valtype: u8) -> Result<Value> {
@@ -840,7 +840,7 @@ impl<'v,'p> EntryAbsent<'v,'p> {
     pub fn insert(self, v: Value) -> Result<()> {
         match self {
             EntryAbsent::DocumentParent(bd, k) => {
-                bd.pairs.push((String::from_str(k), v));
+                bd.pairs.push((String::from(k), v));
             },
             EntryAbsent::ArrayParent(ba, i) => {
                 panic!("TODO EntryAbsent::ArrayParent insert: len={}, i={}", ba.len(), i);
@@ -1273,7 +1273,7 @@ impl Value {
     }
 
     pub fn get_weight_from_index_entry(k: &[u8]) -> Result<i32> {
-        let n = 1 + k.rposition_elem(&0u8).expect("TODO");
+        let n = 1 + k.iter().rposition(|v| *v==0).expect("TODO");
         let ord_shouldbe = Value::BInt32(0).get_type_order() as u8;
         if k[n] != ord_shouldbe {
             return Err(Error::Misc(String::from("bad type order byte")));
