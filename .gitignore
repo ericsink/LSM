@@ -8,7 +8,7 @@
 */*/*/*/bin/**
 */*/*/*/obj/**
 *.userprefs
-/fsharp/packages/**
+/fsharp_lsm/packages/**
 Cargo.lock
 /lsm/target
 /misc/target
