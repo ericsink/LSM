@@ -913,14 +913,14 @@ impl Value {
         }
     }
 
-    fn is_array(&self) -> bool {
+    pub fn is_array(&self) -> bool {
         match self {
             &Value::BArray(_) => true,
             _ => false,
         }
     }
 
-    fn is_undefined(&self) -> bool {
+    pub fn is_undefined(&self) -> bool {
         match self {
             &Value::BUndefined => true,
             _ => false,
@@ -934,7 +934,7 @@ impl Value {
         }
     }
 
-    fn is_document(&self) -> bool {
+    pub fn is_document(&self) -> bool {
         match self {
             &Value::BDocument(_) => true,
             _ => false,

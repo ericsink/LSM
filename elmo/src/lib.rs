@@ -427,6 +427,15 @@ enum AggProj {
     Expr(Expr),
 }
 
+impl AggProj {
+    fn is_include(&self) -> bool {
+        match self {
+            &AggProj::Include => true,
+            &AggProj::Expr(_) => false,
+        }
+    }
+}
+
 #[derive(Debug)]
 enum GroupAccum {
     Sum(Expr),
@@ -1811,6 +1820,30 @@ impl Connection {
             }
         };
 
+        let get_three_args = |mut v: bson::Value| -> Result<(Expr,Expr,Expr)> {
+            match v {
+                bson::Value::BArray(mut a) => {
+                    if a.len() != 3 {
+                        Err(Error::Misc(String::from("16020 wrong number of args")))
+                    } else {
+                        let v2 = a.items.remove(2);
+                        let v1 = a.items.remove(1);
+                        let v0 = a.items.remove(0);
+                        let e0 = try!(Self::parse_expr(v0));
+                        let e1 = try!(Self::parse_expr(v1));
+                        let e2 = try!(Self::parse_expr(v2));
+                        Ok((e0, e1, e2))
+                    }
+                },
+                _ => Err(Error::Misc(String::from("16020 wrong number of args")))
+            }
+        };
+
+        let parse_vec = |mut v: bson::Value| -> Result<Vec<Expr>> {
+            let a = try!(v.into_array());
+            a.items.into_iter().map(|v| Self::parse_expr(v)).collect::<Result<Vec<_>>>()
+        };
+
         match v {
             bson::Value::BString(s) => {
                 if s.starts_with("$$") {
@@ -1918,6 +1951,49 @@ impl Connection {
                                 Ok(Expr::StrCaseCmp(box try!(get_two_args(v))))
                             },
 
+                            "$substr" => {
+                                Ok(Expr::Substr(box try!(get_three_args(v))))
+                            },
+
+                            "$cond" => {
+                                if v.is_array() {
+                                    Ok(Expr::Substr(box try!(get_three_args(v))))
+                                } else if v.is_document() {
+                                    Err(Error::Misc(format!("TODO $cond document: {:?}", v)))
+                                } else {
+                                    Err(Error::Misc(String::from("16020 wrong number of args")))
+                                }
+                            },
+
+                            "$and" => {
+                                Ok(Expr::And(try!(parse_vec(v))))
+                            },
+                            "$or" => {
+                                Ok(Expr::Or(try!(parse_vec(v))))
+                            },
+                            "$add" => {
+                                Ok(Expr::Add(try!(parse_vec(v))))
+                            },
+                            "$multiply" => {
+                                Ok(Expr::Multiply(try!(parse_vec(v))))
+                            },
+                            "$concat" => {
+                                Ok(Expr::Concat(try!(parse_vec(v))))
+                            },
+                            "$setEquals" => {
+                                Ok(Expr::SetEquals(try!(parse_vec(v))))
+                            },
+                            "$setIntersection" => {
+                                Ok(Expr::SetIntersection(try!(parse_vec(v))))
+                            },
+                            "$setUnion" => {
+                                Ok(Expr::SetUnion(try!(parse_vec(v))))
+                            },
+
+                            // TODO let
+                            // TODO map
+                            // TODO dateToString
+
                             _ => {
                                 Err(Error::Misc(format!("invalid expression operator: {}", k)))
                             },
@@ -1939,7 +2015,47 @@ impl Connection {
         }
     }
 
+    fn eval(ctx: &bson::Document, e: &Expr) -> Result<bson::Value> {
+        match e {
+            &Expr::Literal(ref v) => Ok(v.clone()),
+            _ => Err(Error::Misc(format!("TODO eval: {:?}", e)))
+        }
+    }
+
     fn parse_agg(a: bson::Array) -> Result<Vec<AggOp>> {
+        fn flatten_projection(d: bson::Value) -> Result<Vec<(String, bson::Value)>> {
+            fn flatten(a: &mut Vec<(String, bson::Value)>, path: String, d: bson::Value) -> Result<()> {
+                match d {
+                    bson::Value::BDocument(bd) => {
+                        if  bd.pairs.iter().any(|&(ref k, _)| k.starts_with("$")) {
+                            if path.as_str() == "" {
+                                return Err(Error::Misc(String::from("16404 $project key begins with $")))
+                            } else {
+                                a.push((path, bson::Value::BDocument(bd)));
+                            }
+                        } else {
+                            for (k,v) in bd.pairs {
+                                let new_path =
+                                    if path.as_str() == "" {
+                                        String::from(k)
+                                    } else {
+                                        format!("{}.{}", path, k)
+                                    };
+                                try!(flatten(a, new_path, v));
+                            }
+                        }
+                    },
+                    _ => {
+                        a.push((path, d));
+                    },
+                }
+                Ok(())
+            }
+            let mut a = vec![];
+            try!(flatten(&mut a, String::from(""), d));
+            Ok(a)
+        }
+
         a.items.into_iter().map(
             |d| {
                 let mut d = try!(d.into_document());
@@ -1971,7 +2087,50 @@ impl Connection {
                             Ok(AggOp::Match(m))
                         },
                         "$project" => {
-                            Err(Error::Misc(format!("agg pipeline TODO: {}", k)))
+                            // flatten so that:
+                            // project b:{a:1} should be an inclusion of b.a, not {a:1} as a doc literal for b
+                            let args = try!(flatten_projection(v));
+                            // TODO is this $ check needed here again?  It's also done in flatten_projection().
+                            if args.iter().any(|&(ref k, _)| k.starts_with("$")) {
+                                return Err(Error::Misc(String::from("16404 $project key begins with $")))
+                            }
+                            let (mut id, not_id): (Vec<_>, Vec<_>) = args.into_iter().partition(|&(ref k, _)| k=="_id");
+                            if id.len() > 1 {
+                                return Err(Error::Misc(String::from("only one id allowed here")))
+                            }
+                            let id = id.pop();
+                            let id_item =
+                                match id {
+                                    None => Some((String::from("_id"), AggProj::Include)),
+                                    Some((_,id)) => {
+                                        match id {
+                                            bson::Value::BInt32(0) 
+                                            | bson::Value::BInt64(0) 
+                                            | bson::Value::BDouble(0.0)
+                                            | bson::Value::BBoolean(false) => None,
+                                            _ => Some((String::from("_id"), AggProj::Expr(try!(Self::parse_expr(id))))),
+                                        }
+                                    },
+                                };
+                            let expressions =
+                                not_id.into_iter().map(
+                                    |(k,v)| match v {
+                                        bson::Value::BInt32(1) 
+                                        | bson::Value::BInt64(1) 
+                                        | bson::Value::BDouble(1.0)
+                                        | bson::Value::BBoolean(true) => Ok((k, AggProj::Include)),
+                                        _ => Ok((k, AggProj::Expr(try!(Self::parse_expr(v))))),
+                                    }
+                                    ).collect::<Result<Vec<_>>>();
+                            let mut expressions = try!(expressions);
+                            match id_item {
+                                Some(id) => {
+                                    expressions.insert(0, id);
+                                },
+                                None => {
+                                },
+                            }
+                            Ok(AggOp::Project(expressions))
                         },
                         "$group" => {
                             Err(Error::Misc(format!("agg pipeline TODO: {}", k)))
@@ -1986,6 +2145,49 @@ impl Connection {
                     }
                 }
             }).collect::<Result<Vec<AggOp>>>()
+    }
+
+    fn agg_project(seq: Box<Iterator<Item=Result<Row>>>, expressions: Vec<(String,AggProj)>) -> Box<Iterator<Item=Result<Row>>> {
+        box seq.map(
+            move |rr| {
+                match rr {
+                    Ok(mut row) => {
+                        let (includes, exes): (Vec<_>, Vec<_>) = expressions.iter().partition(|&&(ref s, ref a)| a.is_include());
+                        let exes = exes.into_iter().map(|&(ref path, ref a)| 
+                                                        match a {
+                                                            &AggProj::Expr(ref e) => {
+                                                                (path, e)
+                                                            },
+                                                            &AggProj::Include => {
+                                                                unreachable!();
+                                                            },
+                                                        }
+                                                       ).collect::<Vec<_>>();
+                        let mut d = row.doc;
+                        // TODO process the includes against d
+                        // TODO ctx, move d into it as CURRENT, and a clone as ROOT.
+                        let mut ctx = bson::Document::new_empty();
+                        for (ref path, ref e) in exes {
+                            let v = try!(Self::eval(&ctx, e));
+                            // TODO this should modify CURRENT, not d
+                            match try!(d.entry(path)) {
+                                bson::Entry::Found(e) => {
+                                    return Err(Error::Misc(format!("16400 already: {}", path)))
+                                },
+                                bson::Entry::Absent(e) => {
+                                    if !v.is_undefined() {
+                                        e.insert(v);
+                                    }
+                                },
+                            }
+                        }
+                        row.doc = d;
+                        Ok(row)
+                    },
+                    Err(e) => Err(e),
+                }
+            }
+            )
     }
 
     pub fn aggregate(&self,
@@ -2025,7 +2227,10 @@ impl Connection {
                 AggOp::Sort(k) => {
                     let mut a = try!(seq.collect::<Result<Vec<_>>>());
                     a.sort_by(cmp_row);
-                    seq = box a.into_iter().map(|d| Ok(d))
+                    seq = box a.into_iter().map(|d| Ok(d));
+                },
+                AggOp::Project(expressions) => {
+                    seq = box Self::agg_project(seq, expressions);
                 },
                 _ => {
                     //return Err(Error::Misc(format!("agg pipeline TODO: {:?}", ops)))
